@@ -97,6 +97,20 @@ if [[ "$STATUS" == "published" && -n "$PR_URL" && "$PR_URL" != "null" ]]; then
   exit 0
 fi
 
+# Trim trailing blank lines. Portable: the previous implementation used GNU
+# sed's `:a;...;ba` label syntax, which BSD sed (macOS) parses as one label
+# name running to end of line and rejects with "unused label", making every
+# section come back empty.
+trim_trailing_blank_lines() {
+  awk '
+    { lines[NR] = $0 }
+    END {
+      last = 0
+      for (i = 1; i <= NR; i++) if (lines[i] ~ /[^[:space:]]/) last = i
+      for (i = 1; i <= last; i++) print lines[i]
+    }
+  '
+}
 # Body sections — split on `^# ` H1 headings.
 extract_section() {
   local heading="$1"
@@ -104,8 +118,10 @@ extract_section() {
     $0 ~ h { in_sec = 1; next }
     /^# / && in_sec { in_sec = 0 }
     in_sec { print }
-  ' | sed -e ':a;/./,$!d;/^$/{$d;ba;}'   # trim trailing blank lines
+  ' | trim_trailing_blank_lines
 }
+
+
 
 TITLE=$(extract_section "Title" | sed -e '/./,$!d')
 DESCRIPTION=$(extract_section "Description")
@@ -238,6 +254,10 @@ FAILURES=0
 post_comment_gh() {
   local file="$1" start="$2" end="$3" side="$4" body="$5"
   local repo commit
+  # The API rejects a lowercase side with 422. Context files commonly write
+  # `side: right`, so normalise rather than trusting the author to shout.
+  side=$(printf '%s' "${side:-RIGHT}" | tr '[:lower:]' '[:upper:]')
+  [[ "$side" == "LEFT" || "$side" == "RIGHT" ]] || side="RIGHT"
   repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)
   commit=$(git rev-parse "origin/$BRANCH")
   local args=(
@@ -248,12 +268,18 @@ post_comment_gh() {
     -f "commit_id=$commit"
     -f "path=$file"
     -F "line=${end:-$start}"
-    -f "side=${side:-RIGHT}"
+    -f "side=$side"
   )
   if [[ -n "$end" && "$end" != "$start" && "$end" != "null" ]]; then
-    args+=( -F "start_line=$start" -f "start_side=${side:-RIGHT}" )
+    args+=( -F "start_line=$start" -f "start_side=$side" )
   fi
-  gh "${args[@]}" >/dev/null 2>&1
+  local err
+  if ! err=$(gh "${args[@]}" 2>&1 >/dev/null); then
+    # Surface why. Silently discarding this is how a whole run of failed
+    # comments got reported as success.
+    printf '    gh error: %s\n' "${err//$'\n'/ }" >&2
+    return 1
+  fi
 }
 
 post_comment_glab() {
@@ -329,7 +355,10 @@ if [[ $DRY_RUN -eq 0 ]]; then
 
   # If body already has a publish log, append entries to it; else add new section.
   if echo "$BODY" | grep -q '^## Publish log'; then
-    NEW_BODY=$(echo "$BODY" | awk -v entries="$(printf '%s\n' "${PUBLISH_LOG[@]}" | sed 's/^/- /')" '
+    # Passed through the environment, not `awk -v`: BSD awk rejects a literal
+    # newline inside a -v assignment ("newline in string").
+    NEW_BODY=$(echo "$BODY" | PUBLISH_ENTRIES="$(printf '%s\n' "${PUBLISH_LOG[@]}" | sed 's/^/- /')" awk '
+      BEGIN { entries = ENVIRON["PUBLISH_ENTRIES"] }
       /^## Publish log/ { in_log = 1; print; next }
       /^## / && in_log { in_log = 0; print entries; print; next }
       { print }

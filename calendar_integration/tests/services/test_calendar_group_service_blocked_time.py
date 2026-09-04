@@ -819,12 +819,12 @@ def test_deleting_slot_through_update_group_cascades_group_scoped_blocks(
 
 
 # ---------------------------------------------------------------------------
-# Removing a calendar from a slot removes its group-scoped blocks
+# Removing a calendar from a slot keeps its group-scoped blocks
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-def test_removing_calendar_from_slot_removes_group_scoped_blocks(
+def test_removing_calendar_from_slot_keeps_group_scoped_blocks(
     service: CalendarGroupService,
     admin_user: User,
     calendar: Calendar,
@@ -832,10 +832,10 @@ def test_removing_calendar_from_slot_removes_group_scoped_blocks(
     group: CalendarGroup,
     django_capture_on_commit_callbacks,
 ) -> None:
-    """When removing a calendar from a slot's membership, its group-scoped
-    blocked time must be deleted (not orphaned). A second calendar's blocks
-    in the same slot survive. Each deleted block is audited with a DELETE
-    action naming the actor."""
+    """Contract change (Calendar Pools Phase 1): when removing a calendar from
+    a slot's membership, its group-scoped blocked time is kept, not deleted --
+    roster removal is lenient and never destroys configuration. Both
+    calendars' blocks survive, and no block DELETE is audited."""
     # Create a slot with TWO calendars.
     slot = CalendarGroupSlot.objects.create(
         organization=service.organization, group=group, name="Test Slot"
@@ -889,9 +889,8 @@ def test_removing_calendar_from_slot_removes_group_scoped_blocks(
                 ),
             )
 
-    # The first calendar's block must be deleted.
-    assert not BlockedTime.objects.unscoped().filter(id=block1_id).exists()
-    # The second calendar's block must survive.
+    # Both blocks survive the roster removal.
+    assert BlockedTime.objects.unscoped().filter(id=block1_id).exists()
     assert BlockedTime.objects.unscoped().filter(id=block2_id).exists()
     # The first calendar's membership is gone.
     assert (
@@ -906,7 +905,7 @@ def test_removing_calendar_from_slot_removes_group_scoped_blocks(
         .exists()
     )
 
-    # Verify that a DELETE audit record was emitted for the deleted block.
+    # No block DELETE is audited -- nothing was deleted.
     payloads = _payloads(mock_task)
     delete_payloads = [p for p in payloads if p["action_key"] == AuditAction.DELETE]
     block_delete_payloads = [
@@ -914,8 +913,7 @@ def test_removing_calendar_from_slot_removes_group_scoped_blocks(
         for p in delete_payloads
         if p["subject"]["subject_type"] == "calendar_integration.blockedtime"
     ]
-    assert len(block_delete_payloads) == 1
-    assert block_delete_payloads[0]["subject"]["subject_id"] == str(block1_id)
+    assert block_delete_payloads == []
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import datetime
 from collections.abc import Callable
-from typing import Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from django.db.models import Case, IntegerField, Value, When
 from django.http import Http404, HttpResponse
@@ -18,6 +18,7 @@ from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
+from rest_framework.viewsets import GenericViewSet
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -31,8 +32,10 @@ from calendar_integration.exceptions import (
     CalendarGroupSlotConfigNotFoundError,
     CalendarGroupValidationError,
     CalendarIntegrationError,
+    CalendarPoolInUseError,
     ChangeRequestIneligibleError,
     ChangeRequestNotPendingError,
+    InvalidTokenError,
 )
 from calendar_integration.filtersets import (
     AvailableTimeFilterSet,
@@ -40,6 +43,7 @@ from calendar_integration.filtersets import (
     CalendarEventFilterSet,
     CalendarFilterSet,
     CalendarGroupFilterSet,
+    CalendarPoolFilterSet,
     ExternalEventChangeRequestFilterSet,
 )
 from calendar_integration.models import (
@@ -50,14 +54,18 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarGroup,
     CalendarGroupSlotQuotaRule,
+    CalendarManagementToken,
     CalendarOwnership,
+    CalendarPool,
     ExternalEventChangeRequest,
 )
 from calendar_integration.permissions import (
+    BookingCodePermission,
     BookingPolicyPermission,
     CalendarAvailabilityPermission,
     CalendarEventPermission,
     CalendarGroupPermission,
+    CalendarPoolPermission,
     ExternalEventChangeRequestPermission,
     GroupScopedAvailabilityWindowPermission,
     GroupScopedBlockedTimePermission,
@@ -73,6 +81,8 @@ from calendar_integration.serializers import (
     BlockedTimeRecurringExceptionSerializer,
     BlockedTimeSerializer,
     BookableSlotProposalSerializer,
+    BookingCodeCreateResultSerializer,
+    BookingCodeCreateSerializer,
     BookingPolicySerializer,
     BulkBlockedTimeSerializer,
     CalendarBundleCreateSerializer,
@@ -83,6 +93,7 @@ from calendar_integration.serializers import (
     CalendarGroupEventCreateSerializer,
     CalendarGroupRangeAvailabilitySerializer,
     CalendarGroupSerializer,
+    CalendarPoolSerializer,
     CalendarSerializer,
     CalendarSyncRequestSerializer,
     CalendarSyncSerializer,
@@ -101,17 +112,27 @@ from calendar_integration.serializers import (
     GroupScopedQuotaRuleSerializer,
     GroupScopedQuotaRuleUpdateSerializer,
     ResourceCalendarCreateSerializer,
+    StaleSelectionSerializer,
     UnavailableTimeWindowSerializer,
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.calendar_group_service import _UNCHANGED, CalendarGroupService
+from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
-from common.utils.view_utils import ReadOnlyVintaScheduleModelViewSet, VintaScheduleModelViewSet
+from common.utils.view_utils import (
+    ReadOnlyVintaScheduleModelViewSet,
+    TenantScopedViewMixin,
+    VintaScheduleModelViewSet,
+)
 from organizations.permissions import IsOrganizationAdmin
+
+
+if TYPE_CHECKING:
+    from users.models import User
 
 
 def _parse_bool(value, *, default: bool = True) -> bool:
@@ -123,6 +144,21 @@ def _parse_bool(value, *, default: bool = True) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("true", "1", "yes", "on")
     return bool(value)
+
+
+_CALENDAR_UPDATE_DESCRIPTION = (
+    "Updates a calendar's editable fields.\n\n"
+    "**Authorization rules (enforced after org-scoping):**\n"
+    "- BUNDLE calendar: caller must be an org admin. Non-admin members receive 403.\n"
+    "- Non-bundle calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar "
+    "(CalendarOwnership) or be an org admin. Non-owner non-admins receive 403.\n"
+    "\n\n"
+    "**Activation:** imported calendars other than the account's default one arrive "
+    "unlisted with sync_enabled=false. Setting sync_enabled=true here also requests the "
+    "calendar's first sync (over a one-year window, using the owner's linked account), so "
+    "no follow-up call to /calendar/{id}/request-sync/ is needed. Set visibility=active in "
+    "the same request to list it for booking."
+)
 
 
 @extend_schema_view(
@@ -297,6 +333,52 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         serializer = self.get_serializer(ownership.calendar)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    def _assert_can_manage_calendar(self, calendar: Calendar, user: "User", verb: str) -> None:
+        """Gate a mutating action on a calendar, by calendar type.
+
+        - BUNDLE: admin-only. Bundles are management resources, not anyone's
+          personal calendar, so there is no owner to fall back on.
+        - Everything else (PERSONAL/RESOURCE/VIRTUAL): the caller must hold a
+          ``CalendarOwnership`` row for it, or be an org admin.
+
+        ``user`` is the acting (authenticated) user and ``verb`` is the action
+        named in the 403 message ("disable", "update"). Org scoping is already
+        drawn by ``get_queryset()``; this is the who-inside-the-org layer on top
+        of it.
+        """
+        if calendar.calendar_type == CalendarType.BUNDLE:
+            if not user.is_organization_admin(calendar.organization_id):
+                raise PermissionDenied(f"Only org admins can {verb} a bundle calendar.")
+            return
+
+        is_owner = (
+            CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+            .filter(
+                calendar=calendar,
+                membership_user_id=user.id,
+            )
+            .exists()
+        )
+        if not (is_owner or user.is_organization_admin(calendar.organization_id)):
+            raise PermissionDenied(f"You must own this calendar or be an org admin to {verb} it.")
+
+    @extend_schema(
+        summary="Update a calendar",
+        description=_CALENDAR_UPDATE_DESCRIPTION,
+    )
+    def update(self, request, *args, **kwargs):
+        """Update a calendar. Owner-or-admin gated; admin-only for bundles."""
+        self._assert_can_manage_calendar(self.get_object(), request.user, "update")
+        return super().update(request, *args, **kwargs)
+
+    @extend_schema(
+        summary="Partially update a calendar",
+        description=_CALENDAR_UPDATE_DESCRIPTION,
+    )
+    def partial_update(self, request, *args, **kwargs):
+        """PATCH a calendar. Same gating as ``update``, which DRF delegates to."""
+        return super().partial_update(request, *args, **kwargs)
+
     @extend_schema(
         summary="Soft-disable a calendar",
         description=(
@@ -323,28 +405,10 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         """
         calendar = self.get_object()
 
-        if calendar.calendar_type == CalendarType.BUNDLE:
-            # Bundle calendars are management resources — admin-only disable.
-            # Only the bundle wrapper is hidden; child calendars, bundle events, and
-            # their representation BlockedTimes/events are left intact. Event
-            # cancellation is out of scope: leave the events, hide the bundle.
-            if not request.user.is_organization_admin(calendar.organization_id):
-                raise PermissionDenied("Only org admins can disable a bundle calendar.")
-        else:
-            # Non-bundle calendars (PERSONAL/RESOURCE/VIRTUAL): owner or admin.
-            is_owner = (
-                CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
-                .filter(
-                    calendar=calendar,
-                    membership_user_id=request.user.id,
-                )
-                .exists()
-            )
-            is_admin = request.user.is_organization_admin(calendar.organization_id)
-            if not (is_owner or is_admin):
-                raise PermissionDenied(
-                    "You must own this calendar or be an org admin to disable it."
-                )
+        # Disabling a bundle hides only the bundle wrapper; child calendars, bundle
+        # events, and their representation BlockedTimes/events are left intact.
+        # Event cancellation is out of scope: leave the events, hide the bundle.
+        self._assert_can_manage_calendar(calendar, request.user, "disable")
 
         calendar.visibility = CalendarVisibility.INACTIVE
         calendar.save(update_fields=["visibility"])
@@ -2453,6 +2517,114 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         )
 
     @extend_schema(
+        summary="List stale calendar selections for this group",
+        description=(
+            "Every `(event, slot, calendar)` triple booked under this group whose "
+            "calendar has since left its slot's roster (removed inline, or via a "
+            "pool detaching or losing that calendar) -- the ops-sweep counterpart "
+            "to the per-selection `is_in_current_roster` flag. Optionally bounded "
+            "to events overlapping `[window_start, window_end)`; omitting both "
+            "returns every stale selection in the group regardless of when its "
+            "event falls. Returns a bare array, page-bounded by `offset`/`limit` "
+            "-- this exists specifically to expose a potentially large backlog, "
+            "so the result set is never fetched or materialized unbounded."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="window_start",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Only events ending after this instant (ISO 8601). Optional.",
+                required=False,
+            ),
+            OpenApiParameter(
+                name="window_end",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Only events starting before this instant (ISO 8601). Optional.",
+                required=False,
+            ),
+            OpenApiParameter(
+                name="offset",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="Number of rows to skip. Defaults to 0.",
+                required=False,
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="Max rows to return, 1-100. Defaults to 100.",
+                required=False,
+            ),
+        ],
+        responses={200: StaleSelectionSerializer(many=True)},
+    )
+    @action(
+        methods=["GET"],
+        detail=True,
+        url_path="stale-selections",
+        url_name="stale-selections",
+        # Returns a bare array, page-bounded by explicit offset/limit query
+        # params the service validates -- not a DRF Page. pagination_class=None
+        # and filter_backends=[] so drf-spectacular stops advertising the
+        # count/next/previous/results envelope and CalendarGroupFilterSet's
+        # `name` param, neither of which this action implements (reviewer
+        # finding, Phase 6).
+        pagination_class=None,
+        filter_backends=[],
+    )
+    @inject
+    def stale_selections(
+        self,
+        request,
+        pk,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+    ):
+        group = self.get_object()
+        start_raw = request.query_params.get("window_start")
+        end_raw = request.query_params.get("window_end")
+        try:
+            window_start = (
+                datetime.datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                if start_raw
+                else None
+            )
+            window_end = (
+                datetime.datetime.fromisoformat(end_raw.replace("Z", "+00:00")) if end_raw else None
+            )
+        except ValueError as e:
+            raise ValidationError(
+                {"non_field_errors": ["Invalid datetime format; use ISO 8601."]}
+            ) from e
+
+        try:
+            offset = int(request.query_params.get("offset", 0))
+            limit = int(request.query_params.get("limit", 100))
+        except ValueError as e:
+            raise ValidationError(
+                {"non_field_errors": ["offset and limit must be integers."]}
+            ) from e
+
+        calendar_group_service.initialize(organization=group.organization)
+        try:
+            stale = calendar_group_service.find_stale_selections(
+                group_id=group.id,
+                window_start=window_start,
+                window_end=window_end,
+                offset=offset,
+                limit=limit,
+            )
+        except CalendarGroupValidationError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+        payload = [
+            {"event_id": s.event_id, "slot_id": s.slot_id, "calendar_id": s.calendar_id}
+            for s in stale
+        ]
+        return Response(StaleSelectionSerializer(payload, many=True).data)
+
+    @extend_schema(
         summary="Per-slot availability for requested ranges",
         request=CalendarGroupAvailabilityQuerySerializer,
         responses={200: CalendarGroupRangeAvailabilitySerializer(many=True)},
@@ -2577,6 +2749,67 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
 
         payload = [{"start_time": p.start_time, "end_time": p.end_time} for p in proposals]
         return Response(BookableSlotProposalSerializer(payload, many=True).data)
+
+
+@extend_schema(tags=["Calendar Pools"])
+class CalendarPoolViewSet(VintaScheduleModelViewSet):
+    """
+    ViewSet for CalendarPool CRUD.
+    """
+
+    permission_classes = (CalendarPoolPermission,)
+    # See ``CalendarViewSet.queryset``.
+    queryset = CalendarPool.objects.unscoped()
+    serializer_class = CalendarPoolSerializer
+    filterset_class = CalendarPoolFilterSet
+
+    def get_queryset(self):
+        """Org-scoped, then role-scoped: admins see every pool in the org;
+        non-admin members see only pools where they own a roster calendar
+        (`CalendarPoolQuerySet.only_member_of`) -- same visibility shape as
+        `CalendarGroupViewSet.get_queryset`, and what makes a pool a member
+        doesn't participate in 404 rather than 403 on retrieve.
+        """
+        user = self.request.user
+        if not user.is_authenticated:
+            return CalendarPool.original_manager.none()
+        membership = self.request.organization_membership
+        if not membership:
+            return CalendarPool.original_manager.none()
+        qs = super().get_queryset().filter_by_organization(membership.organization_id)
+        if user.is_organization_admin(membership.organization_id):
+            return qs
+        return qs.only_member_of(membership.user_id)
+
+    @extend_schema(
+        summary="Delete calendar pool",
+        description=(
+            "Delete a CalendarPool. Fails with 409 if the pool is still attached "
+            "to any calendar group slot, naming the referencing groups."
+        ),
+        responses={
+            204: None,
+            409: OpenApiResponse(description="Pool is still attached to a group slot."),
+        },
+    )
+    @inject
+    def destroy(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        instance = self.get_object()
+        calendar_group_service.initialize(organization=instance.organization)
+        try:
+            calendar_group_service.delete_pool(pool_id=instance.id)
+        except CalendarPoolInUseError as e:
+            return Response(
+                {"detail": str(e), "groups": e.group_names},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @extend_schema(tags=["Booking Policies"])
@@ -2983,3 +3216,292 @@ class ExternalEventChangeRequestViewSet(ReadOnlyVintaScheduleModelViewSet):
 
         serializer = self.get_serializer(updated)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=["Booking Codes"])
+class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
+    """Authenticated booking-code minting and revocation.
+
+    ``POST /booking-codes/`` collapses GraphQL's six ``create*BookingCode``
+    mutations (``calendar_integration.mutations``, ~L774-1115) into one
+    resource: ``purpose`` x {``calendar``, ``calendar_group``} is the same
+    cross product those six mutations cover, no more and no less (see
+    ``BookingCodeCreateSerializer``). ``DELETE /booking-codes/<id>/`` mirrors
+    ``revoke_booking_code``'s idempotent contract.
+
+    No ``list`` / ``retrieve``: there is nothing safe to return about a code
+    after mint -- the plaintext is generated fresh by
+    ``CalendarPermissionService.create_booking_token`` and never persisted, so
+    a listing could only ever show metadata, and Product declined that
+    surface (see the plan's Open Questions).
+
+    Authenticated (session/JWT) + active organization membership
+    (``BookingCodePermission.has_permission``). The finer owner-or-org-admin
+    authorization against the specific target happens here, in ``create`` AND
+    ``destroy``, because the target arrives in the request body (``create``)
+    or is only resolvable by id (``destroy``) rather than as a URL-routed
+    object ``has_object_permission`` could inspect. ``destroy`` additionally
+    requires the id to name a token minted through a booking-code mint
+    surface (see ``CalendarManagementToken.objects.booking_codes_for_organization``)
+    -- calendar-owner / attendee / external-attendee tokens are not
+    reachable through this endpoint at all, mint or revoke.
+    """
+
+    permission_classes = (BookingCodePermission,)
+    serializer_class = BookingCodeCreateSerializer
+    http_method_names = ("post", "delete", "options", "head")
+
+    def _authorize_calendar_target(
+        self,
+        request,
+        calendar_permission_service: "CalendarPermissionService",
+        organization_id: int,
+        calendar_id: int,
+    ) -> None:
+        """Resolve + authorize a ``calendar`` mint target.
+
+        A calendar outside the caller's organization is answered 404 -- never
+        403 -- so the endpoint cannot be used to learn that a given id exists
+        in some other tenant. Delegates the owner-or-admin decision to
+        ``CalendarPermissionService.can_view_calendar`` -- the same split
+        ``_authorize_calendar_group_target`` draws for a calendar group, kept
+        in one place on the service rather than re-implemented per target type.
+        """
+        try:
+            calendar = Calendar.objects.filter_by_organization(organization_id).get(id=calendar_id)
+        except Calendar.DoesNotExist:
+            raise NotFound() from None
+
+        if not calendar_permission_service.can_view_calendar(user=request.user, calendar=calendar):
+            raise PermissionDenied(
+                "You do not have permission to mint a booking code for this calendar."
+            )
+
+    def _authorize_calendar_group_target(
+        self,
+        request,
+        calendar_permission_service: "CalendarPermissionService",
+        organization_id: int,
+        calendar_group_id: int,
+    ) -> None:
+        """Resolve + authorize a ``calendar_group`` mint target.
+
+        Same 404-not-403 rule as ``_authorize_calendar_target``. Delegates the
+        owner-or-admin decision to
+        ``CalendarPermissionService.can_view_calendar_group`` -- the same
+        admin-or-participating-member split ``CalendarGroupPermission`` already
+        draws for the group's own endpoints.
+        """
+        try:
+            group = CalendarGroup.objects.filter_by_organization(organization_id).get(
+                id=calendar_group_id
+            )
+        except CalendarGroup.DoesNotExist:
+            raise NotFound() from None
+
+        if not calendar_permission_service.can_view_calendar_group(user=request.user, group=group):
+            raise PermissionDenied(
+                "You do not have permission to mint a booking code for this calendar group."
+            )
+
+    def _resolve_event_target(
+        self,
+        organization_id: int,
+        event_id: int,
+        *,
+        calendar_id: int | None,
+        calendar_group_id: int | None,
+    ) -> None:
+        """Verify ``event_id`` belongs to this org AND to the named calendar/group.
+
+        Mirrors the GraphQL reschedule/cancel mint mutations exactly
+        (``create_calendar_reschedule_booking_code`` et al.): a calendar-scoped
+        code may only be minted for a non-grouped event on that calendar; a
+        group-scoped code only for an event on that group. Any mismatch --
+        wrong org, wrong calendar, or a grouped event on a calendar-scoped
+        request -- is 404, matching the calendar/group 404-not-403 rule (the
+        event id is as sensitive as the calendar/group id it belongs to).
+        """
+        lookup: dict[str, object] = {"id": event_id}
+        if calendar_id is not None:
+            lookup["calendar_fk_id"] = calendar_id
+            lookup["calendar_group_fk_id__isnull"] = True
+        else:
+            lookup["calendar_group_fk_id"] = calendar_group_id
+
+        try:
+            CalendarEvent.objects.filter_by_organization(organization_id).get(**lookup)
+        except CalendarEvent.DoesNotExist:
+            raise NotFound() from None
+
+    @extend_schema(
+        request=BookingCodeCreateSerializer,
+        responses={201: BookingCodeCreateResultSerializer},
+        summary="Mint a single-use booking code",
+        description=(
+            "Mint a single-use booking / reschedule / cancel code scoped to a "
+            "calendar or calendar group. Collapses GraphQL's six "
+            "create*BookingCode mutations into one endpoint. The plaintext "
+            "code is returned exactly once in this response and is never "
+            "retrievable afterwards. Org admins may mint for any calendar or "
+            "group in the organization; other members may mint only for a "
+            "calendar they own or a group they participate in. A target in "
+            "another organization is answered 404, never 403."
+        ),
+    )
+    @inject
+    def create(
+        self,
+        request,
+        *args,
+        calendar_permission_service: Annotated[
+            "CalendarPermissionService", Provide["calendar_permission_service"]
+        ] = None,  # type: ignore[assignment]
+        **kwargs,
+    ) -> Response:
+        membership = request.organization_membership
+        if membership is None:
+            # Gated -- BookingCodePermission.has_permission already refuses this
+            # request before this method is reached; this is a safeguard only.
+            raise PermissionDenied()
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        organization_id = membership.organization_id
+        calendar_id = data.get("calendar")
+        calendar_group_id = data.get("calendar_group")
+        event_id = data.get("event")
+
+        if calendar_id is not None:
+            self._authorize_calendar_target(
+                request, calendar_permission_service, organization_id, calendar_id
+            )
+        else:
+            self._authorize_calendar_group_target(
+                request, calendar_permission_service, organization_id, calendar_group_id
+            )
+
+        if event_id is not None:
+            self._resolve_event_target(
+                organization_id,
+                event_id,
+                calendar_id=calendar_id,
+                calendar_group_id=calendar_group_id,
+            )
+
+        token, plaintext_code = calendar_permission_service.create_booking_token(
+            organization_id=organization_id,
+            permissions=BookingCodeCreateSerializer.PURPOSE_PERMISSIONS[data["purpose"]],
+            expires_at=data.get("expires_at"),
+            minted_by_user=request.user,
+            calendar_id=calendar_id,
+            calendar_group_id=calendar_group_id,
+            event_id=event_id,
+        )
+
+        result_serializer = BookingCodeCreateResultSerializer(
+            {
+                "id": token.pk,
+                "code": plaintext_code,
+                "purpose": data["purpose"],
+                "calendar": calendar_id,
+                "calendar_group": calendar_group_id,
+                "event": event_id,
+                "expires_at": data.get("expires_at"),
+            }
+        )
+        return Response(result_serializer.data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        responses={204: None},
+        summary="Revoke a booking code",
+        description=(
+            "Revoke a booking code by its opaque id. Org admins may revoke any "
+            "booking code in the organization; other members may revoke only a "
+            "code scoped to a calendar they own or a group they participate in "
+            "-- the same owner-or-org-admin rule POST applies at mint time. "
+            "Non-oracle: revoking an already-revoked code, an id that does not "
+            "exist within the caller's organization (including an id belonging "
+            "to another organization or to a non-booking-code token), and an id "
+            "the caller is not authorized to revoke, all return 204 without "
+            "error and without touching the row -- a caller cannot distinguish "
+            "'does not exist' from 'not yours' from 'already revoked'."
+        ),
+    )
+    @inject
+    def destroy(
+        self,
+        request,
+        *args,
+        calendar_permission_service: Annotated[
+            "CalendarPermissionService", Provide["calendar_permission_service"]
+        ] = None,  # type: ignore[assignment]
+        **kwargs,
+    ) -> Response:
+        membership = request.organization_membership
+        if membership is None:
+            # Gated -- BookingCodePermission.has_permission already refuses this
+            # request before this method is reached; this is a safeguard only.
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        pk = kwargs.get("pk") or self.kwargs.get("pk")
+        if pk is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        try:
+            token_id = int(pk)
+        except (TypeError, ValueError):
+            # Not a valid token id -- idempotent no-op, matching the contract
+            # for a well-formed but nonexistent / foreign-org id.
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        organization_id = membership.organization_id
+
+        # Resolve the token org-scoped AND restricted to rows minted through a
+        # booking-code mint surface (CalendarManagementTokenQuerySet.booking_codes)
+        # -- this endpoint must never be usable to revoke a calendar-owner /
+        # attendee / external-attendee token, none of which are reachable
+        # through it at mint time either. A foreign-org id, a nonexistent id,
+        # and a non-booking-code id are all indistinguishable from here on:
+        # idempotent no-op, 204.
+        try:
+            token = (
+                CalendarManagementToken.objects.booking_codes_for_organization(organization_id)
+                .select_related("calendar", "calendar_group")
+                .get(id=token_id)
+            )
+        except CalendarManagementToken.DoesNotExist:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        # Same owner-or-org-admin split `create` applies at mint time, against
+        # whichever scope the token actually carries. A booking code always
+        # carries exactly one (create_booking_token requires calendar_id or
+        # calendar_group_id) -- fail closed if somehow neither is set, rather
+        # than silently allowing the revoke.
+        if token.calendar_fk_id is not None:
+            authorized = calendar_permission_service.can_view_calendar(
+                user=request.user, calendar=token.calendar
+            )
+        elif token.calendar_group_fk_id is not None:
+            authorized = calendar_permission_service.can_view_calendar_group(
+                user=request.user, group=token.calendar_group
+            )
+        else:
+            authorized = False
+
+        # Unauthorized is answered exactly like "not found": 204, row
+        # untouched. Only an authorized revoke actually writes `revoked_at`.
+        if authorized:
+            try:
+                calendar_permission_service.revoke_token(
+                    organization_id=organization_id,
+                    token_id=token_id,
+                    actor_user=request.user,
+                )
+            except InvalidTokenError:
+                # Raced with something that removed the row between the
+                # lookup above and here -- idempotent no-op either way.
+                pass
+
+        return Response(status=status.HTTP_204_NO_CONTENT)

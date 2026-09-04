@@ -325,6 +325,11 @@ class CalendarGroupInput:
     description: str = ""
     slots: list[CalendarGroupSlotInput] = strawberry.field(default_factory=list)
     is_private: bool = True
+    #: Exact length every booking through the group must span. Required to
+    #: create the group with ``is_private=False``: a codeless public booking
+    #: presents no code, so the group is the only place its length can come
+    #: from. Omitted leaves the group unpinned, which only private groups may be.
+    duration_seconds: int | None = None
 
 
 @strawberry.input
@@ -335,6 +340,10 @@ class UpdateCalendarGroupInput:
     description: str = ""
     slots: list[CalendarGroupSlotInput] = strawberry.field(default_factory=list)
     is_private: bool | None = None
+    #: See ``CalendarGroupInput.duration_seconds``. Omitted leaves whatever the
+    #: group already has, so flipping ``is_private`` to False in the same call
+    #: succeeds only if the group already carries a duration or is given one here.
+    duration_seconds: int | None = None
 
 
 @strawberry.input
@@ -415,11 +424,23 @@ def _to_slot_input_data(slots: list[CalendarGroupSlotInput]) -> list[CalendarGro
     ]
 
 
-def _load_organization(organization_id: int) -> Organization | None:
-    try:
-        return Organization.objects.get(id=organization_id)
-    except Organization.DoesNotExist:
+def _group_duration_from_seconds(duration_seconds: int | None) -> datetime.timedelta | None:
+    """Convert a group mutation's ``duration_seconds`` to the service's timedelta.
+
+    Seconds is the unit every other duration-carrying field in this schema takes
+    at the boundary, so the group inputs match rather than introducing a Duration
+    scalar for two fields.
+
+    ``None`` passes straight through: it is the "omitted, leave unchanged"
+    sentinel ``CalendarGroupInputData.duration`` uses, which also means there is
+    no way to clear a duration here -- deliberately, since clearing one on a
+    publicly schedulable group would fail open.
+    """
+    if duration_seconds is None:
         return None
+    if duration_seconds <= 0:
+        raise CalendarGroupValidationError("duration_seconds must be greater than zero.")
+    return datetime.timedelta(seconds=duration_seconds)
 
 
 def _client_ip_from_request(request: object) -> str:
@@ -634,13 +655,16 @@ class CancelWithCodeInput:
 class CalendarGroupMutations:
     """GraphQL mutations for CalendarGroup CRUD and grouped event booking."""
 
-    @strawberry.mutation
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def create_calendar_group(
         self,
+        info: strawberry.Info,
         input: CalendarGroupInput,  # noqa: A002
     ) -> CalendarGroupResult:
-        organization = _load_organization(input.organization_id)
+        organization = info.context.request.public_api_organization
         if organization is None:
+            return CalendarGroupResult(success=False, error_message="Organization not found")
+        if input.organization_id != organization.id:
             return CalendarGroupResult(success=False, error_message="Organization not found")
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_group_service.initialize(organization=organization)
@@ -655,6 +679,9 @@ class CalendarGroupMutations:
                     description=input.description,
                     slots=_to_slot_input_data(input.slots),
                     accepts_public_scheduling=not input.is_private,
+                    # Raises CalendarGroupValidationError on a non-positive
+                    # value, caught below like any other group error.
+                    duration=_group_duration_from_seconds(input.duration_seconds),
                 )
             )
         except OverLimitError as exc:
@@ -663,13 +690,16 @@ class CalendarGroupMutations:
             return CalendarGroupResult(success=False, error_message=str(e))
         return CalendarGroupResult(success=True, group=group)  # type: ignore[arg-type]
 
-    @strawberry.mutation
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def update_calendar_group(
         self,
+        info: strawberry.Info,
         input: UpdateCalendarGroupInput,  # noqa: A002
     ) -> CalendarGroupResult:
-        organization = _load_organization(input.organization_id)
+        organization = info.context.request.public_api_organization
         if organization is None:
+            return CalendarGroupResult(success=False, error_message="Organization not found")
+        if input.organization_id != organization.id:
             return CalendarGroupResult(success=False, error_message="Organization not found")
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_group_service.initialize(organization=organization)
@@ -682,6 +712,7 @@ class CalendarGroupMutations:
                     description=input.description,
                     slots=_to_slot_input_data(input.slots),
                     accepts_public_scheduling=accepts_public_scheduling,
+                    duration=_group_duration_from_seconds(input.duration_seconds),
                 ),
             )
         except CalendarGroup.DoesNotExist:
@@ -690,13 +721,16 @@ class CalendarGroupMutations:
             return CalendarGroupResult(success=False, error_message=str(e))
         return CalendarGroupResult(success=True, group=group)  # type: ignore[arg-type]
 
-    @strawberry.mutation
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def delete_calendar_group(
         self,
+        info: strawberry.Info,
         input: DeleteCalendarGroupInput,  # noqa: A002
     ) -> DeleteCalendarGroupResult:
-        organization = _load_organization(input.organization_id)
+        organization = info.context.request.public_api_organization
         if organization is None:
+            return DeleteCalendarGroupResult(success=False, error_message="Organization not found")
+        if input.organization_id != organization.id:
             return DeleteCalendarGroupResult(success=False, error_message="Organization not found")
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_group_service.initialize(organization=organization)
@@ -708,13 +742,16 @@ class CalendarGroupMutations:
             return DeleteCalendarGroupResult(success=False, error_message=str(e))
         return DeleteCalendarGroupResult(success=True)
 
-    @strawberry.mutation
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def create_calendar_group_event(
         self,
+        info: strawberry.Info,
         input: CalendarGroupEventInput,  # noqa: A002
     ) -> CalendarGroupEventResult:
-        organization = _load_organization(input.organization_id)
+        organization = info.context.request.public_api_organization
         if organization is None:
+            return CalendarGroupEventResult(success=False, error_message="Organization not found")
+        if input.organization_id != organization.id:
             return CalendarGroupEventResult(success=False, error_message="Organization not found")
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_service.initialize_without_provider(organization=organization)
@@ -1139,9 +1176,14 @@ class CalendarGroupMutations:
                 error_message="Not found.",
             )
 
+        actor_system_user = getattr(info.context.request, "public_api_system_user", None)
         deps = get_booking_code_mutation_dependencies()
         try:
-            deps.calendar_permission_service.revoke_token(organization_id=org.id, token_id=input.id)
+            deps.calendar_permission_service.revoke_token(
+                organization_id=org.id,
+                token_id=input.id,
+                actor_system_user=actor_system_user,
+            )
         except InvalidTokenError:
             return BookingCodeResult(
                 success=False,

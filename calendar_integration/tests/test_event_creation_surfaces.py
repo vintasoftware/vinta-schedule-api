@@ -44,6 +44,7 @@ from vinta_billing.models import (
 )
 from vinta_billing.registry import entitlements
 
+from calendar_integration.booking_auth import BOOKING_CODE_HEADER
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarType,
@@ -684,6 +685,88 @@ class TestBookingCodeEventSurface:
 
 
 # ----------------------------------------------------------------------------------
+# 4b. Booking-code REST -- calendar_integration/booking_views.py
+#     BookingCodeCalendarEventViewSet (POST /public/booking/calendar-events/)
+# ----------------------------------------------------------------------------------
+
+
+def _rest_booking_headers(code: str) -> dict:
+    return {BOOKING_CODE_HEADER: code}
+
+
+def _rest_booking_payload() -> dict:
+    start = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
+    return {
+        "title": "REST Booking Code Surface Event",
+        "description": "",
+        "start_time": start.isoformat(),
+        "end_time": (start + datetime.timedelta(hours=1)).isoformat(),
+        "timezone": "UTC",
+        "external_attendee": {"email": "patient@example.com", "name": "Pat"},
+    }
+
+
+@pytest.mark.django_db
+class TestBookingCodeRestEventSurface:
+    """The REST counterpart of ``TestBookingCodeEventSurface`` above --
+    ``POST /public/booking/calendar-events/`` reaches ``create_event`` through
+    the exact same ``CalendarService.create_event`` call, so it must meter and
+    gate identically. Guarding only the viewset layer (and missing this REST
+    entry point) is exactly the unmetered-surface gap this file exists to catch.
+    """
+
+    def test_blocked_at_the_allowance_returns_402(self):
+        organization, _subscription = _at_the_allowance_no_payment_method()
+        calendar = baker.make(
+            Calendar,
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            accepts_public_scheduling=False,
+            external_id=f"rest-code-cal-{organization.pk}",
+        )
+        token, code = _booking_code_for_calendar(organization, calendar)
+
+        client = APIClient()
+        response = client.post(
+            reverse("calendar_booking_api:booking-calendar-events-list"),
+            _rest_booking_payload(),
+            format="json",
+            headers=_rest_booking_headers(code),
+        )
+
+        assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
+        body = response.json()
+        assert body["resource"] == EVENT_OCCURRENCES
+        assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
+        # The code must not have been consumed by a rejected booking.
+        token.refresh_from_db()
+        assert token.used_at is None
+
+    def test_unlimited_plan_is_unchanged(self):
+        organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        calendar = baker.make(
+            Calendar,
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            accepts_public_scheduling=False,
+            external_id=f"rest-code-cal-unlimited-{organization.pk}",
+        )
+        _token, code = _booking_code_for_calendar(organization, calendar)
+
+        client = APIClient()
+        response = client.post(
+            reverse("calendar_booking_api:booking-calendar-events-list"),
+            _rest_booking_payload(),
+            format="json",
+            headers=_rest_booking_headers(code),
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED, response.content
+
+
+# ----------------------------------------------------------------------------------
 # 5. Booking-code GraphQL -- createCalendarGroupEventWithCode
 # ----------------------------------------------------------------------------------
 
@@ -699,7 +782,9 @@ mutation CreateCalendarGroupEventWithCode($input: CreateGroupEventWithCodeInput!
 """
 
 
-def _group_with_one_slot(organization: Organization) -> tuple[object, object, Calendar]:
+def _group_with_one_slot(
+    organization: Organization, accepts_public_scheduling: bool = False
+) -> tuple[object, object, Calendar]:
     calendar = baker.make(
         Calendar,
         organization=organization,
@@ -707,7 +792,18 @@ def _group_with_one_slot(organization: Organization) -> tuple[object, object, Ca
         accepts_public_scheduling=False,
         external_id=f"group-code-cal-{organization.pk}",
     )
-    group = baker.make(CalendarGroup, organization=organization)
+    # A publicly schedulable group must carry a duration --
+    # ``can_perform_group_scheduling`` fails closed (403) for a public group
+    # with ``duration=None``, treating it as misconfigured rather than
+    # unbounded-length. ``_rest_group_booking_payload`` below books exactly
+    # one hour, so that is the pin here.
+    duration = datetime.timedelta(hours=1) if accepts_public_scheduling else None
+    group = baker.make(
+        CalendarGroup,
+        organization=organization,
+        accepts_public_scheduling=accepts_public_scheduling,
+        duration=duration,
+    )
     slot = CalendarGroupSlot.objects.create(
         organization=organization, group=group, name="Providers", order=0, required_count=1
     )
@@ -802,6 +898,121 @@ class TestBookingCodeGroupEventSurface:
         data = response.json()
         assert "errors" not in data or not data.get("errors"), data
         assert data["data"]["createCalendarGroupEventWithCode"]["success"] is True
+
+
+# ----------------------------------------------------------------------------------
+# 5b. Booking-code REST group -- calendar_integration/booking_views.py
+#     BookingCodeGroupEventViewSet
+#     (POST /public/booking/calendar-groups/<public_slug>/events/)
+# ----------------------------------------------------------------------------------
+
+
+def _rest_group_booking_payload(slot, calendar: Calendar) -> dict:
+    start = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
+    return {
+        "title": "REST Group Booking Code Surface Event",
+        "description": "",
+        "start_time": start.isoformat(),
+        "end_time": (start + datetime.timedelta(hours=1)).isoformat(),
+        "timezone": "UTC",
+        "slot_selections": [{"slot_id": slot.id, "calendar_ids": [calendar.id]}],
+        "external_attendee": {"email": "patient@example.com", "name": "Pat"},
+    }
+
+
+@pytest.mark.django_db
+class TestBookingCodeRestGroupEventSurface:
+    """The REST counterpart of ``TestBookingCodeGroupEventSurface`` above --
+    ``POST /public/booking/calendar-groups/<public_slug>/events/`` reaches
+    ``create_event`` through ``CalendarGroupService.create_grouped_event`` ->
+    ``CalendarService.create_event``, so it must meter and gate identically.
+    """
+
+    def test_blocked_at_the_allowance_returns_402(self):
+        organization, _subscription = _at_the_allowance_no_payment_method()
+        group, slot, calendar = _group_with_one_slot(organization)
+        token, code = _group_booking_code(organization, group)
+
+        client = APIClient()
+        response = client.post(
+            reverse(
+                "calendar_booking_api:booking-calendar-group-events-list",
+                kwargs={"public_slug": group.public_booking_slug},
+            ),
+            _rest_group_booking_payload(slot, calendar),
+            format="json",
+            headers=_rest_booking_headers(code),
+        )
+
+        assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
+        body = response.json()
+        assert body["resource"] == EVENT_OCCURRENCES
+        assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
+        token.refresh_from_db()
+        assert token.used_at is None
+
+    def test_unlimited_plan_is_unchanged(self):
+        organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        group, slot, calendar = _group_with_one_slot(organization)
+        _token, code = _group_booking_code(organization, group)
+
+        client = APIClient()
+        response = client.post(
+            reverse(
+                "calendar_booking_api:booking-calendar-group-events-list",
+                kwargs={"public_slug": group.public_booking_slug},
+            ),
+            _rest_group_booking_payload(slot, calendar),
+            format="json",
+            headers=_rest_booking_headers(code),
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED, response.content
+
+    # --------------------------------------------------------------------------
+    # Codeless (Phase 3): no X-Booking-Code header, authorized instead by the
+    # group's own accepts_public_scheduling flag. Reaches the exact same
+    # create_grouped_event -> create_event path, so it must meter identically.
+    # --------------------------------------------------------------------------
+
+    def test_codeless_blocked_at_the_allowance_returns_402(self):
+        organization, _subscription = _at_the_allowance_no_payment_method()
+        group, slot, calendar = _group_with_one_slot(organization, accepts_public_scheduling=True)
+
+        client = APIClient()
+        response = client.post(
+            reverse(
+                "calendar_booking_api:booking-calendar-group-events-list",
+                kwargs={"public_slug": group.public_booking_slug},
+            ),
+            _rest_group_booking_payload(slot, calendar),
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
+        body = response.json()
+        assert body["resource"] == EVENT_OCCURRENCES
+        assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
+
+    def test_codeless_unlimited_plan_is_unchanged(self):
+        organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        group, slot, calendar = _group_with_one_slot(organization, accepts_public_scheduling=True)
+
+        client = APIClient()
+        response = client.post(
+            reverse(
+                "calendar_booking_api:booking-calendar-group-events-list",
+                kwargs={"public_slug": group.public_booking_slug},
+            ),
+            _rest_group_booking_payload(slot, calendar),
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED, response.content
 
 
 # ----------------------------------------------------------------------------------

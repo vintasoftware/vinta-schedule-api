@@ -3949,6 +3949,186 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedBlockedTimeList'
           description: ''
+  /booking-codes/:
+    post:
+      operationId: booking_codes_create
+      description: Mint a single-use booking / reschedule / cancel code scoped to
+        a calendar or calendar group. Collapses GraphQL's six create*BookingCode mutations
+        into one endpoint. The plaintext code is returned exactly once in this response
+        and is never retrievable afterwards. Org admins may mint for any calendar
+        or group in the organization; other members may mint only for a calendar they
+        own or a group they participate in. A target in another organization is answered
+        404, never 403.
+      summary: Mint a single-use booking code
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingCodeCreateResult'
+          description: ''
+  /booking-codes{format}:
+    post:
+      operationId: booking_codes_formatted_create
+      description: Mint a single-use booking / reschedule / cancel code scoped to
+        a calendar or calendar group. Collapses GraphQL's six create*BookingCode mutations
+        into one endpoint. The plaintext code is returned exactly once in this response
+        and is never retrievable afterwards. Org admins may mint for any calendar
+        or group in the organization; other members may mint only for a calendar they
+        own or a group they participate in. A target in another organization is answered
+        404, never 403.
+      summary: Mint a single-use booking code
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingCodeCreateResult'
+          description: ''
+  /booking-codes/{id}/:
+    delete:
+      operationId: booking_codes_destroy
+      description: 'Revoke a booking code by its opaque id. Org admins may revoke
+        any booking code in the organization; other members may revoke only a code
+        scoped to a calendar they own or a group they participate in -- the same owner-or-org-admin
+        rule POST applies at mint time. Non-oracle: revoking an already-revoked code,
+        an id that does not exist within the caller''s organization (including an
+        id belonging to another organization or to a non-booking-code token), and
+        an id the caller is not authorized to revoke, all return 204 without error
+        and without touching the row -- a caller cannot distinguish ''does not exist''
+        from ''not yours'' from ''already revoked''.'
+      summary: Revoke a booking code
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Codes
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /booking-codes/{id}{format}:
+    delete:
+      operationId: booking_codes_formatted_destroy
+      description: 'Revoke a booking code by its opaque id. Org admins may revoke
+        any booking code in the organization; other members may revoke only a code
+        scoped to a calendar they own or a group they participate in -- the same owner-or-org-admin
+        rule POST applies at mint time. Non-oracle: revoking an already-revoked code,
+        an id that does not exist within the caller''s organization (including an
+        id belonging to another organization or to a non-booking-code token), and
+        an id the caller is not authorized to revoke, all return 204 without error
+        and without touching the row -- a caller cannot distinguish ''does not exist''
+        from ''not yours'' from ''already revoked''.'
+      summary: Revoke a booking code
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Codes
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /booking-policies/:
     get:
       operationId: booking_policies_list
@@ -8998,6 +9178,639 @@ paths:
               schema:
                 $ref: '#/components/schemas/CalendarEvent'
           description: ''
+  /calendar-groups/{id}/stale-selections/:
+    get:
+      operationId: calendar_groups_stale_selections_list
+      description: Every `(event, slot, calendar)` triple booked under this group
+        whose calendar has since left its slot's roster (removed inline, or via a
+        pool detaching or losing that calendar) -- the ops-sweep counterpart to the
+        per-selection `is_in_current_roster` flag. Optionally bounded to events overlapping
+        `[window_start, window_end)`; omitting both returns every stale selection
+        in the group regardless of when its event falls. Returns a bare array, page-bounded
+        by `offset`/`limit` -- this exists specifically to expose a potentially large
+        backlog, so the result set is never fetched or materialized unbounded.
+      summary: List stale calendar selections for this group
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: query
+        name: limit
+        schema:
+          type: integer
+        description: Max rows to return, 1-100. Defaults to 100.
+      - in: query
+        name: offset
+        schema:
+          type: integer
+        description: Number of rows to skip. Defaults to 0.
+      - in: query
+        name: window_end
+        schema:
+          type: string
+        description: Only events starting before this instant (ISO 8601). Optional.
+      - in: query
+        name: window_start
+        schema:
+          type: string
+        description: Only events ending after this instant (ISO 8601). Optional.
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StaleSelection'
+          description: ''
+  /calendar-groups/{id}/stale-selections{format}:
+    get:
+      operationId: calendar_groups_stale_selections_formatted_list
+      description: Every `(event, slot, calendar)` triple booked under this group
+        whose calendar has since left its slot's roster (removed inline, or via a
+        pool detaching or losing that calendar) -- the ops-sweep counterpart to the
+        per-selection `is_in_current_roster` flag. Optionally bounded to events overlapping
+        `[window_start, window_end)`; omitting both returns every stale selection
+        in the group regardless of when its event falls. Returns a bare array, page-bounded
+        by `offset`/`limit` -- this exists specifically to expose a potentially large
+        backlog, so the result set is never fetched or materialized unbounded.
+      summary: List stale calendar selections for this group
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: query
+        name: limit
+        schema:
+          type: integer
+        description: Max rows to return, 1-100. Defaults to 100.
+      - in: query
+        name: offset
+        schema:
+          type: integer
+        description: Number of rows to skip. Defaults to 0.
+      - in: query
+        name: window_end
+        schema:
+          type: string
+        description: Only events starting before this instant (ISO 8601). Optional.
+      - in: query
+        name: window_start
+        schema:
+          type: string
+        description: Only events ending after this instant (ISO 8601). Optional.
+      tags:
+      - calendar-groups
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StaleSelection'
+          description: ''
+  /calendar-pools/:
+    get:
+      operationId: calendar_pools_list
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarPoolList'
+          description: ''
+    post:
+      operationId: calendar_pools_create
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+  /calendar-pools{format}:
+    get:
+      operationId: calendar_pools_formatted_list
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarPoolList'
+          description: ''
+    post:
+      operationId: calendar_pools_formatted_create
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+  /calendar-pools/{id}/:
+    get:
+      operationId: calendar_pools_retrieve
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    put:
+      operationId: calendar_pools_update
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    patch:
+      operationId: calendar_pools_partial_update
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    delete:
+      operationId: calendar_pools_destroy
+      description: Delete a CalendarPool. Fails with 409 if the pool is still attached
+        to any calendar group slot, naming the referencing groups.
+      summary: Delete calendar pool
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+        '409':
+          description: Pool is still attached to a group slot.
+  /calendar-pools/{id}{format}:
+    get:
+      operationId: calendar_pools_formatted_retrieve
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    put:
+      operationId: calendar_pools_formatted_update
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    patch:
+      operationId: calendar_pools_formatted_partial_update
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    delete:
+      operationId: calendar_pools_formatted_destroy
+      description: Delete a CalendarPool. Fails with 409 if the pool is still attached
+        to any calendar group slot, naming the referencing groups.
+      summary: Delete calendar pool
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+        '409':
+          description: Pool is still attached to a group slot.
   /calendar/{id}/:
     get:
       operationId: calendar_retrieve
@@ -9032,7 +9845,16 @@ paths:
           description: ''
     put:
       operationId: calendar_update
-      description: ViewSet for managing calendars.
+      description: |-
+        Updates a calendar's editable fields.
+
+        **Authorization rules (enforced after org-scoping):**
+        - BUNDLE calendar: caller must be an org admin. Non-admin members receive 403.
+        - Non-bundle calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership) or be an org admin. Non-owner non-admins receive 403.
+
+
+        **Activation:** imported calendars other than the account's default one arrive unlisted with sync_enabled=false. Setting sync_enabled=true here also requests the calendar's first sync (over a one-year window, using the owner's linked account), so no follow-up call to /calendar/{id}/request-sync/ is needed. Set visibility=active in the same request to list it for booking.
+      summary: Update a calendar
       parameters:
       - in: header
         name: X-Organization-Id
@@ -9075,7 +9897,16 @@ paths:
           description: ''
     patch:
       operationId: calendar_partial_update
-      description: ViewSet for managing calendars.
+      description: |-
+        Updates a calendar's editable fields.
+
+        **Authorization rules (enforced after org-scoping):**
+        - BUNDLE calendar: caller must be an org admin. Non-admin members receive 403.
+        - Non-bundle calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership) or be an org admin. Non-owner non-admins receive 403.
+
+
+        **Activation:** imported calendars other than the account's default one arrive unlisted with sync_enabled=false. Setting sync_enabled=true here also requests the calendar's first sync (over a one-year window, using the owner's linked account), so no follow-up call to /calendar/{id}/request-sync/ is needed. Set visibility=active in the same request to list it for booking.
+      summary: Partially update a calendar
       parameters:
       - in: header
         name: X-Organization-Id
@@ -9192,7 +10023,16 @@ paths:
           description: ''
     put:
       operationId: calendar_formatted_update
-      description: ViewSet for managing calendars.
+      description: |-
+        Updates a calendar's editable fields.
+
+        **Authorization rules (enforced after org-scoping):**
+        - BUNDLE calendar: caller must be an org admin. Non-admin members receive 403.
+        - Non-bundle calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership) or be an org admin. Non-owner non-admins receive 403.
+
+
+        **Activation:** imported calendars other than the account's default one arrive unlisted with sync_enabled=false. Setting sync_enabled=true here also requests the calendar's first sync (over a one-year window, using the owner's linked account), so no follow-up call to /calendar/{id}/request-sync/ is needed. Set visibility=active in the same request to list it for booking.
+      summary: Update a calendar
       parameters:
       - in: header
         name: X-Organization-Id
@@ -9242,7 +10082,16 @@ paths:
           description: ''
     patch:
       operationId: calendar_formatted_partial_update
-      description: ViewSet for managing calendars.
+      description: |-
+        Updates a calendar's editable fields.
+
+        **Authorization rules (enforced after org-scoping):**
+        - BUNDLE calendar: caller must be an org admin. Non-admin members receive 403.
+        - Non-bundle calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership) or be an org admin. Non-owner non-admins receive 403.
+
+
+        **Activation:** imported calendars other than the account's default one arrive unlisted with sync_enabled=false. Setting sync_enabled=true here also requests the calendar's first sync (over a one-year window, using the owner's linked account), so no follow-up call to /calendar/{id}/request-sync/ is needed. Set visibility=active in the same request to list it for booking.
+      summary: Partially update a calendar
       parameters:
       - in: header
         name: X-Organization-Id
@@ -14734,6 +15583,667 @@ paths:
               schema:
                 $ref: '#/components/schemas/SystemUserToken'
           description: ''
+  /public/booking/availability-windows/:
+    get:
+      operationId: public_booking_availability_windows_list
+      description: |-
+        Unauthenticated, code-gated read of a calendar's availability windows.
+
+        ``GET /public/booking/availability-windows/`` ports
+        ``public_api.queries.Query.availability_windows_with_code`` to REST. The
+        calendar comes from the resolved token (``token.calendar``, falling back
+        to ``token.event.calendar``); no calendar id is accepted from the client.
+      summary: Availability windows for the calendar bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End of the query window (ISO 8601).
+        required: true
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start of the query window (ISO 8601).
+        required: true
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AvailableTimeWindow'
+          description: ''
+  /public/booking/available-times/:
+    get:
+      operationId: public_booking_available_times_list
+      description: |-
+        Unauthenticated, code-gated read of a calendar's available times.
+
+        ``GET /public/booking/available-times/`` ports
+        ``public_api.queries.Query.available_times_with_code`` to REST. The
+        calendar comes from the resolved token (``token.calendar``, falling back
+        to ``token.event.calendar``); no calendar id is accepted from the client.
+      summary: Available times for the calendar bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End of the query window (ISO 8601).
+        required: true
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start of the query window (ISO 8601).
+        required: true
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AvailableTime'
+          description: ''
+  /public/booking/calendar-bookable-slots/:
+    get:
+      operationId: public_booking_calendar_bookable_slots_list
+      description: |-
+        Unauthenticated, code-gated read of bookable slots for a single calendar.
+
+        ``GET /public/booking/calendar-bookable-slots/`` ports
+        ``public_api.queries.Query.calendar_bookable_slots_with_code`` to REST.
+        The calendar comes from the resolved token (``token.calendar``, falling
+        back to ``token.event.calendar``); a group-scoped code is rejected via
+        the same uniform 403 (its ``calendar`` resolves to ``None``).
+
+        This is the FIRST REST surface for
+        ``BookableSlotsService.find_bookable_slots_for_calendar`` -- previously
+        reachable only from GraphQL.
+      summary: Bookable slot proposals for the calendar bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - in: query
+        name: duration_seconds
+        schema:
+          type: integer
+        description: 'Desired event duration, in seconds. ALWAYS REQUIRED to be present
+          (a request omitting it is a 400 whether or not the resolved code''s group
+          pins a duration -- presence alone must never disclose pin state). Duration
+          pinning lives on the CalendarGroup, not on the code: on the calendar-scoped
+          endpoint this value always stands as given -- a calendar-scoped code carries
+          no duration constraint at all. On the group-scoped endpoint, when the resolved
+          code''s group pins a duration, the pin silently overrides this parameter''s
+          VALUE: a mismatched or malformed value produces the exact same response
+          as the pinned value, so this endpoint cannot be used to probe whether a
+          group is pinned or what the pin is. When the group pins no duration, the
+          value must also be a valid positive integer.'
+        required: true
+      - in: query
+        name: search_window_end
+        schema:
+          type: string
+        description: End of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: search_window_start
+        schema:
+          type: string
+        description: Start of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: slot_step_seconds
+        schema:
+          type: integer
+        description: Search step, in seconds (default 900 = 15min).
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BookableSlotProposal'
+          description: ''
+  /public/booking/calendar-events/:
+    post:
+      operationId: public_booking_calendar_events_create
+      description: |-
+        Resolve the code, then create the event and consume the code atomically.
+
+        Create FIRST, then consume, matching the GraphQL original
+        (``create_calendar_event_with_code``). Both statements run inside the
+        same outer ``transaction.atomic()`` block (see step 5 below), so any
+        exception either one raises -- including ``consume_code``'s
+        ``TokenAlreadyUsedError`` on a lost race -- unwinds the whole
+        transaction: the DB outcome (one event, code consumed once) is the
+        same regardless of which statement runs first. What create-first
+        actually buys is that both racers do the provider-side write (the
+        adapter's ``create_event`` call) before either one's outcome is
+        decided, rather than the loser being turned away by the row lock
+        before ever reaching the provider.
+      summary: Book an event on a single calendar with a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: Single-use booking code, minted with the CREATE permission and
+          scoped to a single calendar (not a group).
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeEventCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeEventCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeEventCreate'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEventWithManagementCodes'
+          description: ''
+  /public/booking/calendar-group-availability/:
+    post:
+      operationId: public_booking_calendar_group_availability_create
+      description: |-
+        Unauthenticated, code-gated per-range availability for a calendar group.
+
+        ``POST /public/booking/calendar-group-availability/`` ports
+        ``public_api.queries.Query.calendar_group_availability_with_code`` to
+        REST. A ``POST`` (not ``GET``) because it takes a list of ranges,
+        matching the existing authenticated ``CalendarGroupViewSet.availability``
+        action, which is also a ``POST`` for the same reason. The group comes
+        from the resolved token (``token.calendar_group``, falling back to
+        ``token.event.calendar_group``); a single-calendar code is rejected via
+        the same uniform 403.
+      summary: Per-range availability for the calendar group bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarGroupRangeAvailabilityList'
+          description: ''
+  /public/booking/calendar-group-bookable-slots/:
+    get:
+      operationId: public_booking_calendar_group_bookable_slots_list
+      description: |-
+        Unauthenticated, code-gated read of bookable slots for a calendar group.
+
+        ``GET /public/booking/calendar-group-bookable-slots/`` ports
+        ``public_api.queries.Query.calendar_group_bookable_slots_with_code`` to
+        REST. The group comes from the resolved token (``token.calendar_group``,
+        falling back to ``token.event.calendar_group``); a single-calendar code
+        is rejected via the same uniform 403 (its ``calendar_group`` resolves to
+        ``None``).
+      summary: Bookable slot proposals for the calendar group bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - in: query
+        name: duration_seconds
+        schema:
+          type: integer
+        description: 'Desired event duration, in seconds. ALWAYS REQUIRED to be present
+          (a request omitting it is a 400 whether or not the resolved code''s group
+          pins a duration -- presence alone must never disclose pin state). Duration
+          pinning lives on the CalendarGroup, not on the code: on the calendar-scoped
+          endpoint this value always stands as given -- a calendar-scoped code carries
+          no duration constraint at all. On the group-scoped endpoint, when the resolved
+          code''s group pins a duration, the pin silently overrides this parameter''s
+          VALUE: a mismatched or malformed value produces the exact same response
+          as the pinned value, so this endpoint cannot be used to probe whether a
+          group is pinned or what the pin is. When the group pins no duration, the
+          value must also be a valid positive integer.'
+        required: true
+      - in: query
+        name: search_window_end
+        schema:
+          type: string
+        description: End of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: search_window_start
+        schema:
+          type: string
+        description: Start of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: slot_step_seconds
+        schema:
+          type: integer
+        description: Search step, in seconds (default 900 = 15min).
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BookableSlotProposal'
+          description: ''
+  /public/booking/calendar-groups/{public_slug}/availability/:
+    post:
+      operationId: public_booking_calendar_groups_availability_create
+      description: |-
+        Unauthenticated, codeless per-range availability for a public calendar group.
+
+        ``POST /public/booking/calendar-groups/<public_slug>/availability/`` is
+        the codeless counterpart of ``BookingCodeCalendarGroupAvailabilityViewSet``
+        above. ``POST`` for the same reason as that endpoint: it takes a list of
+        ranges. The group comes from the path's ``public_slug``; see
+        ``_resolve_public_group`` for the 404/403 contract that gates it.
+
+        ``available_calendar_ids`` is retained per slot even though this
+        endpoint is otherwise group-aggregated -- group booking's
+        ``slot_selections`` genuinely needs those ids to build a valid create
+        request against the Phase 3 codeless write. See the "Codeless discovery
+        is group-aggregated" Guiding Decision, which calls this retention out
+        explicitly.
+      summary: Per-range availability for a public calendar group, no code required
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: path
+        name: public_slug
+        schema:
+          type: string
+          pattern: ^[-a-zA-Z0-9_]+$
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarGroupRangeAvailabilityList'
+          description: ''
+  /public/booking/calendar-groups/{public_slug}/bookable-slots/:
+    get:
+      operationId: public_booking_calendar_groups_bookable_slots_list
+      description: |-
+        Unauthenticated, codeless read of bookable slots for a public calendar group.
+
+        ``GET /public/booking/calendar-groups/<public_slug>/bookable-slots/`` is
+        the codeless counterpart of ``BookingCodeCalendarGroupBookableSlotsViewSet``
+        above -- no ``X-Booking-Code`` is read or required. The group comes from
+        the path's ``public_slug``; see ``_resolve_public_group`` for the
+        404/403 contract that gates it.
+
+        Duration is NOT a query parameter here -- see
+        ``_resolve_public_group_duration``. The slots this returns are exactly
+        the slots the Phase 3 codeless write (``BookingCodeGroupEventViewSet.create``)
+        will accept: same group id, same duration, same underlying
+        ``find_bookable_slots`` call.
+      summary: Bookable slot proposals for a public calendar group, no code required
+      parameters:
+      - in: path
+        name: public_slug
+        schema:
+          type: string
+          pattern: ^[-a-zA-Z0-9_]+$
+        required: true
+      - in: query
+        name: search_window_end
+        schema:
+          type: string
+        description: End of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: search_window_start
+        schema:
+          type: string
+        description: Start of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: slot_step_seconds
+        schema:
+          type: integer
+        description: Search step, in seconds (default 900 = 15min).
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BookableSlotProposal'
+          description: ''
+  /public/booking/calendar-groups/{public_slug}/events/:
+    post:
+      operationId: public_booking_calendar_groups_events_create
+      description: |-
+        Create the grouped event, resolving and consuming a code only when one is presented.
+
+        **Coded**: create FIRST, then consume, matching the GraphQL original
+        (``create_calendar_group_event_with_code``) and Phase 1's single-calendar
+        endpoint. Both statements run inside the same outer ``transaction.atomic()``
+        block below, so any exception either one raises -- including
+        ``consume_code``'s ``TokenAlreadyUsedError`` on a lost race -- unwinds the
+        whole transaction: the DB outcome (one event, code consumed once) is the
+        same regardless of which statement runs first. What create-first actually
+        buys is that both racers do the provider-side write (the adapter's
+        ``create_event`` call) before either one's outcome is decided, rather than
+        the loser being turned away by the row lock before ever reaching the
+        provider.
+
+        **Codeless**: no code exists to create-then-consume around, so only the
+        create runs. Organization is derived from the path group itself (there is
+        no token to read it from), and the group-level
+        ``accepts_public_scheduling`` gate inside ``create_grouped_event`` is the
+        entire authorization decision -- it is not restated here.
+      summary: Book a grouped event through a calendar group, with or without a booking
+        code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code, minted with the CREATE permission and
+          scoped to a calendar group (not a single calendar). OPTIONAL on this endpoint
+          only: when omitted, the booking is authorized instead by the path group''s
+          own accepts_public_scheduling flag (codeless public group booking, GraphQL
+          parity with createCalendarGroupEvent). When present, the coded path always
+          wins -- a public group handed a valid group code still books through it
+          and consumes it.'
+      - in: path
+        name: public_slug
+        schema:
+          type: string
+          pattern: ^[-a-zA-Z0-9_]+$
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeGroupEventCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeGroupEventCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeGroupEventCreate'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEventWithManagementCodes'
+          description: ''
+  /public/booking/events/cancel/:
+    post:
+      operationId: public_booking_events_cancel_create
+      description: |-
+        Consume FIRST, then delete, matching the GraphQL original.
+
+        The event FK on the token has ``on_delete=CASCADE``, so deleting the
+        event would cascade-delete the token -- making a post-delete consume
+        impossible. Consuming first (via ``SELECT FOR UPDATE``) keeps the row
+        alive long enough to lock it; the cascade then removes the
+        already-consumed token row when the event is deleted. Both statements
+        share the one outer ``transaction.atomic()`` block below, so if the
+        delete step raises unexpectedly, the whole block -- including the
+        consume -- rolls back, leaving the code available for retry.
+      summary: Cancel an event, single-calendar or group-bound, with a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: Single-use booking code, minted with the CANCEL permission and
+          bound to a specific event.
+        required: true
+      tags:
+      - Booking Codes
+      responses:
+        '204':
+          description: No response body
+  /public/booking/events/reschedule/:
+    post:
+      operationId: public_booking_events_reschedule_create
+      description: |-
+        Snapshot the bound event's preserved details, then update + consume atomically.
+
+        Update FIRST, then consume, matching the GraphQL original and
+        ``BookingCodeCalendarEventViewSet.create``'s create-then-consume ordering.
+        Both statements share the one outer ``transaction.atomic()`` block below,
+        so the DB outcome (one update, code consumed once) is the same regardless
+        of which runs first -- see that method's docstring for what update-first
+        actually changes (both racers reach the write adapter rather than the
+        loser being turned away by ``consume_code``'s row lock first).
+      summary: Reschedule an event on a single calendar with a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: Single-use booking code, minted with the RESCHEDULE permission
+          and bound to a specific event on a single calendar (not a group).
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEventWithManagementCodes'
+          description: ''
+  /public/booking/group-events/reschedule/:
+    post:
+      operationId: public_booking_group_events_reschedule_create
+      description: |-
+        Reschedule the bound grouped event's times, then consume the code atomically.
+
+        Update FIRST, then consume -- see
+        ``BookingCodeRescheduleEventViewSet.create``'s docstring for what that
+        ordering does and does not guarantee.
+      summary: Reschedule a grouped event through a calendar group with a booking
+        code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: Single-use booking code, minted with the RESCHEDULE permission
+          and bound to a specific event on a calendar group (not a single calendar).
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEventWithManagementCodes'
+          description: ''
+  /public/booking/unavailable-windows/:
+    get:
+      operationId: public_booking_unavailable_windows_list
+      description: |-
+        Unauthenticated, code-gated read of a calendar's unavailable windows.
+
+        ``GET /public/booking/unavailable-windows/`` ports
+        ``public_api.queries.Query.unavailable_windows_with_code`` to REST. The
+        calendar comes from the resolved token (``token.calendar``, falling back
+        to ``token.event.calendar``); no calendar id is accepted from the client.
+      summary: Unavailable windows for the calendar bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End of the query window (ISO 8601).
+        required: true
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start of the query window (ISO 8601).
+        required: true
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UnavailableTimeWindow'
+          description: ''
   /public/organizations/{organization_id}/events/:
     get:
       operationId: public_organizations_events_list
@@ -16421,6 +17931,7 @@ components:
       - unavailable_windows
       - organization
       - calendar_group
+      - calendar_pool
       - system_user
       - membership
       - invitation
@@ -16473,6 +17984,7 @@ components:
         * `unavailable_windows` - Unavailable Windows
         * `organization` - Organization
         * `calendar_group` - Calendar Group
+        * `calendar_pool` - Calendar Pool
         * `system_user` - System User
         * `membership` - Membership
         * `invitation` - Invitation
@@ -17257,6 +18769,218 @@ components:
       required:
       - end_time
       - start_time
+    BookingCodeCreate:
+      type: object
+      description: |-
+        Input for ``POST /booking-codes/`` -- the authenticated minting endpoint.
+
+        Collapses GraphQL's six ``create*BookingCode`` mutations into one resource:
+        ``purpose`` x {``calendar``, ``calendar_group``} is the same cross product those
+        six mutations cover, no more and no less. ``purpose`` maps onto the permission(s)
+        the minted token carries:
+
+        - ``book`` -> ``[EventManagementPermissions.CREATE]``
+        - ``reschedule`` -> ``[EventManagementPermissions.RESCHEDULE]``
+        - ``cancel`` -> ``[EventManagementPermissions.CANCEL]``
+
+        ``calendar`` / ``calendar_group`` / ``event`` are plain integer ids, not
+        ``PrimaryKeyRelatedField`` -- object existence and org/authorization checks
+        happen in ``BookingCodeViewSet.create`` so a cross-organization target can be
+        answered ``404`` there rather than a serializer-level ``400``, keeping "target
+        exists but you can't see it" indistinguishable from "target does not exist".
+
+        No ``duration_seconds`` field: duration pinning lives on
+        ``CalendarGroup.duration``, not on the minted token -- there is no
+        per-code duration to set at mint time. A calendar-scoped code carries no
+        duration constraint at all; a calendar-group-scoped code inherits
+        whatever duration (if any) is already set on that group.
+      properties:
+        purpose:
+          $ref: '#/components/schemas/PurposeEnum'
+        calendar:
+          type: integer
+          nullable: true
+        calendar_group:
+          type: integer
+          nullable: true
+        event:
+          type: integer
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+      - purpose
+    BookingCodeCreateResult:
+      type: object
+      description: |-
+        One-time response for ``POST /booking-codes/``.
+
+        ``code`` carries the plaintext booking code -- it is generated fresh by
+        ``CalendarPermissionService.create_booking_token`` and never persisted or
+        re-derivable, so this is the only response that will ever expose it. Every
+        field here is read-only: this serializer only ever renders a response, it
+        is never used to validate input.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        code:
+          type: string
+          readOnly: true
+        purpose:
+          $ref: '#/components/schemas/PurposeEnum'
+        calendar:
+          type: integer
+          readOnly: true
+          nullable: true
+        calendar_group:
+          type: integer
+          readOnly: true
+          nullable: true
+        event:
+          type: integer
+          readOnly: true
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+      required:
+      - calendar
+      - calendar_group
+      - code
+      - event
+      - expires_at
+      - id
+      - purpose
+    BookingCodeEventCreate:
+      type: object
+      description: |-
+        Input for ``POST /public/booking/calendar-events/``.
+
+        Mirrors ``CreateEventWithCodeInput`` (GraphQL) minus its ``code`` field -- the
+        booking code travels as the ``X-Booking-Code`` header instead (see
+        ``calendar_integration.booking_auth``). ``calendar_id`` is never accepted here:
+        it comes strictly from the resolved token, never from client input.
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          default: ''
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        external_attendee:
+          $ref: '#/components/schemas/_BookingCodeExternalAttendee'
+      required:
+      - end_time
+      - external_attendee
+      - start_time
+      - timezone
+      - title
+    BookingCodeGroupEventCreate:
+      type: object
+      description: |-
+        Input for ``POST /public/booking/calendar-groups/<public_slug>/events/``.
+
+        Mirrors ``CreateGroupEventWithCodeInput`` (GraphQL) minus its ``code`` field --
+        the booking code travels as the ``X-Booking-Code`` header instead (see
+        ``calendar_integration.booking_auth``). The group is never accepted here: on
+        the coded branch it comes strictly from the resolved token's
+        ``calendar_group``, never from client input or the path (Phase 3b: the path
+        carries only ``CalendarGroup.public_booking_slug``, an opaque identifier, and
+        even that is only a routing convenience -- see
+        ``BookingCodeGroupEventViewSet.create``). Reuses
+        ``_CalendarGroupSlotSelectionInputSerializer``, the same slot-selection shape
+        ``CalendarGroupEventCreateSerializer`` already uses for the authenticated
+        group-booking endpoint.
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          default: ''
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        slot_selections:
+          type: array
+          items:
+            $ref: '#/components/schemas/_CalendarGroupSlotSelectionInput'
+        external_attendee:
+          $ref: '#/components/schemas/_BookingCodeExternalAttendee'
+      required:
+      - end_time
+      - external_attendee
+      - slot_selections
+      - start_time
+      - timezone
+      - title
+    BookingCodeReschedule:
+      type: object
+      description: |-
+        Input for ``POST /public/booking/events/reschedule/`` and
+        ``POST /public/booking/group-events/reschedule/``.
+
+        Mirrors ``RescheduleWithCodeInput`` / ``RescheduleGroupWithCodeInput`` (GraphQL)
+        minus their ``code`` field -- the booking code travels as the ``X-Booking-Code``
+        header instead. Only the new start/end/timezone are accepted: title, description,
+        attendees, and resource allocations are never client-settable here -- the view
+        snapshots them, unchanged, from the existing event so that only the RESCHEDULE
+        permission is required (see ``BookingCodeRescheduleEventViewSet.create``).
+      properties:
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+      required:
+      - end_time
+      - start_time
+      - timezone
+    BookingManagementCodes:
+      type: object
+      description: |-
+        The ``management`` object on a booking-code create/reschedule ``201``.
+
+        ``reschedule_code`` and ``cancel_code`` are plaintext, single-use booking
+        codes minted for the patient's own event (see
+        ``booking_views.mint_management_code_pair``), returned exactly once here
+        -- only their hashes are persisted, so this is the only response that
+        will ever expose them. Never echoed on a read: none of the booking-code
+        viewsets has one.
+
+        Fields are read-only for documentation purposes only (this serializer
+        never validates input, it only renders a nested attribute the view sets
+        on the event instance before serialization -- see
+        ``CalendarEventWithManagementCodesSerializer``).
+      properties:
+        reschedule_code:
+          type: string
+          readOnly: true
+        cancel_code:
+          type: string
+          readOnly: true
+      required:
+      - cancel_code
+      - reschedule_code
     BookingPolicy:
       type: object
       description: |-
@@ -17486,6 +19210,11 @@ components:
           description: Client-owned (system, identifier) pairs for this event. Omitted
             on a partial update leaves the stored set untouched; an explicit list
             (including []) replaces it.
+        group_selections:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarEventGroupSelection'
+          readOnly: true
         recurrence_rule:
           allOf:
           - $ref: '#/components/schemas/RecurrenceRule'
@@ -17532,6 +19261,7 @@ components:
       - end_time
       - external_attendances
       - external_id
+      - group_selections
       - id
       - is_recurring
       - is_recurring_instance
@@ -17541,6 +19271,47 @@ components:
       - start_time
       - timezone
       - title
+    CalendarEventGroupSelection:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        slot:
+          allOf:
+          - $ref: '#/components/schemas/CalendarGroupSlot'
+          readOnly: true
+        calendar:
+          allOf:
+          - $ref: '#/components/schemas/Calendar'
+          readOnly: true
+        is_in_current_roster:
+          type: boolean
+          description: |-
+            Whether ``obj``'s calendar is still a member of its slot's roster.
+
+            Staleness definition (see the plan's Guiding Decisions): stale when no
+            ``CalendarGroupSlotMembership`` row exists for the ``(slot, calendar)``
+            pair. ``slot.memberships`` is prefetched by
+            ``CalendarEventGroupSelectionVirtualModel`` (via the ``hints.Virtual``
+            hint above), so this reads from that prefetch cache instead of issuing
+            a query per selection.
+
+            The hint names the concrete ``calendar_fk_id`` column explicitly
+            rather than just ``slot__memberships``: an empty per-field lookup list
+            tells ``django-virtual-models`` to prefetch *every* declared field
+            under that branch, including ``CalendarGroupSlotMembershipVirtualModel
+            .calendar`` -- which cascades into ``CalendarVirtualModel
+            .calendar_ownerships``, a field name that does not match ``Calendar``'s
+            actual related accessor (``ownerships``) and raises. Naming the one
+            concrete column this field actually reads avoids that unrelated,
+            pre-existing mismatch instead of masking it.
+          readOnly: true
+      required:
+      - calendar
+      - id
+      - is_in_current_roster
+      - slot
     CalendarEventTransfer:
       type: object
       properties:
@@ -17548,6 +19319,148 @@ components:
           type: integer
       required:
       - target_calendar_id
+    CalendarEventWithManagementCodes:
+      type: object
+      description: |-
+        ``CalendarEventSerializer`` plus the self-service ``management`` object.
+
+        Used ONLY to render the ``201`` response of a booking-code create or
+        reschedule viewset (``BookingCodeCalendarEventViewSet``,
+        ``BookingCodeGroupEventViewSet``, ``BookingCodeRescheduleEventViewSet``,
+        ``BookingCodeRescheduleGroupEventViewSet``) -- never for a read, and
+        never for ``get_optimized_queryset``: ``management`` is not a model field
+        or relation, it does not exist on ``CalendarEventVirtualModel``, and
+        django-virtual-models' ``LookupFinder`` would raise
+        ``MissingVirtualModelFieldException`` if this subclass were ever handed
+        to ``get_optimized_queryset`` (it walks every readable field looking for
+        a matching virtual-model entry). Callers therefore build the optimized
+        queryset with the PLAIN ``CalendarEventSerializer`` first, and only use
+        this subclass afterwards, purely to render ``.data`` on the already-
+        fetched instance.
+
+        The view sets ``event.management`` (a plain object carrying
+        ``reschedule_code`` / ``cancel_code``, matching
+        ``BookingManagementCodesSerializer``'s two fields) on the event instance
+        before calling this serializer -- there is nothing in the database for
+        this field to read, ``to_representation`` finds it via a plain
+        ``getattr(instance, "management")``, same as any other declared field.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        provider:
+          type: string
+          writeOnly: true
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+          maxLength: 50
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+        external_id:
+          type: string
+          readOnly: true
+        external_attendances:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventExternalAttendance'
+        attendances:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventAttendance'
+        resource_allocations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceAllocation'
+        external_client_identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExternalClientIdentifier'
+          description: Client-owned (system, identifier) pairs for this event. Omitted
+            on a partial update leaves the stored set untouched; an explicit list
+            (including []) replaces it.
+        group_selections:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarEventGroupSelection'
+          readOnly: true
+        recurrence_rule:
+          allOf:
+          - $ref: '#/components/schemas/RecurrenceRule'
+          description: Recurrence rule data for creating recurring events
+        rrule_string:
+          type: string
+          writeOnly: true
+          description: RRULE string for creating recurring events
+        parent_recurring_object_id:
+          type: integer
+          writeOnly: true
+          description: ID of parent event for recurring instances
+        parent_recurring_object:
+          allOf:
+          - $ref: '#/components/schemas/ParentEvent'
+          readOnly: true
+        is_recurring_instance:
+          type: boolean
+          description: True if this is an instance of a recurring event
+          readOnly: true
+        is_recurring:
+          type: boolean
+          description: True if this is a recurring event
+          readOnly: true
+        is_recurring_exception:
+          type: boolean
+          description: True if this object is an exception to the recurrence rule
+            (modified occurrence)
+        recurrence_id:
+          type: string
+          format: date-time
+          nullable: true
+          description: For recurring instances, this identifies which occurrence this
+            is
+        management:
+          allOf:
+          - $ref: '#/components/schemas/BookingManagementCodes'
+          readOnly: true
+        google_calendar_service_account:
+          type: integer
+          writeOnly: true
+        calendar:
+          type: integer
+          writeOnly: true
+      required:
+      - attendances
+      - created
+      - end_time
+      - external_attendances
+      - external_id
+      - group_selections
+      - id
+      - is_recurring
+      - is_recurring_instance
+      - management
+      - modified
+      - parent_recurring_object
+      - resource_allocations
+      - start_time
+      - timezone
+      - title
     CalendarGroup:
       type: object
       properties:
@@ -17559,10 +19472,24 @@ components:
           maxLength: 255
         description:
           type: string
+        duration:
+          type: string
+        accepts_public_scheduling:
+          type: boolean
         slots:
           type: array
           items:
             $ref: '#/components/schemas/CalendarGroupSlot'
+        public_booking_slug:
+          type: string
+          readOnly: true
+          description: 'Opaque, unguessable identifier used to address this group
+            on the unauthenticated codeless booking route, instead of the integer
+            primary key. Uniqueness is GLOBAL (not scoped to organization) because
+            that route carries no organization in its path -- the slug alone must
+            identify exactly one group system-wide. Authorizes nothing by itself:
+            accepts_public_scheduling still gates codeless booking, and a group later
+            flipped to public already has its identifier.'
         created:
           type: string
           format: date-time
@@ -17576,6 +19503,7 @@ components:
       - id
       - modified
       - name
+      - public_booking_slug
       - slots
     CalendarGroupAvailabilityQuery:
       type: object
@@ -17655,6 +19583,14 @@ components:
         pool via `calendars` (the M2M). We deliberately keep slot writes to
         payload-time data only — persistence happens through
         `CalendarGroupSerializer` which delegates to `CalendarGroupService`.
+
+        `pool_ids` (write-only) attaches/detaches `CalendarPool`s -- **omitting**
+        it leaves the slot's current attachments unchanged; an explicit `[]`
+        detaches every pool. This mirrors `CalendarGroupSlotInputData.pool_ids`
+        exactly, and the distinction is resolved in
+        `CalendarGroupSerializer._to_input_data` by checking key presence in the
+        validated per-slot dict, not by inspecting the value. `pools` (read-only)
+        exposes the attached pools themselves.
       properties:
         id:
           type: integer
@@ -17685,11 +19621,22 @@ components:
           items:
             type: integer
           writeOnly: true
+        pools:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarPool'
+          readOnly: true
+        pool_ids:
+          type: array
+          items:
+            type: integer
+          writeOnly: true
       required:
       - calendar_ids
       - calendars
       - id
       - name
+      - pools
     CalendarGroupSlotAvailability:
       type: object
       properties:
@@ -17709,6 +19656,50 @@ components:
       - is_bookable
       - required_count
       - slot_id
+    CalendarPool:
+      type: object
+      description: |-
+        CalendarPool CRUD representation.
+
+        On write, accepts `calendar_ids: list[int]` and replaces the roster
+        wholesale; on read exposes the roster via `calendars` -- mirrors
+        `CalendarGroupSlotSerializer`. Persistence delegates to
+        `CalendarGroupService.create_pool` / `update_pool`; this serializer never
+        writes `CalendarPool`/`CalendarPoolMembership` rows directly.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        calendars:
+          type: array
+          items:
+            $ref: '#/components/schemas/Calendar'
+          readOnly: true
+        calendar_ids:
+          type: array
+          items:
+            type: integer
+          writeOnly: true
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - calendar_ids
+      - calendars
+      - created
+      - id
+      - modified
+      - name
     CalendarSync:
       type: object
       properties:
@@ -19469,6 +21460,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Calendar'
+    PaginatedCalendarPoolList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarPool'
     PaginatedExternalEventChangeRequestList:
       type: object
       required:
@@ -20127,6 +22141,11 @@ components:
           description: Client-owned (system, identifier) pairs for this event. Omitted
             on a partial update leaves the stored set untouched; an explicit list
             (including []) replaces it.
+        group_selections:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarEventGroupSelection'
+          readOnly: true
         recurrence_rule:
           allOf:
           - $ref: '#/components/schemas/RecurrenceRule'
@@ -20178,10 +22197,61 @@ components:
           maxLength: 255
         description:
           type: string
+        duration:
+          type: string
+        accepts_public_scheduling:
+          type: boolean
         slots:
           type: array
           items:
             $ref: '#/components/schemas/CalendarGroupSlot'
+        public_booking_slug:
+          type: string
+          readOnly: true
+          description: 'Opaque, unguessable identifier used to address this group
+            on the unauthenticated codeless booking route, instead of the integer
+            primary key. Uniqueness is GLOBAL (not scoped to organization) because
+            that route carries no organization in its path -- the slug alone must
+            identify exactly one group system-wide. Authorizes nothing by itself:
+            accepts_public_scheduling still gates codeless booking, and a group later
+            flipped to public already has its identifier.'
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedCalendarPool:
+      type: object
+      description: |-
+        CalendarPool CRUD representation.
+
+        On write, accepts `calendar_ids: list[int]` and replaces the roster
+        wholesale; on read exposes the roster via `calendars` -- mirrors
+        `CalendarGroupSlotSerializer`. Persistence delegates to
+        `CalendarGroupService.create_pool` / `update_pool`; this serializer never
+        writes `CalendarPool`/`CalendarPoolMembership` rows directly.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        calendars:
+          type: array
+          items:
+            $ref: '#/components/schemas/Calendar'
+          readOnly: true
+        calendar_ids:
+          type: array
+          items:
+            type: integer
+          writeOnly: true
         created:
           type: string
           format: date-time
@@ -20634,6 +22704,16 @@ components:
         * `microsoft` - Microsoft Outlook Calendar
         * `apple` - Apple Calendar
         * `ics` - ICS
+    PurposeEnum:
+      enum:
+      - book
+      - reschedule
+      - cancel
+      type: string
+      description: |-
+        * `book` - book
+        * `reschedule` - reschedule
+        * `cancel` - cancel
     RSVPStatusEnum:
       enum:
       - accepted
@@ -20929,6 +23009,24 @@ components:
         * `signup_form` - Signup Form
         * `oauth_step` - OAuth Consent Step
         * `api` - API
+    StaleSelection:
+      type: object
+      description: |-
+        A `(event, slot, calendar)` triple whose calendar has left its slot's
+        roster -- see ``CalendarGroupService.find_stale_selections`` and the
+        Calendar Pools plan's Staleness definition. Scalar ids only, matching the
+        ``StaleSelection`` dataclass this wraps.
+      properties:
+        event_id:
+          type: integer
+        slot_id:
+          type: integer
+        calendar_id:
+          type: integer
+      required:
+      - calendar_id
+      - event_id
+      - slot_id
     StripePublicCredentials:
       type: object
       description: The browser-safe half of Stripe's credentials -- never the secret
@@ -21479,6 +23577,24 @@ components:
         * `pending` - Pending
         * `success` - Success
         * `failed` - Failed
+    _BookingCodeExternalAttendee:
+      type: object
+      description: |-
+        External attendee for the unauthenticated booking-code write endpoints.
+
+        Deliberately NOT ``ExternalAttendeeSerializer`` (a full ``VirtualModelSerializer``
+        exposing read-only model fields like ``id`` / ``created`` / ``modified``) -- this
+        is a plain two-field write input, mirroring ``ExternalAttendeeCodeInput`` (the
+        GraphQL input the code-gated mutations already use).
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          default: ''
+      required:
+      - email
     _CalendarGroupSlotSelectionInput:
       type: object
       properties:

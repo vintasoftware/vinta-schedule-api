@@ -165,8 +165,15 @@ def other_calendar(organization: Organization) -> Calendar:
 
 @pytest.fixture
 def surgery_group(organization: Organization) -> CalendarGroup:
+    # duration=30min matches every codeless booking span made through this
+    # group below (``_book_via_service``'s default) -- a public group with no
+    # duration fails closed in
+    # CalendarPermissionService.can_perform_group_scheduling.
     return CalendarGroup.objects.create(
-        organization=organization, name="Surgery", accepts_public_scheduling=True
+        organization=organization,
+        name="Surgery",
+        accepts_public_scheduling=True,
+        duration=datetime.timedelta(minutes=30),
     )
 
 

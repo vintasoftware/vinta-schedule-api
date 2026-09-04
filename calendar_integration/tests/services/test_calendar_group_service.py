@@ -295,9 +295,14 @@ def test_update_group_creates_new_slot_and_removes_old(service, base_input, mana
 
 
 @pytest.mark.django_db
-def test_update_group_refuses_evicting_calendar_with_future_booking(
+def test_update_group_allows_evicting_calendar_with_future_booking(
     service, base_input, managed_calendars
 ):
+    """Contract change (Calendar Pools Phase 1): removing a calendar from a
+    slot's roster always succeeds, even when a future-booked event still
+    selects it. The old behavior raised CalendarGroupSlotInUseError here; the
+    new one drops only the CalendarGroupSlotMembership row and leaves the
+    event's CalendarEventGroupSelection untouched."""
     group = service.create_group(base_input)
     physicians = group.slots.get(name="Physicians")
     # Simulate a future-booked event with a group selection for phys_a
@@ -321,8 +326,16 @@ def test_update_group_refuses_evicting_calendar_with_future_booking(
 
     base_input.slots[0].calendar_ids = [managed_calendars["phys_b"].id]
 
-    with pytest.raises(CalendarGroupSlotInUseError):
-        service.update_group(group.id, base_input)
+    updated = service.update_group(group.id, base_input)
+
+    physicians = updated.slots.get(name="Physicians")
+    assert set(physicians.calendars.values_list("external_id", flat=True)) == {"phys_b"}
+    # The grandfathered selection on the future-booked event is untouched.
+    assert (
+        CalendarEventGroupSelection.objects.filter_by_organization(service.organization.id)
+        .filter(event=event, slot=physicians, calendar=managed_calendars["phys_a"])
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -726,6 +739,7 @@ def clinic_group(grouped_service, internal_calendars):
         CalendarGroupInputData(
             name="Clinic Appointments",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -831,6 +845,7 @@ def test_create_grouped_event_primary_follows_slot_order(
         CalendarGroupInputData(
             name="Rooms-first",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Rooms",
@@ -923,6 +938,7 @@ def test_create_grouped_event_rejects_underfilled_slot(grouped_service, internal
         CalendarGroupInputData(
             name="Strict",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1041,6 +1057,7 @@ def test_create_grouped_event_rejects_slot_from_other_group(
         CalendarGroupInputData(
             name="Other",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Extra",
@@ -1135,6 +1152,7 @@ def test_create_grouped_event_multi_pick_slot(grouped_service, internal_calendar
         CalendarGroupInputData(
             name="Two-physician",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1340,6 +1358,7 @@ def test_create_grouped_event_skips_blocked_time_when_provider_will_sync(
         CalendarGroupInputData(
             name="Two Google",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1422,6 +1441,7 @@ def test_create_grouped_event_skips_blocked_time_for_microsoft_pair(organization
         CalendarGroupInputData(
             name="Two MS",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1504,6 +1524,7 @@ def test_create_grouped_event_blocks_cross_provider_pair(organization):
         CalendarGroupInputData(
             name="Mixed provider",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1579,6 +1600,7 @@ def test_create_grouped_event_still_blocks_resource_calendar_with_provider(
         CalendarGroupInputData(
             name="Doc+Room",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(name="Physicians", calendar_ids=[primary.id], order=0),
                 CalendarGroupSlotInputData(name="Rooms", calendar_ids=[room.id], order=1),
@@ -1656,6 +1678,7 @@ def test_create_grouped_event_blocks_when_primary_is_internal(organization):
         CalendarGroupInputData(
             name="Internal Primary",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",

@@ -1,4 +1,5 @@
 import datetime
+import secrets
 import zoneinfo
 from typing import TYPE_CHECKING, Any, ClassVar, Self
 
@@ -12,6 +13,7 @@ from encrypted_fields.fields import EncryptedCharField, EncryptedTextField  # ty
 from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from calendar_integration.constants import (
+    CalendarManagementTokenKind,
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
     CalendarSyncStatus,
@@ -36,9 +38,12 @@ from calendar_integration.managers import (
     CalendarGroupManager,
     CalendarGroupSlotManager,
     CalendarGroupSlotMembershipManager,
+    CalendarGroupSlotPoolManager,
     CalendarGroupSlotQuotaRuleManager,
     CalendarManagementTokenManager,
     CalendarManager,
+    CalendarPoolManager,
+    CalendarPoolMembershipManager,
     CalendarSyncManager,
     ExternalEventChangeRequestManager,
 )
@@ -304,6 +309,24 @@ class CalendarOwnership(SingleOrganizationModelMixin, SafeRelationNullInitMixin,
         return f"{self.calendar} owned by membership {self.membership_user_id}"
 
 
+def generate_public_booking_slug() -> str:
+    """Generate an opaque, unguessable identifier for a publicly addressed group.
+
+    ``secrets.token_urlsafe(16)`` yields ~128 bits of entropy encoded as ~22
+    URL-safe characters -- long enough that walking the identifier space is
+    infeasible, short enough to sit comfortably in a URL path segment.
+
+    Used as ``CalendarGroup.public_booking_slug``'s default so every group,
+    public or private, gets one at creation time. The slug authorizes
+    nothing by itself -- ``accepts_public_scheduling`` still gates codeless
+    booking -- it only replaces the integer primary key as the identifier the
+    unauthenticated codeless route addresses, closing the cross-tenant
+    enumeration oracle a sequential id would otherwise be (see Phase 3b of
+    the REST_CODE_GATED_SCHEDULING plan).
+    """
+    return secrets.token_urlsafe(16)
+
+
 class CalendarGroup(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
     """
     Aggregates calendars into named slots so a single booking can be made by
@@ -322,6 +345,37 @@ class CalendarGroup(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Bas
             "If true, this group can be booked by external users through public scheduling "
             "links without a scheduling code. If false (default), the group is restricted: "
             "booking requires a token or a single-use scheduling code."
+        ),
+    )
+    duration = models.DurationField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When set, an event booked or rescheduled through this group must span exactly "
+            "this duration. Enforced by CalendarPermissionService. Duration pinning lives "
+            "here rather than on CalendarManagementToken because a codeless public-group "
+            "booking (accepts_public_scheduling=True) presents no code, so it inherits no "
+            "per-code pin -- the group being booked is the only place a length constraint "
+            "can live for that path. A group that accepts public scheduling MUST have this "
+            "set (enforced by CalendarGroupService.create_group / update_group, not a DB "
+            "constraint -- pre-existing public groups with no duration are grandfathered at "
+            "rest and refused at booking time instead, fail-closed, by "
+            "CalendarPermissionService). Null is otherwise unpinned, matching every "
+            "restricted group and every group created before this field existed."
+        ),
+    )
+    public_booking_slug = models.CharField(
+        max_length=32,
+        unique=True,
+        default=generate_public_booking_slug,
+        help_text=(
+            "Opaque, unguessable identifier used to address this group on the "
+            "unauthenticated codeless booking route, instead of the integer primary "
+            "key. Uniqueness is GLOBAL (not scoped to organization) because that "
+            "route carries no organization in its path -- the slug alone must "
+            "identify exactly one group system-wide. Authorizes nothing by itself: "
+            "accepts_public_scheduling still gates codeless booking, and a group "
+            "later flipped to public already has its identifier."
         ),
     )
 
@@ -373,10 +427,35 @@ class CalendarGroupSlot(SingleOrganizationModelMixin, SafeRelationNullInitMixin,
             related_name="group_slots",
         )
     )
+    # Attached pools. Their rosters are PROJECTED into ``memberships`` (one row
+    # per pool calendar, with ``source_pool`` set) rather than resolved on read
+    # -- see the Calendar Pools plan's Guiding Decisions -> Roster resolution.
+    # A slot's bookable roster is therefore the union of its inline memberships
+    # and its projected ones, which ``memberships`` already carries whole.
+    #
+    # Because that union deliberately keeps BOTH rows when a calendar is inline
+    # and in an attached pool, ``calendars`` can yield the same ``Calendar``
+    # more than once. Four call sites collapse that duplication, three of them
+    # with ``.distinct()``:
+    # ``CalendarGroupSlotVirtualModel.calendars`` (``DistinctCalendarVirtualModel``
+    # in virtual_models.py), ``CalendarGroupFilterSet``'s ``calendar`` filter
+    # (filtersets.py, ``distinct=True``), and ``CalendarGroupSlotAdmin``'s
+    # ``calendar_count`` (admin.py). ``CalendarGroupSlotGraphQLType.calendars``
+    # (graphql.py) deliberately does NOT call ``.distinct()`` -- doing so on the
+    # related manager would bypass the multi-slot prefetch the group resolvers
+    # install and reintroduce an N+1, so it dedupes in Python instead (see
+    # ``_deduplicated_calendars`` in graphql.py).
+    pools: "models.ManyToManyField[CalendarPool, CalendarGroupSlotPool]" = models.ManyToManyField(
+        "CalendarPool",
+        through="CalendarGroupSlotPool",
+        through_fields=("slot", "pool"),
+        related_name="group_slots",
+    )
 
     objects: ClassVar[CalendarGroupSlotManager] = CalendarGroupSlotManager()
 
     memberships: "RelatedManager[CalendarGroupSlotMembership]"
+    pool_attachments: "RelatedManager[CalendarGroupSlotPool]"
 
     class Meta:
         ordering = ("order", "id")
@@ -396,6 +475,13 @@ class CalendarGroupSlotMembership(
 ):
     """
     Through model linking a Calendar to a CalendarGroupSlot's pool.
+
+    One row per (slot, calendar, source). ``source_pool`` names where the row
+    came from: NULL for a calendar put on the slot directly ("inline" -- every
+    row that existed before Calendar Pools shipped), and a ``CalendarPool``
+    when the row was projected from a pool attached to the slot. The slot's
+    bookable roster is the union of both, so a calendar that is inline AND in
+    two attached pools holds three rows and survives losing any two of them.
     """
 
     slot = OrganizationSafeForeignKey(
@@ -408,19 +494,65 @@ class CalendarGroupSlotMembership(
         on_delete=models.CASCADE,
         related_name="group_slot_memberships",
     )
+    source_pool = OrganizationSafeForeignKey(
+        "CalendarPool",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="projected_slot_memberships",
+        help_text=(
+            "The pool this roster row was projected from, or NULL when the "
+            "calendar was added to the slot directly. Only "
+            "CalendarGroupService._reconcile_slot_pools writes non-NULL rows, "
+            "and only it deletes them; the inline path never reads or writes "
+            "them. CASCADE is safe here because CalendarGroupSlotPool.pool "
+            "PROTECTs the pool for as long as any slot references it, so a "
+            "pool with projected rows cannot reach this cascade."
+        ),
+    )
 
     objects: ClassVar[CalendarGroupSlotMembershipManager] = CalendarGroupSlotMembershipManager()
 
     class Meta:
+        # Two PARTIAL unique indexes, not one three-column constraint.
+        #
+        # ``UNIQUE(slot_fk, calendar_fk, source_pool_fk)`` as a plain constraint
+        # is silently wrong: Postgres treats NULLs as distinct, so two INLINE
+        # rows for the same (slot, calendar) would both be accepted and a slot's
+        # roster satisfaction count would double-count one calendar. Postgres 15
+        # added ``NULLS NOT DISTINCT`` (Django's ``UniqueConstraint(
+        # nulls_distinct=False)``), but this project still runs against
+        # Postgres 14 in local development, so the portable form -- a pair of
+        # partial unique indexes covering the NULL and NOT NULL halves -- is
+        # what ships. Together they are exactly "unique on (slot, calendar,
+        # source_pool) with NULL treated as a value".
         constraints = (
             models.UniqueConstraint(
                 fields=("slot_fk", "calendar_fk"),
-                name="calendargroupslotmembership_unique_slot_calendar",
+                condition=models.Q(source_pool_fk__isnull=True),
+                name="calendargroupslotmembership_uniq_inline",
+            ),
+            models.UniqueConstraint(
+                fields=("slot_fk", "calendar_fk", "source_pool_fk"),
+                condition=models.Q(source_pool_fk__isnull=False),
+                name="calendargroupslotmembership_uniq_projected",
+            ),
+        )
+        indexes = (
+            # Serves the detach path, which deletes by (slot, source_pool), and
+            # the reconcile command, which sweeps by source_pool.
+            models.Index(
+                fields=["organization", "source_pool_fk"],
+                name="cgsmembership_org_srcpool_idx",
             ),
         )
 
     def __str__(self):
-        return f"{self.calendar_fk_id} in slot {self.slot_fk_id}"
+        if self.source_pool_fk_id is None:
+            return f"{self.calendar_fk_id} in slot {self.slot_fk_id}"
+        return (
+            f"{self.calendar_fk_id} in slot {self.slot_fk_id} (from pool {self.source_pool_fk_id})"
+        )
 
 
 class CalendarGroupSlotQuotaRule(
@@ -444,11 +576,13 @@ class CalendarGroupSlotQuotaRule(
     constraint below.
 
     Cascade: `on_delete=CASCADE` on both FKs handles slot/group/calendar
-    deletion. It does NOT handle a calendar being removed from a slot's
-    roster while the slot itself survives (``CalendarGroupSlotMembership``
-    deletion) -- ``CalendarGroupService._reconcile_slot`` explicitly deletes
-    orphaned quota rules for removed calendars, the same way it already does
-    for group-scoped availability windows and blocked time.
+    deletion. A calendar being removed from a slot's roster while the slot
+    itself survives (a `CalendarGroupSlotMembership` deletion) does NOT cascade
+    here, and `CalendarGroupService._reconcile_slot` does not clean these rows
+    up either: a departed calendar's quota rules for this slot are kept and
+    keep enforcing. A reschedule of a grandfathered booking (one made before
+    the calendar left the roster) still respects the cap, and the rule is
+    still there, unchanged, if the calendar rejoins the roster later.
     """
 
     group_slot = OrganizationSafeForeignKey(
@@ -497,6 +631,119 @@ class CalendarGroupSlotQuotaRule(
         return (
             f"calendar={self.calendar_fk_id} slot={self.group_slot_fk_id} {self.period}<={self.cap}"
         )
+
+
+class CalendarPool(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
+    """
+    A named, reusable roster of calendars ("Nurses", "Consult Rooms") that can
+    be attached to the slots of any number of ``CalendarGroup``s, so one
+    roster edit propagates everywhere it's used.
+
+    Phase 0 of the Calendar Pools plan: this model and its roster exist in the
+    database and the admin, but nothing else in the system reads them yet --
+    no slot can be attached to a pool, and no availability or booking query
+    considers pool membership. See
+    ``ai-plans/2026-09-01-CALENDAR_POOLS_IMPLEMENTATION_PLAN.md``.
+    """
+
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+
+    calendars: "models.ManyToManyField[Calendar, CalendarPoolMembership]" = models.ManyToManyField(
+        Calendar,
+        through="CalendarPoolMembership",
+        through_fields=("pool", "calendar"),
+        related_name="pools",
+    )
+
+    objects: ClassVar[CalendarPoolManager] = CalendarPoolManager()
+
+    memberships: "RelatedManager[CalendarPoolMembership]"
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("organization", "name"),
+                name="calendarpool_unique_name_per_org",
+            ),
+        )
+
+    def __str__(self):
+        return self.name
+
+
+class CalendarPoolMembership(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
+    """
+    Through model linking a Calendar to a CalendarPool's roster.
+    """
+
+    pool = OrganizationSafeForeignKey(
+        CalendarPool,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+    )
+    calendar = OrganizationSafeForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        related_name="pool_memberships",
+    )
+
+    objects: ClassVar[CalendarPoolMembershipManager] = CalendarPoolMembershipManager()
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("pool_fk", "calendar_fk"),
+                name="calendarpoolmembership_unique_pool_calendar",
+            ),
+        )
+
+    def __str__(self):
+        return f"{self.calendar_fk_id} in pool {self.pool_fk_id}"
+
+
+class CalendarGroupSlotPool(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
+    """
+    Through model attaching a ``CalendarPool`` to a ``CalendarGroupSlot``.
+
+    Attaching projects one ``CalendarGroupSlotMembership`` per pool calendar
+    (with ``source_pool`` set to that pool); detaching deletes exactly those
+    rows and nothing else. ``CalendarGroupService._reconcile_slot_pools`` is
+    the only writer of both sides.
+
+    Deletion asymmetry is deliberate:
+
+    - ``slot`` CASCADEs -- deleting a slot drops its attachments, and the
+      projected membership rows go with the slot's own CASCADE.
+    - ``pool`` PROTECTs -- this FK is what enforces the plan's
+      refuse-when-referenced rule at the schema level rather than in
+      application code, so a pool attached anywhere cannot be deleted even by
+      a path that never consulted the service.
+    """
+
+    slot = OrganizationSafeForeignKey(
+        CalendarGroupSlot,
+        on_delete=models.CASCADE,
+        related_name="pool_attachments",
+    )
+    pool = OrganizationSafeForeignKey(
+        CalendarPool,
+        on_delete=models.PROTECT,
+        related_name="slot_attachments",
+    )
+
+    objects: ClassVar[CalendarGroupSlotPoolManager] = CalendarGroupSlotPoolManager()
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("slot_fk", "pool_fk"),
+                name="calendargroupslotpool_unique_slot_pool",
+            ),
+        )
+
+    def __str__(self):
+        return f"pool {self.pool_fk_id} attached to slot {self.slot_fk_id}"
 
 
 class ExternalAttendee(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
@@ -1551,9 +1798,11 @@ class BlockedTime(RecurringMixin):
     # NULL means a base row — today's behavior, visible on every read path. A
     # non-null value scopes the row to that one CalendarGroupSlot; it is invisible
     # to the default manager (`objects`) and only reachable through the explicit
-    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so removing a
-    # calendar from a slot (or deleting the slot/group) deletes its group-scoped
-    # blocked time with it, matching the spec's cascade rule.
+    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so deleting the
+    # slot (or its group) deletes its group-scoped blocked time with it. Removing
+    # one calendar from the slot's roster while the slot survives does NOT cascade
+    # here -- that row is kept and keeps enforcing, by design (Calendar Pools
+    # Phase 1: roster removal is lenient and never destroys configuration).
     group_slot = OrganizationSafeForeignKey(
         CalendarGroupSlot,
         on_delete=models.CASCADE,
@@ -1653,9 +1902,12 @@ class AvailableTime(RecurringMixin):
     # NULL means a base row — today's behavior, visible on every read path. A
     # non-null value scopes the row to that one CalendarGroupSlot; it is invisible
     # to the default manager (`objects`) and only reachable through the explicit
-    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so removing a
-    # calendar from a slot (or deleting the slot/group) deletes its group-scoped
-    # availability windows with it, matching the spec's cascade rule.
+    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so deleting the
+    # slot (or its group) deletes its group-scoped availability windows with it.
+    # Removing one calendar from the slot's roster while the slot survives does
+    # NOT cascade here -- that row is kept and keeps enforcing, by design
+    # (Calendar Pools Phase 1: roster removal is lenient and never destroys
+    # configuration).
     group_slot = OrganizationSafeForeignKey(
         CalendarGroupSlot,
         on_delete=models.CASCADE,
@@ -2001,6 +2253,29 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
     revoked_at = models.DateTimeField(null=True)
 
     # Booking-code audit / lifecycle columns
+    kind = models.CharField(
+        max_length=20,
+        choices=CalendarManagementTokenKind,
+        default=CalendarManagementTokenKind.MANAGEMENT_TOKEN,
+        db_default=CalendarManagementTokenKind.MANAGEMENT_TOKEN,
+        help_text=(
+            "Explicit discriminator: BOOKING_CODE tokens are single-use booking "
+            "codes, selected by CalendarManagementTokenQuerySet.booking_codes and "
+            "therefore eligible for revocation via CalendarPermissionService.revoke_token "
+            "/ DELETE /booking-codes/<id>/ (the REST surface additionally requires "
+            "owner-or-org-admin). Everything else (owner, attendee, external-attendee "
+            "tokens) is MANAGEMENT_TOKEN and never revokable through those surfaces. "
+            "Defaults to MANAGEMENT_TOKEN deliberately: a mint path that forgets to "
+            "set this produces an un-revokable token rather than a wrongly-revokable "
+            "one -- it fails closed. Set explicitly on creation by every "
+            "create_*_token method on CalendarPermissionService (via "
+            "get_or_create(defaults=...), so only on the CREATE branch -- a "
+            "get_or_create hit on an existing row trusts that row's own kind "
+            "rather than re-asserting it); the column default exists only as a "
+            "safety net for a row inserted with kind omitted entirely, never "
+            "leaned on by a known call site."
+        ),
+    )
     expires_at = models.DateTimeField(
         null=True,
         blank=True,
@@ -2014,6 +2289,21 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
         related_name="minted_management_tokens",
         help_text="The SystemUser (org token) that minted this booking code, if any.",
     )
+    minted_by_membership = OrganizationMembershipForeignKey(
+        on_delete=models.SET_NULL,
+        related_name="minted_booking_codes",
+        null=True,
+        blank=True,
+        help_text=(
+            "The organization member who minted this booking code through the "
+            "authenticated REST surface, if any. Null for codes minted by a "
+            "SystemUser (see minted_by_system_user) or by internal flows."
+        ),
+    )
+    if TYPE_CHECKING:
+        # Contributed at runtime by ``OrganizationMembershipForeignKey.contribute_to_class``
+        # as a concrete ``BigIntegerField``; declared here so type checkers see it too.
+        minted_by_membership_user_id: int | None
     consumed_source_ip = models.GenericIPAddressField(
         null=True,
         blank=True,
@@ -2050,6 +2340,10 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
             models.Index(
                 fields=["organization", "membership_user_id"],
                 name="calmgmttoken_org_member_idx",
+            ),
+            models.Index(
+                fields=["organization", "minted_by_membership_user_id"],
+                name="calmgmttoken_org_minter_idx",
             ),
         ]
 

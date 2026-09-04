@@ -3,9 +3,11 @@ from common.types import RouteDict
 from .views import (
     AvailableTimeViewSet,
     BlockedTimeViewSet,
+    BookingCodeViewSet,
     BookingPolicyViewSet,
     CalendarEventViewSet,
     CalendarGroupViewSet,
+    CalendarPoolViewSet,
     CalendarViewSet,
     ExternalEventChangeRequestViewSet,
     GroupScopedAvailabilityWindowViewSet,
@@ -41,6 +43,11 @@ routes: list[RouteDict] = [
         "basename": "GroupScopedQuotaRules",
     },
     {
+        "regex": r"calendar-pools",
+        "viewset": CalendarPoolViewSet,
+        "basename": "CalendarPools",
+    },
+    {
         "regex": r"calendar",
         "viewset": CalendarViewSet,
         "basename": "Calendars",
@@ -64,5 +71,10 @@ routes: list[RouteDict] = [
         "regex": r"booking-policies",
         "viewset": BookingPolicyViewSet,
         "basename": "BookingPolicies",
+    },
+    {
+        "regex": r"booking-codes",
+        "viewset": BookingCodeViewSet,
+        "basename": "BookingCodes",
     },
 ]

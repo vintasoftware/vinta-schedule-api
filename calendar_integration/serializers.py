@@ -1,10 +1,12 @@
 import datetime
+import logging
 import zoneinfo
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Annotated, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, ClassVar, TypedDict, cast
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
+from django.utils import timezone
 
 import django_virtual_models as v
 from allauth.socialaccount.models import SocialAccount
@@ -13,13 +15,16 @@ from rest_framework import serializers
 
 from calendar_integration.constants import (
     CalendarProvider,
+    CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
+    EventManagementPermissions,
     QuotaPeriod,
 )
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarIntegrationError,
+    CalendarPoolError,
     CalendarServiceNotInjectedError,
     DuplicateBookingPolicyError,
 )
@@ -35,6 +40,7 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarGroupSlotQuotaRule,
     CalendarOwnership,
+    CalendarPool,
     CalendarSync,
     ChildrenCalendarRelationship,
     EventAttendance,
@@ -54,6 +60,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupInputData,
     CalendarGroupSlotInputData,
     CalendarGroupSlotSelectionInputData,
+    CalendarPoolInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
@@ -70,6 +77,7 @@ from calendar_integration.virtual_models import (
     CalendarGroupSlotVirtualModel,
     CalendarGroupVirtualModel,
     CalendarOwnershipVirtualModel,
+    CalendarPoolVirtualModel,
     CalendarVirtualModel,
     EventAttendanceVirtualModel,
     EventExternalAttendanceVirtualModel,
@@ -93,6 +101,15 @@ from users.models import User
 if TYPE_CHECKING:
     from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_service import CalendarService
+
+
+logger = logging.getLogger(__name__)
+
+# Window a calendar activated through PATCH is first synced over. Matches the
+# window `CalendarSyncService.import_account_calendars` uses for the calendars it
+# imports live, so an activated calendar ends up holding the same stretch of
+# events an imported one does.
+ACTIVATION_SYNC_LOOKAHEAD = datetime.timedelta(days=365)
 
 
 def _localize_times_in_representation(
@@ -236,6 +253,87 @@ class CalendarSerializer(VirtualModelSerializer):
                     {"capacity": "Only org admins can change a resource calendar's capacity."}
                 )
         return attrs
+
+    def update(self, instance, validated_data):
+        """Apply the edit, then request a first sync when sync is switched on.
+
+        Every imported calendar except the account's default one lands with
+        ``sync_enabled=False`` and no events (see
+        ``CalendarSyncService.import_account_calendars``), so flipping the flag on
+        is the moment the calendar starts mattering for scheduling -- and it is
+        still empty. Requesting the sync here makes one PATCH both activate and
+        backfill the calendar, instead of every client having to follow up with
+        ``POST /calendar/{id}/request-sync/``.
+        """
+        was_sync_enabled = instance.sync_enabled
+        calendar = super().update(instance, validated_data)
+
+        if not was_sync_enabled and calendar.sync_enabled:
+            self._request_activation_sync(calendar)
+
+        return calendar
+
+    def _request_activation_sync(self, calendar: Calendar) -> None:
+        """Enqueue the first sync for a calendar whose ``sync_enabled`` just flipped on.
+
+        Best-effort by design: the activation is already committed by the time this
+        runs, so a missing owner, a missing linked account, or a provider error is
+        logged and left for an explicit ``request-sync`` call rather than failing
+        the PATCH and rolling the user's activation back.
+        """
+        if calendar.provider == CalendarProvider.INTERNAL:
+            # Virtual/internal calendars have no external provider to pull from.
+            return
+
+        # Sync against the *owner's* account rather than the caller's: an org admin
+        # activating a member's calendar holds no token for it. Same owner
+        # resolution as `CalendarViewSet.admin_sync` -- membership-backed rows only
+        # (an orphan ownership resolves no account), default owner first.
+        ownership = (
+            CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+            .filter(
+                calendar=calendar,
+                membership_user_id__isnull=False,
+            )
+            .order_by("-is_default", "id")
+            .first()
+        )
+        if ownership is None:
+            logger.info(
+                "Calendar %s activated but has no membership-backed owner; skipping initial sync.",
+                calendar.id,
+            )
+            return
+
+        social_account = SocialAccount.objects.filter(
+            user_id=ownership.membership_user_id, provider=calendar.provider
+        ).first()
+        if social_account is None:
+            logger.info(
+                "Calendar %s activated but its owner has no linked %s account; "
+                "skipping initial sync.",
+                calendar.id,
+                calendar.provider,
+            )
+            return
+
+        now = datetime.datetime.now(datetime.UTC)
+        try:
+            self.calendar_service.authenticate(
+                account=social_account,
+                organization=calendar.organization,
+            )
+            self.calendar_service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=now,
+                end_datetime=now + ACTIVATION_SYNC_LOOKAHEAD,
+                should_update_events=True,
+                trigger_source=CalendarSyncTriggerSource.MANUAL,
+            )
+        except (ValueError, CalendarIntegrationError, NotImplementedError):
+            logger.exception(
+                "Failed to request the initial sync for activated calendar %s.", calendar.id
+            )
 
     def create(self, validated_data):
         membership = self.context["request"].organization_membership
@@ -914,7 +1012,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
     class Meta:
         model = CalendarEvent
         virtual_model = CalendarEventVirtualModel
-        fields = (
+        fields: tuple[str, ...] = (
             "id",
             "provider",
             "title",
@@ -929,6 +1027,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
             "attendances",
             "resource_allocations",
             "external_client_identifiers",
+            "group_selections",
             # Recurrence fields
             "recurrence_rule",
             "rrule_string",
@@ -997,6 +1096,14 @@ class CalendarEventSerializer(VirtualModelSerializer):
         self.fields["attendances"] = EventAttendanceSerializer(many=True, context=self.context)
         self.fields["external_attendances"] = EventExternalAttendanceSerializer(
             many=True, context=self.context
+        )
+        # Read-only: group-selection roster picks are managed through
+        # CalendarGroupService, not through this serializer. Declared here rather
+        # than as a class attribute because CalendarEventGroupSelectionSerializer
+        # is defined later in this module (it nests CalendarGroupSlotSerializer,
+        # which itself is defined after CalendarEventSerializer).
+        self.fields["group_selections"] = CalendarEventGroupSelectionSerializer(
+            many=True, read_only=True, context=self.context
         )
 
         if self.instance:
@@ -2581,6 +2688,123 @@ def _translate_group_error(exc: CalendarGroupError) -> serializers.ValidationErr
     return serializers.ValidationError({"non_field_errors": [str(exc)]})
 
 
+def _translate_pool_error(exc: CalendarPoolError) -> serializers.ValidationError:
+    return serializers.ValidationError({"non_field_errors": [str(exc)]})
+
+
+class CalendarPoolSerializer(VirtualModelSerializer):
+    """CalendarPool CRUD representation.
+
+    On write, accepts `calendar_ids: list[int]` and replaces the roster
+    wholesale; on read exposes the roster via `calendars` -- mirrors
+    `CalendarGroupSlotSerializer`. Persistence delegates to
+    `CalendarGroupService.create_pool` / `update_pool`; this serializer never
+    writes `CalendarPool`/`CalendarPoolMembership` rows directly.
+    """
+
+    calendars = CalendarSerializer(many=True, read_only=True)
+    calendar_ids = serializers.ListField(
+        child=serializers.IntegerField(), write_only=True, required=True
+    )
+
+    class Meta:
+        model = CalendarPool
+        virtual_model = CalendarPoolVirtualModel
+        fields = (
+            "id",
+            "name",
+            "description",
+            "calendars",
+            "calendar_ids",
+            "created",
+            "modified",
+        )
+        read_only_fields = ("id", "created", "modified")
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        calendar_group_service: Annotated[
+            "CalendarGroupService | None", Provide["calendar_group_service"]
+        ] = None,
+        **kwargs,
+    ):
+        self.calendar_group_service = calendar_group_service
+        super().__init__(*args, **kwargs)
+
+    def _organization(self) -> Organization:
+        request = self.context.get("request") if self.context else None
+        if not request or not getattr(request, "user", None):
+            raise serializers.ValidationError(
+                {"non_field_errors": ["Authenticated user with organization is required."]}
+            )
+        membership = request.organization_membership
+        if not membership:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["User has no organization membership."]}
+            )
+        return membership.organization
+
+    def validate(self, attrs: dict) -> dict:
+        # `name`/`calendar_ids` have no "omitted means unchanged" sentinel --
+        # a pool write always replaces the name/roster wholesale (see
+        # `CalendarPoolInputData`'s docstring). Under `partial=True` (PATCH),
+        # DRF silently drops an absent required field via `SkipField` instead
+        # of raising its normal "this field is required" error, so an absent
+        # `name` would otherwise reach `_to_input_data` and KeyError, and an
+        # absent `calendar_ids` would silently wipe the entire roster (and
+        # cascade that wipe into every slot the pool is attached to). Reject
+        # the ambiguous partial write instead of guessing.
+        if self.partial:
+            missing = [field for field in ("name", "calendar_ids") if field not in attrs]
+            if missing:
+                raise serializers.ValidationError(
+                    {
+                        field: (
+                            "This field cannot be omitted on a partial update: a pool "
+                            "write always replaces the full name/roster, so an absent "
+                            "value would corrupt or wipe the pool."
+                        )
+                        for field in missing
+                    }
+                )
+        return attrs
+
+    def _to_input_data(self, validated_data: dict) -> CalendarPoolInputData:
+        return CalendarPoolInputData(
+            name=validated_data["name"],
+            description=validated_data.get("description", ""),
+            calendar_ids=list(validated_data.get("calendar_ids", [])),
+        )
+
+    def create(self, validated_data: dict) -> CalendarPool:
+        if not self.calendar_group_service:
+            raise CalendarServiceNotInjectedError(
+                "calendar_group_service is not defined; configure the DI container."
+            )
+        organization = self._organization()
+        self.calendar_group_service.initialize(organization=organization)
+        try:
+            return self.calendar_group_service.create_pool(self._to_input_data(validated_data))
+        except CalendarPoolError as e:
+            raise _translate_pool_error(e) from e
+
+    def update(self, instance: CalendarPool, validated_data: dict) -> CalendarPool:
+        if not self.calendar_group_service:
+            raise CalendarServiceNotInjectedError(
+                "calendar_group_service is not defined; configure the DI container."
+            )
+        organization = self._organization()
+        self.calendar_group_service.initialize(organization=organization)
+        try:
+            return self.calendar_group_service.update_pool(
+                pool_id=instance.id, data=self._to_input_data(validated_data)
+            )
+        except CalendarPoolError as e:
+            raise _translate_pool_error(e) from e
+
+
 class CalendarGroupSlotMembershipSerializer(VirtualModelSerializer):
     calendar = CalendarSerializer(read_only=True)
 
@@ -2968,11 +3192,23 @@ class CalendarGroupSlotSerializer(VirtualModelSerializer):
     pool via `calendars` (the M2M). We deliberately keep slot writes to
     payload-time data only — persistence happens through
     `CalendarGroupSerializer` which delegates to `CalendarGroupService`.
+
+    `pool_ids` (write-only) attaches/detaches `CalendarPool`s -- **omitting**
+    it leaves the slot's current attachments unchanged; an explicit `[]`
+    detaches every pool. This mirrors `CalendarGroupSlotInputData.pool_ids`
+    exactly, and the distinction is resolved in
+    `CalendarGroupSerializer._to_input_data` by checking key presence in the
+    validated per-slot dict, not by inspecting the value. `pools` (read-only)
+    exposes the attached pools themselves.
     """
 
     calendars = CalendarSerializer(many=True, read_only=True)
     calendar_ids = serializers.ListField(
         child=serializers.IntegerField(), write_only=True, required=True
+    )
+    pools = CalendarPoolSerializer(many=True, read_only=True)
+    pool_ids = serializers.ListField(
+        child=serializers.IntegerField(), write_only=True, required=False
     )
 
     class Meta:
@@ -2986,12 +3222,29 @@ class CalendarGroupSlotSerializer(VirtualModelSerializer):
             "required_count",
             "calendars",
             "calendar_ids",
+            "pools",
+            "pool_ids",
         )
         read_only_fields = ("id",)
 
 
 class CalendarGroupSerializer(VirtualModelSerializer):
     slots = CalendarGroupSlotSerializer(many=True)
+    # Declared explicitly rather than inferred from the model field, to refuse
+    # an explicit ``null``. The model column is nullable, so ModelSerializer
+    # would infer ``allow_null=True`` -- but ``CalendarGroupInputData.duration``
+    # is tri-state with ``None`` meaning "omitted, leave unchanged", so a client
+    # sending ``null`` to clear the duration would get a silent no-op instead.
+    # Refusing null keeps "absent" the only meaning ``None`` ever carries here.
+    # Clearing a duration is not offered at all: it would be a fail-open change
+    # on a public group, whose bookings depend on it.
+    duration = serializers.DurationField(required=False, allow_null=False)
+    # Same tri-state contract as ``duration``: absent means "leave unchanged",
+    # so null is refused rather than read as False. Writable only by an
+    # organization admin, which needs no enforcement here -- CalendarGroupPermission
+    # already gates `create` and `update`/`partial_update` on admin, so a
+    # non-admin never reaches this serializer's write path at all (403).
+    accepts_public_scheduling = serializers.BooleanField(required=False, allow_null=False)
 
     class Meta:
         model = CalendarGroup
@@ -3000,11 +3253,19 @@ class CalendarGroupSerializer(VirtualModelSerializer):
             "id",
             "name",
             "description",
+            "duration",
+            "accepts_public_scheduling",
             "slots",
+            "public_booking_slug",
             "created",
             "modified",
         )
-        read_only_fields = ("id", "created", "modified")
+        # public_booking_slug: read-only so an organization admin can read it
+        # to build a codeless public booking link
+        # (public/booking/calendar-groups/<public_booking_slug>/events/), but
+        # it is never client-settable -- it is generated once, at model
+        # creation, by CalendarGroup's own field default (Phase 3b).
+        read_only_fields = ("id", "created", "modified", "public_booking_slug")
 
     @inject
     def __init__(
@@ -3031,10 +3292,62 @@ class CalendarGroupSerializer(VirtualModelSerializer):
             )
         return membership.organization
 
+    def validate_duration(self, value: datetime.timedelta) -> datetime.timedelta:
+        # A group's duration is the exact length every booking through it must
+        # span, so a zero or negative value describes no bookable event at all.
+        # The model carries no CHECK constraint, so this is the only guard.
+        if value <= datetime.timedelta(0):
+            raise serializers.ValidationError("Duration must be greater than zero.")
+        return value
+
+    def validate(self, attrs: dict) -> dict:
+        # `slots` has no "omitted means unchanged" sentinel -- a group write
+        # always replaces the full slot list wholesale. Under `partial=True`
+        # (PATCH), DRF silently drops an absent `slots` key via `SkipField`
+        # instead of raising its normal "this field is required" error, and
+        # `_to_input_data`'s `validated_data.get("slots", [])` would then read
+        # that absence as "no slots" -- deleting every existing slot (and
+        # every pool attachment with it) on a PATCH that never mentioned
+        # slots at all. The same `SkipField` behavior applies one level down:
+        # a `slots` entry present but missing `calendar_ids` reaches here
+        # silently instead of raising DRF's normal required-field error.
+        # Reject both ambiguous partial writes instead of guessing.
+        if self.partial:
+            if "slots" not in attrs:
+                raise serializers.ValidationError(
+                    {
+                        "slots": (
+                            "This field cannot be omitted on a partial update: a group "
+                            "write always replaces the full slot list, so an absent "
+                            "value would delete every existing slot."
+                        )
+                    }
+                )
+            for index, slot in enumerate(attrs["slots"]):
+                if "calendar_ids" not in slot:
+                    raise serializers.ValidationError(
+                        {
+                            "slots": {
+                                str(index): {
+                                    "calendar_ids": (
+                                        "This field cannot be omitted: every slot must "
+                                        "supply its full calendar roster."
+                                    )
+                                }
+                            }
+                        }
+                    )
+        return attrs
+
     def _to_input_data(self, validated_data: dict) -> CalendarGroupInputData:
         return CalendarGroupInputData(
             name=validated_data["name"],
             description=validated_data.get("description", ""),
+            # Absent means "leave unchanged" on update and "not set" on create,
+            # which is exactly what ``.get`` returning ``None`` conveys. An
+            # explicit ``null`` never reaches here -- both fields refuse it.
+            duration=validated_data.get("duration"),
+            accepts_public_scheduling=validated_data.get("accepts_public_scheduling"),
             slots=[
                 CalendarGroupSlotInputData(
                     name=slot["name"],
@@ -3042,6 +3355,13 @@ class CalendarGroupSerializer(VirtualModelSerializer):
                     required_count=slot.get("required_count", 1),
                     description=slot.get("description", ""),
                     order=slot.get("order", 0),
+                    # `pool_ids` is optional with no default, so a client that
+                    # never sends it is simply absent from `slot` -- checked by
+                    # key, not by truthiness, so an explicit `[]` (detach all)
+                    # is preserved instead of collapsing to the same `None`
+                    # "leave unchanged" sentinel `CalendarGroupSlotInputData`
+                    # uses for an omitted key.
+                    pool_ids=list(slot["pool_ids"]) if "pool_ids" in slot else None,
                 )
                 for slot in validated_data.get("slots", [])
             ],
@@ -3077,11 +3397,49 @@ class CalendarGroupSerializer(VirtualModelSerializer):
 class CalendarEventGroupSelectionSerializer(VirtualModelSerializer):
     slot = CalendarGroupSlotSerializer(read_only=True)
     calendar = CalendarSerializer(read_only=True)
+    is_in_current_roster = serializers.SerializerMethodField()
 
     class Meta:
         model = CalendarEventGroupSelection
         virtual_model = CalendarEventGroupSelectionVirtualModel
-        fields = ("id", "slot", "calendar")
+        fields = ("id", "slot", "calendar", "is_in_current_roster")
+
+    def get_is_in_current_roster(
+        self,
+        # `# type: ignore[valid-type]`: django-stubs' mypy plugin special-cases any
+        # `Annotated[...]` whose first argument is a Django `Model` subclass (its own
+        # generic-field handling), and chokes on `hints.Virtual(...)` as the second
+        # argument -- reproduced in isolation against a bare `Annotated[SomeModel, ...]`
+        # with no django-virtual-models involved. Runtime behavior is unaffected:
+        # `typing_extensions.get_type_hints(..., include_extras=True)` (what
+        # `LookupFinder` actually reads) resolves this annotation the same as any other.
+        obj: Annotated[  # type: ignore[valid-type]
+            "CalendarEventGroupSelection", v.hints.Virtual("slot__memberships__calendar_fk_id")
+        ],
+    ) -> bool:
+        """Whether ``obj``'s calendar is still a member of its slot's roster.
+
+        Staleness definition (see the plan's Guiding Decisions): stale when no
+        ``CalendarGroupSlotMembership`` row exists for the ``(slot, calendar)``
+        pair. ``slot.memberships`` is prefetched by
+        ``CalendarEventGroupSelectionVirtualModel`` (via the ``hints.Virtual``
+        hint above), so this reads from that prefetch cache instead of issuing
+        a query per selection.
+
+        The hint names the concrete ``calendar_fk_id`` column explicitly
+        rather than just ``slot__memberships``: an empty per-field lookup list
+        tells ``django-virtual-models`` to prefetch *every* declared field
+        under that branch, including ``CalendarGroupSlotMembershipVirtualModel
+        .calendar`` -- which cascades into ``CalendarVirtualModel
+        .calendar_ownerships``, a field name that does not match ``Calendar``'s
+        actual related accessor (``ownerships``) and raises. Naming the one
+        concrete column this field actually reads avoids that unrelated,
+        pre-existing mismatch instead of masking it.
+        """
+        return any(
+            membership.calendar_fk_id == obj.calendar_fk_id
+            for membership in obj.slot.memberships.all()
+        )
 
 
 class _CalendarGroupSlotSelectionInputSerializer(serializers.Serializer):
@@ -3089,7 +3447,34 @@ class _CalendarGroupSlotSelectionInputSerializer(serializers.Serializer):
     calendar_ids = serializers.ListField(child=serializers.IntegerField())
 
 
-class CalendarGroupEventCreateSerializer(serializers.Serializer):
+class _EndTimeAfterStartTimeSerializerMixin(serializers.Serializer):
+    """Shared ``validate_end_time`` rejecting an ``end_time`` at/before ``start_time``.
+
+    Parses a string ``start_time`` from ``initial_data`` -- at the point
+    ``validate_end_time`` runs, DRF has not yet validated/coerced sibling
+    fields, so ``start_time`` is read from the raw input instead of
+    ``validated_data``. Silently skips the check when ``start_time`` is
+    missing or unparsable -- the field-level validator for ``start_time``
+    surfaces that failure separately.
+    """
+
+    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
+        start_time = self.initial_data.get("start_time") if self.initial_data else None
+        if start_time:
+            try:
+                start_time_parsed = (
+                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+                    if isinstance(start_time, str)
+                    else start_time
+                )
+            except ValueError:
+                start_time_parsed = None
+            if start_time_parsed and end_time <= start_time_parsed:
+                raise serializers.ValidationError("end_time must be after start_time.")
+        return end_time
+
+
+class CalendarGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
     """Input for booking an event through a CalendarGroup.
 
     On `save()` this delegates to `CalendarGroupService.create_grouped_event`
@@ -3119,21 +3504,6 @@ class CalendarGroupEventCreateSerializer(serializers.Serializer):
     ):
         self.calendar_group_service = calendar_group_service
         super().__init__(*args, **kwargs)
-
-    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
-        start_time = self.initial_data.get("start_time") if self.initial_data else None
-        if start_time:
-            try:
-                start_time_parsed = (
-                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-                    if isinstance(start_time, str)
-                    else start_time
-                )
-            except ValueError:
-                start_time_parsed = None
-            if start_time_parsed and end_time <= start_time_parsed:
-                raise serializers.ValidationError("end_time must be after start_time.")
-        return end_time
 
     def save(self, **kwargs):
         if not self.calendar_group_service or not self.calendar_group_service.calendar_service:
@@ -3229,6 +3599,18 @@ class CalendarGroupAvailabilityQuerySerializer(serializers.Serializer):
 class BookableSlotProposalSerializer(serializers.Serializer):
     start_time = serializers.DateTimeField()
     end_time = serializers.DateTimeField()
+
+
+class StaleSelectionSerializer(serializers.Serializer):
+    """A `(event, slot, calendar)` triple whose calendar has left its slot's
+    roster -- see ``CalendarGroupService.find_stale_selections`` and the
+    Calendar Pools plan's Staleness definition. Scalar ids only, matching the
+    ``StaleSelection`` dataclass this wraps.
+    """
+
+    event_id = serializers.IntegerField()
+    slot_id = serializers.IntegerField()
+    calendar_id = serializers.IntegerField()
 
 
 class BookingPolicySerializer(serializers.ModelSerializer):
@@ -3454,3 +3836,222 @@ class ExternalEventChangeRequestSerializer(VirtualModelSerializer):
     def get_resolved_by_user_id(self, obj: ExternalEventChangeRequest) -> int | None:
         """Return the resolver's user id, or ``None`` when unresolved."""
         return obj.resolved_by_user_id  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Booking-code REST surface (public/booking/) -- Phase 1+
+# ---------------------------------------------------------------------------
+
+
+class _BookingCodeExternalAttendeeSerializer(serializers.Serializer):
+    """External attendee for the unauthenticated booking-code write endpoints.
+
+    Deliberately NOT ``ExternalAttendeeSerializer`` (a full ``VirtualModelSerializer``
+    exposing read-only model fields like ``id`` / ``created`` / ``modified``) -- this
+    is a plain two-field write input, mirroring ``ExternalAttendeeCodeInput`` (the
+    GraphQL input the code-gated mutations already use).
+    """
+
+    email = serializers.EmailField()
+    name = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class BookingCodeEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
+    """Input for ``POST /public/booking/calendar-events/``.
+
+    Mirrors ``CreateEventWithCodeInput`` (GraphQL) minus its ``code`` field -- the
+    booking code travels as the ``X-Booking-Code`` header instead (see
+    ``calendar_integration.booking_auth``). ``calendar_id`` is never accepted here:
+    it comes strictly from the resolved token, never from client input.
+    """
+
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True, required=False, default="")
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    timezone = serializers.CharField()
+    external_attendee = _BookingCodeExternalAttendeeSerializer()
+
+
+class BookingCodeGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
+    """Input for ``POST /public/booking/calendar-groups/<public_slug>/events/``.
+
+    Mirrors ``CreateGroupEventWithCodeInput`` (GraphQL) minus its ``code`` field --
+    the booking code travels as the ``X-Booking-Code`` header instead (see
+    ``calendar_integration.booking_auth``). The group is never accepted here: on
+    the coded branch it comes strictly from the resolved token's
+    ``calendar_group``, never from client input or the path (Phase 3b: the path
+    carries only ``CalendarGroup.public_booking_slug``, an opaque identifier, and
+    even that is only a routing convenience -- see
+    ``BookingCodeGroupEventViewSet.create``). Reuses
+    ``_CalendarGroupSlotSelectionInputSerializer``, the same slot-selection shape
+    ``CalendarGroupEventCreateSerializer`` already uses for the authenticated
+    group-booking endpoint.
+    """
+
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True, required=False, default="")
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    timezone = serializers.CharField()
+    slot_selections = _CalendarGroupSlotSelectionInputSerializer(many=True)
+    external_attendee = _BookingCodeExternalAttendeeSerializer()
+
+
+class BookingCodeRescheduleSerializer(_EndTimeAfterStartTimeSerializerMixin):
+    """Input for ``POST /public/booking/events/reschedule/`` and
+    ``POST /public/booking/group-events/reschedule/``.
+
+    Mirrors ``RescheduleWithCodeInput`` / ``RescheduleGroupWithCodeInput`` (GraphQL)
+    minus their ``code`` field -- the booking code travels as the ``X-Booking-Code``
+    header instead. Only the new start/end/timezone are accepted: title, description,
+    attendees, and resource allocations are never client-settable here -- the view
+    snapshots them, unchanged, from the existing event so that only the RESCHEDULE
+    permission is required (see ``BookingCodeRescheduleEventViewSet.create``).
+    """
+
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    timezone = serializers.CharField()
+
+
+class BookingCodeCreateSerializer(serializers.Serializer):
+    """Input for ``POST /booking-codes/`` -- the authenticated minting endpoint.
+
+    Collapses GraphQL's six ``create*BookingCode`` mutations into one resource:
+    ``purpose`` x {``calendar``, ``calendar_group``} is the same cross product those
+    six mutations cover, no more and no less. ``purpose`` maps onto the permission(s)
+    the minted token carries:
+
+    - ``book`` -> ``[EventManagementPermissions.CREATE]``
+    - ``reschedule`` -> ``[EventManagementPermissions.RESCHEDULE]``
+    - ``cancel`` -> ``[EventManagementPermissions.CANCEL]``
+
+    ``calendar`` / ``calendar_group`` / ``event`` are plain integer ids, not
+    ``PrimaryKeyRelatedField`` -- object existence and org/authorization checks
+    happen in ``BookingCodeViewSet.create`` so a cross-organization target can be
+    answered ``404`` there rather than a serializer-level ``400``, keeping "target
+    exists but you can't see it" indistinguishable from "target does not exist".
+
+    No ``duration_seconds`` field: duration pinning lives on
+    ``CalendarGroup.duration``, not on the minted token -- there is no
+    per-code duration to set at mint time. A calendar-scoped code carries no
+    duration constraint at all; a calendar-group-scoped code inherits
+    whatever duration (if any) is already set on that group.
+    """
+
+    PURPOSE_BOOK = "book"
+    PURPOSE_RESCHEDULE = "reschedule"
+    PURPOSE_CANCEL = "cancel"
+    PURPOSE_CHOICES = (PURPOSE_BOOK, PURPOSE_RESCHEDULE, PURPOSE_CANCEL)
+
+    #: Kept next to ``PURPOSE_CHOICES`` on purpose -- this is the enum the
+    #: permission it grants, in one place, so the two cannot drift apart the
+    #: way they could when the mapping lived separately in ``views.py``.
+    PURPOSE_PERMISSIONS: ClassVar[dict[str, list[EventManagementPermissions]]] = {
+        PURPOSE_BOOK: [EventManagementPermissions.CREATE],
+        PURPOSE_RESCHEDULE: [EventManagementPermissions.RESCHEDULE],
+        PURPOSE_CANCEL: [EventManagementPermissions.CANCEL],
+    }
+
+    purpose = serializers.ChoiceField(choices=PURPOSE_CHOICES)
+    calendar = serializers.IntegerField(required=False, allow_null=True, default=None)
+    calendar_group = serializers.IntegerField(required=False, allow_null=True, default=None)
+    event = serializers.IntegerField(required=False, allow_null=True, default=None)
+    expires_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
+
+    def validate(self, attrs: dict) -> dict:
+        calendar = attrs.get("calendar")
+        calendar_group = attrs.get("calendar_group")
+        if (calendar is None) == (calendar_group is None):
+            raise serializers.ValidationError(
+                "Exactly one of 'calendar' or 'calendar_group' must be set."
+            )
+
+        purpose = attrs["purpose"]
+        event = attrs.get("event")
+        if purpose == self.PURPOSE_BOOK and event is not None:
+            raise serializers.ValidationError("'event' is forbidden for purpose='book'.")
+        if purpose in (self.PURPOSE_RESCHEDULE, self.PURPOSE_CANCEL) and event is None:
+            raise serializers.ValidationError(f"'event' is required for purpose='{purpose}'.")
+
+        expires_at = attrs.get("expires_at")
+        if expires_at is not None and expires_at <= timezone.now():
+            raise serializers.ValidationError("'expires_at' must be in the future.")
+
+        return attrs
+
+
+class BookingCodeCreateResultSerializer(serializers.Serializer):
+    """One-time response for ``POST /booking-codes/``.
+
+    ``code`` carries the plaintext booking code -- it is generated fresh by
+    ``CalendarPermissionService.create_booking_token`` and never persisted or
+    re-derivable, so this is the only response that will ever expose it. Every
+    field here is read-only: this serializer only ever renders a response, it
+    is never used to validate input.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    code = serializers.CharField(read_only=True)
+    purpose = serializers.ChoiceField(choices=BookingCodeCreateSerializer.PURPOSE_CHOICES)
+    calendar = serializers.IntegerField(read_only=True, allow_null=True)
+    calendar_group = serializers.IntegerField(read_only=True, allow_null=True)
+    event = serializers.IntegerField(read_only=True, allow_null=True)
+    expires_at = serializers.DateTimeField(read_only=True, allow_null=True)
+
+
+# ---------------------------------------------------------------------------
+# Patient self-service management codes -- Phase 8
+# ---------------------------------------------------------------------------
+
+
+class BookingManagementCodesSerializer(serializers.Serializer):
+    """The ``management`` object on a booking-code create/reschedule ``201``.
+
+    ``reschedule_code`` and ``cancel_code`` are plaintext, single-use booking
+    codes minted for the patient's own event (see
+    ``booking_views.mint_management_code_pair``), returned exactly once here
+    -- only their hashes are persisted, so this is the only response that
+    will ever expose them. Never echoed on a read: none of the booking-code
+    viewsets has one.
+
+    Fields are read-only for documentation purposes only (this serializer
+    never validates input, it only renders a nested attribute the view sets
+    on the event instance before serialization -- see
+    ``CalendarEventWithManagementCodesSerializer``).
+    """
+
+    reschedule_code = serializers.CharField(read_only=True)
+    cancel_code = serializers.CharField(read_only=True)
+
+
+class CalendarEventWithManagementCodesSerializer(CalendarEventSerializer):
+    """``CalendarEventSerializer`` plus the self-service ``management`` object.
+
+    Used ONLY to render the ``201`` response of a booking-code create or
+    reschedule viewset (``BookingCodeCalendarEventViewSet``,
+    ``BookingCodeGroupEventViewSet``, ``BookingCodeRescheduleEventViewSet``,
+    ``BookingCodeRescheduleGroupEventViewSet``) -- never for a read, and
+    never for ``get_optimized_queryset``: ``management`` is not a model field
+    or relation, it does not exist on ``CalendarEventVirtualModel``, and
+    django-virtual-models' ``LookupFinder`` would raise
+    ``MissingVirtualModelFieldException`` if this subclass were ever handed
+    to ``get_optimized_queryset`` (it walks every readable field looking for
+    a matching virtual-model entry). Callers therefore build the optimized
+    queryset with the PLAIN ``CalendarEventSerializer`` first, and only use
+    this subclass afterwards, purely to render ``.data`` on the already-
+    fetched instance.
+
+    The view sets ``event.management`` (a plain object carrying
+    ``reschedule_code`` / ``cancel_code``, matching
+    ``BookingManagementCodesSerializer``'s two fields) on the event instance
+    before calling this serializer -- there is nothing in the database for
+    this field to read, ``to_representation`` finds it via a plain
+    ``getattr(instance, "management")``, same as any other declared field.
+    """
+
+    management = BookingManagementCodesSerializer(read_only=True)
+
+    class Meta(CalendarEventSerializer.Meta):
+        fields = (*CalendarEventSerializer.Meta.fields, "management")

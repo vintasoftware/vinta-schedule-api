@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from unittest.mock import patch as _patch
 
 import pytest
@@ -101,11 +101,17 @@ def _managed_cal(org: Organization) -> Calendar:
 def _make_group_and_slot(
     org: Organization, calendar: Calendar
 ) -> tuple[CalendarGroup, CalendarGroupSlot]:
-    """Create a single-slot group containing *calendar* and return (group, slot)."""
+    """Create a single-slot group containing *calendar* and return (group, slot).
+
+    duration matches ``_START``/``_END`` (1 hour) below -- a public group with
+    no duration fails closed in
+    CalendarPermissionService.can_perform_group_scheduling.
+    """
     group = CalendarGroup.objects.create(
         organization=org,
         name=f"grp-enforce-{_unique()}",
         accepts_public_scheduling=True,
+        duration=datetime.timedelta(hours=1),
     )
     slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Main", order=0)
     CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)
@@ -131,7 +137,15 @@ def _invoke_mutation(
     calendar: Calendar,
     deps: CalendarGroupMutationDependencies,
 ) -> object:
-    """Invoke the createCalendarGroupEvent mutation directly (no HTTP)."""
+    """Invoke the createCalendarGroupEvent mutation directly (no HTTP).
+
+    The resolver now resolves its organization from the authenticated
+    token via ``info.context.request.public_api_organization`` (see
+    ``calendar_integration/mutations.py``'s ``create_calendar_group_event``),
+    rather than from ``input.organization_id`` -- so a direct-call test must
+    fake that request context. ``input.organization_id`` is still supplied
+    and must match ``org`` for the resolver's own-org check to pass.
+    """
     mutations = CalendarGroupMutations()
     input_data = CalendarGroupEventInput(
         organization_id=org.id,
@@ -145,12 +159,14 @@ def _invoke_mutation(
             CalendarGroupSlotSelectionInput(slot_id=slot.id, calendar_ids=[calendar.id])
         ],
     )
+    mock_info = Mock()
+    mock_info.context.request.public_api_organization = org
     # Patch the dependency factory so our real-deps (with policy) are used.
     with patch(
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        return mutations.create_calendar_group_event(input_data)  # type: ignore[arg-type]
+        return mutations.create_calendar_group_event(mock_info, input_data)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

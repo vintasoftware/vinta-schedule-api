@@ -16,7 +16,7 @@ from calendar_integration.constants import (
     CalendarType,
     EventManagementPermissions,
 )
-from calendar_integration.factories import create_calendar_ownership
+from calendar_integration.factories import create_calendar_ownership, create_calendar_pool
 from calendar_integration.models import (
     AvailableTime,
     Calendar,
@@ -25,6 +25,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    CalendarGroupSlotPool,
     CalendarManagementToken,
 )
 from organizations.models import Organization, OrganizationMembership
@@ -186,6 +187,55 @@ class TestCalendarGroupCrud:
         assert response.data["name"] == "Clinic"
         assert {s["name"] for s in response.data["slots"]} == {"Physicians", "Rooms"}
 
+    def test_retrieve_exposes_public_booking_slug(self, auth_client, owned_group):
+        """An org member can read `public_booking_slug` to build a codeless
+        public booking link (Phase 3b) -- it is present and matches the
+        model's own value exactly."""
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        assert response.data["public_booking_slug"] == owned_group.public_booking_slug
+        assert response.data["public_booking_slug"]
+
+    def test_retrieve_lists_a_doubly_sourced_calendar_once(
+        self, auth_client, organization, internal_calendars, owned_group
+    ):
+        """A calendar reachable both inline and through an attached pool is one
+        entry in ``slots[].calendars``, not two.
+
+        Since Calendar Pools projected pool rosters into
+        ``CalendarGroupSlotMembership``, the slot's M2M can yield the same
+        ``Calendar`` once per source row. ``CalendarGroupSlotVirtualModel``
+        deduplicates the prefetch; without that this response would repeat the
+        calendar.
+        """
+        from calendar_integration.factories import create_calendar_pool
+        from calendar_integration.models import CalendarGroupSlotPool
+
+        physicians = owned_group.slots.get(name="Physicians")
+        pool = create_calendar_pool(
+            organization=organization,
+            name="Nurses",
+            calendars=[internal_calendars["phys_a"]],
+        )
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=physicians, pool=pool)
+        CalendarGroupSlotMembership.objects.create(
+            organization=organization,
+            slot=physicians,
+            calendar=internal_calendars["phys_a"],
+            source_pool=pool,
+        )
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.get(url)
+
+        _assert_status(response, status.HTTP_200_OK)
+        slot_payload = next(s for s in response.data["slots"] if s["name"] == "Physicians")
+        calendar_ids = [c["id"] for c in slot_payload["calendars"]]
+        assert sorted(calendar_ids) == sorted(
+            [internal_calendars["phys_a"].id, internal_calendars["phys_b"].id]
+        )
+
     def test_retrieve_not_found_if_user_does_not_own_any_pool_calendar(
         self, auth_client, organization, internal_calendars
     ):
@@ -312,6 +362,39 @@ class TestCalendarGroupCrud:
         )
         assert set(created.slots.values_list("name", flat=True)) == {"Physicians", "Rooms"}
 
+    def test_create_rejects_client_supplied_public_booking_slug(
+        self, auth_client, organization, internal_calendars, user, admin_user
+    ):
+        """`public_booking_slug` is read-only (Phase 3b): a client-supplied
+        value in the create payload is silently ignored, never adopted -- the
+        created group still gets its own, distinct, server-generated slug."""
+        create_calendar_ownership(
+            calendar=internal_calendars["phys_a"],
+            user=user,
+        )
+        url = reverse("api:CalendarGroups-list")
+        payload = {
+            "name": "Slug Hijack Attempt",
+            "description": "",
+            "public_booking_slug": "attacker-chosen-slug",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+            ],
+        }
+        response = auth_client.post(url, payload, format="json")
+        _assert_status(response, status.HTTP_201_CREATED)
+        created = CalendarGroup.objects.filter_by_organization(organization.id).get(
+            name="Slug Hijack Attempt"
+        )
+        assert created.public_booking_slug != "attacker-chosen-slug"
+        assert created.public_booking_slug
+        assert response.data["public_booking_slug"] == created.public_booking_slug
+
     def test_create_group_rejects_duplicate_slot_name(
         self, auth_client, organization, internal_calendars, user, admin_user
     ):
@@ -359,6 +442,81 @@ class TestCalendarGroupCrud:
             owned_group.slots.get(name="Physicians").calendars.values_list("external_id", flat=True)
         ) == {"phys_a"}
 
+    def test_update_rejects_client_supplied_public_booking_slug(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        """`public_booking_slug` is read-only (Phase 3b): attempting to
+        overwrite an existing group's slug via update is silently ignored --
+        the slug an admin already handed out as a booking link must not be
+        able to be invalidated (or hijacked) through this endpoint."""
+        original_slug = owned_group.public_booking_slug
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": "Clinic Renamed",
+            "description": "New desc",
+            "public_booking_slug": "attacker-chosen-slug",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.put(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.name == "Clinic Renamed"
+        assert owned_group.public_booking_slug == original_slug
+        assert response.data["public_booking_slug"] == original_slug
+
+    def test_partial_update_rejects_client_supplied_public_booking_slug(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        """Same guarantee as ``test_update_rejects_client_supplied_public_booking_slug``,
+        exercised through PATCH rather than PUT -- a client-supplied
+        ``public_booking_slug`` must not be able to overwrite the existing
+        slug via a partial update either. ``name``/``slots`` are still
+        included in the payload -- unrelated to the read-only check this test
+        targets, but required because ``CalendarGroupSerializer.update()``
+        reconstructs the full group input regardless of HTTP method (PATCH
+        is not a true partial update on this endpoint), so a payload missing
+        them would 500/wipe slots for reasons this test isn't about."""
+        original_slug = owned_group.public_booking_slug
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "public_booking_slug": "attacker-chosen-slug",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+
+        response = auth_client.patch(url, payload, format="json")
+
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.public_booking_slug == original_slug
+        assert response.data["public_booking_slug"] == original_slug
+
     def test_destroy(self, auth_client, owned_group, admin_user):
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
         response = auth_client.delete(url)
@@ -382,6 +540,429 @@ class TestCalendarGroupCrud:
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
         response = auth_client.delete(url)
         _assert_status(response, status.HTTP_400_BAD_REQUEST)
+
+
+@pytest.mark.django_db
+class TestCalendarGroupPatch:
+    """`slots` has no "omitted means unchanged" sentinel, so a PATCH that
+    omits it entirely must be rejected rather than silently delete every
+    existing slot (and every pool attachment with it) -- pre-existing on
+    `main` (`CalendarGroupSerializer._to_input_data`'s
+    `validated_data.get("slots", [])`), fixed here at the requester's
+    explicit request."""
+
+    @pytest.fixture
+    def pool(self, organization, internal_calendars):
+        return create_calendar_pool(
+            organization=organization,
+            name="Nurses",
+            calendars=[internal_calendars["phys_b"]],
+        )
+
+    def test_patch_omitting_slots_leaves_existing_slots_and_pool_attachments_intact(
+        self, auth_client, owned_group, internal_calendars, admin_user, organization, pool
+    ):
+        physicians = owned_group.slots.get(name="Physicians")
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=physicians, pool=pool)
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.patch(url, {"description": "x"}, format="json")
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "slots" in response.data
+
+        # Existing slots survive, with their calendar rosters intact.
+        assert {s.name for s in owned_group.slots.all()} == {"Physicians", "Rooms"}
+        assert set(
+            CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians)
+            .values_list("calendar_fk_id", flat=True)
+        ) == {internal_calendars["phys_a"].id, internal_calendars["phys_b"].id}
+        # Pool attachment survives.
+        assert (
+            CalendarGroupSlotPool.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians, pool=pool)
+            .exists()
+        )
+
+    def test_patch_slot_missing_calendar_ids_returns_400_not_500(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "description": owned_group.description,
+            "slots": [
+                {
+                    "name": "Physicians",
+                    # calendar_ids omitted -- must not KeyError.
+                    "required_count": 1,
+                    "order": 0,
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.patch(url, payload, format="json")
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "slots" in response.data
+
+    def test_patch_supplying_every_key_behaves_like_put(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": "Clinic Renamed",
+            "description": "New desc",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.patch(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.name == "Clinic Renamed"
+        assert set(
+            owned_group.slots.get(name="Physicians").calendars.values_list("external_id", flat=True)
+        ) == {"phys_a"}
+
+
+@pytest.mark.django_db
+class TestCalendarGroupDuration:
+    """`duration` is the exact length every booking through the group must
+    span, and a group that accepts public scheduling is refused without one.
+    See `TestCalendarGroupPublicScheduling` for the two fields together."""
+
+    def _slots(self, internal_calendars):
+        return [
+            {
+                "name": "Physicians",
+                "calendar_ids": [internal_calendars["phys_a"].id],
+                "required_count": 1,
+                "order": 0,
+            },
+            {
+                "name": "Rooms",
+                "calendar_ids": [internal_calendars["room_1"].id],
+                "required_count": 1,
+                "order": 1,
+            },
+        ]
+
+    def test_create_accepts_duration(
+        self, auth_client, organization, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.post(
+            url,
+            {
+                "name": "Timed Clinic",
+                "description": "",
+                "duration": "00:30:00",
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_201_CREATED)
+        created = CalendarGroup.objects.filter_by_organization(organization.id).get(
+            name="Timed Clinic"
+        )
+        assert created.duration == timedelta(minutes=30)
+
+    def test_create_without_duration_leaves_it_null(
+        self, auth_client, organization, internal_calendars, admin_user
+    ):
+        """Unpinned stays the default: every group created before this field
+        existed has a null duration, and omitting it must not invent one."""
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.post(
+            url,
+            {
+                "name": "Untimed Clinic",
+                "description": "",
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_201_CREATED)
+        created = CalendarGroup.objects.filter_by_organization(organization.id).get(
+            name="Untimed Clinic"
+        )
+        assert created.duration is None
+
+    def test_retrieve_exposes_duration(self, auth_client, owned_group):
+        owned_group.duration = timedelta(minutes=45)
+        owned_group.save(update_fields=["duration"])
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        assert response.json()["duration"] == "00:45:00"
+
+    def test_update_sets_duration(self, auth_client, owned_group, internal_calendars, admin_user):
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": owned_group.name,
+                "description": owned_group.description,
+                "duration": "01:00:00",
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.duration == timedelta(hours=1)
+
+    def test_update_omitting_duration_leaves_it_unchanged(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        """An absent `duration` is the "leave unchanged" case the service's
+        tri-state relies on. A write that never mentions it must not wipe it."""
+        owned_group.duration = timedelta(minutes=30)
+        owned_group.save(update_fields=["duration"])
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": "Renamed, same duration",
+                "description": owned_group.description,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.name == "Renamed, same duration"
+        assert owned_group.duration == timedelta(minutes=30)
+
+    def test_explicit_null_duration_is_rejected(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        """`None` already means "leave unchanged" to the service, so an
+        accepted null would be a silent no-op. Refuse it instead."""
+        owned_group.duration = timedelta(minutes=30)
+        owned_group.save(update_fields=["duration"])
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": owned_group.name,
+                "description": owned_group.description,
+                "duration": None,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "duration" in response.data
+        owned_group.refresh_from_db()
+        assert owned_group.duration == timedelta(minutes=30)
+
+    @pytest.mark.parametrize("value", ["00:00:00", "-01:00:00"])
+    def test_non_positive_duration_is_rejected(
+        self, auth_client, owned_group, internal_calendars, admin_user, value
+    ):
+        """A zero or negative length describes no bookable event at all, and
+        the column carries no CHECK constraint to catch it downstream."""
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": owned_group.name,
+                "description": owned_group.description,
+                "duration": value,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "duration" in response.data
+        owned_group.refresh_from_db()
+        assert owned_group.duration is None
+
+
+@pytest.mark.django_db
+class TestCalendarGroupPublicScheduling:
+    """`accepts_public_scheduling` opens a group to codeless booking, so it is
+    bound to `duration`: the length a codeless booking takes has nowhere else
+    to come from. Writable only by an org admin -- enforced by
+    CalendarGroupPermission, not by this serializer."""
+
+    def _slots(self, internal_calendars):
+        return [
+            {
+                "name": "Physicians",
+                "calendar_ids": [internal_calendars["phys_a"].id],
+                "required_count": 1,
+                "order": 0,
+            },
+            {
+                "name": "Rooms",
+                "calendar_ids": [internal_calendars["room_1"].id],
+                "required_count": 1,
+                "order": 1,
+            },
+        ]
+
+    def test_create_public_group_with_duration_in_one_call(
+        self, auth_client, organization, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.post(
+            url,
+            {
+                "name": "Public Clinic",
+                "description": "",
+                "duration": "00:30:00",
+                "accepts_public_scheduling": True,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_201_CREATED)
+        created = CalendarGroup.objects.filter_by_organization(organization.id).get(
+            name="Public Clinic"
+        )
+        assert created.accepts_public_scheduling is True
+        assert created.duration == timedelta(minutes=30)
+
+    def test_create_public_group_without_duration_is_rejected(
+        self, auth_client, organization, internal_calendars, admin_user
+    ):
+        """The invariant reaches REST through the service, so this is a 400
+        rather than a group that is public and unbookable."""
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.post(
+            url,
+            {
+                "name": "Unbookable Public",
+                "description": "",
+                "accepts_public_scheduling": True,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "duration" in str(response.data).lower()
+        assert (
+            not CalendarGroup.objects.filter_by_organization(organization.id)
+            .filter(name="Unbookable Public")
+            .exists()
+        )
+
+    def test_defaults_to_private_when_omitted(
+        self, auth_client, organization, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.post(
+            url,
+            {
+                "name": "Default Clinic",
+                "description": "",
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_201_CREATED)
+        created = CalendarGroup.objects.filter_by_organization(organization.id).get(
+            name="Default Clinic"
+        )
+        assert created.accepts_public_scheduling is False
+
+    def test_retrieve_exposes_the_flag(self, auth_client, owned_group):
+        owned_group.accepts_public_scheduling = True
+        owned_group.duration = timedelta(minutes=30)
+        owned_group.save(update_fields=["accepts_public_scheduling", "duration"])
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        assert response.json()["accepts_public_scheduling"] is True
+
+    def test_flip_public_using_the_groups_existing_duration(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        """The invariant reads the resulting state, so a group that already has
+        a duration can be opened up without restating it."""
+        owned_group.duration = timedelta(minutes=20)
+        owned_group.save(update_fields=["duration"])
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": owned_group.name,
+                "description": owned_group.description,
+                "accepts_public_scheduling": True,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.accepts_public_scheduling is True
+        assert owned_group.duration == timedelta(minutes=20)
+
+    def test_omitting_the_flag_leaves_it_unchanged(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        owned_group.accepts_public_scheduling = True
+        owned_group.duration = timedelta(minutes=30)
+        owned_group.save(update_fields=["accepts_public_scheduling", "duration"])
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": "Renamed, still public",
+                "description": owned_group.description,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.name == "Renamed, still public"
+        assert owned_group.accepts_public_scheduling is True
+
+    def test_non_admin_member_cannot_open_a_group_to_public_booking(
+        self, auth_client, owned_group, internal_calendars
+    ):
+        """No `admin_user` fixture: participation grants visibility, not the
+        ability to expose the group to codeless booking."""
+        owned_group.duration = timedelta(minutes=30)
+        owned_group.save(update_fields=["duration"])
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": owned_group.name,
+                "description": owned_group.description,
+                "accepts_public_scheduling": True,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_403_FORBIDDEN)
+        owned_group.refresh_from_db()
+        assert owned_group.accepts_public_scheduling is False
 
 
 @pytest.mark.django_db
@@ -565,3 +1146,173 @@ class TestPermissionBoundary:
         response = auth_client.get(url)
         # Queryset is org-scoped, so it should 404 rather than 403.
         _assert_status(response, status.HTTP_404_NOT_FOUND)
+
+
+@pytest.mark.django_db
+class TestCalendarGroupSlotPoolAttachment:
+    """Phase 4: `pool_ids` (write) / `pools` (read) on `CalendarGroupSlotSerializer`.
+
+    The load-bearing behavior is the omit-versus-empty-list distinction:
+    omitting `pool_ids` from a slot payload must leave that slot's pool
+    attachments untouched, while an explicit `[]` must detach every pool. A
+    group update payload never includes `pool_ids` unless the client knows
+    about pools at all, so a client that predates this phase must round-trip
+    a group's attachments unchanged.
+    """
+
+    @pytest.fixture
+    def pool(self, organization, internal_calendars):
+        return create_calendar_pool(
+            organization=organization,
+            name="Nurses",
+            calendars=[internal_calendars["phys_b"]],
+        )
+
+    def test_update_group_omitting_pool_ids_leaves_attachments_untouched(
+        self, auth_client, owned_group, internal_calendars, admin_user, organization, pool
+    ):
+        physicians = owned_group.slots.get(name="Physicians")
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=physicians, pool=pool)
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "description": owned_group.description,
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                    # pool_ids omitted entirely -- must leave the attachment below untouched.
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.put(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        assert (
+            CalendarGroupSlotPool.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians, pool=pool)
+            .exists()
+        )
+
+    def test_update_group_empty_pool_ids_detaches_all(
+        self, auth_client, owned_group, internal_calendars, admin_user, organization, pool
+    ):
+        physicians = owned_group.slots.get(name="Physicians")
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=physicians, pool=pool)
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "description": owned_group.description,
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                    "pool_ids": [],
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.put(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        assert not (
+            CalendarGroupSlotPool.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians, pool=pool)
+            .exists()
+        )
+
+    def test_update_group_explicit_pool_ids_attaches(
+        self, auth_client, owned_group, internal_calendars, admin_user, organization, pool
+    ):
+        physicians = owned_group.slots.get(name="Physicians")
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "description": owned_group.description,
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                    "pool_ids": [pool.id],
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.put(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        assert (
+            CalendarGroupSlotPool.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians, pool=pool)
+            .exists()
+        )
+        physicians_payload = next(s for s in response.data["slots"] if s["name"] == "Physicians")
+        assert [p["id"] for p in physicians_payload["pools"]] == [pool.id]
+
+
+@pytest.mark.django_db
+class TestCalendarGroupListQueryCountWithPools:
+    """Item A: `CalendarGroupSlotVirtualModel.pools` was deliberately left off
+    in Phase 3, so it has to land together with the serializer field it
+    supports -- pinned here so the group list endpoint does not regress into
+    one extra query per group.
+    """
+
+    def _make_group_with_pool(self, organization, internal_calendars, pool, name):
+        group = CalendarGroup.objects.create(organization=organization, name=name)
+        slot = CalendarGroupSlot.objects.create(
+            organization=organization, group=group, name="Physicians"
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=organization, slot=slot, calendar=internal_calendars["phys_a"]
+        )
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=slot, pool=pool)
+        return group
+
+    def test_list_query_count_does_not_grow_with_group_count(
+        self, auth_client, organization, admin_user, internal_calendars, django_assert_num_queries
+    ):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        pool = create_calendar_pool(
+            organization=organization,
+            name="Nurses",
+            calendars=[internal_calendars["phys_b"]],
+        )
+        self._make_group_with_pool(organization, internal_calendars, pool, "Group A")
+
+        url = reverse("api:CalendarGroups-list")
+        with CaptureQueriesContext(connection) as ctx_one_group:
+            response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        query_count = len(ctx_one_group.captured_queries)
+
+        self._make_group_with_pool(organization, internal_calendars, pool, "Group B")
+        self._make_group_with_pool(organization, internal_calendars, pool, "Group C")
+
+        with django_assert_num_queries(query_count):
+            response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        assert len(response.data["results"]) == 3

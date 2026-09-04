@@ -19,9 +19,12 @@ from calendar_integration.querysets import (
     CalendarEventQuerySet,
     CalendarGroupQuerySet,
     CalendarGroupSlotMembershipQuerySet,
+    CalendarGroupSlotPoolQuerySet,
     CalendarGroupSlotQuerySet,
     CalendarGroupSlotQuotaRuleQuerySet,
     CalendarManagementTokenQuerySet,
+    CalendarPoolMembershipQuerySet,
+    CalendarPoolQuerySet,
     CalendarQuerySet,
     CalendarSyncQuerySet,
     ExternalEventChangeRequestQuerySet,
@@ -53,8 +56,15 @@ _CalendarGroupSlotManagerBase = OrganizationScopedManager.from_queryset(Calendar
 _CalendarGroupSlotMembershipManagerBase = OrganizationScopedManager.from_queryset(
     CalendarGroupSlotMembershipQuerySet
 )
+_CalendarGroupSlotPoolManagerBase = OrganizationScopedManager.from_queryset(
+    CalendarGroupSlotPoolQuerySet
+)
 _CalendarGroupSlotQuotaRuleManagerBase = OrganizationScopedManager.from_queryset(
     CalendarGroupSlotQuotaRuleQuerySet
+)
+_CalendarPoolManagerBase = OrganizationScopedManager.from_queryset(CalendarPoolQuerySet)
+_CalendarPoolMembershipManagerBase = OrganizationScopedManager.from_queryset(
+    CalendarPoolMembershipQuerySet
 )
 _CalendarManagementTokenManagerBase = OrganizationScopedManager.from_queryset(
     CalendarManagementTokenQuerySet
@@ -389,6 +399,30 @@ class CalendarGroupSlotManager(_CalendarGroupSlotManagerBase):  # type: ignore[m
 class CalendarGroupSlotMembershipManager(_CalendarGroupSlotMembershipManagerBase):  # type: ignore[misc,valid-type]
     """Custom manager for CalendarGroupSlotMembership model to handle specific queries."""
 
+    def inline(self) -> CalendarGroupSlotMembershipQuerySet:
+        """Wraps :meth:`CalendarGroupSlotMembershipQuerySet.inline`."""
+        return self.get_queryset().inline()
+
+    def projected(self) -> CalendarGroupSlotMembershipQuerySet:
+        """Wraps :meth:`CalendarGroupSlotMembershipQuerySet.projected`."""
+        return self.get_queryset().projected()
+
+
+class CalendarGroupSlotPoolManager(_CalendarGroupSlotPoolManagerBase):  # type: ignore[misc,valid-type]
+    """Custom manager for CalendarGroupSlotPool model to handle specific queries."""
+
+
+class CalendarPoolManager(_CalendarPoolManagerBase):  # type: ignore[misc,valid-type]
+    """Custom manager for CalendarPool model to handle specific queries."""
+
+    def only_member_of(self, membership_user_id: int) -> CalendarPoolQuerySet:
+        """Wraps :meth:`CalendarPoolQuerySet.only_member_of`."""
+        return self.get_queryset().only_member_of(membership_user_id)
+
+
+class CalendarPoolMembershipManager(_CalendarPoolMembershipManagerBase):  # type: ignore[misc,valid-type]
+    """Custom manager for CalendarPoolMembership model to handle specific queries."""
+
 
 class CalendarEventGroupSelectionManager(_CalendarEventGroupSelectionManagerBase):  # type: ignore[misc,valid-type]
     """Custom manager for CalendarEventGroupSelection model to handle specific queries."""
@@ -416,6 +450,20 @@ class CalendarManagementTokenManager(_CalendarManagementTokenManagerBase):  # ty
     def active(self) -> CalendarManagementTokenQuerySet:
         """Return tokens that are not used, not revoked, and not expired."""
         return self.get_queryset().active()
+
+    def booking_codes_for_organization(
+        self, organization_id: int
+    ) -> CalendarManagementTokenQuerySet:
+        """Booking codes only, scoped to *organization_id*.
+
+        Starts from the unscoped queryset and narrows explicitly by
+        organization (the ``filter_by_organization`` call-site convention):
+        callers here (``BookingCodeViewSet.destroy``) resolve the organization
+        from ``request.organization_membership`` rather than an ambient bound
+        context. See ``CalendarManagementTokenQuerySet.booking_codes`` for the
+        discriminator.
+        """
+        return self.filter_by_organization(organization_id).booking_codes()
 
     def consume(self, token: "CalendarManagementToken", source_ip: str) -> None:
         """Atomically consume *token* by setting used_at + consumed_source_ip.

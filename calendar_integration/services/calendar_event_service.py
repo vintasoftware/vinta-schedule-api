@@ -915,6 +915,10 @@ class CalendarEventService:
             new_event=self._serialize_event_data_input(
                 event, event_data, current_event=serialized_old_event
             ),
+            # A plain FK id column -- no extra query. Lets can_perform_update
+            # check the NEW span against the group's duration pin for a
+            # grouped event; ``None`` for a non-grouped event is a no-op.
+            calendar_group_id=event.calendar_group_fk_id,
         ):
             raise PermissionDenied("You do not have permission to update this event.")
 
@@ -2207,6 +2211,9 @@ class CalendarEventService:
         if not is_public_token_write and not context.calendar_permission_service.can_perform_update(
             old_event=serialized_old_event,
             new_event=None,
+            # Cancellation has no new span -- can_perform_update skips the
+            # duration check whenever new_event is None regardless of this.
+            calendar_group_id=event.calendar_group_fk_id,
         ):
             raise PermissionDenied("You do not have permission to update this event.")
 

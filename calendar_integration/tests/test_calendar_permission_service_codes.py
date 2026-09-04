@@ -36,7 +36,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.dataclasses import CalendarEventInputData, CalendarSettingsData
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from public_api.models import SystemUser
 
 
@@ -217,6 +217,70 @@ def test_create_booking_token_multiple_permissions(service, org, calendar):
     )
     assert EventManagementPermissions.RESCHEDULE in stored
     assert EventManagementPermissions.CANCEL in stored
+
+
+@pytest.mark.django_db
+def test_create_booking_token_neither_new_argument_behaves_unchanged(service, org, calendar):
+    """create_booking_token with ``minted_by_user`` omitted behaves
+    byte-identically to every pre-existing call site:
+    ``minted_by_membership_user_id`` stays NULL.
+
+    Every existing call site omits this Phase 0 keyword-only parameter, so
+    this is the guarantee that landing it changed nothing for any of them --
+    the phase's acceptance criterion, not incidental coverage. There is no
+    ``duration`` parameter on this method any more -- see
+    ``test_calendar_permission_service_duration.py`` for that: duration
+    pinning lives on ``CalendarGroup.duration`` now, set through
+    ``CalendarGroupService``, not through this method.
+    """
+    token, code = service.create_booking_token(
+        organization_id=org.id,
+        permissions=[EventManagementPermissions.CREATE],
+        calendar_id=calendar.id,
+    )
+
+    token.refresh_from_db()
+    assert not hasattr(token, "duration")
+    assert token.minted_by_membership_user_id is None
+    assert token.minted_by_system_user_id is None
+    assert code  # unchanged: a plaintext code is still returned
+
+
+@pytest.mark.django_db
+def test_create_booking_token_minted_by_and_minted_by_user_mutually_exclusive(
+    service, org, calendar, system_user
+):
+    """Supplying both ``minted_by`` and ``minted_by_user`` raises ValueError."""
+    membership_user = baker.make("users.User")
+    OrganizationMembership.objects.create(user=membership_user, organization=org)
+
+    with pytest.raises(ValueError, match="minted_by / minted_by_user"):
+        service.create_booking_token(
+            organization_id=org.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=calendar.id,
+            minted_by=system_user,
+            minted_by_user=membership_user,
+        )
+
+
+@pytest.mark.django_db
+def test_create_booking_token_with_minted_by_user_sets_membership_and_actor(service, org, calendar):
+    """``minted_by_user`` sets ``minted_by_membership_user_id`` and does not
+    touch ``minted_by_system_user``."""
+    membership_user = baker.make("users.User")
+    OrganizationMembership.objects.create(user=membership_user, organization=org)
+
+    token, _ = service.create_booking_token(
+        organization_id=org.id,
+        permissions=[EventManagementPermissions.CREATE],
+        calendar_id=calendar.id,
+        minted_by_user=membership_user,
+    )
+
+    token.refresh_from_db()
+    assert token.minted_by_membership_user_id == membership_user.id
+    assert token.minted_by_system_user_id is None
 
 
 # ---------------------------------------------------------------------------

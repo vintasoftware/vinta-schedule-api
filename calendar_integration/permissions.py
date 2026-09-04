@@ -230,6 +230,52 @@ class CalendarGroupPermission(BasePermission):
         )
 
 
+class CalendarPoolPermission(BasePermission):
+    """
+    Permission for CalendarPool REST endpoints.
+
+    Per the Calendar Pools plan's Visibility scoping decision: org admins get
+    full CRUD; non-admin members get read-only access, and only to pools
+    containing a calendar they own. A missing organization membership is
+    refused outright here (fail closed); an active-but-non-admin membership
+    is further narrowed to "owns a roster calendar" both here (defense in
+    depth, mirroring `CalendarGroupPermission`) and in
+    `CalendarPoolViewSet.get_queryset` (`only_member_of`), which is what
+    makes a pool a member doesn't participate in 404 rather than 403.
+
+    Every write action (create/update/destroy) is admin-only, unlike
+    `CalendarGroupPermission` where a slot-scoped member can act on group
+    resources they participate in -- a pool has no per-member write surface
+    at all, so there is nothing for `has_object_permission` to carve out for
+    a non-admin on unsafe methods.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        user = request.user
+        if not user.is_authenticated:
+            return False
+        membership = request.organization_membership
+        if membership is None:
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        return user.is_organization_admin(membership.organization_id)
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        membership = request.organization_membership
+        if membership is None or obj.organization_id != membership.organization_id:
+            return False
+        if request.method not in SAFE_METHODS:
+            return request.user.is_organization_admin(obj.organization_id)
+        if request.user.is_organization_admin(obj.organization_id):
+            return True
+        return (
+            CalendarOwnership.objects.filter_by_organization(obj.organization_id)
+            .filter(membership_user_id=request.user.id, calendar_fk__pools=obj)
+            .exists()
+        )
+
+
 class GroupScopedAvailabilityWindowPermission(BasePermission):
     """Route-level group-visibility gate for the group-scoped availability
     window routes nested under a group's slot
@@ -419,3 +465,36 @@ class GroupScopedQuotaRulePermission(BasePermission):
 
         view.group_slot = group_slot
         return True
+
+
+class BookingCodePermission(BasePermission):
+    """Permission for ``BookingCodeViewSet`` (``POST`` / ``DELETE /booking-codes/``).
+
+    ``has_permission`` only requires an authenticated user with an active
+    organization membership. Unlike ``CalendarGroupPermission``, the finer
+    owner-or-org-admin decision does **not** live in ``has_object_permission``:
+    on ``create`` the target (``calendar`` or ``calendar_group``) arrives in the
+    request BODY, not as a URL-routed object DRF could resolve before this class
+    runs, and on ``destroy`` the target (the token being revoked) is only
+    resolvable by id, which DRF's generic ``has_object_permission`` hook cannot
+    do here either (it is never handed the object -- ``get_object`` is not
+    called on a ``destroy`` this view overrides outright). Both authorization
+    decisions happen in ``BookingCodeViewSet`` itself, where the target has
+    actually been resolved -- mirroring the split ``CalendarGroupPermission``
+    documents between admin-only "manage" and owner-or-participant
+    "view/book", applied here to "mint or revoke a code for this
+    calendar/group".
+
+    ``destroy`` IS a permission question, same owner-or-org-admin split as
+    ``create`` -- idempotence (revoking an already-revoked, nonexistent, or
+    foreign-org id is a no-op ``204``) is a *separate* property, about not
+    leaking which id exists. Revoking a token that exists but is not the
+    caller's is refused exactly as silently: also ``204``, but with
+    ``revoked_at`` left untouched. See ``BookingCodeViewSet.destroy``.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        user = request.user
+        if not user.is_authenticated:
+            return False
+        return request.organization_membership is not None
