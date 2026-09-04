@@ -16,7 +16,7 @@ from calendar_integration.constants import (
     CalendarType,
     EventManagementPermissions,
 )
-from calendar_integration.factories import create_calendar_ownership
+from calendar_integration.factories import create_calendar_ownership, create_calendar_pool
 from calendar_integration.models import (
     AvailableTime,
     Calendar,
@@ -25,6 +25,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    CalendarGroupSlotPool,
     CalendarManagementToken,
 )
 from organizations.models import Organization, OrganizationMembership
@@ -195,6 +196,45 @@ class TestCalendarGroupCrud:
         _assert_status(response, status.HTTP_200_OK)
         assert response.data["public_booking_slug"] == owned_group.public_booking_slug
         assert response.data["public_booking_slug"]
+
+    def test_retrieve_lists_a_doubly_sourced_calendar_once(
+        self, auth_client, organization, internal_calendars, owned_group
+    ):
+        """A calendar reachable both inline and through an attached pool is one
+        entry in ``slots[].calendars``, not two.
+
+        Since Calendar Pools projected pool rosters into
+        ``CalendarGroupSlotMembership``, the slot's M2M can yield the same
+        ``Calendar`` once per source row. ``CalendarGroupSlotVirtualModel``
+        deduplicates the prefetch; without that this response would repeat the
+        calendar.
+        """
+        from calendar_integration.factories import create_calendar_pool
+        from calendar_integration.models import CalendarGroupSlotPool
+
+        physicians = owned_group.slots.get(name="Physicians")
+        pool = create_calendar_pool(
+            organization=organization,
+            name="Nurses",
+            calendars=[internal_calendars["phys_a"]],
+        )
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=physicians, pool=pool)
+        CalendarGroupSlotMembership.objects.create(
+            organization=organization,
+            slot=physicians,
+            calendar=internal_calendars["phys_a"],
+            source_pool=pool,
+        )
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.get(url)
+
+        _assert_status(response, status.HTTP_200_OK)
+        slot_payload = next(s for s in response.data["slots"] if s["name"] == "Physicians")
+        calendar_ids = [c["id"] for c in slot_payload["calendars"]]
+        assert sorted(calendar_ids) == sorted(
+            [internal_calendars["phys_a"].id, internal_calendars["phys_b"].id]
+        )
 
     def test_retrieve_not_found_if_user_does_not_own_any_pool_calendar(
         self, auth_client, organization, internal_calendars
@@ -503,6 +543,105 @@ class TestCalendarGroupCrud:
 
 
 @pytest.mark.django_db
+class TestCalendarGroupPatch:
+    """`slots` has no "omitted means unchanged" sentinel, so a PATCH that
+    omits it entirely must be rejected rather than silently delete every
+    existing slot (and every pool attachment with it) -- pre-existing on
+    `main` (`CalendarGroupSerializer._to_input_data`'s
+    `validated_data.get("slots", [])`), fixed here at the requester's
+    explicit request."""
+
+    @pytest.fixture
+    def pool(self, organization, internal_calendars):
+        return create_calendar_pool(
+            organization=organization,
+            name="Nurses",
+            calendars=[internal_calendars["phys_b"]],
+        )
+
+    def test_patch_omitting_slots_leaves_existing_slots_and_pool_attachments_intact(
+        self, auth_client, owned_group, internal_calendars, admin_user, organization, pool
+    ):
+        physicians = owned_group.slots.get(name="Physicians")
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=physicians, pool=pool)
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.patch(url, {"description": "x"}, format="json")
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "slots" in response.data
+
+        # Existing slots survive, with their calendar rosters intact.
+        assert {s.name for s in owned_group.slots.all()} == {"Physicians", "Rooms"}
+        assert set(
+            CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians)
+            .values_list("calendar_fk_id", flat=True)
+        ) == {internal_calendars["phys_a"].id, internal_calendars["phys_b"].id}
+        # Pool attachment survives.
+        assert (
+            CalendarGroupSlotPool.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians, pool=pool)
+            .exists()
+        )
+
+    def test_patch_slot_missing_calendar_ids_returns_400_not_500(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "description": owned_group.description,
+            "slots": [
+                {
+                    "name": "Physicians",
+                    # calendar_ids omitted -- must not KeyError.
+                    "required_count": 1,
+                    "order": 0,
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.patch(url, payload, format="json")
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "slots" in response.data
+
+    def test_patch_supplying_every_key_behaves_like_put(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": "Clinic Renamed",
+            "description": "New desc",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.patch(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.name == "Clinic Renamed"
+        assert set(
+            owned_group.slots.get(name="Physicians").calendars.values_list("external_id", flat=True)
+        ) == {"phys_a"}
+
+
+@pytest.mark.django_db
 class TestCalendarGroupEventActions:
     def _make_window_available(self, calendars, start, end):
         for cal in calendars:
@@ -683,3 +822,173 @@ class TestPermissionBoundary:
         response = auth_client.get(url)
         # Queryset is org-scoped, so it should 404 rather than 403.
         _assert_status(response, status.HTTP_404_NOT_FOUND)
+
+
+@pytest.mark.django_db
+class TestCalendarGroupSlotPoolAttachment:
+    """Phase 4: `pool_ids` (write) / `pools` (read) on `CalendarGroupSlotSerializer`.
+
+    The load-bearing behavior is the omit-versus-empty-list distinction:
+    omitting `pool_ids` from a slot payload must leave that slot's pool
+    attachments untouched, while an explicit `[]` must detach every pool. A
+    group update payload never includes `pool_ids` unless the client knows
+    about pools at all, so a client that predates this phase must round-trip
+    a group's attachments unchanged.
+    """
+
+    @pytest.fixture
+    def pool(self, organization, internal_calendars):
+        return create_calendar_pool(
+            organization=organization,
+            name="Nurses",
+            calendars=[internal_calendars["phys_b"]],
+        )
+
+    def test_update_group_omitting_pool_ids_leaves_attachments_untouched(
+        self, auth_client, owned_group, internal_calendars, admin_user, organization, pool
+    ):
+        physicians = owned_group.slots.get(name="Physicians")
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=physicians, pool=pool)
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "description": owned_group.description,
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                    # pool_ids omitted entirely -- must leave the attachment below untouched.
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.put(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        assert (
+            CalendarGroupSlotPool.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians, pool=pool)
+            .exists()
+        )
+
+    def test_update_group_empty_pool_ids_detaches_all(
+        self, auth_client, owned_group, internal_calendars, admin_user, organization, pool
+    ):
+        physicians = owned_group.slots.get(name="Physicians")
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=physicians, pool=pool)
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "description": owned_group.description,
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                    "pool_ids": [],
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.put(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        assert not (
+            CalendarGroupSlotPool.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians, pool=pool)
+            .exists()
+        )
+
+    def test_update_group_explicit_pool_ids_attaches(
+        self, auth_client, owned_group, internal_calendars, admin_user, organization, pool
+    ):
+        physicians = owned_group.slots.get(name="Physicians")
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "description": owned_group.description,
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                    "pool_ids": [pool.id],
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.put(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        assert (
+            CalendarGroupSlotPool.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians, pool=pool)
+            .exists()
+        )
+        physicians_payload = next(s for s in response.data["slots"] if s["name"] == "Physicians")
+        assert [p["id"] for p in physicians_payload["pools"]] == [pool.id]
+
+
+@pytest.mark.django_db
+class TestCalendarGroupListQueryCountWithPools:
+    """Item A: `CalendarGroupSlotVirtualModel.pools` was deliberately left off
+    in Phase 3, so it has to land together with the serializer field it
+    supports -- pinned here so the group list endpoint does not regress into
+    one extra query per group.
+    """
+
+    def _make_group_with_pool(self, organization, internal_calendars, pool, name):
+        group = CalendarGroup.objects.create(organization=organization, name=name)
+        slot = CalendarGroupSlot.objects.create(
+            organization=organization, group=group, name="Physicians"
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=organization, slot=slot, calendar=internal_calendars["phys_a"]
+        )
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=slot, pool=pool)
+        return group
+
+    def test_list_query_count_does_not_grow_with_group_count(
+        self, auth_client, organization, admin_user, internal_calendars, django_assert_num_queries
+    ):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        pool = create_calendar_pool(
+            organization=organization,
+            name="Nurses",
+            calendars=[internal_calendars["phys_b"]],
+        )
+        self._make_group_with_pool(organization, internal_calendars, pool, "Group A")
+
+        url = reverse("api:CalendarGroups-list")
+        with CaptureQueriesContext(connection) as ctx_one_group:
+            response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        query_count = len(ctx_one_group.captured_queries)
+
+        self._make_group_with_pool(organization, internal_calendars, pool, "Group B")
+        self._make_group_with_pool(organization, internal_calendars, pool, "Group C")
+
+        with django_assert_num_queries(query_count):
+            response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        assert len(response.data["results"]) == 3

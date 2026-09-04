@@ -323,12 +323,18 @@ class CalendarGroupValidationError(CalendarGroupError):
 
 
 class CalendarGroupSlotInUseError(CalendarGroupError):
-    """Raised when a slot/membership cannot be removed because it is used by
-    future bookings."""
+    """Raised when a `CalendarGroupSlot` cannot be removed outright because it is
+    referenced by a future-booked event.
 
-    default_message = (
-        "Cannot remove slot or calendar because it is referenced by future group bookings."
-    )
+    Removing one calendar from a slot's roster while the slot itself survives
+    never raises this -- that removal is unconditionally lenient (it deletes
+    only the `CalendarGroupSlotMembership` row; see
+    `CalendarGroupService._reconcile_slot`). This error is reserved for
+    deleting the whole slot, which would also drop every remaining calendar's
+    group-scoped windows, blocked time, and quota rules for it.
+    """
+
+    default_message = "Cannot remove slot because it is referenced by future group bookings."
 
 
 class CalendarGroupHasFutureEventsError(CalendarGroupError):
@@ -377,6 +383,39 @@ class CalendarGroupScopedRuleViolationError(CalendarGroupError):
                 f"this group ({rule_type})."
             )
         super().__init__(message)
+
+
+# Calendar Pool errors
+class CalendarPoolError(CalendarIntegrationError):
+    """Base class for CalendarPool-related errors."""
+
+    pass
+
+
+class CalendarPoolValidationError(CalendarPoolError):
+    """Raised when CalendarPool input data is invalid (e.g. a roster calendar
+    id that does not belong to this organization)."""
+
+    pass
+
+
+class CalendarPoolInUseError(CalendarPoolError):
+    """Raised when a `CalendarPool` cannot be deleted because it is still
+    attached to at least one `CalendarGroupSlot`.
+
+    Mirrors `CalendarGroupHasFutureEventsError`'s refuse-when-referenced
+    posture (see the plan's Pool deletion decision), but carries the distinct
+    names of every referencing group so the REST layer can name them in a 409
+    without a second query.
+    """
+
+    def __init__(self, group_names: list[str]) -> None:
+        self.group_names = group_names
+        names = ", ".join(sorted(group_names))
+        super().__init__(
+            f"Cannot delete CalendarPool because it is still attached to slots "
+            f"in these groups: {names}."
+        )
 
 
 # Bookable Slots errors

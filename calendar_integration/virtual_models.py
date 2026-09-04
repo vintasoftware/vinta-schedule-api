@@ -1,3 +1,7 @@
+from typing import Any
+
+from django.db.models import Model, QuerySet
+
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -9,6 +13,8 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarGroupSlotQuotaRule,
     CalendarOwnership,
+    CalendarPool,
+    CalendarPoolMembership,
     EventAttendance,
     EventExternalAttendance,
     EventRecurrenceException,
@@ -87,9 +93,46 @@ class CalendarGroupSlotMembershipVirtualModel(OrganizationScopedVirtualModel):
         model = CalendarGroupSlotMembership
 
 
+class DistinctCalendarVirtualModel(CalendarVirtualModel):
+    """``CalendarVirtualModel`` whose prefetch cannot return the same row twice.
+
+    ``CalendarGroupSlot.calendars`` goes through ``CalendarGroupSlotMembership``,
+    which since Calendar Pools holds one row per (slot, calendar, source): a
+    calendar that is both inline on the slot and in an attached ``CalendarPool``
+    has two, and the M2M prefetch would hand the serializer the same calendar
+    twice. ``DISTINCT`` collapses them; the prefetch's own join columns are part
+    of the ``SELECT`` list, so it dedupes per parent slot rather than globally.
+    """
+
+    def get_prefetch_queryset(self, user: Model | None = None, **kwargs: Any) -> QuerySet:
+        return super().get_prefetch_queryset(user=user, **kwargs).distinct()
+
+
+class CalendarPoolMembershipVirtualModel(OrganizationScopedVirtualModel):
+    calendar = CalendarVirtualModel()
+
+    class Meta:
+        model = CalendarPoolMembership
+
+
+class CalendarPoolVirtualModel(OrganizationScopedVirtualModel):
+    memberships = CalendarPoolMembershipVirtualModel(many=True)
+    calendars = CalendarVirtualModel(many=True)
+
+    class Meta:
+        model = CalendarPool
+
+
 class CalendarGroupSlotVirtualModel(OrganizationScopedVirtualModel):
     memberships = CalendarGroupSlotMembershipVirtualModel(many=True)
-    calendars = CalendarVirtualModel(many=True)
+    calendars = DistinctCalendarVirtualModel(many=True)
+    # Added alongside `CalendarGroupSlotSerializer.pools` (Phase 4) -- Phase 3
+    # deliberately left this hint off, since an unconditional prefetch with no
+    # serializer field would cost a query on every group fetch for nothing.
+    # `CalendarGroupSlotPool` (the through table) is a plain M2M attachment --
+    # unique on (slot, pool) -- so no dedup is needed here the way
+    # `DistinctCalendarVirtualModel` is for `calendars`.
+    pools = CalendarPoolVirtualModel(many=True)
 
     class Meta:
         model = CalendarGroupSlot

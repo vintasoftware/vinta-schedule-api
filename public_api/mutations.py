@@ -24,6 +24,8 @@ from calendar_integration.exceptions import (
     CalendarGroupSlotConfigNotFoundError,
     CalendarGroupValidationError,
     CalendarIntegrationError,
+    CalendarPoolError,
+    CalendarPoolInUseError,
     DuplicateBookingPolicyError,
     NoAvailableTimeWindowsError,
 )
@@ -34,18 +36,29 @@ from calendar_integration.graphql import (
     CalendarBundleGraphQLType,
     CalendarEventGraphQLType,
     CalendarGraphQLType,
+    CalendarPoolResult,
     CreateBookingPolicyInput,
+    CreateCalendarPoolInput,
     DeleteBookingPolicyInput,
     DeleteBookingPolicyResult,
+    DeleteCalendarPoolInput,
+    DeleteCalendarPoolResult,
     GroupScopedAvailabilityWindowGraphQLType,
     GroupScopedBlockedTimeGraphQLType,
     GroupScopedQuotaRuleGraphQLType,
     UpdateBookingPolicyInput,
+    UpdateCalendarPoolInput,
     group_scoped_availability_window_from_model,
     group_scoped_blocked_time_from_model,
     group_scoped_quota_rule_from_model,
 )
-from calendar_integration.models import BookingPolicy, Calendar, CalendarEvent, CalendarGroup
+from calendar_integration.models import (
+    BookingPolicy,
+    Calendar,
+    CalendarEvent,
+    CalendarGroup,
+    CalendarPool,
+)
 from calendar_integration.mutations import (
     CalendarGroupMutations,
     ExternalEventChangeRequestMutations,
@@ -53,6 +66,7 @@ from calendar_integration.mutations import (
 from calendar_integration.services.calendar_service import _UNCHANGED
 from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
+    CalendarPoolInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
@@ -92,7 +106,7 @@ from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.extensions import raise_over_limit_graphql_error
 from public_api.models import ResourceAccess, SystemUser
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
-from public_api.scoping import assert_calendar_in_owner_scope
+from public_api.scoping import assert_calendar_in_owner_scope, system_user_scope
 from public_api.services import PublicAPIAuthService
 from public_api.types import (
     BrandingLogoUploadResult,
@@ -340,6 +354,61 @@ def _get_org_and_init_calendar_service(
     )
 
     return deps.calendar_service, org
+
+
+def _get_org_and_init_calendar_group_service(
+    info: strawberry.Info,
+) -> tuple["CalendarGroupService", Organization]:
+    """Resolve org from request context and initialize ``calendar_group_service``.
+
+    Also wires its ``calendar_service`` to the token-authenticated instance
+    -- necessary because the DI container's Factory provider gives
+    ``CalendarGroupService`` its OWN ``CalendarService`` instance via its
+    ``@inject __init__`` (see ``create_calendar_group_event_with_code``'s
+    docstring for the fuller explanation of this wiring). Without it,
+    ``CalendarGroupService._audit_group_write`` would resolve every actor to
+    "system" instead of the acting ``SystemUser`` token.
+
+    Returns:
+        Tuple of (initialized calendar_group_service, organization)
+
+    Raises:
+        GraphQLError: If organization is not found in request context
+    """
+    org = info.context.request.public_api_organization
+    if not org:
+        raise GraphQLError("Organization not found in request context")
+
+    deps = get_calendar_mutation_dependencies()
+    request: PublicApiHttpRequest = info.context.request
+    deps.calendar_service.initialize_without_provider(
+        user_or_token=request.public_api_system_user, organization=org
+    )
+    deps.calendar_group_service.calendar_service = deps.calendar_service
+    deps.calendar_group_service.initialize(organization=org)
+
+    return deps.calendar_group_service, org
+
+
+def _assert_can_write_calendar_pools(
+    request: PublicApiHttpRequest, org: Organization
+) -> str | None:
+    """Return an error message if `request`'s token may not write pools, else None.
+
+    Visibility scoping (plan's Guiding Decisions -> Visibility scoping):
+    org-wide and scoped-admin tokens get full CRUD; a scoped-member token
+    cannot write at all -- a pool has no per-member write surface, mirroring
+    `CalendarPoolPermission` on REST (every write action is admin-only there
+    too). Module-level (not a method) because strawberry mutation resolvers
+    are invoked with `source=None` for root fields -- an instance method
+    reached via `self.` would raise `AttributeError` on `None`.
+    """
+    system_user = request.public_api_system_user
+    if system_user is None:
+        return "Not authenticated."
+    if system_user_scope(system_user, org) not in ("org_wide", "scoped_admin"):
+        return "You do not have permission to manage calendar pools."
+    return None
 
 
 @strawberry.type
@@ -4150,3 +4219,144 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
 
         service.delete_booking_policy(policy)
         return DeleteBookingPolicyResult(success=True)
+
+    # ------------------------------------------------------------------
+    # CalendarPool mutations
+    # ------------------------------------------------------------------
+    # A non-admin scope is refused as data (`success=False`), never raised,
+    # matching how `CalendarGroupMutations` reports domain failures on this
+    # API -- see `_assert_can_write_calendar_pools` for the scoping rule.
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_calendar_pool(
+        self,
+        info: strawberry.Info,
+        input: CreateCalendarPoolInput,  # noqa: A002
+    ) -> CalendarPoolResult:
+        """Create a CalendarPool for the caller's organization.
+
+        The token's OrganizationResourceAccess must include the
+        CALENDAR_POOL resource. See the class-level note above for the
+        org-wide/scoped-admin/scoped-member write scoping.
+        """
+        group_service, org = _get_org_and_init_calendar_group_service(info)
+        request: PublicApiHttpRequest = info.context.request
+        if error_message := _assert_can_write_calendar_pools(request, org):
+            return CalendarPoolResult(success=False, error_message=error_message)
+
+        # create_pool raises OverLimitError when the organization's billing root
+        # is RESTRICTED (``_check_not_restricted``). Rendered identically to the
+        # REST 402 body via raise_over_limit_graphql_error, which also rolls back
+        # the request transaction -- see that function's docstring.
+        try:
+            pool = group_service.create_pool(
+                CalendarPoolInputData(
+                    name=input.name,
+                    description=input.description,
+                    calendar_ids=list(input.calendar_ids),
+                )
+            )
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
+        except CalendarPoolError as e:
+            return CalendarPoolResult(success=False, error_message=str(e))
+        return CalendarPoolResult(success=True, pool=pool)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_calendar_pool(
+        self,
+        info: strawberry.Info,
+        input: UpdateCalendarPoolInput,  # noqa: A002
+    ) -> CalendarPoolResult:
+        """Update a CalendarPool's name/description/roster (org-scoped).
+
+        ``calendar_ids`` always replaces the roster wholesale -- see
+        ``UpdateCalendarPoolInput``. Same write scoping as
+        ``create_calendar_pool``. The token's OrganizationResourceAccess must
+        include the CALENDAR_POOL resource.
+        """
+        group_service, org = _get_org_and_init_calendar_group_service(info)
+        request: PublicApiHttpRequest = info.context.request
+        if error_message := _assert_can_write_calendar_pools(request, org):
+            return CalendarPoolResult(success=False, error_message=error_message)
+
+        # update_pool raises OverLimitError when the organization's billing root
+        # is RESTRICTED (``_check_not_restricted``). Rendered identically to the
+        # REST 402 body via raise_over_limit_graphql_error, which also rolls back
+        # the request transaction -- see that function's docstring.
+        try:
+            pool = group_service.update_pool(
+                pool_id=input.pool_id,
+                data=CalendarPoolInputData(
+                    name=input.name,
+                    description=input.description,
+                    calendar_ids=list(input.calendar_ids),
+                ),
+            )
+        except CalendarPool.DoesNotExist:
+            return CalendarPoolResult(success=False, error_message="Pool not found.")
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
+        except CalendarPoolError as e:
+            return CalendarPoolResult(success=False, error_message=str(e))
+        return CalendarPoolResult(success=True, pool=pool)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def delete_calendar_pool(
+        self,
+        info: strawberry.Info,
+        input: DeleteCalendarPoolInput,  # noqa: A002
+    ) -> DeleteCalendarPoolResult:
+        """Delete a CalendarPool (org-scoped).
+
+        Refused while any slot still references it -- returns
+        ``success=False`` naming the referencing groups in
+        ``referencing_groups`` (mirrors the REST 409 payload), not a GraphQL
+        error. Same write scoping as ``create_calendar_pool``. The token's
+        OrganizationResourceAccess must include the CALENDAR_POOL resource.
+
+        ``referencing_groups`` names ``CalendarGroup`` rows, which is a
+        different resource (``CALENDAR_GROUP``) than the one this mutation is
+        gated on. A token holding only ``CALENDAR_POOL`` -- explicitly denied
+        ``CALENDAR_GROUP`` -- must not learn those names through this refusal;
+        ``referencing_groups`` is returned empty for it, with a count-only
+        ``error_message`` so the caller still learns why the delete failed.
+        A token that also holds ``CALENDAR_GROUP`` gets the full, named list.
+        """
+        group_service, org = _get_org_and_init_calendar_group_service(info)
+        request: PublicApiHttpRequest = info.context.request
+        if error_message := _assert_can_write_calendar_pools(request, org):
+            return DeleteCalendarPoolResult(success=False, error_message=error_message)
+
+        # delete_pool raises OverLimitError when the organization's billing root
+        # is RESTRICTED (``_check_not_restricted``). Rendered identically to the
+        # REST 402 body via raise_over_limit_graphql_error, which also rolls back
+        # the request transaction -- see that function's docstring.
+        try:
+            group_service.delete_pool(pool_id=input.pool_id)
+        except CalendarPool.DoesNotExist:
+            return DeleteCalendarPoolResult(success=False, error_message="Pool not found.")
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
+        except CalendarPoolInUseError as e:
+            system_user = request.public_api_system_user
+            can_see_group_names = system_user is not None and (
+                system_user.available_resources.filter(
+                    resource_name=PublicAPIResources.CALENDAR_GROUP
+                ).exists()
+            )
+            if can_see_group_names:
+                return DeleteCalendarPoolResult(
+                    success=False, error_message=str(e), referencing_groups=e.group_names
+                )
+            return DeleteCalendarPoolResult(
+                success=False,
+                error_message=(
+                    "Cannot delete CalendarPool because it is still attached to slots "
+                    f"in {len(e.group_names)} group(s)."
+                ),
+                referencing_groups=[],
+            )
+        except CalendarPoolError as e:
+            return DeleteCalendarPoolResult(success=False, error_message=str(e))
+        return DeleteCalendarPoolResult(success=True)

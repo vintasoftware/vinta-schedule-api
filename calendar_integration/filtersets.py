@@ -13,6 +13,7 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarPool,
     ExternalEventChangeRequest,
 )
 
@@ -219,6 +220,39 @@ class CalendarGroupFilterSet(filters.FilterSet):
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="slots__memberships__calendar_fk_id",
             label="Filter to groups whose slot pools include this calendar",
+            # A calendar can hold several CalendarGroupSlotMembership rows for one
+            # slot since Calendar Pools projected pool rosters into that table
+            # (inline plus one per attached pool listing it), and this join would
+            # otherwise return the group once per row.
+            distinct=True,
+            queryset=(
+                Calendar.objects.filter_by_organization(membership.organization_id)
+                if membership
+                else Calendar.original_manager.none()
+            ),
+        )
+
+
+class CalendarPoolFilterSet(filters.FilterSet):
+    """FilterSet for CalendarPool."""
+
+    name = filters.CharFilter(
+        field_name="name",
+        lookup_expr="icontains",
+        label="Filter by partial name match",
+    )
+
+    class Meta:
+        model = CalendarPool
+        fields = ("name",)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        membership = self.request.organization_membership if self.request else None
+        self.filters["calendar"] = filters.ModelChoiceFilter(
+            field_name="memberships__calendar_fk_id",
+            label="Filter to pools whose roster includes this calendar",
             queryset=(
                 Calendar.objects.filter_by_organization(membership.organization_id)
                 if membership

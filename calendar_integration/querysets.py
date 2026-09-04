@@ -935,8 +935,16 @@ class CalendarGroupQuerySet(OrganizationScopedQuerySet):
                 # from availability results.
                 .filter(group_fk_id=OuterRef("id"), organization_id=OuterRef("organization_id"))
                 .annotate(
+                    # Counts distinct CALENDARS, not distinct membership rows.
+                    # Once a calendar can reach a slot from more than one source
+                    # (inline plus one or more pools, per the Calendar Pools
+                    # plan's Roster composition decision), it holds several
+                    # ``CalendarGroupSlotMembership`` rows for the same slot, and
+                    # ``Count("memberships", distinct=True)`` would count each of
+                    # them -- reporting a slot needing two calendars as satisfied
+                    # by one calendar present twice.
                     available_in_slot=Count(
-                        "memberships",
+                        "memberships__calendar_fk_id",
                         filter=Q(memberships__calendar_fk_id__in=Subquery(available_calendar_ids)),
                         distinct=True,
                     ),
@@ -1085,11 +1093,100 @@ class CalendarGroupSlotMembershipQuerySet(OrganizationScopedQuerySet):
     Custom QuerySet for CalendarGroupSlotMembership model to handle specific queries.
     """
 
+    def inline(self) -> "CalendarGroupSlotMembershipQuerySet":
+        """Only the rows a user put on the slot directly (``source_pool IS NULL``).
+
+        The inline half of the projected union (see the Calendar Pools plan's
+        Guiding Decisions -> Roster resolution). Every roster row that existed
+        before pools shipped is inline, and the pool projection must neither
+        read nor write these.
+        """
+        return self.filter(source_pool_fk__isnull=True)
+
+    def projected(self) -> "CalendarGroupSlotMembershipQuerySet":
+        """Only the rows projected from an attached pool (``source_pool IS NOT NULL``).
+
+        The complement of :meth:`inline`. This is the only set
+        ``CalendarGroupService._reconcile_slot_pools`` may delete.
+        """
+        return self.filter(source_pool_fk__isnull=False)
+
+
+class CalendarGroupSlotPoolQuerySet(OrganizationScopedQuerySet):
+    """
+    Custom QuerySet for CalendarGroupSlotPool model to handle specific queries.
+    """
+
+
+class CalendarPoolQuerySet(OrganizationScopedQuerySet):
+    """
+    Custom QuerySet for CalendarPool model to handle specific queries.
+    """
+
+    def only_member_of(self, membership_user_id: int) -> "CalendarPoolQuerySet":
+        """Pools where `membership_user_id` owns at least one roster calendar.
+
+        The pool analogue of ``CalendarGroupQuerySet.only_member_of``: "part of
+        a pool" == owns at least one ``CalendarOwnership`` row for a calendar
+        that is a member of the pool's roster. ``distinct()`` because a user
+        may own several calendars in the same pool.
+        """
+        return self.filter(
+            memberships__calendar_fk__ownerships__membership_user_id=membership_user_id
+        ).distinct()
+
+
+class CalendarPoolMembershipQuerySet(OrganizationScopedQuerySet):
+    """
+    Custom QuerySet for CalendarPoolMembership model to handle specific queries.
+
+    ``bulk_create`` is deliberately NOT overridden here: nothing in this
+    codebase calls it on this model today (the only multi-row writer,
+    ``factories.create_calendar_pool``, loops ``.create()`` per calendar,
+    which the per-row signal in ``calendar_integration.signals`` already
+    reconciles). A future caller that reaches for ``bulk_create`` bypasses
+    Django's ``post_save`` entirely -- for any model, not something fixable
+    here -- and must call ``calendar_integration.signals.reconcile_pools``
+    itself, in the same transaction, after the insert.
+    """
+
+    def delete(self) -> tuple[int, dict[str, int]]:
+        """Bulk delete, reconciling each affected pool's slots once, not once per row.
+
+        ``calendar_integration.signals`` reprojects a pool's attached slots
+        on ``post_delete``, which is correct for a single-row delete (the
+        admin inline, or ``.delete()`` on one instance) but would reconcile
+        the same slot once per row for a queryset delete -- Django's deletion
+        collector still sends ``post_delete`` per instance even when the SQL
+        itself is one statement. Capture the distinct pools this queryset
+        touches before deleting, suppress the per-row signal for the delete
+        itself, then reconcile each pool exactly once.
+        """
+        from calendar_integration.signals import (
+            reconcile_pools,
+            suppress_pool_membership_reconcile,
+        )
+
+        affected = set(self.values_list("organization_id", "pool_fk_id"))
+        with suppress_pool_membership_reconcile():
+            result = super().delete()
+        for organization_id, pool_id in affected:
+            reconcile_pools({pool_id}, organization_id)
+        return result
+
 
 class CalendarEventGroupSelectionQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarEventGroupSelection model to handle specific queries.
     """
+
+    def future_selections_for_slot(
+        self, slot_id: int, now: datetime.datetime
+    ) -> "CalendarEventGroupSelectionQuerySet":
+        """Selections on ``slot_id`` whose event starts after ``now`` -- the
+        guard ``CalendarGroupService.update_group`` uses to decide whether a
+        whole slot can be deleted (a future-booked slot cannot)."""
+        return self.filter(slot_fk_id=slot_id, event_fk__start_time__gt=now)
 
 
 class CalendarGroupSlotQuotaRuleQuerySet(OrganizationScopedQuerySet):

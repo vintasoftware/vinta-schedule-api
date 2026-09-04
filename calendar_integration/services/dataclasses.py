@@ -334,6 +334,15 @@ class CalendarGroupSlotInputData:
     required_count: int = 1
     description: str = ""
     order: int = 0
+    #: Ids of the ``CalendarPool``s attached to this slot, whose rosters are
+    #: projected into the slot's memberships alongside ``calendar_ids``.
+    #:
+    #: ``None`` (the default, and what every pre-pools caller sends) means
+    #: "leave the slot's pool attachments exactly as they are" -- NOT "detach
+    #: everything". An empty list is the explicit detach-all. The distinction
+    #: matters because a client that never learned about pools must not silently
+    #: strip them from a group it round-trips.
+    pool_ids: list[int] | None = None
 
 
 @dataclass
@@ -358,6 +367,21 @@ class CalendarGroupInputData:
     slots: list[CalendarGroupSlotInputData] = dataclass_field(default_factory=list)
     accepts_public_scheduling: bool | None = None
     duration: datetime.timedelta | None = None
+
+
+@dataclass
+class CalendarPoolInputData:
+    """Input data for creating/updating a ``CalendarPool`` and its roster.
+
+    Unlike ``CalendarGroupSlotInputData.pool_ids``, ``calendar_ids`` here has
+    no "omitted means unchanged" sentinel -- a pool write always replaces the
+    roster wholesale (mirrors how ``CalendarGroupSlotSerializer.calendar_ids``
+    is required, not optional).
+    """
+
+    name: str
+    calendar_ids: list[int]
+    description: str = ""
 
 
 @dataclass
@@ -417,6 +441,25 @@ class BookableSlotProposal:
 
     start_time: datetime.datetime
     end_time: datetime.datetime
+
+
+@dataclass
+class StaleSelection:
+    """A `(event, slot, calendar)` triple whose calendar has left its slot's
+    roster since the selection was made.
+
+    Staleness definition (Calendar Pools plan, Guiding Decisions -> Staleness
+    definition): no ``CalendarGroupSlotMembership`` row exists for the
+    selection's ``(slot, calendar)`` pair, regardless of source -- inline or
+    projected from a ``CalendarPool``. Carries scalar ids only, matching the
+    plan's Data Model Changes -> Type plumbing, so ops-sweep consumers (REST,
+    GraphQL) do not have to load full ``CalendarEvent`` / ``CalendarGroupSlot``
+    / ``Calendar`` rows just to list the backlog.
+    """
+
+    event_id: int
+    slot_id: int
+    calendar_id: int
 
 
 @dataclass

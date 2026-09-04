@@ -32,6 +32,7 @@ from calendar_integration.exceptions import (
     CalendarGroupSlotConfigNotFoundError,
     CalendarGroupValidationError,
     CalendarIntegrationError,
+    CalendarPoolInUseError,
     ChangeRequestIneligibleError,
     ChangeRequestNotPendingError,
     InvalidTokenError,
@@ -42,6 +43,7 @@ from calendar_integration.filtersets import (
     CalendarEventFilterSet,
     CalendarFilterSet,
     CalendarGroupFilterSet,
+    CalendarPoolFilterSet,
     ExternalEventChangeRequestFilterSet,
 )
 from calendar_integration.models import (
@@ -54,6 +56,7 @@ from calendar_integration.models import (
     CalendarGroupSlotQuotaRule,
     CalendarManagementToken,
     CalendarOwnership,
+    CalendarPool,
     ExternalEventChangeRequest,
 )
 from calendar_integration.permissions import (
@@ -62,6 +65,7 @@ from calendar_integration.permissions import (
     CalendarAvailabilityPermission,
     CalendarEventPermission,
     CalendarGroupPermission,
+    CalendarPoolPermission,
     ExternalEventChangeRequestPermission,
     GroupScopedAvailabilityWindowPermission,
     GroupScopedBlockedTimePermission,
@@ -89,6 +93,7 @@ from calendar_integration.serializers import (
     CalendarGroupEventCreateSerializer,
     CalendarGroupRangeAvailabilitySerializer,
     CalendarGroupSerializer,
+    CalendarPoolSerializer,
     CalendarSerializer,
     CalendarSyncRequestSerializer,
     CalendarSyncSerializer,
@@ -107,6 +112,7 @@ from calendar_integration.serializers import (
     GroupScopedQuotaRuleSerializer,
     GroupScopedQuotaRuleUpdateSerializer,
     ResourceCalendarCreateSerializer,
+    StaleSelectionSerializer,
     UnavailableTimeWindowSerializer,
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
@@ -2511,6 +2517,114 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         )
 
     @extend_schema(
+        summary="List stale calendar selections for this group",
+        description=(
+            "Every `(event, slot, calendar)` triple booked under this group whose "
+            "calendar has since left its slot's roster (removed inline, or via a "
+            "pool detaching or losing that calendar) -- the ops-sweep counterpart "
+            "to the per-selection `is_in_current_roster` flag. Optionally bounded "
+            "to events overlapping `[window_start, window_end)`; omitting both "
+            "returns every stale selection in the group regardless of when its "
+            "event falls. Returns a bare array, page-bounded by `offset`/`limit` "
+            "-- this exists specifically to expose a potentially large backlog, "
+            "so the result set is never fetched or materialized unbounded."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="window_start",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Only events ending after this instant (ISO 8601). Optional.",
+                required=False,
+            ),
+            OpenApiParameter(
+                name="window_end",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Only events starting before this instant (ISO 8601). Optional.",
+                required=False,
+            ),
+            OpenApiParameter(
+                name="offset",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="Number of rows to skip. Defaults to 0.",
+                required=False,
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="Max rows to return, 1-100. Defaults to 100.",
+                required=False,
+            ),
+        ],
+        responses={200: StaleSelectionSerializer(many=True)},
+    )
+    @action(
+        methods=["GET"],
+        detail=True,
+        url_path="stale-selections",
+        url_name="stale-selections",
+        # Returns a bare array, page-bounded by explicit offset/limit query
+        # params the service validates -- not a DRF Page. pagination_class=None
+        # and filter_backends=[] so drf-spectacular stops advertising the
+        # count/next/previous/results envelope and CalendarGroupFilterSet's
+        # `name` param, neither of which this action implements (reviewer
+        # finding, Phase 6).
+        pagination_class=None,
+        filter_backends=[],
+    )
+    @inject
+    def stale_selections(
+        self,
+        request,
+        pk,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+    ):
+        group = self.get_object()
+        start_raw = request.query_params.get("window_start")
+        end_raw = request.query_params.get("window_end")
+        try:
+            window_start = (
+                datetime.datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                if start_raw
+                else None
+            )
+            window_end = (
+                datetime.datetime.fromisoformat(end_raw.replace("Z", "+00:00")) if end_raw else None
+            )
+        except ValueError as e:
+            raise ValidationError(
+                {"non_field_errors": ["Invalid datetime format; use ISO 8601."]}
+            ) from e
+
+        try:
+            offset = int(request.query_params.get("offset", 0))
+            limit = int(request.query_params.get("limit", 100))
+        except ValueError as e:
+            raise ValidationError(
+                {"non_field_errors": ["offset and limit must be integers."]}
+            ) from e
+
+        calendar_group_service.initialize(organization=group.organization)
+        try:
+            stale = calendar_group_service.find_stale_selections(
+                group_id=group.id,
+                window_start=window_start,
+                window_end=window_end,
+                offset=offset,
+                limit=limit,
+            )
+        except CalendarGroupValidationError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+        payload = [
+            {"event_id": s.event_id, "slot_id": s.slot_id, "calendar_id": s.calendar_id}
+            for s in stale
+        ]
+        return Response(StaleSelectionSerializer(payload, many=True).data)
+
+    @extend_schema(
         summary="Per-slot availability for requested ranges",
         request=CalendarGroupAvailabilityQuerySerializer,
         responses={200: CalendarGroupRangeAvailabilitySerializer(many=True)},
@@ -2635,6 +2749,67 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
 
         payload = [{"start_time": p.start_time, "end_time": p.end_time} for p in proposals]
         return Response(BookableSlotProposalSerializer(payload, many=True).data)
+
+
+@extend_schema(tags=["Calendar Pools"])
+class CalendarPoolViewSet(VintaScheduleModelViewSet):
+    """
+    ViewSet for CalendarPool CRUD.
+    """
+
+    permission_classes = (CalendarPoolPermission,)
+    # See ``CalendarViewSet.queryset``.
+    queryset = CalendarPool.objects.unscoped()
+    serializer_class = CalendarPoolSerializer
+    filterset_class = CalendarPoolFilterSet
+
+    def get_queryset(self):
+        """Org-scoped, then role-scoped: admins see every pool in the org;
+        non-admin members see only pools where they own a roster calendar
+        (`CalendarPoolQuerySet.only_member_of`) -- same visibility shape as
+        `CalendarGroupViewSet.get_queryset`, and what makes a pool a member
+        doesn't participate in 404 rather than 403 on retrieve.
+        """
+        user = self.request.user
+        if not user.is_authenticated:
+            return CalendarPool.original_manager.none()
+        membership = self.request.organization_membership
+        if not membership:
+            return CalendarPool.original_manager.none()
+        qs = super().get_queryset().filter_by_organization(membership.organization_id)
+        if user.is_organization_admin(membership.organization_id):
+            return qs
+        return qs.only_member_of(membership.user_id)
+
+    @extend_schema(
+        summary="Delete calendar pool",
+        description=(
+            "Delete a CalendarPool. Fails with 409 if the pool is still attached "
+            "to any calendar group slot, naming the referencing groups."
+        ),
+        responses={
+            204: None,
+            409: OpenApiResponse(description="Pool is still attached to a group slot."),
+        },
+    )
+    @inject
+    def destroy(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        instance = self.get_object()
+        calendar_group_service.initialize(organization=instance.organization)
+        try:
+            calendar_group_service.delete_pool(pool_id=instance.id)
+        except CalendarPoolInUseError as e:
+            return Response(
+                {"detail": str(e), "groups": e.group_names},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @extend_schema(tags=["Booking Policies"])

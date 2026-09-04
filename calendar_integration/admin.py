@@ -20,6 +20,8 @@ from calendar_integration.models import (
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
     CalendarGroupSlotQuotaRule,
+    CalendarPool,
+    CalendarPoolMembership,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
     ExternalClientIdentifier,
@@ -395,12 +397,15 @@ class CalendarGroupSlotAdmin(admin.ModelAdmin):
             super()
             .get_queryset(request)
             .select_related("organization", "group_fk")
-            .annotate(_calendar_count=Count("memberships"))
+            # Distinct CALENDARS, not membership rows: a calendar reachable both
+            # inline and through an attached CalendarPool holds one row per
+            # source, and counting rows would overstate the roster.
+            .annotate(_calendar_count=Count("memberships__calendar_fk_id", distinct=True))
         )
 
     @admin.display(description="Calendars", ordering="_calendar_count")
     def calendar_count(self, obj: CalendarGroupSlot) -> int:
-        return getattr(obj, "_calendar_count", obj.memberships.count())
+        return getattr(obj, "_calendar_count", obj.calendars.distinct().count())
 
 
 @admin.register(CalendarEventGroupSelection)
@@ -445,6 +450,39 @@ class CalendarGroupSlotQuotaRuleAdmin(admin.ModelAdmin):
             .get_queryset(request)
             .select_related("organization", "calendar_fk", "group_slot_fk")
         )
+
+
+class CalendarPoolMembershipInline(admin.TabularInline):
+    """Inline admin for memberships within a CalendarPool."""
+
+    model = CalendarPoolMembership
+    fk_name = "pool_fk"
+    fields = ("calendar_fk",)
+    extra = 1
+
+
+@admin.register(CalendarPool)
+class CalendarPoolAdmin(admin.ModelAdmin):
+    """Admin interface for CalendarPool."""
+
+    list_display = ("id", "name", "organization", "calendar_count", "created")
+    list_filter = ("organization", "created")
+    search_fields = ("name", "description")
+    readonly_fields = ("created", "modified")
+    fields = ("organization", "name", "description", "created", "modified")
+    inlines: ClassVar = [CalendarPoolMembershipInline]
+
+    def get_queryset(self, request: HttpRequest):
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("organization")
+            .annotate(_calendar_count=Count("memberships"))
+        )
+
+    @admin.display(description="Calendars", ordering="_calendar_count")
+    def calendar_count(self, obj: CalendarPool) -> int:
+        return getattr(obj, "_calendar_count", obj.memberships.count())
 
 
 @admin.register(BlockedTime)

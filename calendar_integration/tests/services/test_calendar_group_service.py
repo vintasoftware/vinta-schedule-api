@@ -295,9 +295,14 @@ def test_update_group_creates_new_slot_and_removes_old(service, base_input, mana
 
 
 @pytest.mark.django_db
-def test_update_group_refuses_evicting_calendar_with_future_booking(
+def test_update_group_allows_evicting_calendar_with_future_booking(
     service, base_input, managed_calendars
 ):
+    """Contract change (Calendar Pools Phase 1): removing a calendar from a
+    slot's roster always succeeds, even when a future-booked event still
+    selects it. The old behavior raised CalendarGroupSlotInUseError here; the
+    new one drops only the CalendarGroupSlotMembership row and leaves the
+    event's CalendarEventGroupSelection untouched."""
     group = service.create_group(base_input)
     physicians = group.slots.get(name="Physicians")
     # Simulate a future-booked event with a group selection for phys_a
@@ -321,8 +326,16 @@ def test_update_group_refuses_evicting_calendar_with_future_booking(
 
     base_input.slots[0].calendar_ids = [managed_calendars["phys_b"].id]
 
-    with pytest.raises(CalendarGroupSlotInUseError):
-        service.update_group(group.id, base_input)
+    updated = service.update_group(group.id, base_input)
+
+    physicians = updated.slots.get(name="Physicians")
+    assert set(physicians.calendars.values_list("external_id", flat=True)) == {"phys_b"}
+    # The grandfathered selection on the future-booked event is untouched.
+    assert (
+        CalendarEventGroupSelection.objects.filter_by_organization(service.organization.id)
+        .filter(event=event, slot=physicians, calendar=managed_calendars["phys_a"])
+        .exists()
+    )
 
 
 @pytest.mark.django_db
