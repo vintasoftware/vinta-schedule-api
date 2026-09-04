@@ -125,11 +125,14 @@ needs **AWS credentials**, as **shell (environment) variables** on the workspace
 | `AWS_SECRET_ACCESS_KEY` | deployer secret | yes |
 | `AWS_DEFAULT_REGION` | `us-east-1` (optional; the provider already sets region) | no |
 
-- The **deployer** is an admin/CI IAM principal. The stack needs a wide
-  policy: `ec2:*` (VPC, subnets, NAT, security groups), `ecs:*`, `elasticloadbalancing:*`,
-  `rds:*`, `elasticache:*`, `sqs:*`, `secretsmanager:*`, `ecr:*`, `logs:*`,
-  `ssm:*`, `acm:*`, and the `iam:` actions to create roles, policies and an OIDC
-  provider.
+- The **deployer** needs rights over everything the stack creates: the VPC and
+  its security groups, the ALB, ECS, ECR, RDS, ElastiCache, SQS, Secrets
+  Manager, the SSM deploy parameter, CloudWatch log groups, and the IAM roles
+  plus the GitHub OIDC provider. The deployer created for the storage-only
+  stack has none of that and fails its first `app` plan on
+  `ec2:DescribeAvailabilityZones` — attach the three documents in
+  [policies/](policies/README.md), which grant exactly those actions and no
+  more.
 - **Preferred over static keys:** attach a Scalr **Provider Configuration** for
   AWS (OIDC / role delegation) to the environment — no long-lived keys stored.
 

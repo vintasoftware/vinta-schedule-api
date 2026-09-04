@@ -1,0 +1,188 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CeleryQueues",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:CreateQueue",
+        "sqs:DeleteQueue",
+        "sqs:GetQueueAttributes",
+        "sqs:SetQueueAttributes",
+        "sqs:GetQueueUrl",
+        "sqs:TagQueue",
+        "sqs:UntagQueue",
+        "sqs:ListQueueTags"
+      ],
+      "Resource": [
+        "arn:aws:sqs:us-east-1:261390480437:vinta-schedule-production-celery",
+        "arn:aws:sqs:us-east-1:261390480437:vinta-schedule-production-celery-dlq"
+      ]
+    },
+    {
+      "Sid": "SqsListNoArnSupport",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:ListQueues"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1"
+        }
+      }
+    },
+    {
+      "Sid": "AppSecret",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:GetResourcePolicy",
+        "secretsmanager:ListSecretVersionIds",
+        "secretsmanager:TagResource",
+        "secretsmanager:UntagResource"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-1:261390480437:secret:vinta-schedule-production/app-*"
+    },
+    {
+      "Sid": "DeployParameter",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:DeleteParameter",
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:AddTagsToResource",
+        "ssm:RemoveTagsFromResource",
+        "ssm:ListTagsForResource"
+      ],
+      "Resource": "arn:aws:ssm:us-east-1:261390480437:parameter/vinta-schedule/production/deploy"
+    },
+    {
+      "Sid": "SsmDescribeNoArnSupport",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeParameters"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1"
+        }
+      }
+    },
+    {
+      "Sid": "TaskAndDeployRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:ListRoleTags",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole"
+      ],
+      "Resource": "arn:aws:iam::261390480437:role/vinta-schedule-production-*"
+    },
+    {
+      "Sid": "PassTaskRolesToEcsOnly",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::261390480437:role/vinta-schedule-production-task",
+        "arn:aws:iam::261390480437:role/vinta-schedule-production-task-execution"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ecs-tasks.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "GithubOidcProvider",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateOpenIDConnectProvider",
+        "iam:DeleteOpenIDConnectProvider",
+        "iam:GetOpenIDConnectProvider",
+        "iam:TagOpenIDConnectProvider",
+        "iam:UntagOpenIDConnectProvider",
+        "iam:ListOpenIDConnectProviderTags",
+        "iam:UpdateOpenIDConnectProviderThumbprint",
+        "iam:AddClientIDToOpenIDConnectProvider",
+        "iam:RemoveClientIDFromOpenIDConnectProvider"
+      ],
+      "Resource": "arn:aws:iam::261390480437:oidc-provider/token.actions.githubusercontent.com"
+    },
+    {
+      "Sid": "IamListNoArnSupport",
+      "Effect": "Allow",
+      "Action": [
+        "iam:ListOpenIDConnectProviders",
+        "iam:ListRoles"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ServiceLinkedRolesForTheseServicesOnly",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": [
+            "ecs.amazonaws.com",
+            "elasticache.amazonaws.com",
+            "elasticloadbalancing.amazonaws.com",
+            "rds.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DefaultKeysForTheseServicesOnly",
+      "Effect": "Allow",
+      "Action": [
+        "kms:DescribeKey",
+        "kms:CreateGrant",
+        "kms:GenerateDataKey",
+        "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:ReEncryptFrom",
+        "kms:ReEncryptTo"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": [
+            "rds.us-east-1.amazonaws.com",
+            "elasticache.us-east-1.amazonaws.com",
+            "secretsmanager.us-east-1.amazonaws.com",
+            "sqs.us-east-1.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "AssumeTheDnsAccountRole",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::310361226925:role/vinta-schedule-dns-deployer"
+    }
+  ]
+}
