@@ -13,6 +13,20 @@ data "aws_route53_zone" "this" {
   private_zone = false
 }
 
+# CAA: authorize Amazon (ACM) to issue certs for this hostname. The parent
+# zone's CAA blocks Amazon by default, so without this ACM gives up on
+# validation with CAA_ERROR. A CAA at the exact host is the closest match and
+# takes precedence (RFC 8659) without changing apex policy. Same reason
+# modules/s3-cloudfront writes one for each of its two hostnames.
+resource "aws_route53_record" "api_caa" {
+  provider = aws.dns
+  zone_id  = data.aws_route53_zone.this.zone_id
+  name     = var.api_domain
+  type     = "CAA"
+  ttl      = 300
+  records  = ["0 issue \"amazon.com\""]
+}
+
 resource "aws_acm_certificate" "api" {
   domain_name       = var.api_domain
   validation_method = "DNS"
@@ -20,6 +34,12 @@ resource "aws_acm_certificate" "api" {
   lifecycle {
     create_before_destroy = true
   }
+
+  # ACM reads CAA when it issues, which is triggered by the validation records
+  # below. Ordering the record ahead of the request keeps a first apply from
+  # racing into a FAILED certificate, which cannot be revalidated -- it has to
+  # be replaced.
+  depends_on = [aws_route53_record.api_caa]
 }
 
 resource "aws_route53_record" "cert_validation" {
