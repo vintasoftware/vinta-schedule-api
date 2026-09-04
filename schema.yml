@@ -19194,6 +19194,8 @@ components:
           type: string
         duration:
           type: string
+        accepts_public_scheduling:
+          type: boolean
         slots:
           type: array
           items:
@@ -21917,6 +21919,8 @@ components:
           type: string
         duration:
           type: string
+        accepts_public_scheduling:
+          type: boolean
         slots:
           type: array
           items:

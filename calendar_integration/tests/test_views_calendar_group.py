@@ -16,7 +16,6 @@ from calendar_integration.constants import (
     CalendarType,
     EventManagementPermissions,
 )
-from calendar_integration.exceptions import CalendarGroupValidationError
 from calendar_integration.factories import create_calendar_ownership, create_calendar_pool
 from calendar_integration.models import (
     AvailableTime,
@@ -28,11 +27,6 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarGroupSlotPool,
     CalendarManagementToken,
-)
-from calendar_integration.services.calendar_group_service import CalendarGroupService
-from calendar_integration.services.dataclasses import (
-    CalendarGroupInputData,
-    CalendarGroupSlotInputData,
 )
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
@@ -650,9 +644,8 @@ class TestCalendarGroupPatch:
 @pytest.mark.django_db
 class TestCalendarGroupDuration:
     """`duration` is the exact length every booking through the group must
-    span. It is writable here because REST is the only client-facing surface
-    that can set it -- the GraphQL group mutations still cannot -- and a group
-    that accepts public scheduling is refused without one."""
+    span, and a group that accepts public scheduling is refused without one.
+    See `TestCalendarGroupPublicScheduling` for the two fields together."""
 
     def _slots(self, internal_calendars):
         return [
@@ -804,31 +797,111 @@ class TestCalendarGroupDuration:
         owned_group.refresh_from_db()
         assert owned_group.duration is None
 
-    def test_duration_set_over_rest_unblocks_making_the_group_public(
-        self, auth_client, owned_group, organization, internal_calendars, admin_user
-    ):
-        """The reason this field is writable at all: a group with no duration
-        cannot be made publicly schedulable, and REST is the only client-facing
-        way to give it one."""
-        service = CalendarGroupService()
-        service.initialize(organization=organization)
-        slots_input = [
-            CalendarGroupSlotInputData(
-                name=slot.name,
-                calendar_ids=list(slot.calendars.values_list("id", flat=True)),
-                order=slot.order,
-            )
-            for slot in owned_group.slots.all().order_by("order")
+
+@pytest.mark.django_db
+class TestCalendarGroupPublicScheduling:
+    """`accepts_public_scheduling` opens a group to codeless booking, so it is
+    bound to `duration`: the length a codeless booking takes has nowhere else
+    to come from. Writable only by an org admin -- enforced by
+    CalendarGroupPermission, not by this serializer."""
+
+    def _slots(self, internal_calendars):
+        return [
+            {
+                "name": "Physicians",
+                "calendar_ids": [internal_calendars["phys_a"].id],
+                "required_count": 1,
+                "order": 0,
+            },
+            {
+                "name": "Rooms",
+                "calendar_ids": [internal_calendars["room_1"].id],
+                "required_count": 1,
+                "order": 1,
+            },
         ]
-        go_public = CalendarGroupInputData(
-            name=owned_group.name,
-            description=owned_group.description,
-            slots=slots_input,
-            accepts_public_scheduling=True,
+
+    def test_create_public_group_with_duration_in_one_call(
+        self, auth_client, organization, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.post(
+            url,
+            {
+                "name": "Public Clinic",
+                "description": "",
+                "duration": "00:30:00",
+                "accepts_public_scheduling": True,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_201_CREATED)
+        created = CalendarGroup.objects.filter_by_organization(organization.id).get(
+            name="Public Clinic"
+        )
+        assert created.accepts_public_scheduling is True
+        assert created.duration == timedelta(minutes=30)
+
+    def test_create_public_group_without_duration_is_rejected(
+        self, auth_client, organization, internal_calendars, admin_user
+    ):
+        """The invariant reaches REST through the service, so this is a 400
+        rather than a group that is public and unbookable."""
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.post(
+            url,
+            {
+                "name": "Unbookable Public",
+                "description": "",
+                "accepts_public_scheduling": True,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "duration" in str(response.data).lower()
+        assert (
+            not CalendarGroup.objects.filter_by_organization(organization.id)
+            .filter(name="Unbookable Public")
+            .exists()
         )
 
-        with pytest.raises(CalendarGroupValidationError):
-            service.update_group(owned_group.id, go_public)
+    def test_defaults_to_private_when_omitted(
+        self, auth_client, organization, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.post(
+            url,
+            {
+                "name": "Default Clinic",
+                "description": "",
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_201_CREATED)
+        created = CalendarGroup.objects.filter_by_organization(organization.id).get(
+            name="Default Clinic"
+        )
+        assert created.accepts_public_scheduling is False
+
+    def test_retrieve_exposes_the_flag(self, auth_client, owned_group):
+        owned_group.accepts_public_scheduling = True
+        owned_group.duration = timedelta(minutes=30)
+        owned_group.save(update_fields=["accepts_public_scheduling", "duration"])
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        assert response.json()["accepts_public_scheduling"] is True
+
+    def test_flip_public_using_the_groups_existing_duration(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        """The invariant reads the resulting state, so a group that already has
+        a duration can be opened up without restating it."""
+        owned_group.duration = timedelta(minutes=20)
+        owned_group.save(update_fields=["duration"])
 
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
         response = auth_client.put(
@@ -836,17 +909,60 @@ class TestCalendarGroupDuration:
             {
                 "name": owned_group.name,
                 "description": owned_group.description,
-                "duration": "00:30:00",
+                "accepts_public_scheduling": True,
                 "slots": self._slots(internal_calendars),
             },
             format="json",
         )
         _assert_status(response, status.HTTP_200_OK)
-
-        service.update_group(owned_group.id, go_public)
         owned_group.refresh_from_db()
         assert owned_group.accepts_public_scheduling is True
-        assert owned_group.duration == timedelta(minutes=30)
+        assert owned_group.duration == timedelta(minutes=20)
+
+    def test_omitting_the_flag_leaves_it_unchanged(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        owned_group.accepts_public_scheduling = True
+        owned_group.duration = timedelta(minutes=30)
+        owned_group.save(update_fields=["accepts_public_scheduling", "duration"])
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": "Renamed, still public",
+                "description": owned_group.description,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.name == "Renamed, still public"
+        assert owned_group.accepts_public_scheduling is True
+
+    def test_non_admin_member_cannot_open_a_group_to_public_booking(
+        self, auth_client, owned_group, internal_calendars
+    ):
+        """No `admin_user` fixture: participation grants visibility, not the
+        ability to expose the group to codeless booking."""
+        owned_group.duration = timedelta(minutes=30)
+        owned_group.save(update_fields=["duration"])
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": owned_group.name,
+                "description": owned_group.description,
+                "accepts_public_scheduling": True,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_403_FORBIDDEN)
+        owned_group.refresh_from_db()
+        assert owned_group.accepts_public_scheduling is False
 
 
 @pytest.mark.django_db

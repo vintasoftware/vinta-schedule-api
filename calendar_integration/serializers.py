@@ -3239,6 +3239,12 @@ class CalendarGroupSerializer(VirtualModelSerializer):
     # Clearing a duration is not offered at all: it would be a fail-open change
     # on a public group, whose bookings depend on it.
     duration = serializers.DurationField(required=False, allow_null=False)
+    # Same tri-state contract as ``duration``: absent means "leave unchanged",
+    # so null is refused rather than read as False. Writable only by an
+    # organization admin, which needs no enforcement here -- CalendarGroupPermission
+    # already gates `create` and `update`/`partial_update` on admin, so a
+    # non-admin never reaches this serializer's write path at all (403).
+    accepts_public_scheduling = serializers.BooleanField(required=False, allow_null=False)
 
     class Meta:
         model = CalendarGroup
@@ -3248,6 +3254,7 @@ class CalendarGroupSerializer(VirtualModelSerializer):
             "name",
             "description",
             "duration",
+            "accepts_public_scheduling",
             "slots",
             "public_booking_slug",
             "created",
@@ -3338,8 +3345,9 @@ class CalendarGroupSerializer(VirtualModelSerializer):
             description=validated_data.get("description", ""),
             # Absent means "leave unchanged" on update and "not set" on create,
             # which is exactly what ``.get`` returning ``None`` conveys. An
-            # explicit ``null`` never reaches here -- the field refuses it.
+            # explicit ``null`` never reaches here -- both fields refuse it.
             duration=validated_data.get("duration"),
+            accepts_public_scheduling=validated_data.get("accepts_public_scheduling"),
             slots=[
                 CalendarGroupSlotInputData(
                     name=slot["name"],

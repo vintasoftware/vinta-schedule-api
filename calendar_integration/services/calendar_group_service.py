@@ -473,20 +473,19 @@ class CalendarGroupService:
         # duration. A codeless public-group booking presents no code, so it
         # inherits no per-code pin; the group is the only place a length
         # constraint can live for that path (see CalendarGroup.duration's
-        # help_text). The REST CalendarGroupSerializer is the only client-facing
-        # surface that can set ``duration``; it cannot set
-        # ``accepts_public_scheduling``, and the GraphQL mutations are the
-        # reverse. So making a group public takes both surfaces: give it a
-        # duration over REST, then flip it public over GraphQL. Calling
-        # ``create_calendar_group`` with ``is_private=False`` used to succeed
-        # and now raises here -- intentional, see the plan's Guiding Decisions.
+        # help_text). Both client-facing surfaces can supply it alongside the
+        # privacy flag -- ``duration`` on the REST CalendarGroupSerializer,
+        # ``duration_seconds`` on the GraphQL CalendarGroupInput -- so a public
+        # group is creatable in one call on either. What still raises here is
+        # asking for public scheduling without a length: ``create_calendar_group``
+        # with ``is_private=False`` and no duration used to succeed and now
+        # does not. That is intentional -- see the plan's Guiding Decisions.
         if accepts_public_scheduling and data.duration is None:
             raise CalendarGroupValidationError(
                 "A CalendarGroup that accepts public scheduling must have a duration set. "
-                "Send ``duration`` to the REST CalendarGroupSerializer, or call "
-                "CalendarGroupService.create_group directly. The create_calendar_group "
-                "GraphQL mutation cannot set it, so leave the group private there and give "
-                "it a duration over REST before making it public."
+                "Send ``duration`` to the REST CalendarGroupSerializer or ``duration_seconds`` "
+                "to the create_calendar_group GraphQL mutation, in the same call that makes "
+                "the group public."
             )
 
         group = CalendarGroup.objects.create(
@@ -546,10 +545,9 @@ class CalendarGroupService:
         if group.accepts_public_scheduling and group.duration is None:
             raise CalendarGroupValidationError(
                 "A CalendarGroup that accepts public scheduling must have a duration set. "
-                "Send ``duration`` to the REST CalendarGroupSerializer, or call "
-                "CalendarGroupService.update_group directly. The update_calendar_group "
-                "GraphQL mutation cannot set it, so give the group a duration over REST "
-                "before flipping it public."
+                "Send ``duration`` to the REST CalendarGroupSerializer or ``duration_seconds`` "
+                "to the update_calendar_group GraphQL mutation, in the same call that makes "
+                "the group public."
             )
 
         # Build update_fields dynamically to avoid writing privacy/duration when not provided.
