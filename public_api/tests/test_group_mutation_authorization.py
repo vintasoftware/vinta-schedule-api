@@ -381,7 +381,11 @@ class TestCreateCalendarGroup:
                     "name": "Legit Group",
                     "description": "Created by an authorized caller",
                     "slots": [],
-                    "isPrivate": False,
+                    # Private on purpose: a group that accepts public scheduling
+                    # must carry a duration, and this mutation has no way to set
+                    # one. Privacy is incidental to what this suite asserts --
+                    # that a caller acting on its own org gets through.
+                    "isPrivate": True,
                 }
             },
         )
@@ -468,7 +472,11 @@ class TestUpdateCalendarGroup:
                     "name": "Renamed By Owner",
                     "description": "",
                     "slots": [],
-                    "isPrivate": False,
+                    # Flips the fixture group private. The invariant is checked
+                    # against the resulting state, and the fixture is public with
+                    # no duration, so leaving it public here would be rejected on
+                    # a suite that is really about org scoping.
+                    "isPrivate": True,
                 }
             },
         )
