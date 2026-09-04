@@ -200,6 +200,20 @@ aws iam put-user-policy --user-name "vinta-schedule-${ENV}-deployer" \
 
 3. Set `dns_role_arn` in each `environments/<env>/env.hcl` to that role's ARN.
 
+### Every hostname here needs its own CAA record
+
+`vintasoftware.com` carries no CAA, but the environment's frontend name does —
+`schedule-staging.vintasoftware.com` is Vercel's, and its CAA lists
+`letsencrypt.org`, `pki.goog`, `sectigo.com` and `globalsign.com`. CAA
+resolution walks up from the hostname and stops at the first name holding one,
+so every name under the frontend inherits a policy that does not authorize
+Amazon, and ACM refuses to issue with `CAA_ERROR`.
+
+Both modules therefore write `0 issue "amazon.com"` at each hostname they
+own — `api` here, `static` and `media` in `modules/s3-cloudfront`. A CAA at the
+exact host is the closest match and wins (RFC 8659), so the frontend's own
+policy is left alone. A new hostname fronted by ACM needs the same record.
+
 ### The api hostname must not already hold a CNAME
 
 Route 53 refuses every other record type at a name that already holds a CNAME,

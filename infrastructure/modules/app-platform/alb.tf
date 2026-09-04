@@ -13,10 +13,18 @@ data "aws_route53_zone" "this" {
   private_zone = false
 }
 
-# CAA: authorize Amazon (ACM) to issue certs for this hostname. The parent
-# zone's CAA blocks Amazon by default, so without this ACM gives up on
-# validation with CAA_ERROR. A CAA at the exact host is the closest match and
-# takes precedence (RFC 8659) without changing apex policy. Same reason
+# CAA: authorize Amazon (ACM) to issue certs for this hostname.
+#
+# The record that blocks it is not on the apex -- vintasoftware.com carries no
+# CAA at all. It sits on the environment's frontend name
+# (schedule-staging.vintasoftware.com, which is Vercel's) and lists
+# letsencrypt.org, pki.goog, sectigo.com and globalsign.com, but not
+# amazon.com. CAA resolution walks up from the hostname and stops at the first
+# name that has one, so everything under the frontend name inherits that
+# refusal and ACM fails validation with CAA_ERROR.
+#
+# A CAA at the exact host is the closest match and wins (RFC 8659), so this
+# authorizes ACM here without touching the frontend's own policy. Same reason
 # modules/s3-cloudfront writes one for each of its two hostnames.
 resource "aws_route53_record" "api_caa" {
   provider = aws.dns
