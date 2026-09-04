@@ -19192,6 +19192,10 @@ components:
           maxLength: 255
         description:
           type: string
+        duration:
+          type: string
+        accepts_public_scheduling:
+          type: boolean
         slots:
           type: array
           items:
@@ -21913,6 +21917,10 @@ components:
           maxLength: 255
         description:
           type: string
+        duration:
+          type: string
+        accepts_public_scheduling:
+          type: boolean
         slots:
           type: array
           items:

@@ -323,24 +323,21 @@ def test_create_calendar_group_mutation_defaults_is_private_true(organization, i
 
 
 @pytest.mark.django_db
-def test_create_calendar_group_mutation_with_is_private_false_now_rejected(
+def test_create_calendar_group_mutation_public_without_duration_rejected(
     organization, internal_calendars
 ):
-    """``is_private=False`` (accepts_public_scheduling=True) is now REJECTED
-    through this mutation -- a deliberate behavior change on an
-    already-deployed surface, not a regression.
+    """``is_private=False`` with no ``duration_seconds`` is REJECTED -- a
+    deliberate behavior change on an already-deployed surface, not a regression.
 
-    ``CalendarGroupService.create_group`` now refuses to create a publicly
+    ``CalendarGroupService.create_group`` refuses to create a publicly
     schedulable group with no duration (see that method and
     ``CalendarGroup.duration``'s help_text for why: a codeless public-group
     booking has no code to pin a length to, so the group itself is the only
-    place a length constraint can live). Neither ``CalendarGroupInput`` nor
-    any other field on this mutation exposes a way to set ``duration``, so
-    every attempt to create a public group through GraphQL now fails until a
-    future phase adds a duration input somewhere. This test used to assert
-    success (see git history) -- it now asserts the rejection is surfaced as
-    a normal ``CalendarGroupResult(success=False, ...)``, not a 500, and that
-    no group was persisted.
+    place a length constraint can live). Supplying ``duration_seconds`` in the
+    same call succeeds -- see the test below. This test used to assert success
+    (see git history); it now asserts the rejection is surfaced as a normal
+    ``CalendarGroupResult(success=False, ...)``, not a 500, and that no group
+    was persisted.
     """
     mutations = CalendarGroupMutations()
     input_data = CalendarGroupInput(
@@ -368,6 +365,79 @@ def test_create_calendar_group_mutation_with_is_private_false_now_rejected(
     assert (
         not CalendarGroup.objects.filter_by_organization(organization.id)
         .filter(name="Public Group")
+        .exists()
+    )
+
+
+@pytest.mark.django_db
+def test_create_calendar_group_mutation_public_with_duration_succeeds(
+    organization, internal_calendars
+):
+    """``duration_seconds`` alongside ``is_private=False`` satisfies the
+    invariant, so a public group is creatable in one call."""
+    mutations = CalendarGroupMutations()
+    input_data = CalendarGroupInput(
+        organization_id=organization.id,
+        name="Public Timed Group",
+        description="Public, 30 minutes",
+        slots=[
+            CalendarGroupSlotInput(
+                name="Physicians",
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+        is_private=False,
+        duration_seconds=30 * 60,
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.create_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
+    assert result.success is True
+    group = CalendarGroup.objects.filter_by_organization(organization.id).get(
+        name="Public Timed Group"
+    )
+    assert group.accepts_public_scheduling is True
+    assert group.duration == timedelta(minutes=30)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("duration_seconds", [0, -60])
+def test_create_calendar_group_mutation_rejects_non_positive_duration(
+    organization, internal_calendars, duration_seconds
+):
+    """A zero or negative length describes no bookable event. Rejected as a
+    normal result, not a 500."""
+    mutations = CalendarGroupMutations()
+    input_data = CalendarGroupInput(
+        organization_id=organization.id,
+        name="Bad Duration Group",
+        description="",
+        slots=[
+            CalendarGroupSlotInput(
+                name="Physicians",
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+        duration_seconds=duration_seconds,
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.create_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
+    assert result.success is False
+    assert "duration_seconds" in (result.error_message or "")
+    assert (
+        not CalendarGroup.objects.filter_by_organization(organization.id)
+        .filter(name="Bad Duration Group")
         .exists()
     )
 
@@ -504,14 +574,14 @@ def test_update_calendar_group_mutation(organization, clinic_group, internal_cal
 
 
 @pytest.mark.django_db
-def test_update_calendar_group_mutation_toggle_is_private_true_to_false_now_rejected(
+def test_update_calendar_group_mutation_public_without_duration_rejected(
     organization, internal_calendars
 ):
-    """Toggling is_private from True (private) to False (public) is now
-    REJECTED through this mutation -- same invariant, same deliberate
-    behavior change, as the create-mutation case above: a group flipping
-    public with no duration set is refused, and neither
-    ``UpdateCalendarGroupInput`` nor the REST serializer can supply one."""
+    """Toggling is_private from True (private) to False (public) with no
+    duration is REJECTED -- same invariant, same deliberate behavior change,
+    as the create-mutation case above. The group carries no duration and the
+    call supplies no ``duration_seconds``, so there is no length for a codeless
+    booking to take."""
     # Create a private group
     group = CalendarGroup.objects.create(
         organization=organization, name="Toggle Group", accepts_public_scheduling=False
@@ -551,6 +621,95 @@ def test_update_calendar_group_mutation_toggle_is_private_true_to_false_now_reje
     group.refresh_from_db()
     # Rejected before the write -- still private.
     assert group.accepts_public_scheduling is False
+
+
+@pytest.mark.django_db
+def test_update_calendar_group_mutation_public_with_duration_succeeds(
+    organization, internal_calendars
+):
+    """Flipping a group public and giving it a length in the same call is the
+    supported way to open one up."""
+    group = CalendarGroup.objects.create(
+        organization=organization, name="Toggle Group", accepts_public_scheduling=False
+    )
+    slot = CalendarGroupSlot.objects.create(organization=organization, group=group, name="Slot1")
+    CalendarGroupSlotMembership.objects.create(
+        organization=organization, slot=slot, calendar=internal_calendars["phys_a"]
+    )
+
+    mutations = CalendarGroupMutations()
+    input_data = UpdateCalendarGroupInput(
+        organization_id=organization.id,
+        group_id=group.id,
+        name="Toggle Group",
+        description="",
+        slots=[
+            CalendarGroupSlotInput(
+                name="Slot1",
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+        is_private=False,
+        duration_seconds=45 * 60,
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.update_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
+    assert result.success is True
+    group.refresh_from_db()
+    assert group.accepts_public_scheduling is True
+    assert group.duration == timedelta(minutes=45)
+
+
+@pytest.mark.django_db
+def test_update_calendar_group_mutation_public_uses_existing_duration(
+    organization, internal_calendars
+):
+    """The invariant reads the RESULTING state, so a group that already carries
+    a duration can be flipped public without restating it."""
+    group = CalendarGroup.objects.create(
+        organization=organization,
+        name="Already Timed",
+        accepts_public_scheduling=False,
+        duration=timedelta(minutes=15),
+    )
+    slot = CalendarGroupSlot.objects.create(organization=organization, group=group, name="Slot1")
+    CalendarGroupSlotMembership.objects.create(
+        organization=organization, slot=slot, calendar=internal_calendars["phys_a"]
+    )
+
+    mutations = CalendarGroupMutations()
+    input_data = UpdateCalendarGroupInput(
+        organization_id=organization.id,
+        group_id=group.id,
+        name="Already Timed",
+        description="",
+        slots=[
+            CalendarGroupSlotInput(
+                name="Slot1",
+                calendar_ids=[internal_calendars["phys_a"].id],
+            ),
+        ],
+        is_private=False,
+        # duration_seconds omitted -- the persisted 15 minutes stands.
+    )
+    deps = _mock_mutation_deps()
+    with patch(
+        "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
+        return_value=deps,
+    ):
+        result = mutations.update_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
+    assert result.success is True
+    group.refresh_from_db()
+    assert group.accepts_public_scheduling is True
+    assert group.duration == timedelta(minutes=15)
 
 
 @pytest.mark.django_db

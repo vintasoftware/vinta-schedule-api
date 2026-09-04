@@ -3230,6 +3230,21 @@ class CalendarGroupSlotSerializer(VirtualModelSerializer):
 
 class CalendarGroupSerializer(VirtualModelSerializer):
     slots = CalendarGroupSlotSerializer(many=True)
+    # Declared explicitly rather than inferred from the model field, to refuse
+    # an explicit ``null``. The model column is nullable, so ModelSerializer
+    # would infer ``allow_null=True`` -- but ``CalendarGroupInputData.duration``
+    # is tri-state with ``None`` meaning "omitted, leave unchanged", so a client
+    # sending ``null`` to clear the duration would get a silent no-op instead.
+    # Refusing null keeps "absent" the only meaning ``None`` ever carries here.
+    # Clearing a duration is not offered at all: it would be a fail-open change
+    # on a public group, whose bookings depend on it.
+    duration = serializers.DurationField(required=False, allow_null=False)
+    # Same tri-state contract as ``duration``: absent means "leave unchanged",
+    # so null is refused rather than read as False. Writable only by an
+    # organization admin, which needs no enforcement here -- CalendarGroupPermission
+    # already gates `create` and `update`/`partial_update` on admin, so a
+    # non-admin never reaches this serializer's write path at all (403).
+    accepts_public_scheduling = serializers.BooleanField(required=False, allow_null=False)
 
     class Meta:
         model = CalendarGroup
@@ -3238,6 +3253,8 @@ class CalendarGroupSerializer(VirtualModelSerializer):
             "id",
             "name",
             "description",
+            "duration",
+            "accepts_public_scheduling",
             "slots",
             "public_booking_slug",
             "created",
@@ -3274,6 +3291,14 @@ class CalendarGroupSerializer(VirtualModelSerializer):
                 {"non_field_errors": ["User has no organization membership."]}
             )
         return membership.organization
+
+    def validate_duration(self, value: datetime.timedelta) -> datetime.timedelta:
+        # A group's duration is the exact length every booking through it must
+        # span, so a zero or negative value describes no bookable event at all.
+        # The model carries no CHECK constraint, so this is the only guard.
+        if value <= datetime.timedelta(0):
+            raise serializers.ValidationError("Duration must be greater than zero.")
+        return value
 
     def validate(self, attrs: dict) -> dict:
         # `slots` has no "omitted means unchanged" sentinel -- a group write
@@ -3318,6 +3343,11 @@ class CalendarGroupSerializer(VirtualModelSerializer):
         return CalendarGroupInputData(
             name=validated_data["name"],
             description=validated_data.get("description", ""),
+            # Absent means "leave unchanged" on update and "not set" on create,
+            # which is exactly what ``.get`` returning ``None`` conveys. An
+            # explicit ``null`` never reaches here -- both fields refuse it.
+            duration=validated_data.get("duration"),
+            accepts_public_scheduling=validated_data.get("accepts_public_scheduling"),
             slots=[
                 CalendarGroupSlotInputData(
                     name=slot["name"],

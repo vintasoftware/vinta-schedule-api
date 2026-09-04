@@ -351,15 +351,17 @@ class CalendarGroupInputData:
 
     ``duration`` and ``accepts_public_scheduling`` are both tri-state:
     ``None`` means "omitted, leave unchanged" on update (and "not set" on
-    create). Neither the GraphQL ``CalendarGroupInput`` /
-    ``UpdateCalendarGroupInput`` input types nor the REST
-    ``CalendarGroupSerializer`` expose ``duration`` today -- it can only be
-    set by a caller building this dataclass directly (internal callers,
-    tests, and a future minting/admin surface). That means a group can no
-    longer become publicly schedulable through either of today's mutation
-    surfaces without also being given a duration through some other path
-    first -- see ``CalendarGroupService.create_group`` / ``update_group``
-    for the invariant this enforces and why.
+    create). Both are settable on both client-facing surfaces -- the REST
+    ``CalendarGroupSerializer`` takes ``duration`` / ``accepts_public_scheduling``,
+    and the GraphQL ``CalendarGroupInput`` / ``UpdateCalendarGroupInput`` take
+    ``duration_seconds`` / ``is_private`` -- so a group can be made publicly
+    schedulable in a single call on either. See
+    ``CalendarGroupService.create_group`` / ``update_group`` for the invariant
+    tying the two together and why.
+
+    Neither surface can *clear* a duration: ``None`` already means "leave
+    unchanged", so there is no value that says "set it back to null". That is
+    deliberate -- clearing one on a publicly schedulable group would fail open.
     """
 
     name: str

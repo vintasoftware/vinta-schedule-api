@@ -325,6 +325,11 @@ class CalendarGroupInput:
     description: str = ""
     slots: list[CalendarGroupSlotInput] = strawberry.field(default_factory=list)
     is_private: bool = True
+    #: Exact length every booking through the group must span. Required to
+    #: create the group with ``is_private=False``: a codeless public booking
+    #: presents no code, so the group is the only place its length can come
+    #: from. Omitted leaves the group unpinned, which only private groups may be.
+    duration_seconds: int | None = None
 
 
 @strawberry.input
@@ -335,6 +340,10 @@ class UpdateCalendarGroupInput:
     description: str = ""
     slots: list[CalendarGroupSlotInput] = strawberry.field(default_factory=list)
     is_private: bool | None = None
+    #: See ``CalendarGroupInput.duration_seconds``. Omitted leaves whatever the
+    #: group already has, so flipping ``is_private`` to False in the same call
+    #: succeeds only if the group already carries a duration or is given one here.
+    duration_seconds: int | None = None
 
 
 @strawberry.input
@@ -413,6 +422,25 @@ def _to_slot_input_data(slots: list[CalendarGroupSlotInput]) -> list[CalendarGro
         )
         for s in slots
     ]
+
+
+def _group_duration_from_seconds(duration_seconds: int | None) -> datetime.timedelta | None:
+    """Convert a group mutation's ``duration_seconds`` to the service's timedelta.
+
+    Seconds is the unit every other duration-carrying field in this schema takes
+    at the boundary, so the group inputs match rather than introducing a Duration
+    scalar for two fields.
+
+    ``None`` passes straight through: it is the "omitted, leave unchanged"
+    sentinel ``CalendarGroupInputData.duration`` uses, which also means there is
+    no way to clear a duration here -- deliberately, since clearing one on a
+    publicly schedulable group would fail open.
+    """
+    if duration_seconds is None:
+        return None
+    if duration_seconds <= 0:
+        raise CalendarGroupValidationError("duration_seconds must be greater than zero.")
+    return datetime.timedelta(seconds=duration_seconds)
 
 
 def _client_ip_from_request(request: object) -> str:
@@ -651,6 +679,9 @@ class CalendarGroupMutations:
                     description=input.description,
                     slots=_to_slot_input_data(input.slots),
                     accepts_public_scheduling=not input.is_private,
+                    # Raises CalendarGroupValidationError on a non-positive
+                    # value, caught below like any other group error.
+                    duration=_group_duration_from_seconds(input.duration_seconds),
                 )
             )
         except OverLimitError as exc:
@@ -681,6 +712,7 @@ class CalendarGroupMutations:
                     description=input.description,
                     slots=_to_slot_input_data(input.slots),
                     accepts_public_scheduling=accepts_public_scheduling,
+                    duration=_group_duration_from_seconds(input.duration_seconds),
                 ),
             )
         except CalendarGroup.DoesNotExist:
