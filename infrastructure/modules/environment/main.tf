@@ -111,8 +111,9 @@ module "app" {
   default_payment_provider           = var.default_payment_provider
   billing_default_grace_period_days  = var.billing_default_grace_period_days
 
-  extra_environment = var.extra_environment
-  extra_secret_keys = var.extra_secret_keys
+  extra_environment    = var.extra_environment
+  extra_secret_keys    = var.extra_secret_keys
+  disabled_secret_keys = var.disabled_secret_keys
 
   github_repository        = var.github_repository
   github_deploy_ref        = var.github_deploy_ref

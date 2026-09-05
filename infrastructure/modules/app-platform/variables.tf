@@ -418,6 +418,26 @@ variable "extra_environment" {
   nullable    = false
 }
 
+variable "disabled_secret_keys" {
+  description = <<-EOT
+    Optional credentials this environment does not use, e.g. the MERCADOPAGO_*
+    trio where payments run through Stripe.
+
+    Every key the task definitions name must exist in the app secret -- ECS
+    fails the WHOLE task, not just that variable, when one is missing. Dropping
+    a key here removes it from both the seed and the task definitions, and
+    settings/base.py reads all of these with a default, so the absent variable
+    resolves to the same "" an empty entry would have given.
+
+    Only the optional set can be dropped. Naming a key Django reads without a
+    default (SMTP_*, TWILIO_ACCOUNT_SID, TWILIO_NUMBER, AWS_CLOUDFRONT_KEY*)
+    has no effect -- see `local.required_secret_keys`.
+  EOT
+  type        = list(string)
+  default     = []
+  nullable    = false
+}
+
 variable "extra_secret_keys" {
   description = "Extra keys to seed (empty) in the Secrets Manager secret and inject as container secrets. For env vars added to the app after this module was written."
   type        = list(string)

@@ -33,21 +33,33 @@ resource "random_password" "salt_key" {
 }
 
 locals {
-  # Credentials an operator must supply. Seeded empty so the container still gets
-  # the env var -- several settings read these with `config("X")` and no default,
-  # which raises when the variable is absent but is happy with an empty string.
-  operator_secret_keys = concat([
-    "SENTRY_DSN",
+  # Read by settings/base.py as `config("X")` with NO default, so Django cannot
+  # even import without them. Always seeded and always in the task definitions;
+  # `disabled_secret_keys` cannot take one out.
+  required_secret_keys = [
     "SMTP_HOST",
     "SMTP_USERNAME",
     "SMTP_PASSWORD",
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_NUMBER",
+    # The CloudFront signing pair, from the storage module:
+    #   terragrunt output cloudfront_key_id
+    #   terragrunt output -raw cloudfront_private_key
+    "AWS_CLOUDFRONT_KEY_ID",
+    "AWS_CLOUDFRONT_KEY",
+  ]
+
+  # Read with a default, so the app boots without them and an absent variable
+  # resolves to the same "" the default supplies. An environment that does not
+  # use one of these integrations lists its keys in `disabled_secret_keys`
+  # rather than carrying an empty entry in the secret forever.
+  default_optional_secret_keys = [
+    "SENTRY_DSN",
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
-    "TWILIO_ACCOUNT_SID",
     "TWILIO_API_KEY_SID",
     "TWILIO_API_KEY_SECRET",
     "TWILIO_AUTH_TOKEN",
-    "TWILIO_NUMBER",
     "TWILIO_DEFAULT_BROADCAST_NUMBERS",
     "MERCADOPAGO_ACCESS_TOKEN",
     "MERCADOPAGO_WEBHOOK_SECRET",
@@ -55,12 +67,15 @@ locals {
     "STRIPE_SECRET_KEY",
     "STRIPE_WEBHOOK_SECRET",
     "STRIPE_PUBLISHABLE_KEY",
-    # The CloudFront signing pair, from the storage stack:
-    #   terragrunt output cloudfront_key_id
-    #   terragrunt output -raw cloudfront_private_key
-    "AWS_CLOUDFRONT_KEY_ID",
-    "AWS_CLOUDFRONT_KEY",
-  ], var.extra_secret_keys)
+  ]
+
+  # Subtracting from the optional set only, so naming a required key in
+  # `disabled_secret_keys` does nothing rather than breaking the container.
+  operator_secret_keys = concat(
+    local.required_secret_keys,
+    sort(tolist(setsubtract(local.default_optional_secret_keys, var.disabled_secret_keys))),
+    var.extra_secret_keys,
+  )
 
   terraform_managed_secret_values = {
     SECRET_KEY   = random_password.django_secret_key.result

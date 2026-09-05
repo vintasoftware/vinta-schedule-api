@@ -361,16 +361,56 @@ containers read, as a flat JSON object. Terraform seeds it once — it knows
 `DATABASE_URL` and `REDIS_URL`, and generates `SECRET_KEY` and `SALT_KEY` — then
 stops managing the value (`ignore_changes`), so operators own it from then on.
 
-Everything else is seeded **empty** and has to be filled in before the app is
-usable. Keys awaiting a value:
+Everything else is seeded **empty**. The keys split in two, and the line between
+them is whether `settings/base.py` reads them with a default:
 
-`SENTRY_DSN`, `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET`, `TWILIO_ACCOUNT_SID`, `TWILIO_API_KEY_SID`,
-`TWILIO_API_KEY_SECRET`, `TWILIO_AUTH_TOKEN`, `TWILIO_NUMBER`,
-`TWILIO_DEFAULT_BROADCAST_NUMBERS`, `MERCADOPAGO_ACCESS_TOKEN`,
-`MERCADOPAGO_WEBHOOK_SECRET`, `MERCADOPAGO_PUBLIC_KEY`, `STRIPE_SECRET_KEY`,
-`STRIPE_WEBHOOK_SECRET`, `STRIPE_PUBLISHABLE_KEY`, `AWS_CLOUDFRONT_KEY_ID`,
-`AWS_CLOUDFRONT_KEY`.
+**Required — `config("X")` with no default, so Django cannot import without
+them.** The module always seeds these and always names them in the task
+definitions:
+
+`SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `TWILIO_ACCOUNT_SID`,
+`TWILIO_NUMBER`, `AWS_CLOUDFRONT_KEY_ID`, `AWS_CLOUDFRONT_KEY`.
+
+**Optional — read with a default, so an absent variable resolves to the same
+`""` an empty entry would give:**
+
+`SENTRY_DSN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `TWILIO_API_KEY_SID`,
+`TWILIO_API_KEY_SECRET`, `TWILIO_AUTH_TOKEN`, `TWILIO_DEFAULT_BROADCAST_NUMBERS`,
+`MERCADOPAGO_ACCESS_TOKEN`, `MERCADOPAGO_WEBHOOK_SECRET`, `MERCADOPAGO_PUBLIC_KEY`,
+`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PUBLISHABLE_KEY`.
+
+An environment that does not use one of those integrations lists its keys in
+`disabled_secret_keys` instead of carrying empty entries forever — staging does
+this for the MercadoPago trio, since it takes payments through Stripe. Naming a
+required key there has no effect, by design.
+
+Filling a value in is still a console or CLI edit, not a Terraform run.
+
+> **Every key the task definitions name has to exist, even with no value.** Each
+> task definition maps one JSON key to one env var, and ECS fails the *whole
+> task* if a single key is absent — no container starts, and the deploy reports:
+>
+> ```
+> ResourceInitializationError: unable to pull secrets or registry auth:
+> retrieved secret from Secrets Manager did not contain json key
+> MERCADOPAGO_ACCESS_TOKEN
+> ```
+>
+> Terraform seeds all of them, so the way this happens is an edit that pastes
+> back a subset — the CLI recipe below replaces the whole document, it does not
+> merge. Adding to `extra_secret_keys` does it too: the task definitions start
+> asking for a key the existing secret version has never held. (Removing one via
+> `disabled_secret_keys` is safe in the other direction — a key left in the
+> secret that nothing reads is ignored.)
+>
+> [scripts/sync-app-secret-keys.sh](scripts/sync-app-secret-keys.sh) reports
+> which keys are missing and adds them as empty strings, leaving existing values
+> alone. It prints key names only, never a value:
+>
+> ```bash
+> infrastructure/scripts/sync-app-secret-keys.sh            # dry run
+> infrastructure/scripts/sync-app-secret-keys.sh --apply
+> ```
 
 The last two come from the storage module, which now lives in the same state:
 
