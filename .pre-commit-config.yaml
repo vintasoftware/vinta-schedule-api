@@ -70,6 +70,12 @@ repos:
         language: system
         files: \.(py)$
         pass_filenames: false
+      - id: check-production-image-imports
+        name: check-production-image-imports-local
+        entry: uv run python manage.py check_production_image_imports
+        language: system
+        files: (\.py$|^\.dockerignore$|^pyproject\.toml$)
+        pass_filenames: false
       - id: backend-schema
         name: backend-schema-local
         entry: uv run python manage.py spectacular --color --file schema.yml

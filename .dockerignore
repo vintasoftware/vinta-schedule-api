@@ -21,3 +21,22 @@ mediafiles
 .ruff_cache
 .env
 .env.docker
+
+# Test support. The production image installs no dev dependencies (`uv sync
+# --no-dev`), and di_core's `container.wire(packages=INTERNAL_INSTALLED_APPS)`
+# imports EVERY module under those packages at startup -- so one shipped test
+# module importing model_bakery crashes web, worker, beat and release alike:
+#
+#   File "/home/user/app/common/tests/test_org_retrievers.py", line 21
+#     from model_bakery import baker
+#   ModuleNotFoundError: No module named 'model_bakery'
+#
+# `factories.py` is test support too, despite living at app level, and every
+# one of them imports model_bakery. The development image gets all of this back
+# through the compose bind mount (`./:/home/user/app/`), and CI runs pytest via
+# `uv run`, not in this image.
+**/tests
+**/testing
+**/factories.py
+**/fixtures.py
+conftest.py
