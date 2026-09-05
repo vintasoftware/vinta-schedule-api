@@ -338,6 +338,12 @@ variable "extra_secret_keys" {
   default     = null
 }
 
+variable "disabled_secret_keys" {
+  description = "Optional credentials this environment does not use. See the app-platform variable of the same name."
+  type        = list(string)
+  default     = null
+}
+
 ########################################
 # CI
 ########################################

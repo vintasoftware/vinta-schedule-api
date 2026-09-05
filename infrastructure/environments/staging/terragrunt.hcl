@@ -64,6 +64,16 @@ inputs = {
   default_from_email = "noreply@schedule-staging.vintasoftware.com"
   default_bcc_emails = ["hugo@vinta.com.br"]
 
+  # Staging takes payments through Stripe, so the MercadoPago credentials are
+  # not carried here. Every key the task definitions name has to exist in the
+  # app secret or ECS starts no container at all, and settings/base.py reads
+  # these three with a default -- absent behaves exactly like the empty string.
+  disabled_secret_keys = [
+    "MERCADOPAGO_ACCESS_TOKEN",
+    "MERCADOPAGO_WEBHOOK_SECRET",
+    "MERCADOPAGO_PUBLIC_KEY",
+  ]
+
   ####################################
   # CI
   ####################################

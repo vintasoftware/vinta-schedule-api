@@ -15,9 +15,10 @@
 # `extra_secret_keys` has the same effect: the task definitions start asking
 # for it, but the existing secret version has never heard of it.
 #
-# This adds the missing keys with empty values and leaves every existing value
-# untouched. Dry run by default; re-running once the keys are all present does
-# nothing.
+# This compares the secret against the `secrets` array of the deployed web task
+# definition -- the exact set ECS resolves at task start -- then adds whatever
+# is missing with an empty value, leaving every existing value untouched. Dry
+# run by default; re-running once the keys are all present does nothing.
 #
 # It prints key NAMES only, never a value.
 #
@@ -46,28 +47,32 @@ for tool in aws jq; do
 done
 
 INFRA="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SECRETS_TF="$INFRA/modules/app-platform/secrets.tf"
 ENV_TG="$INFRA/environments/$ENVIRONMENT/terragrunt.hcl"
 
 [[ -f "$ENV_TG" ]] || { echo "no such environment: $ENVIRONMENT" >&2; exit 2; }
 
 PROJECT="$(grep -E '^\s*project_name\s*=' "$ENV_TG" | head -1 | sed -E 's/.*"(.*)".*/\1/')"
-SECRET_ID="${PROJECT}-${ENVIRONMENT}/app"
+NAME_PREFIX="${PROJECT}-${ENVIRONMENT}"
+SECRET_ID="${NAME_PREFIX}/app"
 
-# The same list ecs.tf turns into `container_secrets`: the four Terraform
-# generates, the operator-owned ones, and whatever the environment adds.
-required_keys() {
-  printf '%s\n' SECRET_KEY SALT_KEY DATABASE_URL REDIS_URL
-  sed -n '/operator_secret_keys = concat(\[/,/\], var\.extra_secret_keys)/p' "$SECRETS_TF" \
-    | grep -oE '"[A-Z][A-Z0-9_]*"' | tr -d '"'
-  sed -n '/extra_secret_keys\s*=\s*\[/,/\]/p' "$ENV_TG" \
-    | grep -oE '"[A-Z][A-Z0-9_]*"' | tr -d '"'
-}
+# Ask the deployed task definition rather than parsing the Terraform. Its
+# `secrets` array IS what ECS will look for, so this stays correct across
+# changes to how the module builds the list -- required vs optional keys,
+# disabled_secret_keys, extra_secret_keys, or the next refactor.
+REQUIRED="$(aws ecs describe-task-definition \
+  --task-definition "${NAME_PREFIX}-web" \
+  --query 'taskDefinition.containerDefinitions[0].secrets[].name' \
+  --output text 2>/dev/null | tr '\t' '\n' | sort -u)"
 
-REQUIRED="$(required_keys | sort -u)"
+if [[ -z "$REQUIRED" ]]; then
+  echo "could not read the secrets list from task definition ${NAME_PREFIX}-web." >&2
+  echo "Has the stack been applied in this environment yet?" >&2
+  exit 2
+fi
 
 echo "environment : $ENVIRONMENT"
 echo "secret      : $SECRET_ID"
+echo "key list    : task definition ${NAME_PREFIX}-web"
 echo "mode        : $([[ $APPLY -eq 1 ]] && echo APPLY || echo 'DRY RUN (pass --apply to add them)')"
 echo
 
@@ -77,7 +82,7 @@ PRESENT="$(aws secretsmanager get-secret-value --secret-id "$SECRET_ID" \
 MISSING="$(comm -23 <(echo "$REQUIRED") <(echo "$PRESENT") || true)"
 EXTRA="$(comm -13 <(echo "$REQUIRED") <(echo "$PRESENT") || true)"
 
-echo "$(echo "$REQUIRED" | wc -l | tr -d ' ') keys required, $(echo "$PRESENT" | wc -l | tr -d ' ') present"
+echo "$(echo "$REQUIRED" | wc -l | tr -d ' ') keys read by the containers, $(echo "$PRESENT" | wc -l | tr -d ' ') present in the secret"
 
 if [[ -n "$EXTRA" ]]; then
   echo
