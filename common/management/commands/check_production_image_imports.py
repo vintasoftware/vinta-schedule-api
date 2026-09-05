@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+from typing import TypeGuard
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -49,8 +50,12 @@ def _excluded_from_image() -> tuple[set[str], set[str], set[str]]:
     return components, filenames, root_files
 
 
-def _is_type_checking_guard(node: ast.stmt) -> bool:
-    """`if TYPE_CHECKING:` / `if typing.TYPE_CHECKING:` -- never runs."""
+def _is_type_checking_guard(node: ast.AST) -> TypeGuard[ast.If]:
+    """`if TYPE_CHECKING:` / `if typing.TYPE_CHECKING:` -- never runs.
+
+    A TypeGuard rather than a bool so the caller can reach `.orelse` on the
+    narrowed node; `ast.iter_child_nodes` only promises `AST`.
+    """
     if not isinstance(node, ast.If):
         return False
     test = node.test
