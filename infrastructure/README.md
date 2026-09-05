@@ -372,6 +372,30 @@ usable. Keys awaiting a value:
 `STRIPE_WEBHOOK_SECRET`, `STRIPE_PUBLISHABLE_KEY`, `AWS_CLOUDFRONT_KEY_ID`,
 `AWS_CLOUDFRONT_KEY`.
 
+> **Every key has to exist, even the ones you have no value for.** Each task
+> definition maps one JSON key to one env var, and ECS fails the *whole task* if
+> a single key is absent — no container starts, and the deploy reports:
+>
+> ```
+> ResourceInitializationError: unable to pull secrets or registry auth:
+> retrieved secret from Secrets Manager did not contain json key
+> MERCADOPAGO_ACCESS_TOKEN
+> ```
+>
+> Terraform seeds all of them, so the way this happens is an edit that pastes
+> back a subset — the CLI recipe below replaces the whole document, it does not
+> merge. Adding to `extra_secret_keys` does it too: the task definitions start
+> asking for a key the existing secret version has never held.
+>
+> [scripts/sync-app-secret-keys.sh](scripts/sync-app-secret-keys.sh) reports
+> which keys are missing and adds them as empty strings, leaving existing values
+> alone. It prints key names only, never a value:
+>
+> ```bash
+> infrastructure/scripts/sync-app-secret-keys.sh            # dry run
+> infrastructure/scripts/sync-app-secret-keys.sh --apply
+> ```
+
 The last two come from the storage module, which now lives in the same state:
 
 ```bash
