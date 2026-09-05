@@ -72,7 +72,7 @@ repos:
         pass_filenames: false
       - id: check-production-image-imports
         name: check-production-image-imports-local
-        entry: uv run python manage.py check_production_image_imports
+        entry: uv run python scripts/check_production_image_imports.py
         language: system
         files: (\.py$|^\.dockerignore$|^pyproject\.toml$)
         pass_filenames: false
