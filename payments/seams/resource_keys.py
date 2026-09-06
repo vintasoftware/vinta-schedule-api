@@ -42,7 +42,7 @@ from __future__ import annotations
 #: if it were mistyped.
 ORGANIZATION_MEMBERS = "organization_members"
 RESOURCE_CALENDARS = "resource_calendars"
-CALENDAR_GROUPS = "calendar_groups"
+APPOINTMENT_TYPES = "appointment_types"
 BUNDLE_CALENDARS = "bundle_calendars"
 AVAILABILITY_WINDOWS = "availability_windows"
 WEBHOOK_SUBSCRIPTIONS = "webhook_subscriptions"
@@ -63,7 +63,7 @@ ADVANCED_SCHEDULING = "advanced_scheduling"
 RESOURCE_KEYS = (
     ORGANIZATION_MEMBERS,
     RESOURCE_CALENDARS,
-    CALENDAR_GROUPS,
+    APPOINTMENT_TYPES,
     BUNDLE_CALENDARS,
     AVAILABILITY_WINDOWS,
     WEBHOOK_SUBSCRIPTIONS,

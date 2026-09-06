@@ -1,6 +1,6 @@
 from django.core.exceptions import ImproperlyConfigured, PermissionDenied
 
-from calendar_integration.constants import GroupScopedRuleType
+from calendar_integration.constants import AppointmentTypeScopedRuleType
 
 
 # API Validation Errors
@@ -309,59 +309,63 @@ class ChangeRequestIneligibleError(ChangeRequestError, PermissionDenied):
     default_message = "You are not eligible to resolve this change request."
 
 
-# Calendar Group errors
-class CalendarGroupError(CalendarIntegrationError):
-    """Base class for CalendarGroup-related errors."""
+# Appointment Type errors
+class AppointmentTypeError(CalendarIntegrationError):
+    """Base class for AppointmentType-related errors."""
 
     pass
 
 
-class CalendarGroupValidationError(CalendarGroupError):
-    """Raised when CalendarGroup input data is invalid."""
+class AppointmentTypeValidationError(AppointmentTypeError):
+    """Raised when AppointmentType input data is invalid."""
 
     pass
 
 
-class CalendarGroupSlotInUseError(CalendarGroupError):
-    """Raised when a `CalendarGroupSlot` cannot be removed outright because it is
+class AppointmentTypeSlotInUseError(AppointmentTypeError):
+    """Raised when an `AppointmentTypeSlot` cannot be removed outright because it is
     referenced by a future-booked event.
 
     Removing one calendar from a slot's roster while the slot itself survives
     never raises this -- that removal is unconditionally lenient (it deletes
-    only the `CalendarGroupSlotMembership` row; see
-    `CalendarGroupService._reconcile_slot`). This error is reserved for
+    only the `AppointmentTypeSlotMembership` row; see
+    `AppointmentTypeService._reconcile_slot`). This error is reserved for
     deleting the whole slot, which would also drop every remaining calendar's
-    group-scoped windows, blocked time, and quota rules for it.
+    appointment-type-scoped windows, blocked time, and quota rules for it.
     """
 
-    default_message = "Cannot remove slot because it is referenced by future group bookings."
+    default_message = (
+        "Cannot remove slot because it is referenced by future appointment type bookings."
+    )
 
 
-class CalendarGroupHasFutureEventsError(CalendarGroupError):
-    """Raised when a group cannot be deleted because it has future bookings."""
+class AppointmentTypeHasFutureEventsError(AppointmentTypeError):
+    """Raised when an appointment type cannot be deleted because it has future bookings."""
 
-    default_message = "Cannot delete CalendarGroup because it has future bookings."
+    default_message = "Cannot delete AppointmentType because it has future bookings."
 
 
-class CalendarGroupSlotConfigNotFoundError(CalendarGroupError):
-    """Raised when a (calendar, group slot) target for group-scoped availability
+class AppointmentTypeSlotConfigNotFoundError(AppointmentTypeError):
+    """Raised when a (calendar, appointment type slot) target for appointment-type-scoped availability
     configuration cannot be resolved.
 
     Deliberately the SAME exception -- same type, same message -- whether the
     membership genuinely does not exist or the acting user is simply not
-    authorized to manage it. A member must not be able to learn that a group
+    authorized to manage it. A member must not be able to learn that an appointment type
     or roster entry exists by comparing error shapes: a plain 404-shaped
     error here is indistinguishable from a 403 in disguise.
     """
 
-    default_message = "No group-scoped availability configuration found for this calendar and slot."
+    default_message = (
+        "No appointment-type-scoped availability configuration found for this calendar and slot."
+    )
 
 
-class CalendarGroupScopedRuleViolationError(CalendarGroupError):
-    """Raised when a directly-named calendar violates a group-scoped
+class AppointmentTypeScopedRuleViolationError(AppointmentTypeError):
+    """Raised when a directly-named calendar violates an appointment-type-scoped
     configuration rule for the requested booking/reschedule time.
 
-    Carries ``calendar_id`` and ``rule_type`` (see ``GroupScopedRuleType``) so
+    Carries ``calendar_id`` and ``rule_type`` (see ``AppointmentTypeScopedRuleType``) so
     callers can build a structured error response -- never the configured
     rule values themselves: enough for an admin to act on, without leaking
     roster detail to external bookers on public links. Naming only the
@@ -372,7 +376,7 @@ class CalendarGroupScopedRuleViolationError(CalendarGroupError):
     def __init__(
         self,
         calendar_id: int,
-        rule_type: str = GroupScopedRuleType.OUTSIDE_WINDOW,
+        rule_type: str = AppointmentTypeScopedRuleType.OUTSIDE_WINDOW,
         message: str | None = None,
     ) -> None:
         self.calendar_id = calendar_id
@@ -380,7 +384,7 @@ class CalendarGroupScopedRuleViolationError(CalendarGroupError):
         if message is None:
             message = (
                 f"Calendar {calendar_id} is not bookable for the requested time in "
-                f"this group ({rule_type})."
+                f"this appointment type ({rule_type})."
             )
         super().__init__(message)
 
@@ -401,20 +405,20 @@ class CalendarPoolValidationError(CalendarPoolError):
 
 class CalendarPoolInUseError(CalendarPoolError):
     """Raised when a `CalendarPool` cannot be deleted because it is still
-    attached to at least one `CalendarGroupSlot`.
+    attached to at least one `AppointmentTypeSlot`.
 
-    Mirrors `CalendarGroupHasFutureEventsError`'s refuse-when-referenced
+    Mirrors `AppointmentTypeHasFutureEventsError`'s refuse-when-referenced
     posture (see the plan's Pool deletion decision), but carries the distinct
-    names of every referencing group so the REST layer can name them in a 409
+    names of every referencing appointment type so the REST layer can name them in a 409
     without a second query.
     """
 
-    def __init__(self, group_names: list[str]) -> None:
-        self.group_names = group_names
-        names = ", ".join(sorted(group_names))
+    def __init__(self, appointment_type_names: list[str]) -> None:
+        self.appointment_type_names = appointment_type_names
+        names = ", ".join(sorted(appointment_type_names))
         super().__init__(
             f"Cannot delete CalendarPool because it is still attached to slots "
-            f"in these groups: {names}."
+            f"in these appointment_types: {names}."
         )
 
 

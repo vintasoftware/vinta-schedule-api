@@ -85,23 +85,23 @@ class GetAvailableTimeOccurrencesJSON(Func):
         super().__init__(*_with_overlap(args, overlap), **kwargs)
 
 
-class GetCalendarGroupQuotaPeriodCountsJSON(Func):
+class GetAppointmentTypeQuotaPeriodCountsJSON(Func):
     """
     Database function returning per-period LIVE booking counts for one calendar
-    inside one CalendarGroupSlot, as a JSON array. Only bookings made THROUGH
-    that group slot (a
-    ``CalendarEventGroupSelection`` row for this exact slot+calendar pair) are
+    inside one AppointmentTypeSlot, as a JSON array. Only bookings made THROUGH
+    that appointment type slot (a
+    ``CalendarEventAppointmentTypeSelection`` row for this exact slot+calendar pair) are
     counted; events created directly on the calendar are not. Counts are derived
     on read -- a cancelled booking (its ``CalendarEvent`` row deleted) frees
     quota immediately, and a reschedule moves the count to whichever period its
     new start_time falls into.
 
     Usage:
-        from calendar_integration.database_functions import GetCalendarGroupQuotaPeriodCountsJSON
+        from calendar_integration.database_functions import GetAppointmentTypeQuotaPeriodCountsJSON
 
         Calendar.objects.filter(id__in=calendar_ids).annotate(
-            quota_period_counts=GetCalendarGroupQuotaPeriodCountsJSON(
-                "id", group_slot_id, organization_id, period_type, week_start,
+            quota_period_counts=GetAppointmentTypeQuotaPeriodCountsJSON(
+                "id", appointment_type_slot_id, organization_id, period_type, week_start,
                 range_start, range_end,
             )
         )
@@ -125,13 +125,13 @@ class GetCalendarGroupQuotaPeriodCountsJSON(Func):
     are.
     """
 
-    function = "get_calendar_group_quota_period_counts_json"
+    function = "get_appointment_type_quota_period_counts_json"
     output_field = ArrayField(JSONField())
 
     def __init__(
         self,
         calendar_id,
-        group_slot_id,
+        appointment_type_slot_id,
         organization_id,
         period_type: str,
         week_start: str,
@@ -141,7 +141,7 @@ class GetCalendarGroupQuotaPeriodCountsJSON(Func):
     ):
         super().__init__(
             calendar_id,
-            group_slot_id,
+            appointment_type_slot_id,
             organization_id,
             Value(period_type),
             Value(week_start),

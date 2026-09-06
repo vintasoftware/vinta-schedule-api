@@ -22,23 +22,23 @@ from calendar_integration.constants import (
     QuotaPeriod,
 )
 from calendar_integration.exceptions import (
-    CalendarGroupError,
+    AppointmentTypeError,
     CalendarIntegrationError,
     CalendarPoolError,
     CalendarServiceNotInjectedError,
     DuplicateBookingPolicyError,
 )
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
+    AppointmentTypeSlotQuotaRule,
     AvailableTime,
     BlockedTime,
     BookingPolicy,
     Calendar,
     CalendarEvent,
-    CalendarEventGroupSelection,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
-    CalendarGroupSlotQuotaRule,
+    CalendarEventAppointmentTypeSelection,
     CalendarOwnership,
     CalendarPool,
     CalendarSync,
@@ -53,13 +53,13 @@ from calendar_integration.models import (
     ResourceAllocation,
 )
 from calendar_integration.services.dataclasses import (
+    AppointmentTypeEventInputData,
+    AppointmentTypeInputData,
+    AppointmentTypeSlotInputData,
+    AppointmentTypeSlotSelectionInputData,
     BlockedTimeData,
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
-    CalendarGroupEventInputData,
-    CalendarGroupInputData,
-    CalendarGroupSlotInputData,
-    CalendarGroupSlotSelectionInputData,
     CalendarPoolInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
@@ -69,13 +69,16 @@ from calendar_integration.services.dataclasses import (
     UnavailableTimeWindow,
 )
 from calendar_integration.virtual_models import (
+    AppointmentTypeScopedAvailabilityWindowVirtualModel,
+    AppointmentTypeScopedBlockedTimeVirtualModel,
+    AppointmentTypeScopedQuotaRuleVirtualModel,
+    AppointmentTypeSlotMembershipVirtualModel,
+    AppointmentTypeSlotVirtualModel,
+    AppointmentTypeVirtualModel,
     AvailableTimeVirtualModel,
     BlockedTimeVirtualModel,
-    CalendarEventGroupSelectionVirtualModel,
+    CalendarEventAppointmentTypeSelectionVirtualModel,
     CalendarEventVirtualModel,
-    CalendarGroupSlotMembershipVirtualModel,
-    CalendarGroupSlotVirtualModel,
-    CalendarGroupVirtualModel,
     CalendarOwnershipVirtualModel,
     CalendarPoolVirtualModel,
     CalendarVirtualModel,
@@ -84,9 +87,6 @@ from calendar_integration.virtual_models import (
     EventRecurrenceExceptionVirtualModel,
     ExternalAttendeeVirtualModel,
     ExternalEventChangeRequestVirtualModel,
-    GroupScopedAvailabilityWindowVirtualModel,
-    GroupScopedBlockedTimeVirtualModel,
-    GroupScopedQuotaRuleVirtualModel,
     RecurrenceRuleVirtualModel,
     ResourceAllocationVirtualModel,
 )
@@ -99,7 +99,7 @@ from users.models import User
 
 
 if TYPE_CHECKING:
-    from calendar_integration.services.calendar_group_service import CalendarGroupService
+    from calendar_integration.services.appointment_type_service import AppointmentTypeService
     from calendar_integration.services.calendar_service import CalendarService
 
 
@@ -1027,7 +1027,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
             "attendances",
             "resource_allocations",
             "external_client_identifiers",
-            "group_selections",
+            "appointment_type_selections",
             # Recurrence fields
             "recurrence_rule",
             "rrule_string",
@@ -1097,13 +1097,15 @@ class CalendarEventSerializer(VirtualModelSerializer):
         self.fields["external_attendances"] = EventExternalAttendanceSerializer(
             many=True, context=self.context
         )
-        # Read-only: group-selection roster picks are managed through
-        # CalendarGroupService, not through this serializer. Declared here rather
-        # than as a class attribute because CalendarEventGroupSelectionSerializer
-        # is defined later in this module (it nests CalendarGroupSlotSerializer,
+        # Read-only: appointment-type-selection roster picks are managed through
+        # AppointmentTypeService, not through this serializer. Declared here rather
+        # than as a class attribute because CalendarEventAppointmentTypeSelectionSerializer
+        # is defined later in this module (it nests AppointmentTypeSlotSerializer,
         # which itself is defined after CalendarEventSerializer).
-        self.fields["group_selections"] = CalendarEventGroupSelectionSerializer(
-            many=True, read_only=True, context=self.context
+        self.fields["appointment_type_selections"] = (
+            CalendarEventAppointmentTypeSelectionSerializer(
+                many=True, read_only=True, context=self.context
+            )
         )
 
         if self.instance:
@@ -2682,9 +2684,9 @@ class AvailableTimeBulkModificationSerializer(serializers.Serializer):
 
 
 # ---------------------------------------------------------------------------
-# CalendarGroup REST serializers
+# AppointmentType REST serializers
 # ---------------------------------------------------------------------------
-def _translate_group_error(exc: CalendarGroupError) -> serializers.ValidationError:
+def _translate_appointment_type_error(exc: AppointmentTypeError) -> serializers.ValidationError:
     return serializers.ValidationError({"non_field_errors": [str(exc)]})
 
 
@@ -2697,8 +2699,8 @@ class CalendarPoolSerializer(VirtualModelSerializer):
 
     On write, accepts `calendar_ids: list[int]` and replaces the roster
     wholesale; on read exposes the roster via `calendars` -- mirrors
-    `CalendarGroupSlotSerializer`. Persistence delegates to
-    `CalendarGroupService.create_pool` / `update_pool`; this serializer never
+    `AppointmentTypeSlotSerializer`. Persistence delegates to
+    `AppointmentTypeService.create_pool` / `update_pool`; this serializer never
     writes `CalendarPool`/`CalendarPoolMembership` rows directly.
     """
 
@@ -2725,12 +2727,12 @@ class CalendarPoolSerializer(VirtualModelSerializer):
     def __init__(
         self,
         *args,
-        calendar_group_service: Annotated[
-            "CalendarGroupService | None", Provide["calendar_group_service"]
+        appointment_type_service: Annotated[
+            "AppointmentTypeService | None", Provide["appointment_type_service"]
         ] = None,
         **kwargs,
     ):
-        self.calendar_group_service = calendar_group_service
+        self.appointment_type_service = appointment_type_service
         super().__init__(*args, **kwargs)
 
     def _organization(self) -> Organization:
@@ -2779,52 +2781,54 @@ class CalendarPoolSerializer(VirtualModelSerializer):
         )
 
     def create(self, validated_data: dict) -> CalendarPool:
-        if not self.calendar_group_service:
+        if not self.appointment_type_service:
             raise CalendarServiceNotInjectedError(
-                "calendar_group_service is not defined; configure the DI container."
+                "appointment_type_service is not defined; configure the DI container."
             )
         organization = self._organization()
-        self.calendar_group_service.initialize(organization=organization)
+        self.appointment_type_service.initialize(organization=organization)
         try:
-            return self.calendar_group_service.create_pool(self._to_input_data(validated_data))
+            return self.appointment_type_service.create_pool(self._to_input_data(validated_data))
         except CalendarPoolError as e:
             raise _translate_pool_error(e) from e
 
     def update(self, instance: CalendarPool, validated_data: dict) -> CalendarPool:
-        if not self.calendar_group_service:
+        if not self.appointment_type_service:
             raise CalendarServiceNotInjectedError(
-                "calendar_group_service is not defined; configure the DI container."
+                "appointment_type_service is not defined; configure the DI container."
             )
         organization = self._organization()
-        self.calendar_group_service.initialize(organization=organization)
+        self.appointment_type_service.initialize(organization=organization)
         try:
-            return self.calendar_group_service.update_pool(
+            return self.appointment_type_service.update_pool(
                 pool_id=instance.id, data=self._to_input_data(validated_data)
             )
         except CalendarPoolError as e:
             raise _translate_pool_error(e) from e
 
 
-class CalendarGroupSlotMembershipSerializer(VirtualModelSerializer):
+class AppointmentTypeSlotMembershipSerializer(VirtualModelSerializer):
     calendar = CalendarSerializer(read_only=True)
 
     class Meta:
-        model = CalendarGroupSlotMembership
-        virtual_model = CalendarGroupSlotMembershipVirtualModel
+        model = AppointmentTypeSlotMembership
+        virtual_model = AppointmentTypeSlotMembershipVirtualModel
         fields = ("id", "calendar")
 
 
-class GroupScopedAvailabilityWindowSerializer(VirtualModelSerializer):
-    """Read representation of a group-scoped availability window.
+class AppointmentTypeScopedAvailabilityWindowSerializer(VirtualModelSerializer):
+    """Read representation of an appointment-type-scoped availability window.
 
     Deliberately narrower than ``AvailableTimeSerializer``: there is no nested
     ``recurrence_rule`` write path here, only ``rrule_string`` -- matching
-    exactly what ``CalendarGroupService``'s window-write methods accept, so the
+    exactly what ``AppointmentTypeService``'s window-write methods accept, so the
     REST shape and the service signature cannot drift apart.
     """
 
     calendar_id = serializers.IntegerField(source="calendar_fk_id", read_only=True)
-    group_slot_id = serializers.IntegerField(source="group_slot_fk_id", read_only=True)
+    appointment_type_slot_id = serializers.IntegerField(
+        source="appointment_type_slot_fk_id", read_only=True
+    )
     rrule_string = serializers.SerializerMethodField(read_only=True)
     is_recurring = serializers.SerializerMethodField(read_only=True)
     start_time = serializers.DateTimeField(read_only=True)
@@ -2832,11 +2836,11 @@ class GroupScopedAvailabilityWindowSerializer(VirtualModelSerializer):
 
     class Meta:
         model = AvailableTime
-        virtual_model = GroupScopedAvailabilityWindowVirtualModel
+        virtual_model = AppointmentTypeScopedAvailabilityWindowVirtualModel
         fields = (
             "id",
             "calendar_id",
-            "group_slot_id",
+            "appointment_type_slot_id",
             "start_time",
             "end_time",
             "timezone",
@@ -2864,11 +2868,11 @@ class GroupScopedAvailabilityWindowSerializer(VirtualModelSerializer):
         )
 
 
-class GroupScopedAvailabilityWindowCreateSerializer(serializers.Serializer):
-    """Input for creating a group-scoped availability window.
+class AppointmentTypeScopedAvailabilityWindowCreateSerializer(serializers.Serializer):
+    """Input for creating an appointment-type-scoped availability window.
 
     Field names map 1:1 onto
-    ``CalendarGroupService.create_group_scoped_availability_window``'s keyword
+    ``AppointmentTypeService.create_appointment_type_scoped_availability_window``'s keyword
     arguments (``calendar_id``, ``start_time``, ``end_time``, ``tz``,
     ``rrule_string``) so the REST shape can never silently drift from the
     service signature it delegates to.
@@ -2903,11 +2907,11 @@ class GroupScopedAvailabilityWindowCreateSerializer(serializers.Serializer):
         return attrs
 
 
-class GroupScopedAvailabilityWindowUpdateSerializer(serializers.Serializer):
-    """Input for partially updating a group-scoped availability window.
+class AppointmentTypeScopedAvailabilityWindowUpdateSerializer(serializers.Serializer):
+    """Input for partially updating an appointment-type-scoped availability window.
 
     Every field is optional -- only provided fields change, mirroring
-    ``CalendarGroupService.update_group_scoped_availability_window``.
+    ``AppointmentTypeService.update_appointment_type_scoped_availability_window``.
     """
 
     start_time = serializers.DateTimeField(required=False)
@@ -2927,7 +2931,7 @@ class GroupScopedAvailabilityWindowUpdateSerializer(serializers.Serializer):
         return attrs
 
 
-class GroupScopedAvailabilityOrphanedBookingSerializer(serializers.Serializer):
+class AppointmentTypeScopedAvailabilityOrphanedBookingSerializer(serializers.Serializer):
     """Minimal identification of a booking a narrowing write orphaned (spec UC-6)
     -- enough for an admin to act on. Nothing about the booking itself is
     modified by the write that produced this entry.
@@ -2940,37 +2944,39 @@ class GroupScopedAvailabilityOrphanedBookingSerializer(serializers.Serializer):
     end_time = serializers.DateTimeField(read_only=True)
 
 
-class GroupScopedAvailabilityWriteResultSerializer(serializers.Serializer):
-    """Wraps a ``GroupScopedAvailabilityWriteResult``: the saved window plus any
+class AppointmentTypeScopedAvailabilityWriteResultSerializer(serializers.Serializer):
+    """Wraps an ``AppointmentTypeScopedAvailabilityWriteResult``: the saved window plus any
     confirmed future bookings the write orphaned. Returned by the create and
-    update actions of ``GroupScopedAvailabilityWindowViewSet``.
+    update actions of ``AppointmentTypeScopedAvailabilityWindowViewSet``.
     """
 
-    window = GroupScopedAvailabilityWindowSerializer(read_only=True)
-    orphaned_bookings = GroupScopedAvailabilityOrphanedBookingSerializer(
+    window = AppointmentTypeScopedAvailabilityWindowSerializer(read_only=True)
+    orphaned_bookings = AppointmentTypeScopedAvailabilityOrphanedBookingSerializer(
         many=True,
         read_only=True,
         help_text=(
             "Confirmed future bookings in this slot for this window's calendar that no "
-            "longer fall inside the calendar's group-scoped availability after this "
+            "longer fall inside the calendar's appointment-type-scoped availability after this "
             "write. Nothing about them is modified or cancelled -- act on them manually "
             "if needed."
         ),
     )
 
 
-class GroupScopedBlockedTimeSerializer(VirtualModelSerializer):
-    """Read representation of a group-scoped blocked time.
+class AppointmentTypeScopedBlockedTimeSerializer(VirtualModelSerializer):
+    """Read representation of an appointment-type-scoped blocked time.
 
-    Mirrors ``GroupScopedAvailabilityWindowSerializer`` exactly, plus
+    Mirrors ``AppointmentTypeScopedAvailabilityWindowSerializer`` exactly, plus
     ``reason`` -- there is no nested ``recurrence_rule`` write path here,
-    only ``rrule_string``, matching exactly what ``CalendarGroupService``'s
+    only ``rrule_string``, matching exactly what ``AppointmentTypeService``'s
     block-write methods accept, so the REST shape and the service signature
     cannot drift apart.
     """
 
     calendar_id = serializers.IntegerField(source="calendar_fk_id", read_only=True)
-    group_slot_id = serializers.IntegerField(source="group_slot_fk_id", read_only=True)
+    appointment_type_slot_id = serializers.IntegerField(
+        source="appointment_type_slot_fk_id", read_only=True
+    )
     rrule_string = serializers.SerializerMethodField(read_only=True)
     is_recurring = serializers.SerializerMethodField(read_only=True)
     start_time = serializers.DateTimeField(read_only=True)
@@ -2978,11 +2984,11 @@ class GroupScopedBlockedTimeSerializer(VirtualModelSerializer):
 
     class Meta:
         model = BlockedTime
-        virtual_model = GroupScopedBlockedTimeVirtualModel
+        virtual_model = AppointmentTypeScopedBlockedTimeVirtualModel
         fields = (
             "id",
             "calendar_id",
-            "group_slot_id",
+            "appointment_type_slot_id",
             "start_time",
             "end_time",
             "timezone",
@@ -3011,11 +3017,11 @@ class GroupScopedBlockedTimeSerializer(VirtualModelSerializer):
         )
 
 
-class GroupScopedBlockedTimeCreateSerializer(serializers.Serializer):
-    """Input for creating a group-scoped blocked time.
+class AppointmentTypeScopedBlockedTimeCreateSerializer(serializers.Serializer):
+    """Input for creating an appointment-type-scoped blocked time.
 
     Field names map 1:1 onto
-    ``CalendarGroupService.create_group_scoped_blocked_time``'s keyword
+    ``AppointmentTypeService.create_appointment_type_scoped_blocked_time``'s keyword
     arguments (``calendar_id``, ``start_time``, ``end_time``, ``tz``,
     ``reason``, ``rrule_string``) so the REST shape can never silently drift
     from the service signature it delegates to.
@@ -3051,11 +3057,11 @@ class GroupScopedBlockedTimeCreateSerializer(serializers.Serializer):
         return attrs
 
 
-class GroupScopedBlockedTimeUpdateSerializer(serializers.Serializer):
-    """Input for partially updating a group-scoped blocked time.
+class AppointmentTypeScopedBlockedTimeUpdateSerializer(serializers.Serializer):
+    """Input for partially updating an appointment-type-scoped blocked time.
 
     Every field is optional -- only provided fields change, mirroring
-    ``CalendarGroupService.update_group_scoped_blocked_time``.
+    ``AppointmentTypeService.update_appointment_type_scoped_blocked_time``.
     """
 
     start_time = serializers.DateTimeField(required=False)
@@ -3076,7 +3082,7 @@ class GroupScopedBlockedTimeUpdateSerializer(serializers.Serializer):
         return attrs
 
 
-class GroupScopedBlockOrphanedBookingSerializer(serializers.Serializer):
+class AppointmentTypeScopedBlockOrphanedBookingSerializer(serializers.Serializer):
     """Minimal identification of a booking a block write orphaned (spec
     UC-6's rule applied to blocks) -- enough for an admin to act on. Nothing
     about the booking itself is modified by the write that produced this
@@ -3090,46 +3096,48 @@ class GroupScopedBlockOrphanedBookingSerializer(serializers.Serializer):
     end_time = serializers.DateTimeField(read_only=True)
 
 
-class GroupScopedBlockWriteResultSerializer(serializers.Serializer):
-    """Wraps a ``GroupScopedBlockWriteResult``: the saved block plus any
+class AppointmentTypeScopedBlockWriteResultSerializer(serializers.Serializer):
+    """Wraps an ``AppointmentTypeScopedBlockWriteResult``: the saved block plus any
     confirmed future bookings the write orphaned. Returned by the create and
-    update actions of ``GroupScopedBlockedTimeViewSet``.
+    update actions of ``AppointmentTypeScopedBlockedTimeViewSet``.
     """
 
-    block = GroupScopedBlockedTimeSerializer(read_only=True)
-    orphaned_bookings = GroupScopedBlockOrphanedBookingSerializer(
+    block = AppointmentTypeScopedBlockedTimeSerializer(read_only=True)
+    orphaned_bookings = AppointmentTypeScopedBlockOrphanedBookingSerializer(
         many=True,
         read_only=True,
         help_text=(
             "Confirmed future bookings in this slot for this block's calendar that now "
-            "fall inside the calendar's group-scoped blocked time after this write. "
+            "fall inside the calendar's appointment-type-scoped blocked time after this write. "
             "Nothing about them is modified or cancelled -- act on them manually if "
             "needed."
         ),
     )
 
 
-class GroupScopedQuotaRuleSerializer(VirtualModelSerializer):
-    """Read representation of a group-scoped quota rule.
+class AppointmentTypeScopedQuotaRuleSerializer(VirtualModelSerializer):
+    """Read representation of an appointment-type-scoped quota rule.
 
-    Simpler than ``GroupScopedAvailabilityWindowSerializer``/
-    ``GroupScopedBlockedTimeSerializer``: quota rules are non-recurring (no
+    Simpler than ``AppointmentTypeScopedAvailabilityWindowSerializer``/
+    ``AppointmentTypeScopedBlockedTimeSerializer``: quota rules are non-recurring (no
     ``rrule_string``, no ``timezone``, no time range) -- just the period and
-    the cap, matching exactly what ``CalendarGroupService``'s quota-write
+    the cap, matching exactly what ``AppointmentTypeService``'s quota-write
     methods accept, so the REST shape and the service signature cannot drift
     apart.
     """
 
     calendar_id = serializers.IntegerField(source="calendar_fk_id", read_only=True)
-    group_slot_id = serializers.IntegerField(source="group_slot_fk_id", read_only=True)
+    appointment_type_slot_id = serializers.IntegerField(
+        source="appointment_type_slot_fk_id", read_only=True
+    )
 
     class Meta:
-        model = CalendarGroupSlotQuotaRule
-        virtual_model = GroupScopedQuotaRuleVirtualModel
+        model = AppointmentTypeSlotQuotaRule
+        virtual_model = AppointmentTypeScopedQuotaRuleVirtualModel
         fields = (
             "id",
             "calendar_id",
-            "group_slot_id",
+            "appointment_type_slot_id",
             "period",
             "cap",
             "created",
@@ -3138,11 +3146,11 @@ class GroupScopedQuotaRuleSerializer(VirtualModelSerializer):
         read_only_fields = fields
 
 
-class GroupScopedQuotaRuleCreateSerializer(serializers.Serializer):
-    """Input for creating a group-scoped quota rule.
+class AppointmentTypeScopedQuotaRuleCreateSerializer(serializers.Serializer):
+    """Input for creating an appointment-type-scoped quota rule.
 
     Field names map 1:1 onto
-    ``CalendarGroupService.create_group_scoped_quota_rule``'s keyword
+    ``AppointmentTypeService.create_appointment_type_scoped_quota_rule``'s keyword
     arguments (``calendar_id``, ``period``, ``cap``) so the REST shape can
     never silently drift from the service signature it delegates to.
     """
@@ -3158,7 +3166,7 @@ class GroupScopedQuotaRuleCreateSerializer(serializers.Serializer):
     cap = serializers.IntegerField(
         min_value=1,
         help_text=(
-            "Maximum number of live bookings made through this group slot the "
+            "Maximum number of live bookings made through this appointment type slot the "
             "calendar may hold within one period."
         ),
     )
@@ -3174,30 +3182,30 @@ class GroupScopedQuotaRuleCreateSerializer(serializers.Serializer):
         )
 
 
-class GroupScopedQuotaRuleUpdateSerializer(serializers.Serializer):
-    """Input for partially updating a group-scoped quota rule.
+class AppointmentTypeScopedQuotaRuleUpdateSerializer(serializers.Serializer):
+    """Input for partially updating an appointment-type-scoped quota rule.
 
     Every field is optional -- only provided fields change, mirroring
-    ``CalendarGroupService.update_group_scoped_quota_rule``.
+    ``AppointmentTypeService.update_appointment_type_scoped_quota_rule``.
     """
 
     period = serializers.ChoiceField(choices=QuotaPeriod.choices, required=False)
     cap = serializers.IntegerField(min_value=1, required=False)
 
 
-class CalendarGroupSlotSerializer(VirtualModelSerializer):
-    """Nested slot representation used inside CalendarGroupSerializer.
+class AppointmentTypeSlotSerializer(VirtualModelSerializer):
+    """Nested slot representation used inside AppointmentTypeSerializer.
 
     On write, accepts `calendar_ids: list[int]`; on read exposes the calendar
     pool via `calendars` (the M2M). We deliberately keep slot writes to
     payload-time data only — persistence happens through
-    `CalendarGroupSerializer` which delegates to `CalendarGroupService`.
+    `AppointmentTypeSerializer` which delegates to `AppointmentTypeService`.
 
     `pool_ids` (write-only) attaches/detaches `CalendarPool`s -- **omitting**
     it leaves the slot's current attachments unchanged; an explicit `[]`
-    detaches every pool. This mirrors `CalendarGroupSlotInputData.pool_ids`
+    detaches every pool. This mirrors `AppointmentTypeSlotInputData.pool_ids`
     exactly, and the distinction is resolved in
-    `CalendarGroupSerializer._to_input_data` by checking key presence in the
+    `AppointmentTypeSerializer._to_input_data` by checking key presence in the
     validated per-slot dict, not by inspecting the value. `pools` (read-only)
     exposes the attached pools themselves.
     """
@@ -3212,8 +3220,8 @@ class CalendarGroupSlotSerializer(VirtualModelSerializer):
     )
 
     class Meta:
-        model = CalendarGroupSlot
-        virtual_model = CalendarGroupSlotVirtualModel
+        model = AppointmentTypeSlot
+        virtual_model = AppointmentTypeSlotVirtualModel
         fields = (
             "id",
             "name",
@@ -3228,27 +3236,27 @@ class CalendarGroupSlotSerializer(VirtualModelSerializer):
         read_only_fields = ("id",)
 
 
-class CalendarGroupSerializer(VirtualModelSerializer):
-    slots = CalendarGroupSlotSerializer(many=True)
+class AppointmentTypeSerializer(VirtualModelSerializer):
+    slots = AppointmentTypeSlotSerializer(many=True)
     # Declared explicitly rather than inferred from the model field, to refuse
     # an explicit ``null``. The model column is nullable, so ModelSerializer
-    # would infer ``allow_null=True`` -- but ``CalendarGroupInputData.duration``
+    # would infer ``allow_null=True`` -- but ``AppointmentTypeInputData.duration``
     # is tri-state with ``None`` meaning "omitted, leave unchanged", so a client
     # sending ``null`` to clear the duration would get a silent no-op instead.
     # Refusing null keeps "absent" the only meaning ``None`` ever carries here.
     # Clearing a duration is not offered at all: it would be a fail-open change
-    # on a public group, whose bookings depend on it.
+    # on a public appointment type, whose bookings depend on it.
     duration = serializers.DurationField(required=False, allow_null=False)
     # Same tri-state contract as ``duration``: absent means "leave unchanged",
     # so null is refused rather than read as False. Writable only by an
-    # organization admin, which needs no enforcement here -- CalendarGroupPermission
+    # organization admin, which needs no enforcement here -- AppointmentTypePermission
     # already gates `create` and `update`/`partial_update` on admin, so a
     # non-admin never reaches this serializer's write path at all (403).
     accepts_public_scheduling = serializers.BooleanField(required=False, allow_null=False)
 
     class Meta:
-        model = CalendarGroup
-        virtual_model = CalendarGroupVirtualModel
+        model = AppointmentType
+        virtual_model = AppointmentTypeVirtualModel
         fields = (
             "id",
             "name",
@@ -3262,21 +3270,21 @@ class CalendarGroupSerializer(VirtualModelSerializer):
         )
         # public_booking_slug: read-only so an organization admin can read it
         # to build a codeless public booking link
-        # (public/booking/calendar-groups/<public_booking_slug>/events/), but
+        # (public/booking/appointment-types/<public_booking_slug>/events/), but
         # it is never client-settable -- it is generated once, at model
-        # creation, by CalendarGroup's own field default (Phase 3b).
+        # creation, by AppointmentType's own field default (Phase 3b).
         read_only_fields = ("id", "created", "modified", "public_booking_slug")
 
     @inject
     def __init__(
         self,
         *args,
-        calendar_group_service: Annotated[
-            "CalendarGroupService | None", Provide["calendar_group_service"]
+        appointment_type_service: Annotated[
+            "AppointmentTypeService | None", Provide["appointment_type_service"]
         ] = None,
         **kwargs,
     ):
-        self.calendar_group_service = calendar_group_service
+        self.appointment_type_service = appointment_type_service
         super().__init__(*args, **kwargs)
 
     def _organization(self) -> Organization:
@@ -3293,7 +3301,7 @@ class CalendarGroupSerializer(VirtualModelSerializer):
         return membership.organization
 
     def validate_duration(self, value: datetime.timedelta) -> datetime.timedelta:
-        # A group's duration is the exact length every booking through it must
+        # An appointment type's duration is the exact length every booking through it must
         # span, so a zero or negative value describes no bookable event at all.
         # The model carries no CHECK constraint, so this is the only guard.
         if value <= datetime.timedelta(0):
@@ -3301,7 +3309,7 @@ class CalendarGroupSerializer(VirtualModelSerializer):
         return value
 
     def validate(self, attrs: dict) -> dict:
-        # `slots` has no "omitted means unchanged" sentinel -- a group write
+        # `slots` has no "omitted means unchanged" sentinel -- an appointment type write
         # always replaces the full slot list wholesale. Under `partial=True`
         # (PATCH), DRF silently drops an absent `slots` key via `SkipField`
         # instead of raising its normal "this field is required" error, and
@@ -3317,7 +3325,7 @@ class CalendarGroupSerializer(VirtualModelSerializer):
                 raise serializers.ValidationError(
                     {
                         "slots": (
-                            "This field cannot be omitted on a partial update: a group "
+                            "This field cannot be omitted on a partial update: an appointment type "
                             "write always replaces the full slot list, so an absent "
                             "value would delete every existing slot."
                         )
@@ -3339,8 +3347,8 @@ class CalendarGroupSerializer(VirtualModelSerializer):
                     )
         return attrs
 
-    def _to_input_data(self, validated_data: dict) -> CalendarGroupInputData:
-        return CalendarGroupInputData(
+    def _to_input_data(self, validated_data: dict) -> AppointmentTypeInputData:
+        return AppointmentTypeInputData(
             name=validated_data["name"],
             description=validated_data.get("description", ""),
             # Absent means "leave unchanged" on update and "not set" on create,
@@ -3349,7 +3357,7 @@ class CalendarGroupSerializer(VirtualModelSerializer):
             duration=validated_data.get("duration"),
             accepts_public_scheduling=validated_data.get("accepts_public_scheduling"),
             slots=[
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name=slot["name"],
                     calendar_ids=list(slot["calendar_ids"]),
                     required_count=slot.get("required_count", 1),
@@ -3359,7 +3367,7 @@ class CalendarGroupSerializer(VirtualModelSerializer):
                     # never sends it is simply absent from `slot` -- checked by
                     # key, not by truthiness, so an explicit `[]` (detach all)
                     # is preserved instead of collapsing to the same `None`
-                    # "leave unchanged" sentinel `CalendarGroupSlotInputData`
+                    # "leave unchanged" sentinel `AppointmentTypeSlotInputData`
                     # uses for an omitted key.
                     pool_ids=list(slot["pool_ids"]) if "pool_ids" in slot else None,
                 )
@@ -3367,41 +3375,43 @@ class CalendarGroupSerializer(VirtualModelSerializer):
             ],
         )
 
-    def create(self, validated_data: dict) -> CalendarGroup:
-        if not self.calendar_group_service:
+    def create(self, validated_data: dict) -> AppointmentType:
+        if not self.appointment_type_service:
             raise CalendarServiceNotInjectedError(
-                "calendar_group_service is not defined; configure the DI container."
+                "appointment_type_service is not defined; configure the DI container."
             )
         organization = self._organization()
-        self.calendar_group_service.initialize(organization=organization)
+        self.appointment_type_service.initialize(organization=organization)
         try:
-            return self.calendar_group_service.create_group(self._to_input_data(validated_data))
-        except CalendarGroupError as e:
-            raise _translate_group_error(e) from e
+            return self.appointment_type_service.create_appointment_type(
+                self._to_input_data(validated_data)
+            )
+        except AppointmentTypeError as e:
+            raise _translate_appointment_type_error(e) from e
 
-    def update(self, instance: CalendarGroup, validated_data: dict) -> CalendarGroup:
-        if not self.calendar_group_service:
+    def update(self, instance: AppointmentType, validated_data: dict) -> AppointmentType:
+        if not self.appointment_type_service:
             raise CalendarServiceNotInjectedError(
-                "calendar_group_service is not defined; configure the DI container."
+                "appointment_type_service is not defined; configure the DI container."
             )
         organization = self._organization()
-        self.calendar_group_service.initialize(organization=organization)
+        self.appointment_type_service.initialize(organization=organization)
         try:
-            return self.calendar_group_service.update_group(
-                group_id=instance.id, data=self._to_input_data(validated_data)
+            return self.appointment_type_service.update_appointment_type(
+                appointment_type_id=instance.id, data=self._to_input_data(validated_data)
             )
-        except CalendarGroupError as e:
-            raise _translate_group_error(e) from e
+        except AppointmentTypeError as e:
+            raise _translate_appointment_type_error(e) from e
 
 
-class CalendarEventGroupSelectionSerializer(VirtualModelSerializer):
-    slot = CalendarGroupSlotSerializer(read_only=True)
+class CalendarEventAppointmentTypeSelectionSerializer(VirtualModelSerializer):
+    slot = AppointmentTypeSlotSerializer(read_only=True)
     calendar = CalendarSerializer(read_only=True)
     is_in_current_roster = serializers.SerializerMethodField()
 
     class Meta:
-        model = CalendarEventGroupSelection
-        virtual_model = CalendarEventGroupSelectionVirtualModel
+        model = CalendarEventAppointmentTypeSelection
+        virtual_model = CalendarEventAppointmentTypeSelectionVirtualModel
         fields = ("id", "slot", "calendar", "is_in_current_roster")
 
     def get_is_in_current_roster(
@@ -3414,22 +3424,23 @@ class CalendarEventGroupSelectionSerializer(VirtualModelSerializer):
         # `typing_extensions.get_type_hints(..., include_extras=True)` (what
         # `LookupFinder` actually reads) resolves this annotation the same as any other.
         obj: Annotated[  # type: ignore[valid-type]
-            "CalendarEventGroupSelection", v.hints.Virtual("slot__memberships__calendar_fk_id")
+            "CalendarEventAppointmentTypeSelection",
+            v.hints.Virtual("slot__memberships__calendar_fk_id"),
         ],
     ) -> bool:
         """Whether ``obj``'s calendar is still a member of its slot's roster.
 
         Staleness definition (see the plan's Guiding Decisions): stale when no
-        ``CalendarGroupSlotMembership`` row exists for the ``(slot, calendar)``
+        ``AppointmentTypeSlotMembership`` row exists for the ``(slot, calendar)``
         pair. ``slot.memberships`` is prefetched by
-        ``CalendarEventGroupSelectionVirtualModel`` (via the ``hints.Virtual``
+        ``CalendarEventAppointmentTypeSelectionVirtualModel`` (via the ``hints.Virtual``
         hint above), so this reads from that prefetch cache instead of issuing
         a query per selection.
 
         The hint names the concrete ``calendar_fk_id`` column explicitly
         rather than just ``slot__memberships``: an empty per-field lookup list
         tells ``django-virtual-models`` to prefetch *every* declared field
-        under that branch, including ``CalendarGroupSlotMembershipVirtualModel
+        under that branch, including ``AppointmentTypeSlotMembershipVirtualModel
         .calendar`` -- which cascades into ``CalendarVirtualModel
         .calendar_ownerships``, a field name that does not match ``Calendar``'s
         actual related accessor (``ownerships``) and raises. Naming the one
@@ -3442,7 +3453,7 @@ class CalendarEventGroupSelectionSerializer(VirtualModelSerializer):
         )
 
 
-class _CalendarGroupSlotSelectionInputSerializer(serializers.Serializer):
+class _AppointmentTypeSlotSelectionInputSerializer(serializers.Serializer):
     slot_id = serializers.IntegerField()
     calendar_ids = serializers.ListField(child=serializers.IntegerField())
 
@@ -3474,10 +3485,10 @@ class _EndTimeAfterStartTimeSerializerMixin(serializers.Serializer):
         return end_time
 
 
-class CalendarGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
-    """Input for booking an event through a CalendarGroup.
+class AppointmentTypeEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
+    """Input for booking an event through an AppointmentType.
 
-    On `save()` this delegates to `CalendarGroupService.create_grouped_event`
+    On `save()` this delegates to `AppointmentTypeService.create_appointment_type_event`
     and returns the created `CalendarEvent`. The view is responsible for
     serializing the result (typically with `CalendarEventSerializer`).
     """
@@ -3487,7 +3498,7 @@ class CalendarGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
     start_time = serializers.DateTimeField()
     end_time = serializers.DateTimeField()
     timezone = serializers.CharField()
-    slot_selections = _CalendarGroupSlotSelectionInputSerializer(many=True)
+    slot_selections = _AppointmentTypeSlotSelectionInputSerializer(many=True)
     attendances = serializers.ListField(child=serializers.DictField(), required=False, default=list)
     external_attendances = serializers.ListField(
         child=serializers.DictField(), required=False, default=list
@@ -3497,23 +3508,27 @@ class CalendarGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
     def __init__(
         self,
         *args,
-        calendar_group_service: Annotated[
-            "CalendarGroupService | None", Provide["calendar_group_service"]
+        appointment_type_service: Annotated[
+            "AppointmentTypeService | None", Provide["appointment_type_service"]
         ] = None,
         **kwargs,
     ):
-        self.calendar_group_service = calendar_group_service
+        self.appointment_type_service = appointment_type_service
         super().__init__(*args, **kwargs)
 
     def save(self, **kwargs):
-        if not self.calendar_group_service or not self.calendar_group_service.calendar_service:
+        if not self.appointment_type_service or not self.appointment_type_service.calendar_service:
             raise CalendarServiceNotInjectedError(
-                "calendar_group_service / calendar_service not defined; configure the DI container."
+                "appointment_type_service / calendar_service not defined; configure the DI container."
             )
-        group = kwargs.get("group")
-        if group is None:
+        appointment_type = kwargs.get("appointment_type")
+        if appointment_type is None:
             raise serializers.ValidationError(
-                {"non_field_errors": ["group is required via serializer.save(group=…)"]}
+                {
+                    "non_field_errors": [
+                        "appointment_type is required via serializer.save(appointment_type=…)"
+                    ]
+                }
             )
         request = self.context.get("request") if self.context else None
         if not request or not getattr(request, "user", None):
@@ -3527,23 +3542,23 @@ class CalendarGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
             )
         organization = membership.organization
 
-        # Initialize the nested CalendarService on the group service — the
-        # grouped-event flow delegates to `self.calendar_group_service.calendar_service.create_event`
+        # Initialize the nested CalendarService on the appointment type service — the
+        # appointment-type-event flow delegates to `self.appointment_type_service.calendar_service.create_event`
         # internally, so that exact instance needs to be initialized.
-        self.calendar_group_service.calendar_service.initialize_without_provider(
+        self.appointment_type_service.calendar_service.initialize_without_provider(
             user_or_token=request.user, organization=organization
         )
-        self.calendar_group_service.initialize(organization=organization)
+        self.appointment_type_service.initialize(organization=organization)
 
-        data = CalendarGroupEventInputData(
+        data = AppointmentTypeEventInputData(
             title=self.validated_data["title"],
             description=self.validated_data.get("description", ""),
             start_time=self.validated_data["start_time"],
             end_time=self.validated_data["end_time"],
             timezone=self.validated_data["timezone"],
-            group_id=group.id,
+            appointment_type_id=appointment_type.id,
             slot_selections=[
-                CalendarGroupSlotSelectionInputData(
+                AppointmentTypeSlotSelectionInputData(
                     slot_id=s["slot_id"], calendar_ids=list(s["calendar_ids"])
                 )
                 for s in self.validated_data["slot_selections"]
@@ -3564,12 +3579,12 @@ class CalendarGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
             ],
         )
         try:
-            return self.calendar_group_service.create_grouped_event(data)
-        except CalendarGroupError as e:
-            raise _translate_group_error(e) from e
+            return self.appointment_type_service.create_appointment_type_event(data)
+        except AppointmentTypeError as e:
+            raise _translate_appointment_type_error(e) from e
 
 
-class CalendarGroupSlotAvailabilitySerializer(serializers.Serializer):
+class AppointmentTypeSlotAvailabilitySerializer(serializers.Serializer):
     slot_id = serializers.IntegerField()
     available_calendar_ids = serializers.ListField(child=serializers.IntegerField())
     required_count = serializers.IntegerField()
@@ -3579,10 +3594,10 @@ class CalendarGroupSlotAvailabilitySerializer(serializers.Serializer):
         return len(obj["available_calendar_ids"]) >= obj["required_count"]
 
 
-class CalendarGroupRangeAvailabilitySerializer(serializers.Serializer):
+class AppointmentTypeRangeAvailabilitySerializer(serializers.Serializer):
     start_time = serializers.DateTimeField()
     end_time = serializers.DateTimeField()
-    slots = CalendarGroupSlotAvailabilitySerializer(many=True)
+    slots = AppointmentTypeSlotAvailabilitySerializer(many=True)
 
 
 class _RangeInputSerializer(serializers.Serializer):
@@ -3590,7 +3605,7 @@ class _RangeInputSerializer(serializers.Serializer):
     end_time = serializers.DateTimeField()
 
 
-class CalendarGroupAvailabilityQuerySerializer(serializers.Serializer):
+class AppointmentTypeAvailabilityQuerySerializer(serializers.Serializer):
     """Input for the availability action: list of [start, end] windows."""
 
     ranges = _RangeInputSerializer(many=True)
@@ -3603,7 +3618,7 @@ class BookableSlotProposalSerializer(serializers.Serializer):
 
 class StaleSelectionSerializer(serializers.Serializer):
     """A `(event, slot, calendar)` triple whose calendar has left its slot's
-    roster -- see ``CalendarGroupService.find_stale_selections`` and the
+    roster -- see ``AppointmentTypeService.find_stale_selections`` and the
     Calendar Pools plan's Staleness definition. Scalar ids only, matching the
     ``StaleSelection`` dataclass this wraps.
     """
@@ -3616,7 +3631,7 @@ class StaleSelectionSerializer(serializers.Serializer):
 class BookingPolicySerializer(serializers.ModelSerializer):
     """Serializer for ``BookingPolicy`` CRUD.
 
-    Exactly one of ``calendar``, ``membership_user_id``, ``calendar_group``, or
+    Exactly one of ``calendar``, ``membership_user_id``, ``appointment_type``, or
     ``is_organization_default`` must be set on create.  Targets are immutable
     after creation — only the four rule-field seconds are writable on update.
 
@@ -3654,7 +3669,7 @@ class BookingPolicySerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "calendar",
-            "calendar_group",
+            "appointment_type",
             "membership_user_id",
             "is_organization_default",
             "lead_time_seconds",
@@ -3684,11 +3699,11 @@ class BookingPolicySerializer(serializers.ModelSerializer):
             required=False,
             allow_null=True,
         )
-        self.fields["calendar_group"] = serializers.PrimaryKeyRelatedField(
+        self.fields["appointment_type"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                CalendarGroup.objects.filter_by_organization(org_id)
+                AppointmentType.objects.filter_by_organization(org_id)
                 if org_id is not None
-                else CalendarGroup.original_manager.none()
+                else AppointmentType.original_manager.none()
             ),
             required=False,
             allow_null=True,
@@ -3731,7 +3746,7 @@ class BookingPolicySerializer(serializers.ModelSerializer):
             # Update path — targets cannot change; strip them from attrs so the
             # service update method only sees rule-field changes.
             attrs.pop("calendar", None)
-            attrs.pop("calendar_group", None)
+            attrs.pop("appointment_type", None)
             attrs.pop("membership_user_id", None)
             attrs.pop("is_organization_default", None)
             return attrs
@@ -3739,14 +3754,14 @@ class BookingPolicySerializer(serializers.ModelSerializer):
         # Create path — exactly one target must be set.
         calendar = attrs.get("calendar")
         membership_user_id = attrs.get("membership_user_id")
-        calendar_group = attrs.get("calendar_group")
+        appointment_type = attrs.get("appointment_type")
         is_org_default = attrs.get("is_organization_default", False)
 
         target_count = sum(
             [
                 calendar is not None,
                 membership_user_id is not None,
-                calendar_group is not None,
+                appointment_type is not None,
                 bool(is_org_default),
             ]
         )
@@ -3755,7 +3770,7 @@ class BookingPolicySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {
                     "non_field_errors": [
-                        "Exactly one of 'calendar', 'membership_user_id', 'calendar_group', "
+                        "Exactly one of 'calendar', 'membership_user_id', 'appointment_type', "
                         "or 'is_organization_default' must be set."
                     ]
                 }
@@ -3776,7 +3791,7 @@ class BookingPolicySerializer(serializers.ModelSerializer):
             return service.create_booking_policy(
                 calendar=validated_data.get("calendar"),
                 membership_user_id=validated_data.get("membership_user_id"),
-                calendar_group=validated_data.get("calendar_group"),
+                appointment_type=validated_data.get("appointment_type"),
                 is_organization_default=validated_data.get("is_organization_default", False),
                 lead_time_seconds=validated_data.get("lead_time_seconds", 0),
                 max_horizon_seconds=validated_data.get("max_horizon_seconds", 0),
@@ -3873,20 +3888,20 @@ class BookingCodeEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
     external_attendee = _BookingCodeExternalAttendeeSerializer()
 
 
-class BookingCodeGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
-    """Input for ``POST /public/booking/calendar-groups/<public_slug>/events/``.
+class BookingCodeAppointmentTypeEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
+    """Input for ``POST /public/booking/appointment-types/<public_slug>/events/``.
 
-    Mirrors ``CreateGroupEventWithCodeInput`` (GraphQL) minus its ``code`` field --
+    Mirrors ``CreateAppointmentTypeEventWithCodeInput`` (GraphQL) minus its ``code`` field --
     the booking code travels as the ``X-Booking-Code`` header instead (see
-    ``calendar_integration.booking_auth``). The group is never accepted here: on
+    ``calendar_integration.booking_auth``). The appointment type is never accepted here: on
     the coded branch it comes strictly from the resolved token's
-    ``calendar_group``, never from client input or the path (Phase 3b: the path
-    carries only ``CalendarGroup.public_booking_slug``, an opaque identifier, and
+    ``appointment_type``, never from client input or the path (Phase 3b: the path
+    carries only ``AppointmentType.public_booking_slug``, an opaque identifier, and
     even that is only a routing convenience -- see
-    ``BookingCodeGroupEventViewSet.create``). Reuses
-    ``_CalendarGroupSlotSelectionInputSerializer``, the same slot-selection shape
-    ``CalendarGroupEventCreateSerializer`` already uses for the authenticated
-    group-booking endpoint.
+    ``BookingCodeAppointmentTypeEventViewSet.create``). Reuses
+    ``_AppointmentTypeSlotSelectionInputSerializer``, the same slot-selection shape
+    ``AppointmentTypeEventCreateSerializer`` already uses for the authenticated
+    appointment-type-booking endpoint.
     """
 
     title = serializers.CharField()
@@ -3894,15 +3909,15 @@ class BookingCodeGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixi
     start_time = serializers.DateTimeField()
     end_time = serializers.DateTimeField()
     timezone = serializers.CharField()
-    slot_selections = _CalendarGroupSlotSelectionInputSerializer(many=True)
+    slot_selections = _AppointmentTypeSlotSelectionInputSerializer(many=True)
     external_attendee = _BookingCodeExternalAttendeeSerializer()
 
 
 class BookingCodeRescheduleSerializer(_EndTimeAfterStartTimeSerializerMixin):
     """Input for ``POST /public/booking/events/reschedule/`` and
-    ``POST /public/booking/group-events/reschedule/``.
+    ``POST /public/booking/appointment-type-events/reschedule/``.
 
-    Mirrors ``RescheduleWithCodeInput`` / ``RescheduleGroupWithCodeInput`` (GraphQL)
+    Mirrors ``RescheduleWithCodeInput`` / ``RescheduleAppointmentTypeWithCodeInput`` (GraphQL)
     minus their ``code`` field -- the booking code travels as the ``X-Booking-Code``
     header instead. Only the new start/end/timezone are accepted: title, description,
     attendees, and resource allocations are never client-settable here -- the view
@@ -3919,7 +3934,7 @@ class BookingCodeCreateSerializer(serializers.Serializer):
     """Input for ``POST /booking-codes/`` -- the authenticated minting endpoint.
 
     Collapses GraphQL's six ``create*BookingCode`` mutations into one resource:
-    ``purpose`` x {``calendar``, ``calendar_group``} is the same cross product those
+    ``purpose`` x {``calendar``, ``appointment_type``} is the same cross product those
     six mutations cover, no more and no less. ``purpose`` maps onto the permission(s)
     the minted token carries:
 
@@ -3927,17 +3942,17 @@ class BookingCodeCreateSerializer(serializers.Serializer):
     - ``reschedule`` -> ``[EventManagementPermissions.RESCHEDULE]``
     - ``cancel`` -> ``[EventManagementPermissions.CANCEL]``
 
-    ``calendar`` / ``calendar_group`` / ``event`` are plain integer ids, not
+    ``calendar`` / ``appointment_type`` / ``event`` are plain integer ids, not
     ``PrimaryKeyRelatedField`` -- object existence and org/authorization checks
     happen in ``BookingCodeViewSet.create`` so a cross-organization target can be
     answered ``404`` there rather than a serializer-level ``400``, keeping "target
     exists but you can't see it" indistinguishable from "target does not exist".
 
     No ``duration_seconds`` field: duration pinning lives on
-    ``CalendarGroup.duration``, not on the minted token -- there is no
+    ``AppointmentType.duration``, not on the minted token -- there is no
     per-code duration to set at mint time. A calendar-scoped code carries no
-    duration constraint at all; a calendar-group-scoped code inherits
-    whatever duration (if any) is already set on that group.
+    duration constraint at all; an appointment-type-scoped code inherits
+    whatever duration (if any) is already set on that appointment type.
     """
 
     PURPOSE_BOOK = "book"
@@ -3956,16 +3971,16 @@ class BookingCodeCreateSerializer(serializers.Serializer):
 
     purpose = serializers.ChoiceField(choices=PURPOSE_CHOICES)
     calendar = serializers.IntegerField(required=False, allow_null=True, default=None)
-    calendar_group = serializers.IntegerField(required=False, allow_null=True, default=None)
+    appointment_type = serializers.IntegerField(required=False, allow_null=True, default=None)
     event = serializers.IntegerField(required=False, allow_null=True, default=None)
     expires_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
 
     def validate(self, attrs: dict) -> dict:
         calendar = attrs.get("calendar")
-        calendar_group = attrs.get("calendar_group")
-        if (calendar is None) == (calendar_group is None):
+        appointment_type = attrs.get("appointment_type")
+        if (calendar is None) == (appointment_type is None):
             raise serializers.ValidationError(
-                "Exactly one of 'calendar' or 'calendar_group' must be set."
+                "Exactly one of 'calendar' or 'appointment_type' must be set."
             )
 
         purpose = attrs["purpose"]
@@ -3996,7 +4011,7 @@ class BookingCodeCreateResultSerializer(serializers.Serializer):
     code = serializers.CharField(read_only=True)
     purpose = serializers.ChoiceField(choices=BookingCodeCreateSerializer.PURPOSE_CHOICES)
     calendar = serializers.IntegerField(read_only=True, allow_null=True)
-    calendar_group = serializers.IntegerField(read_only=True, allow_null=True)
+    appointment_type = serializers.IntegerField(read_only=True, allow_null=True)
     event = serializers.IntegerField(read_only=True, allow_null=True)
     expires_at = serializers.DateTimeField(read_only=True, allow_null=True)
 
@@ -4031,8 +4046,8 @@ class CalendarEventWithManagementCodesSerializer(CalendarEventSerializer):
 
     Used ONLY to render the ``201`` response of a booking-code create or
     reschedule viewset (``BookingCodeCalendarEventViewSet``,
-    ``BookingCodeGroupEventViewSet``, ``BookingCodeRescheduleEventViewSet``,
-    ``BookingCodeRescheduleGroupEventViewSet``) -- never for a read, and
+    ``BookingCodeAppointmentTypeEventViewSet``, ``BookingCodeRescheduleEventViewSet``,
+    ``BookingCodeRescheduleAppointmentTypeEventViewSet``) -- never for a read, and
     never for ``get_optimized_queryset``: ``management`` is not a model field
     or relation, it does not exist on ``CalendarEventVirtualModel``, and
     django-virtual-models' ``LookupFinder`` would raise

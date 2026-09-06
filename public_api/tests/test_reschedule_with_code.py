@@ -14,7 +14,7 @@ Scenario coverage:
 3. Failed reschedule (new slot outside availability) → SLOT_UNAVAILABLE, code NOT
    consumed (``used_at`` remains NULL), retryable.
 4. Wrong permission — a CREATE/CANCEL-only code → NOT_PERMITTED.
-5. Wrong scope — a group reschedule code (token.calendar_group set) → NOT_PERMITTED.
+5. Wrong scope — an appointment type reschedule code (token.appointment type set) → NOT_PERMITTED.
 6. Code is event-bound: calendar_id and event_id come from the token, so the code
    always targets exactly ``token.event``.
 7. Expired / revoked / invalid → respective error.
@@ -29,10 +29,10 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AppointmentType,
     AvailableTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
     CalendarManagementToken,
     EventExternalAttendance,
     EventManagementPermissions,
@@ -103,8 +103,8 @@ def calendar(organization):
 
 
 @pytest.fixture
-def calendar_group(organization):
-    return baker.make(CalendarGroup, organization=organization, name="Test Group")
+def appointment_type(organization):
+    return baker.make(AppointmentType, organization=organization, name="Test AppointmentType")
 
 
 @pytest.fixture
@@ -195,12 +195,14 @@ def create_code(permission_service, organization, calendar):
 
 
 @pytest.fixture
-def group_reschedule_code(permission_service, organization, calendar_group, existing_event):
-    """A group-scoped RESCHEDULE code — wrong scope for the single-calendar mutation."""
+def appointment_type_reschedule_code(
+    permission_service, organization, appointment_type, existing_event
+):
+    """An appointment-type-scoped RESCHEDULE code — wrong scope for the single-calendar mutation."""
     token, code = permission_service.create_booking_token(
         organization_id=organization.id,
         permissions=[EventManagementPermissions.RESCHEDULE],
-        calendar_group_id=calendar_group.id,
+        appointment_type_id=appointment_type.id,
         event_id=existing_event.id,
     )
     return token, code
@@ -566,19 +568,19 @@ class TestRescheduleCalendarEventWithCodeWrongPermission:
 
 @pytest.mark.django_db
 class TestRescheduleCalendarEventWithCodeWrongScope:
-    """Scenario 5: Group-scoped reschedule code → NOT_PERMITTED (routes to the group reschedule path)."""
+    """Scenario 5: Appointment-type-scoped reschedule code → NOT_PERMITTED (routes to the appointment type reschedule path)."""
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_group_code_returns_not_permitted(
+    def test_appointment_type_code_returns_not_permitted(
         self,
         mock_rate_limiter,
         anon_client,
-        group_reschedule_code,
+        appointment_type_reschedule_code,
         organization,
         existing_event,
     ):
         mock_rate_limiter.return_value = iter([None])
-        _token, code = group_reschedule_code
+        _token, code = appointment_type_reschedule_code
 
         data = post_graphql(
             anon_client,

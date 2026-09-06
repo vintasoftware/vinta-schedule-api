@@ -4,7 +4,7 @@ Covers:
 - bookingPolicies query: happy path (all, filtered by target); cross-org
   isolation; missing-resource permission error; pagination.
 - createBookingPolicy mutation: each target type; duplicate-target rejection;
-  exactly-one-target validation; cross-org lookup of calendar/group; audit.
+  exactly-one-target validation; cross-org lookup of calendar/appointment type; audit.
 - updateBookingPolicy mutation: rule fields updated; policy not found;
   cross-org isolation.
 - deleteBookingPolicy mutation: idempotent no-op (absent policy); actual
@@ -20,9 +20,9 @@ from rest_framework.test import APIClient
 
 from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import (
+    AppointmentType,
     BookingPolicy,
     Calendar,
-    CalendarGroup,
     CalendarOwnership,
 )
 from organizations.models import Organization, OrganizationMembership
@@ -40,7 +40,7 @@ BOOKING_POLICIES_QUERY = """
 query BookingPolicies(
     $calendarId: Int,
     $membershipUserId: Int,
-    $calendarGroupId: Int,
+    $appointmentTypeId: Int,
     $isOrganizationDefault: Boolean,
     $offset: Int,
     $limit: Int
@@ -48,7 +48,7 @@ query BookingPolicies(
     bookingPolicies(
         calendarId: $calendarId,
         membershipUserId: $membershipUserId,
-        calendarGroupId: $calendarGroupId,
+        appointmentTypeId: $appointmentTypeId,
         isOrganizationDefault: $isOrganizationDefault,
         offset: $offset,
         limit: $limit
@@ -56,7 +56,7 @@ query BookingPolicies(
         id
         calendarId
         membershipUserId
-        calendarGroupId
+        appointmentTypeId
         isOrganizationDefault
         leadTimeSeconds
         maxHorizonSeconds
@@ -76,7 +76,7 @@ mutation CreateBookingPolicy($input: CreateBookingPolicyInput!) {
             id
             calendarId
             membershipUserId
-            calendarGroupId
+            appointmentTypeId
             isOrganizationDefault
             leadTimeSeconds
             maxHorizonSeconds
@@ -253,11 +253,11 @@ class TestBookingPoliciesQuery:
         assert len(policies) == 1
         assert policies[0]["membershipUserId"] == user.id
 
-    def test_filter_by_calendar_group_id(self):
-        """Filtering by calendarGroupId returns only the matching policy."""
+    def test_filter_by_appointment_type_id(self):
+        """Filtering by appointmentTypeId returns only the matching policy."""
         org, system_user, token, auth_service = _setup_org_and_token()
-        group = baker.make(CalendarGroup, organization=org)
-        create_booking_policy(calendar_group=group, buffer_before_seconds=600)
+        appointment_type = baker.make(AppointmentType, organization=org)
+        create_booking_policy(appointment_type=appointment_type, buffer_before_seconds=600)
         create_booking_policy(organization=org, is_organization_default=True)
 
         response = _post_graphql(
@@ -265,13 +265,13 @@ class TestBookingPoliciesQuery:
             system_user,
             token,
             auth_service,
-            {"calendarGroupId": group.id},
+            {"appointmentTypeId": appointment_type.id},
         )
         data = response.json()
         assert "errors" not in data, data.get("errors")
         policies = data["data"]["bookingPolicies"]
         assert len(policies) == 1
-        assert policies[0]["calendarGroupId"] == group.id
+        assert policies[0]["appointmentTypeId"] == appointment_type.id
 
     def test_cross_org_isolation(self):
         """Policies from another org are never returned."""
@@ -422,24 +422,24 @@ class TestCreateBookingPolicyMutation:
         assert policy["isOrganizationDefault"] is True
         assert policy["calendarId"] is None
 
-    def test_create_with_calendar_group_target(self):
-        """Create a calendar-group-scoped policy."""
+    def test_create_with_appointment_type_target(self):
+        """Create an appointment-type-scoped policy."""
         org, system_user, token, auth_service = _setup_org_and_token()
-        group = baker.make(CalendarGroup, organization=org)
+        appointment_type = baker.make(AppointmentType, organization=org)
 
         response = _post_graphql(
             CREATE_BOOKING_POLICY_MUTATION,
             system_user,
             token,
             auth_service,
-            {"input": {"calendarGroupId": group.id, "bufferBeforeSeconds": 300}},
+            {"input": {"appointmentTypeId": appointment_type.id, "bufferBeforeSeconds": 300}},
         )
 
         data = response.json()
         assert "errors" not in data, data.get("errors")
         result = data["data"]["createBookingPolicy"]
         assert result["success"] is True
-        assert result["policy"]["calendarGroupId"] == group.id
+        assert result["policy"]["appointmentTypeId"] == appointment_type.id
 
     def test_create_with_membership_user_id(self):
         """Create a membership-scoped policy."""
@@ -651,22 +651,22 @@ class TestCreateBookingPolicyMutation:
         assert data.get("errors"), "Expected a GraphQL error for duplicate membership policy"
         assert any("already exists" in e["message"] for e in data["errors"])
 
-    def test_create_duplicate_calendar_group_policy_rejected(self):
-        """Creating a second policy for the same calendarGroupId returns a GraphQL error."""
+    def test_create_duplicate_appointment_type_policy_rejected(self):
+        """Creating a second policy for the same appointmentTypeId returns a GraphQL error."""
         org, system_user, token, auth_service = _setup_org_and_token()
-        group = baker.make(CalendarGroup, organization=org)
-        create_booking_policy(calendar_group=group)
+        appointment_type = baker.make(AppointmentType, organization=org)
+        create_booking_policy(appointment_type=appointment_type)
 
         response = _post_graphql(
             CREATE_BOOKING_POLICY_MUTATION,
             system_user,
             token,
             auth_service,
-            {"input": {"calendarGroupId": group.id}},
+            {"input": {"appointmentTypeId": appointment_type.id}},
         )
 
         data = response.json()
-        assert data.get("errors"), "Expected a GraphQL error for duplicate calendar-group policy"
+        assert data.get("errors"), "Expected a GraphQL error for duplicate appointment-type policy"
         assert any("already exists" in e["message"] for e in data["errors"])
 
 
@@ -954,7 +954,7 @@ def _own_cal(org: Organization, membership: OrganizationMembership, external_id:
 @pytest.mark.django_db
 class TestBookingPolicyOwnerScoping:
     """A membership-scoped SystemUser token may manage only its own calendar /
-    membership booking policies; calendar-group and org-default policies stay
+    membership booking policies; appointment-type and org-default policies stay
     org-wide-token only. Org-wide tokens are unaffected."""
 
     # -- create ------------------------------------------------------------
@@ -1006,21 +1006,21 @@ class TestBookingPolicyOwnerScoping:
         assert "errors" not in data, data.get("errors")
         assert data["data"]["createBookingPolicy"]["success"] is True
 
-    def test_scoped_token_cannot_create_group_policy(self):
+    def test_scoped_token_cannot_create_appointment_type_policy(self):
         org, _membership, su, token, auth = _scoped_setup()
-        group = baker.make(CalendarGroup, organization=org, name="Scoped G")
+        appointment_type = baker.make(AppointmentType, organization=org, name="Scoped G")
 
         resp = _post_graphql(
             CREATE_BOOKING_POLICY_MUTATION,
             su,
             token,
             auth,
-            {"input": {"calendarGroupId": group.id, "leadTimeSeconds": 60}},
+            {"input": {"appointmentTypeId": appointment_type.id, "leadTimeSeconds": 60}},
         )
         assert resp.json().get("errors")
         assert not (
             BookingPolicy.objects.filter_by_organization(org.id)
-            .filter(calendar_group_fk_id=group.id)
+            .filter(appointment_type_fk_id=appointment_type.id)
             .exists()
         )
 
@@ -1041,16 +1041,16 @@ class TestBookingPolicyOwnerScoping:
             .exists()
         )
 
-    def test_org_wide_token_can_still_create_group_policy(self):
+    def test_org_wide_token_can_still_create_appointment_type_policy(self):
         org, su, token, auth = _setup_org_and_token(integration_name="orgwide_bp")
-        group = baker.make(CalendarGroup, organization=org, name="Orgwide G")
+        appointment_type = baker.make(AppointmentType, organization=org, name="Orgwide G")
 
         resp = _post_graphql(
             CREATE_BOOKING_POLICY_MUTATION,
             su,
             token,
             auth,
-            {"input": {"calendarGroupId": group.id, "leadTimeSeconds": 60}},
+            {"input": {"appointmentTypeId": appointment_type.id, "leadTimeSeconds": 60}},
         )
         data = resp.json()
         assert "errors" not in data, data.get("errors")
@@ -1074,10 +1074,10 @@ class TestBookingPolicyOwnerScoping:
         assert "errors" not in data, data.get("errors")
         assert data["data"]["updateBookingPolicy"]["policy"]["leadTimeSeconds"] == 999
 
-    def test_scoped_token_cannot_update_group_policy(self):
+    def test_scoped_token_cannot_update_appointment_type_policy(self):
         org, _membership, su, token, auth = _scoped_setup()
-        group = baker.make(CalendarGroup, organization=org, name="Scoped Upd G")
-        policy = create_booking_policy(calendar_group=group, lead_time_seconds=60)
+        appointment_type = baker.make(AppointmentType, organization=org, name="Scoped Upd G")
+        policy = create_booking_policy(appointment_type=appointment_type, lead_time_seconds=60)
 
         resp = _post_graphql(
             UPDATE_BOOKING_POLICY_MUTATION,
@@ -1092,10 +1092,10 @@ class TestBookingPolicyOwnerScoping:
 
     # -- delete ------------------------------------------------------------
 
-    def test_scoped_token_delete_group_policy_is_noop(self):
+    def test_scoped_token_delete_appointment_type_policy_is_noop(self):
         org, _membership, su, token, auth = _scoped_setup()
-        group = baker.make(CalendarGroup, organization=org, name="Scoped Del G")
-        policy = create_booking_policy(calendar_group=group, lead_time_seconds=60)
+        appointment_type = baker.make(AppointmentType, organization=org, name="Scoped Del G")
+        policy = create_booking_policy(appointment_type=appointment_type, lead_time_seconds=60)
 
         resp = _post_graphql(
             DELETE_BOOKING_POLICY_MUTATION,
@@ -1135,9 +1135,9 @@ class TestBookingPolicyOwnerScoping:
         create_booking_policy(
             membership_user_id=membership.user_id, organization=org, lead_time_seconds=120
         )
-        # Noise the scoped token must NOT see: group, org-default, another member's calendar.
-        group = baker.make(CalendarGroup, organization=org, name="Scoped Q G")
-        create_booking_policy(calendar_group=group, lead_time_seconds=30)
+        # Noise the scoped token must NOT see: appointment type, org-default, another member's calendar.
+        appointment_type = baker.make(AppointmentType, organization=org, name="Scoped Q G")
+        create_booking_policy(appointment_type=appointment_type, lead_time_seconds=30)
         create_booking_policy(organization=org, is_organization_default=True, lead_time_seconds=15)
         other_user = UserFactory().create_user()
         other_membership = OrganizationMembership.objects.create(

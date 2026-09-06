@@ -2,7 +2,7 @@
 chain (Phase 7 of REST_CODE_GATED_SCHEDULING).
 
 Two layers, deliberately separate -- same shape as
-``test_calendargroup_public_booking_slug_backfill.py`` (Phase 3b's own
+``test_appointmenttype_public_booking_slug_backfill.py`` (Phase 3b's own
 migration-chain test):
 
 * the backfill helper itself
@@ -101,7 +101,7 @@ class TestBackfillHelperClassification:
         to, so an ORM ``.create()`` would either error (asking about a column
         that transiently does not exist) or rely on ORM internals never
         designed for this mismatch. Same approach as the Phase 3b precedent's
-        ``_insert_group_without_slug``.
+        ``_insert_appointment_type_without_slug``.
         """
         column_names = ["organization_id", *columns.keys()]
         placeholders = ", ".join(["%s"] * len(column_names))
@@ -479,6 +479,17 @@ class TestBackfillHelperClassification:
             executor.loader.build_graph()
 
             assert self._kinds_for([row_id])[row_id] == "booking_code"
+
+            # Back to the leaf before touching the service. ``revoke_token``
+            # goes through the LIVE ``CalendarManagementToken`` model, which
+            # since 0061 names ``appointment_type_fk`` -- a column the 0057
+            # schema still calls ``calendar_group_fk``. The row survives the
+            # rename with its id, so revoking it here proves exactly what it
+            # proved before: the straggler 0057 classified is genuinely
+            # revokable, not merely labelled.
+            executor = MigrationExecutor(connection)
+            executor.migrate(executor.loader.graph.leaf_nodes())
+            executor.loader.build_graph()
 
             result = CalendarPermissionService().revoke_token(
                 organization_id=organization.id, token_id=row_id

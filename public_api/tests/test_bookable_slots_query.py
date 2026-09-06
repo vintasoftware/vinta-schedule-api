@@ -1,9 +1,9 @@
 """End-to-end tests for the ``calendarBookableSlots`` and
-``calendarGroupBookableSlots`` public GraphQL queries.
+``appointmentTypeBookableSlots`` public GraphQL queries.
 
 Asserts the queries are org-scoped, require a resource grant, and return discretized slots.
 Policy filtering (lead-time, max-horizon, buffers) is verified at the GraphQL
-resolver level for both the single-calendar and group variants.
+resolver level for both the single-calendar and appointment type variants.
 """
 
 import datetime
@@ -17,11 +17,11 @@ from rest_framework.test import APIClient
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import AvailableTime, Calendar
+from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.booking_policy_service import BookingPolicyService
-from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.dataclasses import (
-    CalendarGroupInputData,
-    CalendarGroupSlotInputData,
+    AppointmentTypeInputData,
+    AppointmentTypeSlotInputData,
 )
 from organizations.models import Organization
 from public_api.constants import PublicAPIResources
@@ -152,19 +152,19 @@ class TestCalendarBookableSlotsQuery:
 
 
 # ---------------------------------------------------------------------------
-# calendarGroupBookableSlots — policy-aware resolver
+# appointmentTypeBookableSlots — policy-aware resolver
 # ---------------------------------------------------------------------------
 
-_GROUP_BOOKABLE_SLOTS_QUERY = """
-    query GroupSlots(
-        $groupId: Int!,
+_APPOINTMENT_TYPE_BOOKABLE_SLOTS_QUERY = """
+    query AppointmentTypeSlots(
+        $appointmentTypeId: Int!,
         $start: DateTime!,
         $end: DateTime!,
         $duration: Int!,
         $step: Int!
     ) {
-        calendarGroupBookableSlots(
-            groupId: $groupId,
+        appointmentTypeBookableSlots(
+            appointmentTypeId: $appointmentTypeId,
             searchWindowStart: $start,
             searchWindowEnd: $end,
             durationSeconds: $duration,
@@ -177,30 +177,30 @@ _GROUP_BOOKABLE_SLOTS_QUERY = """
 """
 
 
-def _group_client_with_resources(org):
-    """Create an authenticated API client with CALENDAR_GROUP resource."""
+def _appointment_type_client_with_resources(org):
+    """Create an authenticated API client with APPOINTMENT_TYPE resource."""
     auth_service = PublicAPIAuthService()
     system_user, token = auth_service.create_system_user(
-        integration_name="group_slots_integration", organization=org
+        integration_name="appointment_type_slots_integration", organization=org
     )
     baker.make(
-        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR_GROUP
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.APPOINTMENT_TYPE
     )
     client = APIClient()
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
     return client
 
 
-def _make_group(org, *, cal):
-    """Create a one-slot CalendarGroup with one unmanaged calendar."""
-    svc = CalendarGroupService(booking_policy_service=BookingPolicyService())
+def _make_appointment_type(org, *, cal):
+    """Create a one-slot AppointmentType with one unmanaged calendar."""
+    svc = AppointmentTypeService(booking_policy_service=BookingPolicyService())
     svc.initialize(organization=org)
-    return svc.create_group(
-        CalendarGroupInputData(
-            name="Policy Group",
+    return svc.create_appointment_type(
+        AppointmentTypeInputData(
+            name="Policy AppointmentType",
             description="",
             slots=[
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Slot",
                     calendar_ids=[cal.id],
                     required_count=1,
@@ -213,16 +213,16 @@ def _make_group(org, *, cal):
 
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-class TestCalendarGroupBookableSlotsQuery:
-    """End-to-end GraphQL tests for calendarGroupBookableSlots with a BookingPolicy.
+class TestAppointmentTypeBookableSlotsQuery:
+    """End-to-end GraphQL tests for appointmentTypeBookableSlots with a BookingPolicy.
 
-    Verifies the DI wiring that makes the public group resolver policy-aware:
+    Verifies the DI wiring that makes the public appointment type resolver policy-aware:
     slots filtered by the policy (lead-time) are absent from the response.
     """
 
-    def _post(self, client, group_id, start, end, duration_s=30 * 60, step_s=30 * 60):
+    def _post(self, client, appointment_type_id, start, end, duration_s=30 * 60, step_s=30 * 60):
         variables = {
-            "groupId": group_id,
+            "appointmentTypeId": appointment_type_id,
             "start": start.isoformat(),
             "end": end.isoformat(),
             "duration": duration_s,
@@ -230,44 +230,46 @@ class TestCalendarGroupBookableSlotsQuery:
         }
         return client.post(
             "/graphql/",
-            data=json.dumps({"query": _GROUP_BOOKABLE_SLOTS_QUERY, "variables": variables}),
+            data=json.dumps(
+                {"query": _APPOINTMENT_TYPE_BOOKABLE_SLOTS_QUERY, "variables": variables}
+            ),
             content_type="application/json",
         )
 
-    def test_group_lead_time_policy_filters_early_slots(self, mock_rl, organization):
-        """A group with a lead_time BookingPolicy: the resolver honours it —
+    def test_appointment_type_lead_time_policy_filters_early_slots(self, mock_rl, organization):
+        """An appointment type with a lead_time BookingPolicy: the resolver honours it —
         candidates within the lead-time window are absent from the response."""
         mock_rl.return_value = iter([None])
 
         # Unmanaged calendar — always free (no blocking events).
         cal = Calendar.objects.create(
             organization=organization,
-            name="Group Slots Cal",
+            name="AppointmentType Slots Cal",
             external_id="gs-cal-1",
             provider=CalendarProvider.INTERNAL,
             calendar_type=CalendarType.PERSONAL,
             manage_available_windows=False,
         )
-        group = _make_group(organization, cal=cal)
+        appointment_type = _make_appointment_type(organization, cal=cal)
 
         # 2-hour lead time.
         lead_time = datetime.timedelta(hours=2)
         create_booking_policy(
-            calendar_group=group,
+            appointment_type=appointment_type,
             lead_time_seconds=int(lead_time.total_seconds()),
         )
 
-        client = _group_client_with_resources(organization)
+        client = _appointment_type_client_with_resources(organization)
         now = datetime.datetime.now(tz=datetime.UTC).replace(microsecond=0)
         start = now
         end = now + datetime.timedelta(hours=4)
 
-        response = self._post(client, group.id, start, end)
+        response = self._post(client, appointment_type.id, start, end)
 
         assert response.status_code == 200
         data = response.json()
         assert "errors" not in data, data
-        slots = data["data"]["calendarGroupBookableSlots"]
+        slots = data["data"]["appointmentTypeBookableSlots"]
 
         cutoff = now + lead_time
         # Every slot must start at or after the lead-time cutoff.
@@ -283,7 +285,7 @@ class TestCalendarGroupBookableSlotsQuery:
         ]
         assert not before_cutoff, f"Slots before lead-time cutoff leaked: {before_cutoff}"
 
-    def test_group_without_policy_returns_all_slots(self, mock_rl, organization):
+    def test_appointment_type_without_policy_returns_all_slots(self, mock_rl, organization):
         """Without a BookingPolicy, the resolver returns all engine-computed slots
         (regression: policy DI wiring must not break the no-policy path)."""
         mock_rl.return_value = iter([None])
@@ -296,19 +298,19 @@ class TestCalendarGroupBookableSlotsQuery:
             calendar_type=CalendarType.PERSONAL,
             manage_available_windows=False,
         )
-        group = _make_group(organization, cal=cal)
-        # No BookingPolicy created for this group.
+        appointment_type = _make_appointment_type(organization, cal=cal)
+        # No BookingPolicy created for this appointment type.
 
-        client = _group_client_with_resources(organization)
+        client = _appointment_type_client_with_resources(organization)
         now = datetime.datetime.now(tz=datetime.UTC).replace(microsecond=0)
         start = now
         end = now + datetime.timedelta(hours=1)
 
-        response = self._post(client, group.id, start, end)
+        response = self._post(client, appointment_type.id, start, end)
 
         assert response.status_code == 200
         data = response.json()
         assert "errors" not in data, data
         # With an unmanaged calendar and no events, all step-aligned windows are free.
-        slots = data["data"]["calendarGroupBookableSlots"]
+        slots = data["data"]["appointmentTypeBookableSlots"]
         assert isinstance(slots, list)

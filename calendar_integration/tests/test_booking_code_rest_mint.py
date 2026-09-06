@@ -10,14 +10,14 @@ Covers:
 - The six ``purpose`` x target combinations, each minted here and then USED
   against the matching Phase 1-4 write endpoint (the real parity assertion).
 - End-to-end duration pinning: this endpoint mints no ``duration_seconds`` of
-  its own -- duration pinning lives on ``CalendarGroup.duration``, not on the
-  token. A code minted for a group that already carries a duration is
+  its own -- duration pinning lives on ``AppointmentType.duration``, not on the
+  token. A code minted for an appointment type that already carries a duration is
   enforced on write and silently overrides the client's ``duration_seconds``
-  on the Phase 5 group-scoped bookable-slots read; a code minted for a
+  on the Phase 5 appointment-type-scoped bookable-slots read; a code minted for a
   calendar carries no duration constraint at all.
 - Authorization matrix: admin mints for any target; a member mints for an owned
-  calendar / a participated group; a member is refused for a non-owned calendar
-  / non-participated group; a cross-organization target is 404, never 403.
+  calendar / a participated appointment type; a member is refused for a non-owned calendar
+  / non-participated appointment type; a cross-organization target is 404, never 403.
 - Validation matrix.
 - Mint attribution: ``minted_by_membership_user_id`` set, ``minted_by_system_user``
   null, audit actor names the user.
@@ -43,12 +43,12 @@ from calendar_integration.constants import (
 )
 from calendar_integration.factories import create_calendar_ownership
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     AvailableTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
     CalendarManagementToken,
     ExternalAttendee,
 )
@@ -64,10 +64,14 @@ MINT_DETAIL_URL = "api:BookingCodes-detail"
 
 BOOKING_CALENDAR_EVENTS_URL = "calendar_booking_api:booking-calendar-events-list"
 BOOKING_RESCHEDULE_URL = "calendar_booking_api:booking-events-reschedule-list"
-BOOKING_GROUP_RESCHEDULE_URL = "calendar_booking_api:booking-group-events-reschedule-list"
+BOOKING_APPOINTMENT_TYPE_RESCHEDULE_URL = (
+    "calendar_booking_api:booking-appointment-type-events-reschedule-list"
+)
 BOOKING_CANCEL_URL = "calendar_booking_api:booking-events-cancel-list"
 BOOKING_BOOKABLE_SLOTS_URL = "calendar_booking_api:booking-calendar-bookable-slots-list"
-BOOKING_GROUP_BOOKABLE_SLOTS_URL = "calendar_booking_api:booking-calendar-group-bookable-slots-list"
+BOOKING_APPOINTMENT_TYPE_BOOKABLE_SLOTS_URL = (
+    "calendar_booking_api:booking-appointment-type-bookable-slots-list"
+)
 
 BOOKING_START = datetime.datetime(2030, 6, 1, 10, 0, tzinfo=datetime.UTC)
 BOOKING_END = datetime.datetime(2030, 6, 1, 10, 30, tzinfo=datetime.UTC)
@@ -96,8 +100,8 @@ def _revoke(client: APIClient, token_id: int):
     return client.delete(_revoke_url(token_id))
 
 
-def _group_booking_url(public_slug: str) -> str:
-    return f"/public/booking/calendar-groups/{public_slug}/events/"
+def _appointment_type_booking_url(public_slug: str) -> str:
+    return f"/public/booking/appointment-types/{public_slug}/events/"
 
 
 def _make_member(org: Organization, *, is_admin: bool = False) -> OrganizationMembership:
@@ -127,9 +131,11 @@ def _book_payload(**overrides) -> dict:
     return base
 
 
-def _slot_selections(group: CalendarGroup, primary: Calendar, secondary: Calendar) -> list[dict]:
-    slot_a = group.slots.get(name="Physicians")
-    slot_b = group.slots.get(name="Rooms")
+def _slot_selections(
+    appointment_type: AppointmentType, primary: Calendar, secondary: Calendar
+) -> list[dict]:
+    slot_a = appointment_type.slots.get(name="Physicians")
+    slot_b = appointment_type.slots.get(name="Rooms")
     return [
         {"slot_id": slot_a.id, "calendar_ids": [primary.id]},
         {"slot_id": slot_b.id, "calendar_ids": [secondary.id]},
@@ -208,25 +214,29 @@ def available_window(organization, calendar):
 
 
 @pytest.fixture
-def group(organization, calendar, secondary_calendar):
-    grp = baker.make(CalendarGroup, organization=organization, name="Test Group")
-    slot_a = CalendarGroupSlot.objects.create(
-        organization=organization, group=grp, name="Physicians", order=0, required_count=1
+def appointment_type(organization, calendar, secondary_calendar):
+    grp = baker.make(AppointmentType, organization=organization, name="Test AppointmentType")
+    slot_a = AppointmentTypeSlot.objects.create(
+        organization=organization,
+        appointment_type=grp,
+        name="Physicians",
+        order=0,
+        required_count=1,
     )
-    slot_b = CalendarGroupSlot.objects.create(
-        organization=organization, group=grp, name="Rooms", order=1, required_count=1
+    slot_b = AppointmentTypeSlot.objects.create(
+        organization=organization, appointment_type=grp, name="Rooms", order=1, required_count=1
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot_a, calendar=calendar
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot_b, calendar=secondary_calendar
     )
     return grp
 
 
 @pytest.fixture
-def group_availability_windows(organization, calendar, secondary_calendar):
+def appointment_type_availability_windows(organization, calendar, secondary_calendar):
     windows = []
     for cal in (calendar, secondary_calendar):
         windows.append(
@@ -285,17 +295,17 @@ class TestSixPurposeTargetCombinations:
         )
         assert event.calendar_fk_id == calendar.id
 
-    def test_book_calendar_group(
+    def test_book_appointment_type(
         self,
         admin_client,
         anon_client,
         organization,
         calendar,
         secondary_calendar,
-        group,
-        group_availability_windows,  # noqa: ARG002 -- seeds DB rows consumed by create_event
+        appointment_type,
+        appointment_type_availability_windows,  # noqa: ARG002 -- seeds DB rows consumed by create_event
     ):
-        mint = _mint(admin_client, {"purpose": "book", "calendar_group": group.id})
+        mint = _mint(admin_client, {"purpose": "book", "appointment_type": appointment_type.id})
         assert mint.status_code == status.HTTP_201_CREATED, mint.content
         body = mint.json()
         code = body["code"]
@@ -308,10 +318,10 @@ class TestSixPurposeTargetCombinations:
         }
 
         payload = _book_payload(
-            slot_selections=_slot_selections(group, calendar, secondary_calendar)
+            slot_selections=_slot_selections(appointment_type, calendar, secondary_calendar)
         )
         response = anon_client.post(
-            _group_booking_url(group.public_booking_slug),
+            _appointment_type_booking_url(appointment_type.public_booking_slug),
             payload,
             format="json",
             headers={BOOKING_CODE_HEADER: code},
@@ -320,7 +330,7 @@ class TestSixPurposeTargetCombinations:
         event = CalendarEvent.objects.filter_by_organization(organization.id).get(
             id=response.json()["id"]
         )
-        assert event.calendar_group_fk_id == group.id
+        assert event.appointment_type_fk_id == appointment_type.id
 
     def test_reschedule_calendar(
         self,
@@ -370,22 +380,22 @@ class TestSixPurposeTargetCombinations:
         event.refresh_from_db()
         assert event.start_time_tz_unaware.replace(tzinfo=None) == NEW_START.replace(tzinfo=None)
 
-    def test_reschedule_calendar_group(
+    def test_reschedule_appointment_type(
         self,
         admin_client,
         anon_client,
         organization,
         calendar,
         secondary_calendar,
-        group,
-        group_availability_windows,  # noqa: ARG002
+        appointment_type,
+        appointment_type_availability_windows,  # noqa: ARG002
     ):
         event = baker.make(
             CalendarEvent,
             organization=organization,
             calendar=calendar,
-            calendar_group=group,
-            title="Existing Group Event",
+            appointment_type=appointment_type,
+            title="Existing AppointmentType Event",
             timezone="UTC",
             start_time_tz_unaware=BOOKING_START.replace(tzinfo=None),
             end_time_tz_unaware=BOOKING_END.replace(tzinfo=None),
@@ -394,7 +404,7 @@ class TestSixPurposeTargetCombinations:
 
         mint = _mint(
             admin_client,
-            {"purpose": "reschedule", "calendar_group": group.id, "event": event.id},
+            {"purpose": "reschedule", "appointment_type": appointment_type.id, "event": event.id},
         )
         assert mint.status_code == status.HTTP_201_CREATED, mint.content
         body = mint.json()
@@ -408,7 +418,7 @@ class TestSixPurposeTargetCombinations:
         }
 
         response = anon_client.post(
-            reverse(BOOKING_GROUP_RESCHEDULE_URL),
+            reverse(BOOKING_APPOINTMENT_TYPE_RESCHEDULE_URL),
             {
                 "start_time": NEW_START.isoformat(),
                 "end_time": NEW_END.isoformat(),
@@ -453,15 +463,21 @@ class TestSixPurposeTargetCombinations:
         assert response.status_code == status.HTTP_204_NO_CONTENT, response.content
         assert not CalendarEvent.original_manager.filter(id=event.id).exists()
 
-    def test_cancel_calendar_group(
-        self, admin_client, anon_client, organization, calendar, secondary_calendar, group
+    def test_cancel_appointment_type(
+        self,
+        admin_client,
+        anon_client,
+        organization,
+        calendar,
+        secondary_calendar,
+        appointment_type,
     ):
         event = baker.make(
             CalendarEvent,
             organization=organization,
             calendar=calendar,
-            calendar_group=group,
-            title="Existing Group Event",
+            appointment_type=appointment_type,
+            title="Existing AppointmentType Event",
             timezone="UTC",
             start_time_tz_unaware=BOOKING_START.replace(tzinfo=None),
             end_time_tz_unaware=BOOKING_END.replace(tzinfo=None),
@@ -470,7 +486,7 @@ class TestSixPurposeTargetCombinations:
 
         mint = _mint(
             admin_client,
-            {"purpose": "cancel", "calendar_group": group.id, "event": event.id},
+            {"purpose": "cancel", "appointment_type": appointment_type.id, "event": event.id},
         )
         assert mint.status_code == status.HTTP_201_CREATED, mint.content
         body = mint.json()
@@ -497,9 +513,9 @@ class TestSixPurposeTargetCombinations:
 
 @pytest.mark.django_db
 class TestDurationPinEndToEnd:
-    """Duration pinning lives on ``CalendarGroup.duration``, not on the
+    """Duration pinning lives on ``AppointmentType.duration``, not on the
     minted token: the mint endpoint accepts no ``duration_seconds`` of its
-    own, so these tests set the pin on the GROUP target directly, before
+    own, so these tests set the pin on the APPOINTMENT_TYPE target directly, before
     minting a code for it -- unlike GraphQL's mint mutations, which are
     deliberately unchanged.
 
@@ -508,25 +524,25 @@ class TestDurationPinEndToEnd:
     ``test_calendar_scoped_code_accepts_any_span`` below.
     """
 
-    def test_pinned_group_code_enforced_on_write_and_silently_overrides_read(
+    def test_pinned_appointment_type_code_enforced_on_write_and_silently_overrides_read(
         self,
         admin_client,
         anon_client,
         organization,
         calendar,
         secondary_calendar,
-        group,
-        group_availability_windows,  # noqa: ARG002 -- seeds DB rows consumed by create_event
+        appointment_type,
+        appointment_type_availability_windows,  # noqa: ARG002 -- seeds DB rows consumed by create_event
     ):
-        group.duration = datetime.timedelta(minutes=30)
-        group.save()
+        appointment_type.duration = datetime.timedelta(minutes=30)
+        appointment_type.save()
 
-        mint = _mint(admin_client, {"purpose": "book", "calendar_group": group.id})
+        mint = _mint(admin_client, {"purpose": "book", "appointment_type": appointment_type.id})
         assert mint.status_code == status.HTTP_201_CREATED, mint.content
         body = mint.json()
         code = body["code"]
 
-        slot_selections = _slot_selections(group, calendar, secondary_calendar)
+        slot_selections = _slot_selections(appointment_type, calendar, secondary_calendar)
 
         # Wrong span (45 min instead of the pinned 30) is refused and does NOT
         # consume the code -- the pin check runs before create/consume.
@@ -535,7 +551,7 @@ class TestDurationPinEndToEnd:
             slot_selections=slot_selections,
         )
         wrong_response = anon_client.post(
-            _group_booking_url(group.public_booking_slug),
+            _appointment_type_booking_url(appointment_type.public_booking_slug),
             wrong_payload,
             format="json",
             headers={BOOKING_CODE_HEADER: code},
@@ -544,10 +560,10 @@ class TestDurationPinEndToEnd:
         assert wrong_response.json()["error_code"] == "NOT_PERMITTED"
 
         # Phase 5 read: the client asks for a DIFFERENT duration_seconds: the
-        # group's pin silently overrides it, so every proposal spans exactly
+        # appointment type's pin silently overrides it, so every proposal spans exactly
         # 30 minutes.
         read_response = anon_client.get(
-            reverse(BOOKING_GROUP_BOOKABLE_SLOTS_URL),
+            reverse(BOOKING_APPOINTMENT_TYPE_BOOKABLE_SLOTS_URL),
             {
                 "search_window_start": "2030-06-01T09:00:00Z",
                 "search_window_end": "2030-06-01T11:00:00Z",
@@ -567,7 +583,7 @@ class TestDurationPinEndToEnd:
         # Correct span (30 min, matching the pin) succeeds and consumes the code.
         right_payload = _book_payload(slot_selections=slot_selections)
         right_response = anon_client.post(
-            _group_booking_url(group.public_booking_slug),
+            _appointment_type_booking_url(appointment_type.public_booking_slug),
             right_payload,
             format="json",
             headers={BOOKING_CODE_HEADER: code},
@@ -579,26 +595,26 @@ class TestDurationPinEndToEnd:
         )
         assert token.used_at is not None
 
-    def test_unpinned_group_code_accepts_any_span(
+    def test_unpinned_appointment_type_code_accepts_any_span(
         self,
         admin_client,
         anon_client,
         organization,
         calendar,
         secondary_calendar,
-        group,
-        group_availability_windows,  # noqa: ARG002 -- seeds DB rows consumed by create_event
+        appointment_type,
+        appointment_type_availability_windows,  # noqa: ARG002 -- seeds DB rows consumed by create_event
     ):
-        mint = _mint(admin_client, {"purpose": "book", "calendar_group": group.id})
+        mint = _mint(admin_client, {"purpose": "book", "appointment_type": appointment_type.id})
         assert mint.status_code == status.HTTP_201_CREATED, mint.content
         code = mint.json()["code"]
 
         payload = _book_payload(
             end_time=(BOOKING_START + datetime.timedelta(minutes=45)).isoformat(),
-            slot_selections=_slot_selections(group, calendar, secondary_calendar),
+            slot_selections=_slot_selections(appointment_type, calendar, secondary_calendar),
         )
         response = anon_client.post(
-            _group_booking_url(group.public_booking_slug),
+            _appointment_type_booking_url(appointment_type.public_booking_slug),
             payload,
             format="json",
             headers={BOOKING_CODE_HEADER: code},
@@ -608,8 +624,8 @@ class TestDurationPinEndToEnd:
     def test_calendar_scoped_code_accepts_any_span(
         self, admin_client, anon_client, organization, calendar, available_window
     ):
-        """A calendar-scoped code has no ``CalendarGroup`` to pin a duration
-        on at all -- unlike the group-scoped cases above, any span is
+        """A calendar-scoped code has no ``AppointmentType`` to pin a duration
+        on at all -- unlike the appointment-type-scoped cases above, any span is
         accepted."""
         mint = _mint(admin_client, {"purpose": "book", "calendar": calendar.id})
         assert mint.status_code == status.HTTP_201_CREATED, mint.content
@@ -638,8 +654,8 @@ class TestAuthorizationMatrix:
         response = _mint(admin_client, {"purpose": "book", "calendar": calendar.id})
         assert response.status_code == status.HTTP_201_CREATED, response.content
 
-    def test_admin_mints_for_any_group(self, admin_client, group):
-        response = _mint(admin_client, {"purpose": "book", "calendar_group": group.id})
+    def test_admin_mints_for_any_appointment_type(self, admin_client, appointment_type):
+        response = _mint(admin_client, {"purpose": "book", "appointment_type": appointment_type.id})
         assert response.status_code == status.HTTP_201_CREATED, response.content
 
     def test_member_mints_for_owned_calendar(self, organization, calendar):
@@ -650,12 +666,14 @@ class TestAuthorizationMatrix:
         response = _mint(client, {"purpose": "book", "calendar": calendar.id})
         assert response.status_code == status.HTTP_201_CREATED, response.content
 
-    def test_member_mints_for_participated_group(self, organization, calendar, group):
+    def test_member_mints_for_participated_appointment_type(
+        self, organization, calendar, appointment_type
+    ):
         member = _make_member(organization)
         create_calendar_ownership(calendar=calendar, user=member.user)
         client = _auth_client(member)
 
-        response = _mint(client, {"purpose": "book", "calendar_group": group.id})
+        response = _mint(client, {"purpose": "book", "appointment_type": appointment_type.id})
         assert response.status_code == status.HTTP_201_CREATED, response.content
 
     def test_member_refused_for_non_owned_calendar(self, organization, calendar):
@@ -665,34 +683,42 @@ class TestAuthorizationMatrix:
         response = _mint(client, {"purpose": "book", "calendar": calendar.id})
         assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
 
-    def test_member_refused_for_non_participated_group(self, organization, group):
+    def test_member_refused_for_non_participated_appointment_type(
+        self, organization, appointment_type
+    ):
         member = _make_member(organization)
         client = _auth_client(member)
 
-        response = _mint(client, {"purpose": "book", "calendar_group": group.id})
+        response = _mint(client, {"purpose": "book", "appointment_type": appointment_type.id})
         assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
 
-    def test_member_refused_for_different_group_despite_owning_calendar_in_another_group(
-        self, organization, calendar, group
+    def test_member_refused_for_different_appointment_type_despite_owning_calendar_in_another_appointment_type(
+        self, organization, calendar, appointment_type
     ):
-        """A member who owns a calendar inside group `group` (G1)'s slot pools
-        must still be refused for a DIFFERENT group G2 in the same org.
+        """A member who owns a calendar inside appointment type `appointment_type` (G1)'s slot pools
+        must still be refused for a DIFFERENT appointment type G2 in the same org.
 
-        ``test_member_refused_for_non_participated_group`` above uses a member
+        ``test_member_refused_for_non_participated_appointment_type`` above uses a member
         with no ownership at all, so it would pass even if
-        ``can_view_calendar_group`` degenerated to "owns any calendar
+        ``can_view_appointment_type`` degenerated to "owns any calendar
         anywhere" -- this test would catch that regression.
         """
         member = _make_member(organization)
         create_calendar_ownership(calendar=calendar, user=member.user)
         client = _auth_client(member)
 
-        other_group = baker.make(CalendarGroup, organization=organization, name="Other Group")
-        CalendarGroupSlot.objects.create(
-            organization=organization, group=other_group, name="Slot", order=0, required_count=1
+        other_appointment_type = baker.make(
+            AppointmentType, organization=organization, name="Other AppointmentType"
+        )
+        AppointmentTypeSlot.objects.create(
+            organization=organization,
+            appointment_type=other_appointment_type,
+            name="Slot",
+            order=0,
+            required_count=1,
         )
 
-        response = _mint(client, {"purpose": "book", "calendar_group": other_group.id})
+        response = _mint(client, {"purpose": "book", "appointment_type": other_appointment_type.id})
         assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
 
     def test_cross_org_calendar_target_is_404_not_403(self, admin_client, other_organization):
@@ -700,15 +726,19 @@ class TestAuthorizationMatrix:
         response = _mint(admin_client, {"purpose": "book", "calendar": other_calendar.id})
         assert response.status_code == status.HTTP_404_NOT_FOUND, response.content
 
-    def test_cross_org_group_target_is_404_not_403(self, admin_client, other_organization):
-        other_group = baker.make(CalendarGroup, organization=other_organization)
-        response = _mint(admin_client, {"purpose": "book", "calendar_group": other_group.id})
+    def test_cross_org_appointment_type_target_is_404_not_403(
+        self, admin_client, other_organization
+    ):
+        other_appointment_type = baker.make(AppointmentType, organization=other_organization)
+        response = _mint(
+            admin_client, {"purpose": "book", "appointment_type": other_appointment_type.id}
+        )
         assert response.status_code == status.HTTP_404_NOT_FOUND, response.content
 
 
 # ---------------------------------------------------------------------------
 # _resolve_event_target's three 404 branches (mismatch is always 404, never
-# 403 -- the event id is as sensitive as the calendar/group id it belongs to).
+# 403 -- the event id is as sensitive as the calendar/appointment type id it belongs to).
 # ---------------------------------------------------------------------------
 
 
@@ -747,14 +777,14 @@ class TestResolveEventTarget404s:
         )
         assert response.status_code == status.HTTP_404_NOT_FOUND, response.content
 
-    def test_grouped_event_addressed_with_calendar_instead_of_group_is_404(
-        self, admin_client, organization, calendar, secondary_calendar, group
+    def test_appointment_type_event_addressed_with_calendar_instead_of_appointment_type_is_404(
+        self, admin_client, organization, calendar, secondary_calendar, appointment_type
     ):
         event = baker.make(
             CalendarEvent,
             organization=organization,
             calendar=calendar,
-            calendar_group=group,
+            appointment_type=appointment_type,
             timezone="UTC",
         )
 
@@ -772,10 +802,10 @@ class TestResolveEventTarget404s:
 
 @pytest.mark.django_db
 class TestValidationMatrix:
-    def test_both_targets_supplied(self, admin_client, calendar, group):
+    def test_both_targets_supplied(self, admin_client, calendar, appointment_type):
         response = _mint(
             admin_client,
-            {"purpose": "book", "calendar": calendar.id, "calendar_group": group.id},
+            {"purpose": "book", "calendar": calendar.id, "appointment_type": appointment_type.id},
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 

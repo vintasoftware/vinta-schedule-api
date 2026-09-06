@@ -43,13 +43,13 @@ from vinta_billing.registry import entitlements, resources
 from vinta_billing.services.subscription_service import current_billing_period_start
 
 from calendar_integration.constants import CalendarType
-from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
+from calendar_integration.models import AppointmentType, AvailableTime, BlockedTime, Calendar
 from organizations.models import OrganizationInvitation, OrganizationMembership
 from payments.seams.resource_keys import (
     ADVANCED_SCHEDULING,
+    APPOINTMENT_TYPES,
     AVAILABILITY_WINDOWS,
     BUNDLE_CALENDARS,
-    CALENDAR_GROUPS,
     EVENT_OCCURRENCES,
     EXTERNAL_CALENDAR_GOOGLE,
     EXTERNAL_CALENDAR_MICROSOFT,
@@ -141,13 +141,13 @@ def _count_bundle_calendars(context: UsageContext) -> dict[int, int]:
     )
 
 
-def _count_calendar_groups(context: UsageContext) -> dict[int, int]:
-    """Calendar groups per organization.
+def _count_appointment_types(context: UsageContext) -> dict[int, int]:
+    """Appointment types per organization.
 
     ``unscoped()``: see :func:`_count_resource_calendars`.
     """
     return count_by_organization(
-        CalendarGroup.objects.unscoped().filter(organization_id__in=context.organization_ids)
+        AppointmentType.objects.unscoped().filter(organization_id__in=context.organization_ids)
     )
 
 
@@ -165,14 +165,14 @@ def _count_availability_windows(context: UsageContext) -> dict[int, int]:
     "nobody is blocked as a consequence of the rollout itself" rule forbids.
 
     Reads through ``unscoped()`` on both models: the default manager on each
-    excludes group-scoped rows (``group_slot`` set) by design, so counting
-    through it would under-report and let group-scoped windows and blocks bypass
+    excludes appointment-type-scoped rows (``appointment_type_slot`` set) by design, so counting
+    through it would under-report and let appointment-type-scoped windows and blocks bypass
     the plan limit entirely. The spec's metering rule is "every time window an
     organization authors is metered" regardless of scope or sign, so base and
-    group-scoped rows of both models are counted together here. Blocked time is
+    appointment-type-scoped rows of both models are counted together here. Blocked time is
     metered here alongside availability windows deliberately, not incidentally:
     it is a billing-rule change applied to every organization at once, not a
-    side effect of adding group scoping.
+    side effect of adding appointment type scoping.
 
     The two models are grouped separately, then merged key-wise
     (``merge_breakdowns``): an organization that authored both availability
@@ -287,10 +287,10 @@ resources.register(
     usage_extra_keys=READS_NO_USAGE_EXTRA,
 )
 resources.register(
-    CALENDAR_GROUPS,
-    label=_("Calendar groups"),
+    APPOINTMENT_TYPES,
+    label=_("Appointment types"),
     kind=LimitKind.PREPAID,
-    counter=_count_calendar_groups,
+    counter=_count_appointment_types,
     remedy=LimitRemedy.PURCHASE_ADD_ON,
     usage_extra_keys=READS_NO_USAGE_EXTRA,
 )

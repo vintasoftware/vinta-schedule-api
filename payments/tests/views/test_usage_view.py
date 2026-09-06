@@ -37,14 +37,14 @@ from vinta_billing.services.subscription_service import (
 )
 
 from calendar_integration.constants import CalendarType
-from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
+from calendar_integration.models import AppointmentType, AvailableTime, Calendar
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from payments.seams.resource_keys import (
+    APPOINTMENT_TYPES,
     AVAILABILITY_WINDOWS,
     BUNDLE_CALENDARS,
-    CALENDAR_GROUPS,
     EVENT_OCCURRENCES,
     ORGANIZATION_MEMBERS,
     PUBLIC_API_SYSTEM_USERS,
@@ -105,8 +105,8 @@ def _seed_resource_calendars(organization: Organization) -> None:
         )
 
 
-def _seed_calendar_groups(organization: Organization) -> None:
-    baker.make(CalendarGroup, organization=organization, _quantity=2)
+def _seed_appointment_types(organization: Organization) -> None:
+    baker.make(AppointmentType, organization=organization, _quantity=2)
 
 
 def _seed_bundle_calendars(organization: Organization) -> None:
@@ -173,7 +173,7 @@ def _seed_event_occurrences(organization: Organization, subscription) -> None:
 SEEDERS = {
     ORGANIZATION_MEMBERS: _seed_organization_members,
     RESOURCE_CALENDARS: _seed_resource_calendars,
-    CALENDAR_GROUPS: _seed_calendar_groups,
+    APPOINTMENT_TYPES: _seed_appointment_types,
     BUNDLE_CALENDARS: _seed_bundle_calendars,
     AVAILABILITY_WINDOWS: _seed_availability_windows,
     WEBHOOK_SUBSCRIPTIONS: _seed_webhook_subscriptions,

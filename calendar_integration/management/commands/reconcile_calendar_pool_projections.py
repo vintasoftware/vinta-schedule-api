@@ -1,6 +1,6 @@
 """Recompute the calendar-pool roster projection and report (or repair) drift.
 
-A slot's bookable roster is the union of its inline ``CalendarGroupSlotMembership``
+A slot's bookable roster is the union of its inline ``AppointmentTypeSlotMembership``
 rows (``source_pool IS NULL``) and rows *projected* from the ``CalendarPool``s
 attached to it (``source_pool`` set). The projection is written, not computed on
 read -- which buys correctness for the nine call sites that reach the roster
@@ -20,7 +20,7 @@ accepted explicitly, but only to be refused as a conflict when combined with
 ``--fix``'s write, since a flag whose entire purpose is "this is safe" must not
 be overridable by accident. Per the plan's Risk & Rollout Notes, a reported
 difference should be treated as a bug in the reconcile path in
-``CalendarGroupService._reconcile_slot_pools`` and investigated, not merely
+``AppointmentTypeService._reconcile_slot_pools`` and investigated, not merely
 repaired.
 """
 
@@ -31,8 +31,8 @@ from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.db import transaction
 
 from calendar_integration.models import (
-    CalendarGroupSlotMembership,
-    CalendarGroupSlotPool,
+    AppointmentTypeSlotMembership,
+    AppointmentTypeSlotPool,
     CalendarPoolMembership,
 )
 from common.organization_context import organization_context
@@ -46,7 +46,7 @@ class Command(BaseCommand):
     """Recompute the slot <-> pool roster projection and report differences."""
 
     help = (
-        "Recompute CalendarGroupSlotMembership rows projected from attached "
+        "Recompute AppointmentTypeSlotMembership rows projected from attached "
         "CalendarPools and report differences. Dry-run unless --fix is passed."
     )
 
@@ -120,7 +120,7 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.NOTICE(
                 "Treat any difference as a bug in "
-                "CalendarGroupService._reconcile_slot_pools rather than a routine repair."
+                "AppointmentTypeService._reconcile_slot_pools rather than a routine repair."
             )
         )
 
@@ -136,7 +136,7 @@ class Command(BaseCommand):
         org_id = organization.id
 
         attachments = list(
-            CalendarGroupSlotPool.objects.filter_by_organization(org_id).values_list(
+            AppointmentTypeSlotPool.objects.filter_by_organization(org_id).values_list(
                 "slot_fk_id", "pool_fk_id"
             )
         )
@@ -159,7 +159,7 @@ class Command(BaseCommand):
         # are not derived from anything, so they can be neither missing nor
         # orphaned, and a repair must never consider deleting one.
         stored = set(
-            CalendarGroupSlotMembership.objects.filter_by_organization(org_id)
+            AppointmentTypeSlotMembership.objects.filter_by_organization(org_id)
             .projected()
             .values_list("slot_fk_id", "source_pool_fk_id", "calendar_fk_id")
         )
@@ -177,23 +177,23 @@ class Command(BaseCommand):
             )
 
         if apply_fix and (missing or orphaned):
-            # Writes CalendarGroupSlotMembership directly -- the projection
+            # Writes AppointmentTypeSlotMembership directly -- the projection
             # itself -- never CalendarPoolMembership (the pool roster). The
             # post_save/post_delete receivers in calendar_integration.signals
             # that reproject on a CalendarPoolMembership change are therefore
             # not in this call chain and this repair cannot recurse into them.
             with transaction.atomic():
                 for slot_id, pool_id, calendar_id in orphaned:
-                    CalendarGroupSlotMembership.objects.filter_by_organization(
+                    AppointmentTypeSlotMembership.objects.filter_by_organization(
                         org_id
                     ).projected().filter(
                         slot_fk_id=slot_id,
                         source_pool_fk_id=pool_id,
                         calendar_fk_id=calendar_id,
                     ).delete()
-                CalendarGroupSlotMembership.objects.bulk_create(
+                AppointmentTypeSlotMembership.objects.bulk_create(
                     [
-                        CalendarGroupSlotMembership(
+                        AppointmentTypeSlotMembership(
                             organization=organization,
                             slot_fk_id=slot_id,
                             calendar_fk_id=calendar_id,
@@ -202,7 +202,7 @@ class Command(BaseCommand):
                         for slot_id, pool_id, calendar_id in missing
                     ]
                 )
-            # A production repair inserts/deletes rows with no CalendarGroupService
+            # A production repair inserts/deletes rows with no AppointmentTypeService
             # audit trail (that trail is for user-driven writes; this is an
             # operator-run sweep) -- logged at INFO, in addition to stdout, so the
             # repair is traceable after the fact from wherever logs are shipped.

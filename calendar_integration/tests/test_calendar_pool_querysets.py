@@ -8,7 +8,7 @@ from calendar_integration.models import Calendar, CalendarPool, CalendarPoolMemb
 @pytest.mark.django_db
 class TestCalendarPoolOnlyMemberOf:
     """Tests for CalendarPoolQuerySet.only_member_of, the pool analogue of
-    CalendarGroupQuerySet.only_member_of."""
+    AppointmentTypeQuerySet.only_member_of."""
 
     def setup_method(self):
         self.organization = baker.make("organizations.Organization")

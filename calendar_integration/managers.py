@@ -12,16 +12,16 @@ from calendar_integration.exceptions import (
     TokenRevokedError,
 )
 from calendar_integration.querysets import (
+    AppointmentTypeQuerySet,
+    AppointmentTypeSlotMembershipQuerySet,
+    AppointmentTypeSlotPoolQuerySet,
+    AppointmentTypeSlotQuerySet,
+    AppointmentTypeSlotQuotaRuleQuerySet,
     AvailableTimeQuerySet,
     BlockedTimeQuerySet,
     BookingPolicyQuerySet,
-    CalendarEventGroupSelectionQuerySet,
+    CalendarEventAppointmentTypeSelectionQuerySet,
     CalendarEventQuerySet,
-    CalendarGroupQuerySet,
-    CalendarGroupSlotMembershipQuerySet,
-    CalendarGroupSlotPoolQuerySet,
-    CalendarGroupSlotQuerySet,
-    CalendarGroupSlotQuotaRuleQuerySet,
     CalendarManagementTokenQuerySet,
     CalendarPoolMembershipQuerySet,
     CalendarPoolQuerySet,
@@ -47,20 +47,22 @@ if TYPE_CHECKING:
 # ``return XQuerySet(self.model, using=self._db)`` never calls
 # ``OrganizationScopedManagerMixin.get_queryset`` and so never scopes.
 _BookingPolicyManagerBase = OrganizationScopedManager.from_queryset(BookingPolicyQuerySet)
-_CalendarEventGroupSelectionManagerBase = OrganizationScopedManager.from_queryset(
-    CalendarEventGroupSelectionQuerySet
+_CalendarEventAppointmentTypeSelectionManagerBase = OrganizationScopedManager.from_queryset(
+    CalendarEventAppointmentTypeSelectionQuerySet
 )
 _CalendarEventManagerBase = OrganizationScopedManager.from_queryset(CalendarEventQuerySet)
-_CalendarGroupManagerBase = OrganizationScopedManager.from_queryset(CalendarGroupQuerySet)
-_CalendarGroupSlotManagerBase = OrganizationScopedManager.from_queryset(CalendarGroupSlotQuerySet)
-_CalendarGroupSlotMembershipManagerBase = OrganizationScopedManager.from_queryset(
-    CalendarGroupSlotMembershipQuerySet
+_AppointmentTypeManagerBase = OrganizationScopedManager.from_queryset(AppointmentTypeQuerySet)
+_AppointmentTypeSlotManagerBase = OrganizationScopedManager.from_queryset(
+    AppointmentTypeSlotQuerySet
 )
-_CalendarGroupSlotPoolManagerBase = OrganizationScopedManager.from_queryset(
-    CalendarGroupSlotPoolQuerySet
+_AppointmentTypeSlotMembershipManagerBase = OrganizationScopedManager.from_queryset(
+    AppointmentTypeSlotMembershipQuerySet
 )
-_CalendarGroupSlotQuotaRuleManagerBase = OrganizationScopedManager.from_queryset(
-    CalendarGroupSlotQuotaRuleQuerySet
+_AppointmentTypeSlotPoolManagerBase = OrganizationScopedManager.from_queryset(
+    AppointmentTypeSlotPoolQuerySet
+)
+_AppointmentTypeSlotQuotaRuleManagerBase = OrganizationScopedManager.from_queryset(
+    AppointmentTypeSlotQuotaRuleQuerySet
 )
 _CalendarPoolManagerBase = OrganizationScopedManager.from_queryset(CalendarPoolQuerySet)
 _CalendarPoolMembershipManagerBase = OrganizationScopedManager.from_queryset(
@@ -235,19 +237,19 @@ class CalendarSyncManager(_CalendarSyncManagerBase):  # type: ignore[misc,valid-
 class BlockedTimeManager(_BlockedTimeManagerBase, RecurringManagerMixin):  # type: ignore[misc,valid-type]
     """Custom manager for BlockedTime model to handle specific queries.
 
-    ``group_slot`` scoping: :meth:`get_queryset` — and therefore every plain ``.objects`` call — returns
-    only base rows (``group_slot IS NULL``), which is today's behavior and every
-    existing call site's implicit expectation. Group-scoped rows are reachable
-    only through :meth:`for_group_slot` or :meth:`unscoped`, both explicit
+    ``appointment_type_slot`` scoping: :meth:`get_queryset` — and therefore every plain ``.objects`` call — returns
+    only base rows (``appointment_type_slot IS NULL``), which is today's behavior and every
+    existing call site's implicit expectation. Appointment-type-scoped rows are reachable
+    only through :meth:`for_appointment_type_slot` or :meth:`unscoped`, both explicit
     opt-in accessors.
 
-    The group-slot filter is applied to all three of the package's scoping entry
+    The appointment-type-slot filter is applied to all three of the package's scoping entry
     points, not only to ``get_queryset``. ``filter_by_organization`` /
     ``exclude_by_organization`` deliberately start from the *unscoped* queryset
     (reaching another organization's rows is the only reason to call them), so
     inheriting them unchanged would make the most common call in this codebase —
     ``BlockedTime.objects.filter_by_organization(org_id)`` — start returning
-    group-scoped rows it has never returned.
+    appointment-type-scoped rows it has never returned.
 
     ``unscoped()`` is deliberately *not* overridden: the package's version means
     exactly what this manager's own ``unscoped()`` used to (every row, no filter
@@ -288,26 +290,26 @@ class BlockedTimeManager(_BlockedTimeManagerBase, RecurringManagerMixin):  # typ
     def unscoped_default_queryset(self) -> "BlockedTimeQuerySet":
         return super().unscoped_default_queryset().base_rows_only()
 
-    def for_group_slot(self, group_slot_id: int) -> "BlockedTimeQuerySet":
-        """Explicit opt-in: only the blocked-time rows scoped to one ``CalendarGroupSlot``.
+    def for_appointment_type_slot(self, appointment_type_slot_id: int) -> "BlockedTimeQuerySet":
+        """Explicit opt-in: only the blocked-time rows scoped to one ``AppointmentTypeSlot``.
 
         Deliberately cross-organization (it starts from ``unscoped()``): every
         caller narrows the result with ``filter_by_organization``, which is where
         the tenant boundary is drawn.
         """
-        return self.unscoped().for_group_slot(group_slot_id)
+        return self.unscoped().for_appointment_type_slot(appointment_type_slot_id)
 
 
 class AvailableTimeManager(_AvailableTimeManagerBase, RecurringManagerMixin):  # type: ignore[misc,valid-type]
     """Custom manager for AvailableTime model to handle specific queries.
 
-    ``group_slot`` scoping: :meth:`get_queryset` — and therefore every plain ``.objects`` call — returns
-    only base rows (``group_slot IS NULL``), which is today's behavior and every
-    existing call site's implicit expectation. Group-scoped rows are reachable
-    only through :meth:`for_group_slot` or :meth:`unscoped`, both explicit
+    ``appointment_type_slot`` scoping: :meth:`get_queryset` — and therefore every plain ``.objects`` call — returns
+    only base rows (``appointment_type_slot IS NULL``), which is today's behavior and every
+    existing call site's implicit expectation. Appointment-type-scoped rows are reachable
+    only through :meth:`for_appointment_type_slot` or :meth:`unscoped`, both explicit
     opt-in accessors.
 
-    See :class:`BlockedTimeManager` for why the group-slot filter is applied to
+    See :class:`BlockedTimeManager` for why the appointment-type-slot filter is applied to
     ``filter_by_organization`` / ``exclude_by_organization`` as well as to
     ``get_queryset``, and why ``unscoped()`` is left to the package.
     """
@@ -340,76 +342,78 @@ class AvailableTimeManager(_AvailableTimeManagerBase, RecurringManagerMixin):  #
     def unscoped_default_queryset(self) -> "AvailableTimeQuerySet":
         return super().unscoped_default_queryset().base_rows_only()
 
-    def for_group_slot(self, group_slot_id: int) -> "AvailableTimeQuerySet":
-        """Explicit opt-in: only the availability rows scoped to one ``CalendarGroupSlot``.
+    def for_appointment_type_slot(self, appointment_type_slot_id: int) -> "AvailableTimeQuerySet":
+        """Explicit opt-in: only the availability rows scoped to one ``AppointmentTypeSlot``.
 
         Deliberately cross-organization (it starts from ``unscoped()``): every
         caller narrows the result with ``filter_by_organization``, which is where
         the tenant boundary is drawn.
         """
-        return self.unscoped().for_group_slot(group_slot_id)
+        return self.unscoped().for_appointment_type_slot(appointment_type_slot_id)
 
     def only_user_authored(self):
         """Wraps :meth:`AvailableTimeQuerySet.only_user_authored`."""
         return self.get_queryset().only_user_authored()
 
 
-class CalendarGroupManager(_CalendarGroupManagerBase):  # type: ignore[misc,valid-type]
-    """Custom manager for CalendarGroup model to handle specific queries."""
+class AppointmentTypeManager(_AppointmentTypeManagerBase):  # type: ignore[misc,valid-type]
+    """Custom manager for AppointmentType model to handle specific queries."""
 
-    def only_member_of(self, membership_user_id: int) -> CalendarGroupQuerySet:
-        """Wraps :meth:`CalendarGroupQuerySet.only_member_of`."""
+    def only_member_of(self, membership_user_id: int) -> AppointmentTypeQuerySet:
+        """Wraps :meth:`AppointmentTypeQuerySet.only_member_of`."""
         return self.get_queryset().only_member_of(membership_user_id)
 
-    def only_groups_bookable_in_ranges(
+    def only_appointment_types_bookable_in_ranges(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):
         """
-        Returns groups where every slot has at least `required_count` calendars
+        Returns appointment types where every slot has at least `required_count` calendars
         from its pool available in every requested range.
         """
-        return self.get_queryset().only_groups_bookable_in_ranges(ranges=ranges)
+        return self.get_queryset().only_appointment_types_bookable_in_ranges(ranges=ranges)
 
-    def only_groups_bookable_in_ranges_with_bulk_modifications(
+    def only_appointment_types_bookable_in_ranges_with_bulk_modifications(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):
         """
-        Same as `only_groups_bookable_in_ranges` but expands recurring events
+        Same as `only_appointment_types_bookable_in_ranges` but expands recurring events
         through their bulk-modification continuations when computing calendar
         availability per slot.
         """
-        return self.get_queryset().only_groups_bookable_in_ranges_with_bulk_modifications(
-            ranges=ranges
+        return (
+            self.get_queryset().only_appointment_types_bookable_in_ranges_with_bulk_modifications(
+                ranges=ranges
+            )
         )
 
-    def annotate_effective_policy(self) -> CalendarGroupQuerySet:
+    def annotate_effective_policy(self) -> AppointmentTypeQuerySet:
         """Annotate the four ``effective_*_seconds`` booking-policy columns.
 
-        Delegates to the queryset; resolves the group precedence chain (explicit
-        group policy → most_restrictive across participant calendars →
+        Delegates to the queryset; resolves the appointment type precedence chain (explicit
+        appointment type policy → most_restrictive across participant calendars →
         unconstrained) in SQL.
         """
         return self.get_queryset().annotate_effective_policy()
 
 
-class CalendarGroupSlotManager(_CalendarGroupSlotManagerBase):  # type: ignore[misc,valid-type]
-    """Custom manager for CalendarGroupSlot model to handle specific queries."""
+class AppointmentTypeSlotManager(_AppointmentTypeSlotManagerBase):  # type: ignore[misc,valid-type]
+    """Custom manager for AppointmentTypeSlot model to handle specific queries."""
 
 
-class CalendarGroupSlotMembershipManager(_CalendarGroupSlotMembershipManagerBase):  # type: ignore[misc,valid-type]
-    """Custom manager for CalendarGroupSlotMembership model to handle specific queries."""
+class AppointmentTypeSlotMembershipManager(_AppointmentTypeSlotMembershipManagerBase):  # type: ignore[misc,valid-type]
+    """Custom manager for AppointmentTypeSlotMembership model to handle specific queries."""
 
-    def inline(self) -> CalendarGroupSlotMembershipQuerySet:
-        """Wraps :meth:`CalendarGroupSlotMembershipQuerySet.inline`."""
+    def inline(self) -> AppointmentTypeSlotMembershipQuerySet:
+        """Wraps :meth:`AppointmentTypeSlotMembershipQuerySet.inline`."""
         return self.get_queryset().inline()
 
-    def projected(self) -> CalendarGroupSlotMembershipQuerySet:
-        """Wraps :meth:`CalendarGroupSlotMembershipQuerySet.projected`."""
+    def projected(self) -> AppointmentTypeSlotMembershipQuerySet:
+        """Wraps :meth:`AppointmentTypeSlotMembershipQuerySet.projected`."""
         return self.get_queryset().projected()
 
 
-class CalendarGroupSlotPoolManager(_CalendarGroupSlotPoolManagerBase):  # type: ignore[misc,valid-type]
-    """Custom manager for CalendarGroupSlotPool model to handle specific queries."""
+class AppointmentTypeSlotPoolManager(_AppointmentTypeSlotPoolManagerBase):  # type: ignore[misc,valid-type]
+    """Custom manager for AppointmentTypeSlotPool model to handle specific queries."""
 
 
 class CalendarPoolManager(_CalendarPoolManagerBase):  # type: ignore[misc,valid-type]
@@ -424,24 +428,28 @@ class CalendarPoolMembershipManager(_CalendarPoolMembershipManagerBase):  # type
     """Custom manager for CalendarPoolMembership model to handle specific queries."""
 
 
-class CalendarEventGroupSelectionManager(_CalendarEventGroupSelectionManagerBase):  # type: ignore[misc,valid-type]
-    """Custom manager for CalendarEventGroupSelection model to handle specific queries."""
+class CalendarEventAppointmentTypeSelectionManager(
+    _CalendarEventAppointmentTypeSelectionManagerBase
+):  # type: ignore[misc,valid-type]
+    """Custom manager for CalendarEventAppointmentTypeSelection model to handle specific queries."""
 
 
-class CalendarGroupSlotQuotaRuleManager(_CalendarGroupSlotQuotaRuleManagerBase):  # type: ignore[misc,valid-type]
-    """Custom manager for CalendarGroupSlotQuotaRule model to handle specific queries."""
+class AppointmentTypeSlotQuotaRuleManager(_AppointmentTypeSlotQuotaRuleManagerBase):  # type: ignore[misc,valid-type]
+    """Custom manager for AppointmentTypeSlotQuotaRule model to handle specific queries."""
 
-    def for_group_slot(self, group_slot_id: int) -> CalendarGroupSlotQuotaRuleQuerySet:
-        """Wraps :meth:`CalendarGroupSlotQuotaRuleQuerySet.for_group_slot`.
+    def for_appointment_type_slot(
+        self, appointment_type_slot_id: int
+    ) -> AppointmentTypeSlotQuotaRuleQuerySet:
+        """Wraps :meth:`AppointmentTypeSlotQuotaRuleQuerySet.for_appointment_type_slot`.
 
         Deliberately cross-organization (it starts from ``unscoped()``), matching
-        ``BlockedTimeManager.for_group_slot`` / ``AvailableTimeManager.for_group_slot``:
+        ``BlockedTimeManager.for_appointment_type_slot`` / ``AvailableTimeManager.for_appointment_type_slot``:
         every caller narrows the result with ``filter_by_organization``, which is
         where the tenant boundary is drawn, and this is reached from request and
         GraphQL paths that resolve the organization explicitly rather than through
         an ambient request attribute.
         """
-        return self.unscoped().for_group_slot(group_slot_id)
+        return self.unscoped().for_appointment_type_slot(appointment_type_slot_id)
 
 
 class CalendarManagementTokenManager(_CalendarManagementTokenManagerBase):  # type: ignore[misc,valid-type]
@@ -554,7 +562,7 @@ class BookingPolicyManager(_BookingPolicyManagerBase):  # type: ignore[misc,vali
     """Manager for BookingPolicy exposing the per-target lookups the resolver uses.
 
     A policy is attached to exactly one target (calendar / membership / calendar
-    group / organization default); these helpers return the single matching row
+    appointment type / organization default); these helpers return the single matching row
     (or ``None``) for a given target, all scoped through the inherited
     organization filter.
     """
@@ -565,25 +573,25 @@ class BookingPolicyManager(_BookingPolicyManagerBase):  # type: ignore[misc,vali
         *,
         calendar_id: int | None = None,
         membership_user_id: int | None = None,
-        calendar_group_id: int | None = None,
+        appointment_type_id: int | None = None,
     ) -> "BookingPolicy | None":
         """Return the policy attached to exactly one of the given targets, or ``None``.
 
         Scoped to ``organization_id`` via ``filter_by_organization`` (required —
         the base queryset refuses to evaluate without an organization filter).
         Exactly one of ``calendar_id`` / ``membership_user_id`` /
-        ``calendar_group_id`` must be provided. The per-target partial unique
+        ``appointment_type_id`` must be provided. The per-target partial unique
         indexes guarantee at most one matching row.
         """
         provided = [
             value
-            for value in (calendar_id, membership_user_id, calendar_group_id)
+            for value in (calendar_id, membership_user_id, appointment_type_id)
             if value is not None
         ]
         if len(provided) != 1:
             raise ValueError(
                 "for_target requires exactly one of calendar_id, membership_user_id, "
-                "or calendar_group_id."
+                "or appointment_type_id."
             )
 
         # ``self.filter_by_organization``, not ``self.get_queryset().filter_by_organization``:
@@ -596,7 +604,7 @@ class BookingPolicyManager(_BookingPolicyManagerBase):  # type: ignore[misc,vali
         elif membership_user_id is not None:
             queryset = queryset.for_membership(membership_user_id)
         else:
-            queryset = queryset.for_calendar_group(calendar_group_id)  # type: ignore[arg-type]
+            queryset = queryset.for_appointment_type(appointment_type_id)  # type: ignore[arg-type]
 
         return queryset.first()
 

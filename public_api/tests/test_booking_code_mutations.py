@@ -1,6 +1,6 @@
 """Integration tests for single-use booking-code mint mutations.
 
-Covers createCalendarBookingCode and createCalendarGroupBookingCode.
+Covers createCalendarBookingCode and createAppointmentTypeBookingCode.
 """
 
 import datetime
@@ -11,8 +11,8 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import (
+    AppointmentType,
     Calendar,
-    CalendarGroup,
     CalendarManagementToken,
     CalendarManagementTokenPermission,
     EventManagementPermissions,
@@ -35,9 +35,9 @@ mutation CreateCalendarBookingCode($input: CreateBookingCodeInput!) {
 }
 """
 
-CREATE_CALENDAR_GROUP_BOOKING_CODE_MUTATION = """
-mutation CreateCalendarGroupBookingCode($input: CreateGroupBookingCodeInput!) {
-    createCalendarGroupBookingCode(input: $input) {
+CREATE_APPOINTMENT_TYPE_BOOKING_CODE_MUTATION = """
+mutation CreateAppointmentTypeBookingCode($input: CreateAppointmentTypeBookingCodeInput!) {
+    createAppointmentTypeBookingCode(input: $input) {
         success
         errorCode
         errorMessage
@@ -103,9 +103,9 @@ def bundle_calendar(organization):
 
 
 @pytest.fixture
-def calendar_group(organization):
-    """Create a calendar group in the test organization."""
-    return baker.make(CalendarGroup, organization=organization, name="Test Group")
+def appointment_type(organization):
+    """Create an appointment type in the test organization."""
+    return baker.make(AppointmentType, organization=organization, name="Test AppointmentType")
 
 
 @pytest.mark.django_db
@@ -169,7 +169,7 @@ class TestCreateCalendarBookingCode:
         )
         assert db_token.organization_id == organization.id
         assert db_token.calendar_fk_id == calendar.id
-        assert db_token.calendar_group_fk_id is None
+        assert db_token.appointment_type_fk_id is None
         assert db_token.minted_by_system_user_id == system_user.id
 
         # Verify the CREATE permission row
@@ -348,8 +348,8 @@ class TestCreateCalendarBookingCode:
 
 
 @pytest.mark.django_db
-class TestCreateCalendarGroupBookingCode:
-    """Tests for createCalendarGroupBookingCode mutation."""
+class TestCreateAppointmentTypeBookingCode:
+    """Tests for createAppointmentTypeBookingCode mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -361,24 +361,24 @@ class TestCreateCalendarGroupBookingCode:
             return self.client.post(
                 "/graphql/",
                 data={
-                    "query": CREATE_CALENDAR_GROUP_BOOKING_CODE_MUTATION,
+                    "query": CREATE_APPOINTMENT_TYPE_BOOKING_CODE_MUTATION,
                     "variables": variables,
                 },
                 format="json",
                 headers={"authorization": f"Bearer {system_user.id}:{token}"},
             )
 
-    def test_mints_group_booking_code_with_resource(
+    def test_mints_appointment_type_booking_code_with_resource(
         self,
         organization,
-        calendar_group,
+        appointment_type,
         system_user_with_booking_code_resource,
     ):
-        """Org token WITH CALENDAR_BOOKING_CODE mints a group booking code.
+        """Org token WITH CALENDAR_BOOKING_CODE mints an appointment type booking code.
 
         Asserts:
         - Response has a non-empty ``code`` and non-null ``id``.
-        - A CalendarManagementToken row is scoped to the calendar_group.
+        - A CalendarManagementToken row is scoped to the appointment type.
         - It has a CREATE permission row.
         - minted_by_system_user is set.
         """
@@ -391,7 +391,7 @@ class TestCreateCalendarGroupBookingCode:
             {
                 "input": {
                     "organizationId": organization.id,
-                    "calendarGroupId": calendar_group.id,
+                    "appointmentTypeId": appointment_type.id,
                 }
             },
         )
@@ -400,7 +400,7 @@ class TestCreateCalendarGroupBookingCode:
         data = response.json()
         assert "errors" not in data or len(data.get("errors", [])) == 0
 
-        result = data["data"]["createCalendarGroupBookingCode"]
+        result = data["data"]["createAppointmentTypeBookingCode"]
         assert result["success"] is True
         assert result["code"] is not None and len(result["code"]) > 0
         assert result["id"] is not None
@@ -412,7 +412,7 @@ class TestCreateCalendarGroupBookingCode:
             id=result["id"]
         )
         assert db_token.organization_id == organization.id
-        assert db_token.calendar_group_fk_id == calendar_group.id
+        assert db_token.appointment_type_fk_id == appointment_type.id
         assert db_token.calendar_fk_id is None
         assert db_token.minted_by_system_user_id == system_user.id
 
@@ -427,7 +427,7 @@ class TestCreateCalendarGroupBookingCode:
     def test_rejected_without_booking_code_resource(
         self,
         organization,
-        calendar_group,
+        appointment_type,
         system_user_without_booking_code_resource,
     ):
         """Org token WITHOUT CALENDAR_BOOKING_CODE is rejected; no token row created."""
@@ -443,7 +443,7 @@ class TestCreateCalendarGroupBookingCode:
             {
                 "input": {
                     "organizationId": organization.id,
-                    "calendarGroupId": calendar_group.id,
+                    "appointmentTypeId": appointment_type.id,
                 }
             },
         )
@@ -459,13 +459,13 @@ class TestCreateCalendarGroupBookingCode:
         ).count()
         assert tokens_after == tokens_before
 
-    def test_expires_at_persisted_on_group_token(
+    def test_expires_at_persisted_on_appointment_type_token(
         self,
         organization,
-        calendar_group,
+        appointment_type,
         system_user_with_booking_code_resource,
     ):
-        """expiresAt input is persisted on the group CalendarManagementToken row."""
+        """expiresAt input is persisted on the appointment type CalendarManagementToken row."""
         system_user, token, auth_service = system_user_with_booking_code_resource
         expires_at = datetime.datetime(2031, 6, 15, 12, 0, 0, tzinfo=datetime.UTC)
 
@@ -476,7 +476,7 @@ class TestCreateCalendarGroupBookingCode:
             {
                 "input": {
                     "organizationId": organization.id,
-                    "calendarGroupId": calendar_group.id,
+                    "appointmentTypeId": appointment_type.id,
                     "expiresAt": expires_at.isoformat(),
                 }
             },
@@ -486,7 +486,7 @@ class TestCreateCalendarGroupBookingCode:
         data = response.json()
         assert "errors" not in data or len(data.get("errors", [])) == 0
 
-        result = data["data"]["createCalendarGroupBookingCode"]
+        result = data["data"]["createAppointmentTypeBookingCode"]
         assert result["success"] is True
 
         db_token = CalendarManagementToken.objects.filter_by_organization(organization.id).get(
@@ -495,15 +495,15 @@ class TestCreateCalendarGroupBookingCode:
         # Django stores datetimes as timezone-aware UTC; compare full timestamp.
         assert db_token.expires_at == expires_at
 
-    def test_cross_org_calendar_group_returns_invalid_code(
+    def test_cross_org_appointment_type_returns_invalid_code(
         self,
         organization,
         system_user_with_booking_code_resource,
     ):
-        """Calendar group from another organization returns success=False with INVALID_CODE."""
+        """Appointment type from another organization returns success=False with INVALID_CODE."""
         system_user, token, auth_service = system_user_with_booking_code_resource
         other_org = baker.make(Organization, name="Other Org")
-        other_group = baker.make(CalendarGroup, organization=other_org)
+        other_appointment_type = baker.make(AppointmentType, organization=other_org)
 
         response = self._post_mutation(
             system_user,
@@ -512,7 +512,7 @@ class TestCreateCalendarGroupBookingCode:
             {
                 "input": {
                     "organizationId": organization.id,
-                    "calendarGroupId": other_group.id,
+                    "appointmentTypeId": other_appointment_type.id,
                 }
             },
         )
@@ -521,19 +521,19 @@ class TestCreateCalendarGroupBookingCode:
         data = response.json()
         assert "errors" not in data or len(data.get("errors", [])) == 0
 
-        result = data["data"]["createCalendarGroupBookingCode"]
+        result = data["data"]["createAppointmentTypeBookingCode"]
         assert result["success"] is False
         assert result["errorCode"] == "INVALID_CODE"
 
-        # No token row must have been created for the cross-org group
+        # No token row must have been created for the cross-org appointment type
         assert not CalendarManagementToken.original_manager.filter(
-            calendar_group_fk_id=other_group.id
+            appointment_type_fk_id=other_appointment_type.id
         ).exists()
 
     def test_organization_id_mismatch_returns_invalid_code(
         self,
         organization,
-        calendar_group,
+        appointment_type,
         system_user_with_booking_code_resource,
     ):
         """Authenticated org token but organizationId in input set to a different org's id.
@@ -542,7 +542,7 @@ class TestCreateCalendarGroupBookingCode:
         No CalendarManagementToken row must be created.
         """
         system_user, token, auth_service = system_user_with_booking_code_resource
-        other_org = baker.make(Organization, name="Other Org For Group Mismatch")
+        other_org = baker.make(Organization, name="Other Org For AppointmentType Mismatch")
         tokens_before = CalendarManagementToken.objects.filter_by_organization(
             organization.id
         ).count()
@@ -554,7 +554,7 @@ class TestCreateCalendarGroupBookingCode:
             {
                 "input": {
                     "organizationId": other_org.id,
-                    "calendarGroupId": calendar_group.id,
+                    "appointmentTypeId": appointment_type.id,
                 }
             },
         )
@@ -563,7 +563,7 @@ class TestCreateCalendarGroupBookingCode:
         data = response.json()
         assert "errors" not in data or len(data.get("errors", [])) == 0
 
-        result = data["data"]["createCalendarGroupBookingCode"]
+        result = data["data"]["createAppointmentTypeBookingCode"]
         assert result["success"] is False
         assert result["errorCode"] == "INVALID_CODE"
 

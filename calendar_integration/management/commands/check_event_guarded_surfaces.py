@@ -37,15 +37,15 @@ GUARDED_SURFACES: dict[str, tuple[str, ...]] = {
     ),
     "calendar_integration/mutations.py": (
         "TestBookingCodeEventSurface",
-        "TestBookingCodeGroupEventSurface",
+        "TestBookingCodeAppointmentTypeEventSurface",
     ),
     "calendar_integration/booking_views.py": (
         "TestBookingCodeRestEventSurface",
-        "TestBookingCodeRestGroupEventSurface",
+        "TestBookingCodeRestAppointmentTypeEventSurface",
     ),
     "public_api/mutations.py": ("TestPublicApiScheduleEventSurface",),
-    "calendar_integration/services/calendar_group_service.py": (
-        "TestBookingCodeGroupEventSurface",
+    "calendar_integration/services/appointment_type_service.py": (
+        "TestBookingCodeAppointmentTypeEventSurface",
     ),
     "calendar_integration/services/calendar_sync_service.py": ("TestBulkSyncWriterSurface",),
 }

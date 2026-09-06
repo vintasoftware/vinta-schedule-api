@@ -8,6 +8,26 @@ Links point at the file or model that owns the canonical definition.
 
 ---
 
+### Appointment Type
+
+A booking template. Defines named slots, each with a pool of candidate
+calendars and a `required_count`. Bookings are made by picking the
+required calendars per slot; the system enforces simultaneous
+availability across all picks. Modelled by `AppointmentType`.
+→ [concepts/appointment-types.md](concepts/appointment-types.md)
+
+### Appointment Type Slot
+
+A required role inside an `AppointmentType` — e.g. "Physicians", "Rooms",
+"Nurses". Holds a pool of candidate calendars and the `required_count`
+that must be picked at booking time. Modelled by `AppointmentTypeSlot`.
+→ [concepts/appointment-types.md](concepts/appointment-types.md#models)
+
+### Appointment Type Slot Membership
+
+The through-table row linking a `Calendar` into an
+`AppointmentTypeSlot`'s pool. Modelled by `AppointmentTypeSlotMembership`.
+
 ### Available Time
 
 A positive declaration that a calendar is **open** for a span of time.
@@ -20,16 +40,16 @@ hours).
 
 A negative declaration that a calendar is **busy** for a span of time,
 even when there's no event on it. Modelled by `BlockedTime`. Used for
-vacations, externally-synced busy time, and bundle/group-side
+vacations, externally-synced busy time, and bundle/appointment-type-side
 propagation.
 → [concepts/availability.md](concepts/availability.md)
 
 ### Bookable Slot Proposal
 
 A concrete `(start_time, end_time)` window where every slot of a
-`CalendarGroup` can be satisfied. Returned by
-`CalendarGroupService.find_bookable_slots`.
-→ [concepts/calendar-groups.md](concepts/calendar-groups.md#availability-and-bookable-slots)
+`AppointmentType` can be satisfied. Returned by
+`AppointmentTypeService.find_bookable_slots`.
+→ [concepts/appointment-types.md](concepts/appointment-types.md#availability-and-bookable-slots)
 
 ### Bulk Modification
 
@@ -60,36 +80,16 @@ times. Has a `calendar_type` (`PERSONAL` / `RESOURCE` / `VIRTUAL` /
 
 A booking on a calendar. Has `start_time`, `end_time`, `timezone`,
 `attendances`, `external_attendees`, `resource_allocations`. May be
-recurring. May be tied to a `CalendarGroup` and/or a bundle.
+recurring. May be tied to an `AppointmentType` and/or a bundle.
 → [concepts/events.md](concepts/events.md)
 
-### Calendar Event Group Selection
+### Calendar Event Appointment Type Selection
 
-A row recording that, for a given grouped booking, a particular
-`Calendar` was picked to satisfy a particular `CalendarGroupSlot`.
-Modelled by `CalendarEventGroupSelection`. One booking has one row per
+A row recording that, for a given appointment-type booking, a particular
+`Calendar` was picked to satisfy a particular `AppointmentTypeSlot`.
+Modelled by `CalendarEventAppointmentTypeSelection`. One booking has one row per
 (slot, calendar) pick.
-→ [concepts/calendar-groups.md](concepts/calendar-groups.md#models)
-
-### Calendar Group
-
-A booking template. Defines named slots, each with a pool of candidate
-calendars and a `required_count`. Bookings are made by picking the
-required calendars per slot; the system enforces simultaneous
-availability across all picks. Modelled by `CalendarGroup`.
-→ [concepts/calendar-groups.md](concepts/calendar-groups.md)
-
-### Calendar Group Slot
-
-A required role inside a `CalendarGroup` — e.g. "Physicians", "Rooms",
-"Nurses". Holds a pool of candidate calendars and the `required_count`
-that must be picked at booking time. Modelled by `CalendarGroupSlot`.
-→ [concepts/calendar-groups.md](concepts/calendar-groups.md#models)
-
-### Calendar Group Slot Membership
-
-The through-table row linking a `Calendar` into a
-`CalendarGroupSlot`'s pool. Modelled by `CalendarGroupSlotMembership`.
+→ [concepts/appointment-types.md](concepts/appointment-types.md#models)
 
 ### Calendar Ownership
 
@@ -154,7 +154,7 @@ belongs to exactly one `Organization` and is filtered by it through
 
 A `User`'s membership in an `Organization`. Carries the user's `role`
 (`MEMBER` / `ADMIN`); admins get elevated permissions on the org's
-resources (e.g. `can_manage_calendar_group`).
+resources (e.g. `can_manage_appointment_type`).
 
 ### Personal Calendar
 
@@ -162,25 +162,25 @@ A `Calendar` with `calendar_type=PERSONAL`. Belongs to a person; the
 person attends events on it.
 → [concepts/calendars.md](concepts/calendars.md#personal)
 
+### Pool (slot pool)
+
+The set of `Calendar`s available to satisfy a given
+`AppointmentTypeSlot`. Materialized as the slot's
+`AppointmentTypeSlotMembership` rows.
+
+### Primary (appointment type)
+
+The calendar an appointment-type booking lands on as its `CalendarEvent.calendar_fk`
+— picked as the first selection of the lowest-`order` slot of the
+appointment type.
+→ [concepts/appointment-types.md](concepts/appointment-types.md#booking-semantics--appointmenttypeservicecreate_appointment_type_event)
+
 ### Primary (bundle)
 
 The child calendar of a bundle marked `is_primary=True`. Hosts the
 canonical event for any booking made on the bundle; non-primary
 children get representation events or `BlockedTime` rows.
 → [concepts/calendar-bundles.md](concepts/calendar-bundles.md)
-
-### Primary (group)
-
-The calendar a grouped booking lands on as its `CalendarEvent.calendar_fk`
-— picked as the first selection of the lowest-`order` slot of the
-group.
-→ [concepts/calendar-groups.md](concepts/calendar-groups.md#booking-semantics--calendargroupservicecreate_grouped_event)
-
-### Pool (slot pool)
-
-The set of `Calendar`s available to satisfy a given
-`CalendarGroupSlot`. Materialized as the slot's
-`CalendarGroupSlotMembership` rows.
 
 ### Provider
 
@@ -205,17 +205,17 @@ The shared abstract base providing recurrence fields and
 
 ### Required Count
 
-`CalendarGroupSlot.required_count` — the number of calendars from a
+`AppointmentTypeSlot.required_count` — the number of calendars from a
 slot's pool that must be picked at booking time. Default `1`. Larger
 values express "two nurses required", "two attendings + one fellow", etc.
-→ [concepts/calendar-groups.md](concepts/calendar-groups.md#why-slots-have-required_count)
+→ [concepts/appointment-types.md](concepts/appointment-types.md#why-slots-have-required_count)
 
 ### Resource Allocation
 
 The link between a `CalendarEvent` and a `RESOURCE` `Calendar` with
 its own RSVP status. Modelled by `ResourceAllocation`. Distinct from
-`CalendarEventGroupSelection`, which records group-slot picks for
-group bookings.
+`CalendarEventAppointmentTypeSelection`, which records appointment-type-slot picks for
+appointment type bookings.
 → [concepts/events.md](concepts/events.md#resource-allocations)
 
 ### Resource Calendar
@@ -229,9 +229,9 @@ device, suite) rather than a person. Optionally has `capacity`.
 `accepted` / `declined` / `pending`. Used on `EventAttendance`,
 `EventExternalAttendance`, and `ResourceAllocation`.
 
-### Slot (group slot)
+### Slot (appointment type slot)
 
-Short for `CalendarGroupSlot` — see above.
+Short for `AppointmentTypeSlot` — see above.
 
 ### Split (recurrence)
 

@@ -50,8 +50,8 @@ Healthcare examples:
   `BlockedTime` so it counts as busy without polluting the local event
   list (see `external_id`, `bundle_calendar`, and the sync flow in
   [calendar_integration/services/calendar_service.py](../../calendar_integration/services/calendar_service.py)).
-- **Bundle/group propagation**: when a booking is made on the primary
-  calendar of a bundle or group, every other selected calendar gets a
+- **Bundle/appointment type propagation**: when a booking is made on the primary
+  calendar of a bundle or appointment type, every other selected calendar gets a
   `BlockedTime` so it shows as busy without duplicating event data.
 
 `BlockedTime` is also recurring (e.g. "the standing OR cleaning slot
@@ -68,9 +68,9 @@ list of `(start, end)` ranges, it returns the calendars that have:
 - For `manage_available_windows=True` calendars, *some* `AvailableTime`
   fully covering the range.
 
-Group-level availability ([calendar-groups.md](calendar-groups.md))
+Appointment-type-level availability ([appointment-types.md](appointment-types.md))
 delegates to this method per range, so any improvement here flows into
-group bookability automatically.
+appointment type bookability automatically.
 
 ### Worked example — booking an MRI
 

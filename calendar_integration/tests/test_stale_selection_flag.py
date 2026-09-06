@@ -1,12 +1,12 @@
 """Calendar Pools Phase 2: surface stale calendar selections on events.
 
-A ``CalendarEventGroupSelection`` is stale when no ``CalendarGroupSlotMembership``
+A ``CalendarEventAppointmentTypeSelection`` is stale when no ``AppointmentTypeSlotMembership``
 row exists for its ``(slot, calendar)`` pair -- the exact predicate named by the
 plan's Staleness definition. Phase 1 made this state reachable (roster removal no
 longer deletes grandfathered selections); this phase adds a read-only
 ``is_in_current_roster`` boolean on both the REST serializer
-(``CalendarEventGroupSelectionSerializer``) and the public GraphQL type
-(``CalendarEventGroupSelectionGraphQLType``) so a client can warn instead of
+(``CalendarEventAppointmentTypeSelectionSerializer``) and the public GraphQL type
+(``CalendarEventAppointmentTypeSelectionGraphQLType``) so a client can warn instead of
 silently re-offering a calendar it cannot re-add.
 
 Covers:
@@ -14,10 +14,10 @@ Covers:
   slot, and true again once it is re-added -- on both surfaces.
 - Query-count invariance: rendering one selection costs the same number of
   queries as rendering five, on both the REST serializer path (via
-  ``CalendarEventGroupSelectionVirtualModel``'s prefetch) and the GraphQL path
-  (via the batched lookup in ``group_selections``), including a variant where
+  ``CalendarEventAppointmentTypeSelectionVirtualModel``'s prefetch) and the GraphQL path
+  (via the batched lookup in ``appointment_type_selections``), including a variant where
   the selections span multiple distinct slots rather than one.
-- The nested ``group_selections`` field on ``CalendarEventSerializer`` (the
+- The nested ``appointment_type_selections`` field on ``CalendarEventSerializer`` (the
   REST field that actually makes ``is_in_current_roster`` reachable) is
   constant-query on the event list endpoint.
 """
@@ -38,14 +38,14 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     Calendar,
     CalendarEvent,
-    CalendarEventGroupSelection,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
+    CalendarEventAppointmentTypeSelection,
 )
-from calendar_integration.serializers import CalendarEventGroupSelectionSerializer
+from calendar_integration.serializers import CalendarEventAppointmentTypeSelectionSerializer
 from common.organization_context import organization_context
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER
@@ -78,40 +78,49 @@ def _make_calendar(org: Organization, label: str) -> Calendar:
     )
 
 
-def _make_group_with_slot(
+def _make_appointment_type_with_slot(
     org: Organization, *, required_count: int = 1
-) -> tuple[CalendarGroup, CalendarGroupSlot]:
-    group = CalendarGroup.objects.create(organization=org, name=f"Clinic {uuid.uuid4().hex[:8]}")
-    slot = CalendarGroupSlot.objects.create(
-        organization=org, group=group, name="Physicians", required_count=required_count
+) -> tuple[AppointmentType, AppointmentTypeSlot]:
+    appointment_type = AppointmentType.objects.create(
+        organization=org, name=f"Clinic {uuid.uuid4().hex[:8]}"
     )
-    return group, slot
+    slot = AppointmentTypeSlot.objects.create(
+        organization=org,
+        appointment_type=appointment_type,
+        name="Physicians",
+        required_count=required_count,
+    )
+    return appointment_type, slot
 
 
-def _make_group_with_distinct_slots(
+def _make_appointment_type_with_distinct_slots(
     org: Organization, *, slot_count: int = 3
-) -> tuple[CalendarGroup, list[CalendarGroupSlot], list[Calendar]]:
-    """A group with ``slot_count`` distinct slots, each with its own rostered calendar.
+) -> tuple[AppointmentType, list[AppointmentTypeSlot], list[Calendar]]:
+    """An appointment type with ``slot_count`` distinct slots, each with its own rostered calendar.
 
     Used by the multi-slot query-count variants: a selection landing on each
     slot exercises ``_attach_current_roster_flags``'s ``slot_fk_id__in=slot_ids``
     batching (GraphQL) and the REST ``hints.Virtual`` prefetch across more than
     one slot, which the single-slot variants next to these do not.
     """
-    group = CalendarGroup.objects.create(organization=org, name=f"Clinic {uuid.uuid4().hex[:8]}")
+    appointment_type = AppointmentType.objects.create(
+        organization=org, name=f"Clinic {uuid.uuid4().hex[:8]}"
+    )
     slots = [
-        CalendarGroupSlot.objects.create(
-            organization=org, group=group, name=f"Slot {i}", required_count=1
+        AppointmentTypeSlot.objects.create(
+            organization=org, appointment_type=appointment_type, name=f"Slot {i}", required_count=1
         )
         for i in range(slot_count)
     ]
     calendars = [_make_calendar(org, f"Dr {i}") for i in range(slot_count)]
     for slot, calendar in zip(slots, calendars, strict=True):
-        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)
-    return group, slots, calendars
+        AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)
+    return appointment_type, slots, calendars
 
 
-def _make_event(org: Organization, calendar: Calendar, group: CalendarGroup) -> CalendarEvent:
+def _make_event(
+    org: Organization, calendar: Calendar, appointment_type: AppointmentType
+) -> CalendarEvent:
     return CalendarEvent.objects.create(
         organization=org,
         calendar=calendar,
@@ -121,12 +130,12 @@ def _make_event(org: Organization, calendar: Calendar, group: CalendarGroup) -> 
         start_time_tz_unaware=datetime.datetime(2026, 10, 1, 9, 0),
         end_time_tz_unaware=datetime.datetime(2026, 10, 1, 9, 30),
         timezone="UTC",
-        calendar_group=group,
+        appointment_type=appointment_type,
     )
 
 
 def _make_org_with_member() -> tuple[Organization, OrganizationMembership]:
-    """A fresh org plus an active, group-carrying membership for REST auth."""
+    """A fresh org plus an active, appointment-type-carrying membership for REST auth."""
     org = _make_org()
     user = UserFactory().create_user()
     membership = grant_membership_groups(
@@ -148,18 +157,20 @@ def _rest_render_selections(queryset) -> list[dict[str, object]]:
     issued while rendering, under ``DEBUG=True`` (set for tests, see
     ``pytest.ini``'s ``django_debug_mode``).
     """
-    serializer = CalendarEventGroupSelectionSerializer()
+    serializer = CalendarEventAppointmentTypeSelectionSerializer()
     optimized = serializer.get_optimized_queryset(queryset)
-    rendered = CalendarEventGroupSelectionSerializer(optimized, many=True).data
+    rendered = CalendarEventAppointmentTypeSelectionSerializer(optimized, many=True).data
     # djangorestframework-stubs types `.data` as `ReturnDict[Any, Any]` regardless of
     # `many=True`, which actually returns a `ReturnList` of dicts at runtime.
     return rendered  # type: ignore[return-value]
 
 
-def _rest_is_in_current_roster(selection: CalendarEventGroupSelection, org: Organization) -> bool:
+def _rest_is_in_current_roster(
+    selection: CalendarEventAppointmentTypeSelection, org: Organization
+) -> bool:
     with organization_context(org):
         rendered = _rest_render_selections(
-            CalendarEventGroupSelection.objects.filter(id=selection.id)
+            CalendarEventAppointmentTypeSelection.objects.filter(id=selection.id)
         )
     assert len(rendered) == 1
     return bool(rendered[0]["is_in_current_roster"])
@@ -189,7 +200,7 @@ _CALENDAR_EVENT_WITH_ROSTER_FLAG = """
 query CalendarEvents($eventId: Int) {
     calendarEvents(eventId: $eventId) {
         id
-        groupSelections {
+        appointmentTypeSelections {
             calendar { id }
             isInCurrentRoster
         }
@@ -198,7 +209,7 @@ query CalendarEvents($eventId: Int) {
 """
 
 # Query-count-only variant: no ``calendar { id }``. That field's per-selection
-# calendar lookup is a pre-existing N+1 on ``CalendarEventGroupSelectionGraphQLType
+# calendar lookup is a pre-existing N+1 on ``CalendarEventAppointmentTypeSelectionGraphQLType
 # .calendar`` unrelated to this phase (it resolves ``self.calendar``, an
 # unprefetched forward relation, once per selection regardless of
 # ``isInCurrentRoster``) -- including it here would make the "same query count for
@@ -208,7 +219,7 @@ _CALENDAR_EVENT_ROSTER_FLAG_ONLY = """
 query CalendarEvents($eventId: Int) {
     calendarEvents(eventId: $eventId) {
         id
-        groupSelections {
+        appointmentTypeSelections {
             isInCurrentRoster
         }
     }
@@ -231,7 +242,7 @@ def _graphql_selection_flags(event_id: int, system_user, token: str) -> list[boo
     data = assert_graphql_success(response)
     events = data["calendarEvents"]
     assert len(events) == 1
-    return [sel["isInCurrentRoster"] for sel in events[0]["groupSelections"]]
+    return [sel["isInCurrentRoster"] for sel in events[0]["appointmentTypeSelections"]]
 
 
 # ---------------------------------------------------------------------------
@@ -244,12 +255,12 @@ class TestIsInCurrentRosterFlagRest:
     def test_true_then_false_then_true_again(self):
         org = _make_org()
         calendar = _make_calendar(org, "Dr A")
-        group, slot = _make_group_with_slot(org)
-        membership = CalendarGroupSlotMembership.objects.create(
+        appointment_type, slot = _make_appointment_type_with_slot(org)
+        membership = AppointmentTypeSlotMembership.objects.create(
             organization=org, slot=slot, calendar=calendar
         )
-        event = _make_event(org, calendar, group)
-        selection = CalendarEventGroupSelection.objects.create(
+        event = _make_event(org, calendar, appointment_type)
+        selection = CalendarEventAppointmentTypeSelection.objects.create(
             organization=org, event=event, slot=slot, calendar=calendar
         )
 
@@ -258,7 +269,7 @@ class TestIsInCurrentRosterFlagRest:
         membership.delete()
         assert _rest_is_in_current_roster(selection, org) is False
 
-        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)
+        AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)
         assert _rest_is_in_current_roster(selection, org) is True
 
 
@@ -269,12 +280,12 @@ class TestIsInCurrentRosterFlagGraphQL:
         mock_rate_limiter.return_value = iter([None, None, None])
         org = _make_org()
         calendar = _make_calendar(org, "Dr A")
-        group, slot = _make_group_with_slot(org)
-        membership = CalendarGroupSlotMembership.objects.create(
+        appointment_type, slot = _make_appointment_type_with_slot(org)
+        membership = AppointmentTypeSlotMembership.objects.create(
             organization=org, slot=slot, calendar=calendar
         )
-        event = _make_event(org, calendar, group)
-        CalendarEventGroupSelection.objects.create(
+        event = _make_event(org, calendar, appointment_type)
+        CalendarEventAppointmentTypeSelection.objects.create(
             organization=org, event=event, slot=slot, calendar=calendar
         )
         system_user, token = _make_org_wide_system_user(org)
@@ -284,7 +295,7 @@ class TestIsInCurrentRosterFlagGraphQL:
         membership.delete()
         assert _graphql_selection_flags(event.id, system_user, token) == [False]
 
-        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)
+        AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)
         assert _graphql_selection_flags(event.id, system_user, token) == [True]
 
 
@@ -297,28 +308,30 @@ class TestIsInCurrentRosterFlagGraphQL:
 class TestIsInCurrentRosterFlagRestQueryCount:
     def test_constant_query_count_regardless_of_selection_count(self, django_assert_num_queries):
         org = _make_org()
-        group, slot = _make_group_with_slot(org, required_count=5)
+        appointment_type, slot = _make_appointment_type_with_slot(org, required_count=5)
         calendars = [_make_calendar(org, f"Dr {i}") for i in range(5)]
         for calendar in calendars:
-            CalendarGroupSlotMembership.objects.create(
+            AppointmentTypeSlotMembership.objects.create(
                 organization=org, slot=slot, calendar=calendar
             )
 
-        one_selection_event = _make_event(org, calendars[0], group)
-        CalendarEventGroupSelection.objects.create(
+        one_selection_event = _make_event(org, calendars[0], appointment_type)
+        CalendarEventAppointmentTypeSelection.objects.create(
             organization=org, event=one_selection_event, slot=slot, calendar=calendars[0]
         )
 
-        many_selections_event = _make_event(org, calendars[0], group)
+        many_selections_event = _make_event(org, calendars[0], appointment_type)
         for calendar in calendars:
-            CalendarEventGroupSelection.objects.create(
+            CalendarEventAppointmentTypeSelection.objects.create(
                 organization=org, event=many_selections_event, slot=slot, calendar=calendar
             )
 
         with organization_context(org):
             with CaptureQueriesContext(connection) as one_ctx:
                 rendered_one = _rest_render_selections(
-                    CalendarEventGroupSelection.objects.filter(event_fk_id=one_selection_event.id)
+                    CalendarEventAppointmentTypeSelection.objects.filter(
+                        event_fk_id=one_selection_event.id
+                    )
                 )
         assert len(rendered_one) == 1
         query_count = len(one_ctx.captured_queries)
@@ -326,7 +339,9 @@ class TestIsInCurrentRosterFlagRestQueryCount:
         with organization_context(org):
             with django_assert_num_queries(query_count):
                 rendered_many = _rest_render_selections(
-                    CalendarEventGroupSelection.objects.filter(event_fk_id=many_selections_event.id)
+                    CalendarEventAppointmentTypeSelection.objects.filter(
+                        event_fk_id=many_selections_event.id
+                    )
                 )
         assert len(rendered_many) == 5
 
@@ -340,23 +355,27 @@ class TestIsInCurrentRosterFlagRestQueryCount:
         each, closes that gap.
         """
         org = _make_org()
-        group, slots, calendars = _make_group_with_distinct_slots(org, slot_count=3)
+        appointment_type, slots, calendars = _make_appointment_type_with_distinct_slots(
+            org, slot_count=3
+        )
 
-        one_selection_event = _make_event(org, calendars[0], group)
-        CalendarEventGroupSelection.objects.create(
+        one_selection_event = _make_event(org, calendars[0], appointment_type)
+        CalendarEventAppointmentTypeSelection.objects.create(
             organization=org, event=one_selection_event, slot=slots[0], calendar=calendars[0]
         )
 
-        many_slots_event = _make_event(org, calendars[0], group)
+        many_slots_event = _make_event(org, calendars[0], appointment_type)
         for slot, calendar in zip(slots, calendars, strict=True):
-            CalendarEventGroupSelection.objects.create(
+            CalendarEventAppointmentTypeSelection.objects.create(
                 organization=org, event=many_slots_event, slot=slot, calendar=calendar
             )
 
         with organization_context(org):
             with CaptureQueriesContext(connection) as one_ctx:
                 rendered_one = _rest_render_selections(
-                    CalendarEventGroupSelection.objects.filter(event_fk_id=one_selection_event.id)
+                    CalendarEventAppointmentTypeSelection.objects.filter(
+                        event_fk_id=one_selection_event.id
+                    )
                 )
         assert len(rendered_one) == 1
         query_count = len(one_ctx.captured_queries)
@@ -364,7 +383,9 @@ class TestIsInCurrentRosterFlagRestQueryCount:
         with organization_context(org):
             with django_assert_num_queries(query_count):
                 rendered_many = _rest_render_selections(
-                    CalendarEventGroupSelection.objects.filter(event_fk_id=many_slots_event.id)
+                    CalendarEventAppointmentTypeSelection.objects.filter(
+                        event_fk_id=many_slots_event.id
+                    )
                 )
         assert len(rendered_many) == 3
         assert all(selection["is_in_current_roster"] for selection in rendered_many)
@@ -377,21 +398,21 @@ class TestIsInCurrentRosterFlagGraphQLQueryCount:
         self, mock_rate_limiter, django_assert_num_queries
     ):
         org = _make_org()
-        group, slot = _make_group_with_slot(org, required_count=5)
+        appointment_type, slot = _make_appointment_type_with_slot(org, required_count=5)
         calendars = [_make_calendar(org, f"Dr {i}") for i in range(5)]
         for calendar in calendars:
-            CalendarGroupSlotMembership.objects.create(
+            AppointmentTypeSlotMembership.objects.create(
                 organization=org, slot=slot, calendar=calendar
             )
 
-        one_selection_event = _make_event(org, calendars[0], group)
-        CalendarEventGroupSelection.objects.create(
+        one_selection_event = _make_event(org, calendars[0], appointment_type)
+        CalendarEventAppointmentTypeSelection.objects.create(
             organization=org, event=one_selection_event, slot=slot, calendar=calendars[0]
         )
 
-        many_selections_event = _make_event(org, calendars[0], group)
+        many_selections_event = _make_event(org, calendars[0], appointment_type)
         for calendar in calendars:
-            CalendarEventGroupSelection.objects.create(
+            CalendarEventAppointmentTypeSelection.objects.create(
                 organization=org, event=many_selections_event, slot=slot, calendar=calendar
             )
 
@@ -408,7 +429,7 @@ class TestIsInCurrentRosterFlagGraphQLQueryCount:
                 _CALENDAR_EVENT_ROSTER_FLAG_ONLY,
             )
         data_one = assert_graphql_success(response_one)
-        assert len(data_one["calendarEvents"][0]["groupSelections"]) == 1
+        assert len(data_one["calendarEvents"][0]["appointmentTypeSelections"]) == 1
         query_count = len(one_ctx.captured_queries)
 
         mock_rate_limiter.return_value = iter([None])
@@ -421,7 +442,7 @@ class TestIsInCurrentRosterFlagGraphQLQueryCount:
                 _CALENDAR_EVENT_ROSTER_FLAG_ONLY,
             )
         data_many = assert_graphql_success(response_many)
-        assert len(data_many["calendarEvents"][0]["groupSelections"]) == 5
+        assert len(data_many["calendarEvents"][0]["appointmentTypeSelections"]) == 5
 
     def test_constant_query_count_across_multiple_distinct_slots(
         self, mock_rate_limiter, django_assert_num_queries
@@ -434,16 +455,18 @@ class TestIsInCurrentRosterFlagGraphQLQueryCount:
         just how many selections there are on a single slot.
         """
         org = _make_org()
-        group, slots, calendars = _make_group_with_distinct_slots(org, slot_count=3)
+        appointment_type, slots, calendars = _make_appointment_type_with_distinct_slots(
+            org, slot_count=3
+        )
 
-        one_selection_event = _make_event(org, calendars[0], group)
-        CalendarEventGroupSelection.objects.create(
+        one_selection_event = _make_event(org, calendars[0], appointment_type)
+        CalendarEventAppointmentTypeSelection.objects.create(
             organization=org, event=one_selection_event, slot=slots[0], calendar=calendars[0]
         )
 
-        many_slots_event = _make_event(org, calendars[0], group)
+        many_slots_event = _make_event(org, calendars[0], appointment_type)
         for slot, calendar in zip(slots, calendars, strict=True):
-            CalendarEventGroupSelection.objects.create(
+            CalendarEventAppointmentTypeSelection.objects.create(
                 organization=org, event=many_slots_event, slot=slot, calendar=calendar
             )
 
@@ -460,7 +483,7 @@ class TestIsInCurrentRosterFlagGraphQLQueryCount:
                 _CALENDAR_EVENT_ROSTER_FLAG_ONLY,
             )
         data_one = assert_graphql_success(response_one)
-        assert len(data_one["calendarEvents"][0]["groupSelections"]) == 1
+        assert len(data_one["calendarEvents"][0]["appointmentTypeSelections"]) == 1
         query_count = len(one_ctx.captured_queries)
 
         mock_rate_limiter.return_value = iter([None])
@@ -473,33 +496,34 @@ class TestIsInCurrentRosterFlagGraphQLQueryCount:
                 _CALENDAR_EVENT_ROSTER_FLAG_ONLY,
             )
         data_many = assert_graphql_success(response_many)
-        assert len(data_many["calendarEvents"][0]["groupSelections"]) == 3
+        assert len(data_many["calendarEvents"][0]["appointmentTypeSelections"]) == 3
         assert (
-            data_many["calendarEvents"][0]["groupSelections"] == [{"isInCurrentRoster": True}] * 3
+            data_many["calendarEvents"][0]["appointmentTypeSelections"]
+            == [{"isInCurrentRoster": True}] * 3
         )
 
 
 # ---------------------------------------------------------------------------
-# The REST wiring: `group_selections` nested on `CalendarEventSerializer`
+# The REST wiring: `appointment_type_selections` nested on `CalendarEventSerializer`
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestGroupSelectionsFieldOnEventSerializer:
-    """``CalendarEventSerializer.group_selections`` is what makes
+class TestAppointmentTypeSelectionsFieldOnEventSerializer:
+    """``CalendarEventSerializer.appointment_type_selections`` is what makes
     ``is_in_current_roster`` reachable over REST: the standalone
-    ``CalendarEventGroupSelectionSerializer`` above is nested in nothing and
+    ``CalendarEventAppointmentTypeSelectionSerializer`` above is nested in nothing and
     mounted on no route, so a client can only see the flag through an event's
     own serialization.
     """
 
-    def test_group_selections_reachable_on_event_list(self):
+    def test_appointment_type_selections_reachable_on_event_list(self):
         org, membership = _make_org_with_member()
         calendar = _make_calendar(org, "Dr A")
-        group, slot = _make_group_with_slot(org)
-        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)
-        event = _make_event(org, calendar, group)
-        CalendarEventGroupSelection.objects.create(
+        appointment_type, slot = _make_appointment_type_with_slot(org)
+        AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)
+        event = _make_event(org, calendar, appointment_type)
+        CalendarEventAppointmentTypeSelection.objects.create(
             organization=org, event=event, slot=slot, calendar=calendar
         )
 
@@ -510,26 +534,26 @@ class TestGroupSelectionsFieldOnEventSerializer:
         assert response.status_code == 200, response.content
         results = response.data["results"]
         assert len(results) == 1
-        selections = results[0]["group_selections"]
+        selections = results[0]["appointment_type_selections"]
         assert len(selections) == 1
         assert selections[0]["is_in_current_roster"] is True
 
 
 @pytest.mark.django_db
-class TestGroupSelectionsFieldOnEventListQueryCount:
+class TestAppointmentTypeSelectionsFieldOnEventListQueryCount:
     def test_constant_query_count_regardless_of_event_count(self, django_assert_num_queries):
         """The event list endpoint does not gain per-event or per-selection
-        queries from nesting ``group_selections``: one event carrying a
+        queries from nesting ``appointment_type_selections``: one event carrying a
         selection costs the same number of queries as five.
         """
         org, membership = _make_org_with_member()
-        group, slot = _make_group_with_slot(org, required_count=1)
+        appointment_type, slot = _make_appointment_type_with_slot(org, required_count=1)
         calendar = _make_calendar(org, "Dr A")
-        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)
+        AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)
 
         def _make_event_with_selection() -> CalendarEvent:
-            event = _make_event(org, calendar, group)
-            CalendarEventGroupSelection.objects.create(
+            event = _make_event(org, calendar, appointment_type)
+            CalendarEventAppointmentTypeSelection.objects.create(
                 organization=org, event=event, slot=slot, calendar=calendar
             )
             return event
@@ -554,4 +578,4 @@ class TestGroupSelectionsFieldOnEventListQueryCount:
         assert response_many.status_code == 200, response_many.content
         assert response_many.data["count"] == 5
         for result in response_many.data["results"]:
-            assert result["group_selections"][0]["is_in_current_roster"] is True
+            assert result["appointment_type_selections"][0]["is_in_current_roster"] is True

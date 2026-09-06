@@ -307,7 +307,7 @@ class TestDetailReturnsResourcesAndDistinguishesNulls:
         baker.make(
             BillingPeriodResourceUsage,
             summary=summary,
-            resource_key="calendar_groups",
+            resource_key="appointment_types",
             total=0,
             limit_value=10,
         )
@@ -320,8 +320,8 @@ class TestDetailReturnsResourcesAndDistinguishesNulls:
         assert resources_by_key["resource_calendars"]["total"] is None
         assert resources_by_key["resource_calendars"]["limit_value"] is None
         # A recorded usage of exactly zero is a distinct, ordinary integer 0.
-        assert resources_by_key["calendar_groups"]["total"] == 0
-        assert resources_by_key["calendar_groups"]["limit_value"] == 10
+        assert resources_by_key["appointment_types"]["total"] == 0
+        assert resources_by_key["appointment_types"]["limit_value"] == 10
 
 
 @pytest.mark.django_db
@@ -397,7 +397,7 @@ class TestDetailPrefetchesResources:
         resource_keys = [
             "organization_members",
             "resource_calendars",
-            "calendar_groups",
+            "appointment_types",
             "bundle_calendars",
             "availability_windows",
             "webhook_subscriptions",
@@ -469,7 +469,7 @@ class TestDetailByOrganizationAttribution:
 
         resource_keys = [
             "resource_calendars",
-            "calendar_groups",
+            "appointment_types",
             "bundle_calendars",
             "availability_windows",
             "webhook_subscriptions",

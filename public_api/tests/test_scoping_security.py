@@ -29,18 +29,18 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from calendar_integration.graphql import CalendarGroupSlotGraphQLType, _owner_scoped_calendar_ids
+from calendar_integration.graphql import AppointmentTypeSlotGraphQLType, _owner_scoped_calendar_ids
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     AvailableTime,
     AvailableTimeRecurrenceException,
     BlockedTime,
     BlockedTimeRecurrenceException,
     Calendar,
     CalendarEvent,
-    CalendarEventGroupSelection,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
+    CalendarEventAppointmentTypeSelection,
     CalendarOwnership,
     EventExternalAttendance,
     EventRecurrenceException,
@@ -420,16 +420,16 @@ class TestNestedFieldOwnerScopeSecurity:
         assert alloc_foreign.id in alloc_ids
 
     # ==================================================================
-    # CalendarEvent.calendarGroup — suppressed entirely for scoped tokens
-    # plus the SECOND-HOP groupSelections.slot.calendars leak.
+    # CalendarEvent.appointmentType — suppressed entirely for scoped tokens
+    # plus the SECOND-HOP appointmentTypeSelections.slot.calendars leak.
     # ==================================================================
 
-    _EVENT_GROUP_Q = """
+    _EVENT_APPOINTMENT_TYPE_Q = """
         query Q($eventId: Int!) {
             calendarEvents(eventId: $eventId) {
                 id
-                calendarGroup { id slots { id calendars { id } } }
-                groupSelections {
+                appointmentType { id slots { id calendars { id } } }
+                appointmentTypeSelections {
                     id
                     calendar { id }
                     slot { id calendars { id } }
@@ -438,61 +438,67 @@ class TestNestedFieldOwnerScopeSecurity:
         }
     """
 
-    def _event_with_group(self, org, cal_a, cal_b):
+    def _event_with_appointment_type(self, org, cal_a, cal_b):
         # Models with OrganizationForeignKey relations are created via the manager
         # (`.objects.create`) because model_bakery cannot synthesize the ForeignObject
         # join field these fields generate.
-        group = CalendarGroup.objects.create(organization=org, name=f"grp-{uuid.uuid4().hex[:6]}")
-        slot = CalendarGroupSlot.objects.create(
-            organization=org, group=group, name="slot", required_count=1
+        appointment_type = AppointmentType.objects.create(
+            organization=org, name=f"grp-{uuid.uuid4().hex[:6]}"
+        )
+        slot = AppointmentTypeSlot.objects.create(
+            organization=org, appointment_type=appointment_type, name="slot", required_count=1
         )
         # The slot's candidate pool spans BOTH providers (cross-provider pool).
-        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=cal_a)
-        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=cal_b)
-        event = _make_event(org, cal_a, calendar_group=group)
-        # Group selections: the owner's pick (cal_a) and a foreign pick (cal_b).
-        sel_own = CalendarEventGroupSelection.objects.create(
+        AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot, calendar=cal_a)
+        AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot, calendar=cal_b)
+        event = _make_event(org, cal_a, appointment_type=appointment_type)
+        # Appointment type selections: the owner's pick (cal_a) and a foreign pick (cal_b).
+        sel_own = CalendarEventAppointmentTypeSelection.objects.create(
             organization=org, event=event, slot=slot, calendar=cal_a
         )
-        sel_foreign = CalendarEventGroupSelection.objects.create(
+        sel_foreign = CalendarEventAppointmentTypeSelection.objects.create(
             organization=org, event=event, slot=slot, calendar=cal_b
         )
-        return event, group, slot, sel_own, sel_foreign
+        return event, appointment_type, slot, sel_own, sel_foreign
 
-    def test_event_group_scoped_suppressed_including_second_hop(self, _rl):
-        """calendarGroup suppressed; groupSelections.slot suppressed; the foreign pick
+    def test_event_appointment_type_scoped_suppressed_including_second_hop(self, _rl):
+        """appointmentType suppressed; appointmentTypeSelections.slot suppressed; the foreign pick
         filtered out; and even the surviving selection's slot pool cannot leak cal_b."""
         _rl.return_value = iter([None])
         org = self._org()
         _ua, mem_a, cal_a = self._provider_with_calendar(org, "a")
         _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")
-        event, _group, _slot, sel_own, sel_foreign = self._event_with_group(org, cal_a, cal_b)
+        event, _appointment_type, _slot, sel_own, sel_foreign = self._event_with_appointment_type(
+            org, cal_a, cal_b
+        )
         system_user, token, auth = self._scoped_token(
             org, mem_a, [PublicAPIResources.CALENDAR_EVENT]
         )
 
         data = self._data(
-            self._post(self._EVENT_GROUP_Q, system_user, token, auth, {"eventId": event.id})
+            self._post(
+                self._EVENT_APPOINTMENT_TYPE_Q, system_user, token, auth, {"eventId": event.id}
+            )
         )
         evt = data["calendarEvents"][0]
-        # calendarGroup entirely suppressed for scoped tokens.
-        assert evt["calendarGroup"] is None
-        # Foreign group selection filtered out; only the owner's pick survives.
-        sel_ids = {int(s["id"]) for s in evt["groupSelections"]}
+        # appointmentType entirely suppressed for scoped tokens.
+        assert evt["appointmentType"] is None
+        # Foreign appointment type selection filtered out; only the owner's pick survives.
+        sel_ids = {int(s["id"]) for s in evt["appointmentTypeSelections"]}
         assert sel_foreign.id not in sel_ids
         assert sel_own.id in sel_ids
-        for sel in evt["groupSelections"]:
+        for sel in evt["appointmentTypeSelections"]:
             assert int(sel["calendar"]["id"]) == cal_a.id
             # SECOND HOP: slot is suppressed so the cross-provider pool is unreachable.
             assert sel["slot"] is None
 
-    def test_event_group_second_hop_pool_filtered_when_slot_exposed(self, _rl):
+    def test_event_appointment_type_second_hop_pool_filtered_when_slot_exposed(self, _rl):
         """Defence-in-depth: even if slot were exposed, its calendars pool is filtered.
 
         We assert the pool-filter resolver directly via the schema with an internal
         no-op disabled by using a scoped token and reading slot.calendars through the
-        top-level calendarGroup path is blocked by permissions; so we exercise the
-        CalendarGroupSlot.calendars resolver via the org-wide path to confirm it still
+        top-level appointmentType path is blocked by permissions; so we exercise the
+        AppointmentTypeSlot.calendars resolver via the org-wide path to confirm it still
         returns the full pool, and via a scoped token would filter — but a scoped token
         cannot reach a slot at all (both entry points suppressed). This test documents
         that unreachability by asserting the scoped token sees no slot anywhere."""
@@ -500,40 +506,50 @@ class TestNestedFieldOwnerScopeSecurity:
         org = self._org()
         _ua, mem_a, cal_a = self._provider_with_calendar(org, "a")
         _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")
-        event, _group, _slot, _own, _foreign = self._event_with_group(org, cal_a, cal_b)
+        event, _appointment_type, _slot, _own, _foreign = self._event_with_appointment_type(
+            org, cal_a, cal_b
+        )
         system_user, token, auth = self._scoped_token(
             org, mem_a, [PublicAPIResources.CALENDAR_EVENT]
         )
 
         data = self._data(
-            self._post(self._EVENT_GROUP_Q, system_user, token, auth, {"eventId": event.id})
+            self._post(
+                self._EVENT_APPOINTMENT_TYPE_Q, system_user, token, auth, {"eventId": event.id}
+            )
         )
         evt = data["calendarEvents"][0]
         # No reachable slot for the scoped token, so no candidate pool is exposed.
-        for sel in evt["groupSelections"]:
+        for sel in evt["appointmentTypeSelections"]:
             assert sel["slot"] is None
 
-    def test_event_group_org_wide_unchanged(self, _rl):
-        """Org-wide regression: the full group, slots, cross-provider pool, and both
+    def test_event_appointment_type_org_wide_unchanged(self, _rl):
+        """Org-wide regression: the full appointment type, slots, cross-provider pool, and both
         selections are visible (including the second-hop slot.calendars pool)."""
         _rl.return_value = iter([None])
         org = self._org()
         _ua, _mem_a, cal_a = self._provider_with_calendar(org, "a")
         _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")
-        event, group, slot, sel_own, sel_foreign = self._event_with_group(org, cal_a, cal_b)
+        event, appointment_type, slot, sel_own, sel_foreign = self._event_with_appointment_type(
+            org, cal_a, cal_b
+        )
         system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_EVENT])
 
         data = self._data(
-            self._post(self._EVENT_GROUP_Q, system_user, token, auth, {"eventId": event.id})
+            self._post(
+                self._EVENT_APPOINTMENT_TYPE_Q, system_user, token, auth, {"eventId": event.id}
+            )
         )
         evt = data["calendarEvents"][0]
-        assert evt["calendarGroup"]["id"] == str(group.id)
-        group_pool = {int(c["id"]) for c in evt["calendarGroup"]["slots"][0]["calendars"]}
-        assert cal_a.id in group_pool and cal_b.id in group_pool
-        sel_ids = {int(s["id"]) for s in evt["groupSelections"]}
+        assert evt["appointmentType"]["id"] == str(appointment_type.id)
+        appointment_type_pool = {
+            int(c["id"]) for c in evt["appointmentType"]["slots"][0]["calendars"]
+        }
+        assert cal_a.id in appointment_type_pool and cal_b.id in appointment_type_pool
+        sel_ids = {int(s["id"]) for s in evt["appointmentTypeSelections"]}
         assert sel_own.id in sel_ids and sel_foreign.id in sel_ids
         # Second-hop pool fully visible for org-wide tokens.
-        for sel in evt["groupSelections"]:
+        for sel in evt["appointmentTypeSelections"]:
             assert sel["slot"]["id"] == str(slot.id)
             pool = {int(c["id"]) for c in sel["slot"]["calendars"]}
             assert cal_a.id in pool and cal_b.id in pool
@@ -859,10 +875,10 @@ class TestNestedFieldOwnerScopeSecurity:
         assert cal_b.id not in result
 
     # ==================================================================
-    # CalendarGroupSlot.calendars pool — direct second-hop resolver proof
+    # AppointmentTypeSlot.calendars pool — direct second-hop resolver proof
     #
-    # The only scoped-token entry point to a slot (groupSelections.slot) is
-    # suppressed, so no end-to-end scoped query reaches CalendarGroupSlot.calendars.
+    # The only scoped-token entry point to a slot (appointmentTypeSelections.slot) is
+    # suppressed, so no end-to-end scoped query reaches AppointmentTypeSlot.calendars.
     # That makes the pool-filter on the `calendars` resolver invisible to every
     # query-driven test: reverting it to an unfiltered field would not fail any
     # of them. These two tests drive the resolver DIRECTLY (real slot model as
@@ -871,13 +887,15 @@ class TestNestedFieldOwnerScopeSecurity:
     # ==================================================================
 
     def _slot_with_cross_provider_pool(self, org, cal_a, cal_b):
-        """A real CalendarGroupSlot whose candidate pool spans both providers."""
-        group = CalendarGroup.objects.create(organization=org, name=f"grp-{uuid.uuid4().hex[:6]}")
-        slot = CalendarGroupSlot.objects.create(
-            organization=org, group=group, name="slot", required_count=1
+        """A real AppointmentTypeSlot whose candidate pool spans both providers."""
+        appointment_type = AppointmentType.objects.create(
+            organization=org, name=f"grp-{uuid.uuid4().hex[:6]}"
         )
-        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=cal_a)
-        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=cal_b)
+        slot = AppointmentTypeSlot.objects.create(
+            organization=org, appointment_type=appointment_type, name="slot", required_count=1
+        )
+        AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot, calendar=cal_a)
+        AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot, calendar=cal_b)
         return slot
 
     def _info_for_request(self, request):
@@ -904,7 +922,7 @@ class TestNestedFieldOwnerScopeSecurity:
         request.public_api_organization = org
         info = self._info_for_request(request)
 
-        result = CalendarGroupSlotGraphQLType.calendars(slot, info)
+        result = AppointmentTypeSlotGraphQLType.calendars(slot, info)
         result_ids = {c.id for c in result}
         assert result_ids == {cal_a.id}
         assert cal_b.id not in result_ids
@@ -924,6 +942,6 @@ class TestNestedFieldOwnerScopeSecurity:
         request.public_api_organization = org
         info = self._info_for_request(request)
 
-        result = CalendarGroupSlotGraphQLType.calendars(slot, info)
+        result = AppointmentTypeSlotGraphQLType.calendars(slot, info)
         result_ids = {c.id for c in result}
         assert result_ids == {cal_a.id, cal_b.id}

@@ -4,12 +4,12 @@ Covers these fields:
 - availableTimesWithCode
 - availabilityWindowsWithCode
 - unavailableWindowsWithCode
-- calendarGroupBookableSlotsWithCode
-- calendarGroupAvailabilityWithCode
+- appointmentTypeBookableSlotsWithCode
+- appointmentTypeAvailabilityWithCode
 - calendarBookableSlotsWithCode
 
 All fields are unauthenticated (no Authorization header required).  The booking
-code authorizes access to its bound calendar / calendar group.  Reads never
+code authorizes access to its bound calendar / appointment type.  Reads never
 consume the code (used_at remains NULL after any read).
 """
 
@@ -26,21 +26,21 @@ from rest_framework.test import APIClient
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import (
+    AppointmentType,
     AvailableTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
     CalendarManagementToken,
     ChildrenCalendarRelationship,
     EventManagementPermissions,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.dataclasses import (
+    AppointmentTypeRangeAvailability,
+    AppointmentTypeSlotAvailability,
     AvailableTimeWindow,
     BlockedTimeData,
     BookableSlotProposal,
-    CalendarGroupRangeAvailability,
-    CalendarGroupSlotAvailability,
     UnavailableTimeWindow,
 )
 from organizations.models import Organization
@@ -85,14 +85,14 @@ query UnavailableWindowsWithCode($code: String!, $startDatetime: DateTime!, $end
 }
 """
 
-CALENDAR_GROUP_BOOKABLE_SLOTS_WITH_CODE = """
-query CalendarGroupBookableSlotsWithCode(
+APPOINTMENT_TYPE_BOOKABLE_SLOTS_WITH_CODE = """
+query AppointmentTypeBookableSlotsWithCode(
     $code: String!,
     $searchWindowStart: DateTime!,
     $searchWindowEnd: DateTime!,
     $durationSeconds: Int!
 ) {
-    calendarGroupBookableSlotsWithCode(
+    appointmentTypeBookableSlotsWithCode(
         code: $code,
         searchWindowStart: $searchWindowStart,
         searchWindowEnd: $searchWindowEnd,
@@ -104,9 +104,9 @@ query CalendarGroupBookableSlotsWithCode(
 }
 """
 
-CALENDAR_GROUP_AVAILABILITY_WITH_CODE = """
-query CalendarGroupAvailabilityWithCode($code: String!, $ranges: [DateTimeRangeInput!]!) {
-    calendarGroupAvailabilityWithCode(code: $code, ranges: $ranges) {
+APPOINTMENT_TYPE_AVAILABILITY_WITH_CODE = """
+query AppointmentTypeAvailabilityWithCode($code: String!, $ranges: [DateTimeRangeInput!]!) {
+    appointmentTypeAvailabilityWithCode(code: $code, ranges: $ranges) {
         startTime
         endTime
         slots {
@@ -145,8 +145,8 @@ def other_calendar(other_organization):
 
 
 @pytest.fixture
-def calendar_group(organization):
-    return baker.make(CalendarGroup, organization=organization, name="Test Group")
+def appointment_type(organization):
+    return baker.make(AppointmentType, organization=organization, name="Test AppointmentType")
 
 
 @pytest.fixture
@@ -161,13 +161,13 @@ def calendar_event(organization, calendar):
 
 
 @pytest.fixture
-def group_event(organization, calendar, calendar_group):
+def appointment_type_event(organization, calendar, appointment_type):
     return baker.make(
         CalendarEvent,
         organization=organization,
         calendar=calendar,
-        calendar_group=calendar_group,
-        title="Group Test Event",
+        appointment_type=appointment_type,
+        title="AppointmentType Test Event",
         timezone="UTC",
     )
 
@@ -189,12 +189,12 @@ def calendar_booking_code(permission_service, organization, calendar):
 
 
 @pytest.fixture
-def group_booking_code(permission_service, organization, calendar_group):
-    """Create a group-scoped booking code. Returns (token, plaintext_code)."""
+def appointment_type_booking_code(permission_service, organization, appointment_type):
+    """Create an appointment-type-scoped booking code. Returns (token, plaintext_code)."""
     token, code = permission_service.create_booking_token(
         organization_id=organization.id,
         permissions=[EventManagementPermissions.CREATE],
-        calendar_group_id=calendar_group.id,
+        appointment_type_id=appointment_type.id,
     )
     return token, code
 
@@ -414,12 +414,12 @@ class TestAvailableTimesWithCode:
         assert data["errors"][0]["message"] == "Invalid or expired code."
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_group_code_on_calendar_field_returns_error(
-        self, mock_rate_limiter, anon_client, group_booking_code
+    def test_appointment_type_code_on_calendar_field_returns_error(
+        self, mock_rate_limiter, anon_client, appointment_type_booking_code
     ):
-        """A group-bound code passed to a calendar read field returns the uniform error."""
+        """An appointment-type-bound code passed to a calendar read field returns the uniform error."""
         mock_rate_limiter.return_value = iter([None])
-        _token, code = group_booking_code
+        _token, code = appointment_type_booking_code
 
         data = post_graphql(
             anon_client,
@@ -622,12 +622,12 @@ class TestUnavailableWindowsWithCode:
         assert data["errors"][0]["message"] == "Invalid or expired code."
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_group_code_on_calendar_read_field_returns_error(
-        self, mock_rate_limiter, anon_client, group_booking_code
+    def test_appointment_type_code_on_calendar_read_field_returns_error(
+        self, mock_rate_limiter, anon_client, appointment_type_booking_code
     ):
-        """A group-bound code passed to a calendar read field returns the uniform error (wrong scope)."""
+        """An appointment-type-bound code passed to a calendar read field returns the uniform error (wrong scope)."""
         mock_rate_limiter.return_value = iter([None])
-        _token, code = group_booking_code
+        _token, code = appointment_type_booking_code
 
         data = post_graphql(
             anon_client,
@@ -644,7 +644,7 @@ class TestUnavailableWindowsWithCode:
 
 
 # ---------------------------------------------------------------------------
-# Event-scoped code reads — scope resolves via event.calendar / event.calendar_group
+# Event-scoped code reads — scope resolves via event.calendar / event.appointment type
 # ---------------------------------------------------------------------------
 
 
@@ -696,39 +696,39 @@ class TestEventBoundCodeCalendarReads:
 
 
 # ---------------------------------------------------------------------------
-# Group-scoped codes must never leak the specific calendar their event landed
-# on via the ``event.calendar`` / ``event.calendar_group`` fallback.
-# ``CalendarGroupService.create_grouped_event`` always creates the underlying
+# Appointment-type-scoped codes must never leak the specific calendar their event landed
+# on via the ``event.calendar`` / ``event.appointment_type`` fallback.
+# ``AppointmentTypeService.create_appointment_type_event`` always creates the underlying
 # event on a real single primary calendar, so ``token.event.calendar`` is
-# always populated for a grouped booking -- a naive fallback would leak that
-# specific calendar's availability to a patient holding only a group code.
+# always populated for an appointment-type booking -- a naive fallback would leak that
+# specific calendar's availability to a patient holding only an appointment type code.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestGroupScopedCodeCannotLeakViaEventFallback:
+class TestAppointmentTypeScopedCodeCannotLeakViaEventFallback:
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_group_reschedule_code_rejected_on_calendar_field(
+    def test_appointment_type_reschedule_code_rejected_on_calendar_field(
         self,
         mock_rate_limiter,
         anon_client,
         permission_service,
         organization,
-        calendar_group,
-        group_event,
+        appointment_type,
+        appointment_type_event,
     ):
-        """A group reschedule code (``calendar_group_id`` + ``event_id``, no
+        """An appointment type reschedule code (``appointment_type_id`` + ``event_id``, no
         ``calendar_id``) must get the uniform error on a calendar-scoped
-        field, even though ``group_event.calendar`` resolves to a real
-        calendar (mirrors ``CalendarGroupService.create_grouped_event``'s
+        field, even though ``appointment_type_event.calendar`` resolves to a real
+        calendar (mirrors ``AppointmentTypeService.create_appointment_type_event``'s
         persistence).
         """
         mock_rate_limiter.return_value = iter([None])
         _token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.RESCHEDULE],
-            calendar_group_id=calendar_group.id,
-            event_id=group_event.id,
+            appointment_type_id=appointment_type.id,
+            event_id=appointment_type_event.id,
         )
 
         data = post_graphql(
@@ -745,31 +745,31 @@ class TestGroupScopedCodeCannotLeakViaEventFallback:
         assert data["errors"][0]["message"] == "Invalid or expired code."
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_calendar_reschedule_code_rejected_on_group_field(
+    def test_calendar_reschedule_code_rejected_on_appointment_type_field(
         self,
         mock_rate_limiter,
         anon_client,
         permission_service,
         organization,
         calendar,
-        group_event,
+        appointment_type_event,
     ):
         """Symmetric case: a single-calendar reschedule code (``calendar_id``
-        + ``event_id``, no ``calendar_group_id``) must get the uniform error
-        on a group-scoped field, even though ``group_event.calendar_group``
-        resolves to a real group.
+        + ``event_id``, no ``appointment_type_id``) must get the uniform error
+        on an appointment-type-scoped field, even though ``appointment_type_event.appointment_type``
+        resolves to a real appointment type.
         """
         mock_rate_limiter.return_value = iter([None])
         _token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.RESCHEDULE],
             calendar_id=calendar.id,
-            event_id=group_event.id,
+            event_id=appointment_type_event.id,
         )
 
         data = post_graphql(
             anon_client,
-            CALENDAR_GROUP_BOOKABLE_SLOTS_WITH_CODE,
+            APPOINTMENT_TYPE_BOOKABLE_SLOTS_WITH_CODE,
             {
                 "code": code,
                 "searchWindowStart": "2025-09-02T00:00:00Z",
@@ -783,36 +783,36 @@ class TestGroupScopedCodeCannotLeakViaEventFallback:
 
 
 # ---------------------------------------------------------------------------
-# Group-code reads
+# Appointment-type-code reads
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestCalendarGroupBookableSlotsWithCode:
-    """Tests for calendarGroupBookableSlotsWithCode — group scope."""
+class TestAppointmentTypeBookableSlotsWithCode:
+    """Tests for appointmentTypeBookableSlotsWithCode — appointment type scope."""
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
     def test_returns_bookable_slots_no_auth_header(
-        self, mock_rate_limiter, anon_client, group_booking_code
+        self, mock_rate_limiter, anon_client, appointment_type_booking_code
     ):
-        """A group booking code returns bookable slots with no Authorization header."""
+        """An appointment type booking code returns bookable slots with no Authorization header."""
         from di_core.containers import container
 
         mock_rate_limiter.return_value = iter([None])
-        _token, code = group_booking_code
+        _token, code = appointment_type_booking_code
 
         proposal = BookableSlotProposal(
             start_time=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
         )
-        mock_group_service = Mock()
-        mock_group_service.initialize.return_value = None
-        mock_group_service.find_bookable_slots.return_value = [proposal]
+        mock_appointment_type_service = Mock()
+        mock_appointment_type_service.initialize.return_value = None
+        mock_appointment_type_service.find_bookable_slots.return_value = [proposal]
 
-        with container.calendar_group_service.override(mock_group_service):
+        with container.appointment_type_service.override(mock_appointment_type_service):
             data = post_graphql(
                 anon_client,
-                CALENDAR_GROUP_BOOKABLE_SLOTS_WITH_CODE,
+                APPOINTMENT_TYPE_BOOKABLE_SLOTS_WITH_CODE,
                 {
                     "code": code,
                     "searchWindowStart": "2025-09-02T00:00:00Z",
@@ -822,29 +822,31 @@ class TestCalendarGroupBookableSlotsWithCode:
             )
 
         assert "errors" not in data or len(data.get("errors", [])) == 0
-        result = data["data"]["calendarGroupBookableSlotsWithCode"]
+        result = data["data"]["appointmentTypeBookableSlotsWithCode"]
         assert len(result) == 1
         assert result[0]["startTime"] == "2025-09-02T09:00:00+00:00"
         assert result[0]["endTime"] == "2025-09-02T10:00:00+00:00"
 
-        mock_group_service.find_bookable_slots.assert_called_once()
+        mock_appointment_type_service.find_bookable_slots.assert_called_once()
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_code_not_consumed_after_read(self, mock_rate_limiter, anon_client, group_booking_code):
-        """calendarGroupBookableSlotsWithCode must not consume the code."""
+    def test_code_not_consumed_after_read(
+        self, mock_rate_limiter, anon_client, appointment_type_booking_code
+    ):
+        """appointmentTypeBookableSlotsWithCode must not consume the code."""
         from di_core.containers import container
 
         mock_rate_limiter.return_value = iter([None])
-        token, code = group_booking_code
+        token, code = appointment_type_booking_code
 
-        mock_group_service = Mock()
-        mock_group_service.initialize.return_value = None
-        mock_group_service.find_bookable_slots.return_value = []
+        mock_appointment_type_service = Mock()
+        mock_appointment_type_service.initialize.return_value = None
+        mock_appointment_type_service.find_bookable_slots.return_value = []
 
-        with container.calendar_group_service.override(mock_group_service):
+        with container.appointment_type_service.override(mock_appointment_type_service):
             post_graphql(
                 anon_client,
-                CALENDAR_GROUP_BOOKABLE_SLOTS_WITH_CODE,
+                APPOINTMENT_TYPE_BOOKABLE_SLOTS_WITH_CODE,
                 {
                     "code": code,
                     "searchWindowStart": "2025-09-02T00:00:00Z",
@@ -857,16 +859,16 @@ class TestCalendarGroupBookableSlotsWithCode:
         assert token.used_at is None
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_calendar_code_on_group_field_returns_error(
+    def test_calendar_code_on_appointment_type_field_returns_error(
         self, mock_rate_limiter, anon_client, calendar_booking_code
     ):
-        """A calendar-bound code passed to a group read field returns the uniform error (wrong scope)."""
+        """A calendar-bound code passed to an appointment type read field returns the uniform error (wrong scope)."""
         mock_rate_limiter.return_value = iter([None])
         _token, code = calendar_booking_code
 
         data = post_graphql(
             anon_client,
-            CALENDAR_GROUP_BOOKABLE_SLOTS_WITH_CODE,
+            APPOINTMENT_TYPE_BOOKABLE_SLOTS_WITH_CODE,
             {
                 "code": code,
                 "searchWindowStart": "2025-09-02T00:00:00Z",
@@ -885,7 +887,7 @@ class TestCalendarGroupBookableSlotsWithCode:
 
         data = post_graphql(
             anon_client,
-            CALENDAR_GROUP_BOOKABLE_SLOTS_WITH_CODE,
+            APPOINTMENT_TYPE_BOOKABLE_SLOTS_WITH_CODE,
             {
                 "code": "bm90dmFsaWQ=",
                 "searchWindowStart": "2025-09-02T00:00:00Z",
@@ -899,36 +901,38 @@ class TestCalendarGroupBookableSlotsWithCode:
 
 
 @pytest.mark.django_db
-class TestCalendarGroupAvailabilityWithCode:
-    """Tests for calendarGroupAvailabilityWithCode — group scope."""
+class TestAppointmentTypeAvailabilityWithCode:
+    """Tests for appointmentTypeAvailabilityWithCode — appointment type scope."""
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_returns_group_availability_no_auth_header(
-        self, mock_rate_limiter, anon_client, group_booking_code, calendar_group
+    def test_returns_appointment_type_availability_no_auth_header(
+        self, mock_rate_limiter, anon_client, appointment_type_booking_code, appointment_type
     ):
-        """A group booking code returns group availability with no Authorization header."""
+        """An appointment type booking code returns appointment type availability with no Authorization header."""
         from di_core.containers import container
 
         mock_rate_limiter.return_value = iter([None])
-        _token, code = group_booking_code
+        _token, code = appointment_type_booking_code
 
-        slot_avail = CalendarGroupSlotAvailability(
+        slot_avail = AppointmentTypeSlotAvailability(
             slot_id=1, available_calendar_ids=[10, 20], required_count=1
         )
-        range_avail = CalendarGroupRangeAvailability(
+        range_avail = AppointmentTypeRangeAvailability(
             start_time=datetime.datetime(2025, 9, 2, 9, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
             slots=[slot_avail],
         )
 
-        mock_group_service = Mock()
-        mock_group_service.initialize.return_value = None
-        mock_group_service.check_group_availability.return_value = [range_avail]
+        mock_appointment_type_service = Mock()
+        mock_appointment_type_service.initialize.return_value = None
+        mock_appointment_type_service.check_appointment_type_availability.return_value = [
+            range_avail
+        ]
 
-        with container.calendar_group_service.override(mock_group_service):
+        with container.appointment_type_service.override(mock_appointment_type_service):
             data = post_graphql(
                 anon_client,
-                CALENDAR_GROUP_AVAILABILITY_WITH_CODE,
+                APPOINTMENT_TYPE_AVAILABILITY_WITH_CODE,
                 {
                     "code": code,
                     "ranges": [
@@ -941,29 +945,31 @@ class TestCalendarGroupAvailabilityWithCode:
             )
 
         assert "errors" not in data or len(data.get("errors", [])) == 0
-        result = data["data"]["calendarGroupAvailabilityWithCode"]
+        result = data["data"]["appointmentTypeAvailabilityWithCode"]
         assert len(result) == 1
         assert result[0]["slots"][0]["slotId"] == 1
         assert result[0]["slots"][0]["requiredCount"] == 1
 
-        mock_group_service.check_group_availability.assert_called_once()
+        mock_appointment_type_service.check_appointment_type_availability.assert_called_once()
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_code_not_consumed_after_read(self, mock_rate_limiter, anon_client, group_booking_code):
-        """calendarGroupAvailabilityWithCode must not consume the code."""
+    def test_code_not_consumed_after_read(
+        self, mock_rate_limiter, anon_client, appointment_type_booking_code
+    ):
+        """appointmentTypeAvailabilityWithCode must not consume the code."""
         from di_core.containers import container
 
         mock_rate_limiter.return_value = iter([None])
-        token, code = group_booking_code
+        token, code = appointment_type_booking_code
 
-        mock_group_service = Mock()
-        mock_group_service.initialize.return_value = None
-        mock_group_service.check_group_availability.return_value = []
+        mock_appointment_type_service = Mock()
+        mock_appointment_type_service.initialize.return_value = None
+        mock_appointment_type_service.check_appointment_type_availability.return_value = []
 
-        with container.calendar_group_service.override(mock_group_service):
+        with container.appointment_type_service.override(mock_appointment_type_service):
             post_graphql(
                 anon_client,
-                CALENDAR_GROUP_AVAILABILITY_WITH_CODE,
+                APPOINTMENT_TYPE_AVAILABILITY_WITH_CODE,
                 {
                     "code": code,
                     "ranges": [
@@ -979,16 +985,16 @@ class TestCalendarGroupAvailabilityWithCode:
         assert token.used_at is None
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_calendar_code_on_group_availability_returns_error(
+    def test_calendar_code_on_appointment_type_availability_returns_error(
         self, mock_rate_limiter, anon_client, calendar_booking_code
     ):
-        """A calendar-bound code on calendarGroupAvailabilityWithCode returns the uniform error."""
+        """A calendar-bound code on appointmentTypeAvailabilityWithCode returns the uniform error."""
         mock_rate_limiter.return_value = iter([None])
         _token, code = calendar_booking_code
 
         data = post_graphql(
             anon_client,
-            CALENDAR_GROUP_AVAILABILITY_WITH_CODE,
+            APPOINTMENT_TYPE_AVAILABILITY_WITH_CODE,
             {
                 "code": code,
                 "ranges": [
@@ -1010,7 +1016,7 @@ class TestCalendarGroupAvailabilityWithCode:
 
         data = post_graphql(
             anon_client,
-            CALENDAR_GROUP_AVAILABILITY_WITH_CODE,
+            APPOINTMENT_TYPE_AVAILABILITY_WITH_CODE,
             {
                 "code": "bm90YXZhbGlkY29kZQ==",
                 "ranges": [
@@ -1033,7 +1039,7 @@ class TestCalendarGroupAvailabilityWithCode:
 
 @pytest.mark.django_db
 class TestCrossOrgIsolation:
-    """A code can only read data for its own org's calendar / group."""
+    """A code can only read data for its own org's calendar / appointment type."""
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
     def test_calendar_code_reads_own_org_only(
@@ -1137,20 +1143,20 @@ class TestTamperedSecretCode:
         assert token.used_at is None
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_tampered_secret_group_field_returns_error(
+    def test_tampered_secret_appointment_type_field_returns_error(
         self,
         mock_rate_limiter,
         anon_client,
         permission_service,
         organization,
-        calendar_group,
+        appointment_type,
     ):
-        """Same tampered-secret test for the group availability field."""
+        """Same tampered-secret test for the appointment type availability field."""
         mock_rate_limiter.return_value = iter([None])
         token, real_code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CREATE],
-            calendar_group_id=calendar_group.id,
+            appointment_type_id=appointment_type.id,
         )
 
         decoded = base64.b64decode(real_code).decode("utf-8")
@@ -1159,7 +1165,7 @@ class TestTamperedSecretCode:
 
         data = post_graphql(
             anon_client,
-            CALENDAR_GROUP_AVAILABILITY_WITH_CODE,
+            APPOINTMENT_TYPE_AVAILABILITY_WITH_CODE,
             {
                 "code": tampered_code,
                 "ranges": [
@@ -1313,19 +1319,19 @@ class TestCodeGatedRangeClamp:
         assert data["errors"][0]["message"] == "Invalid time range."
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_over_max_range_group_field_rejected(
+    def test_over_max_range_appointment_type_field_rejected(
         self,
         mock_rate_limiter,
         anon_client,
-        group_booking_code,
+        appointment_type_booking_code,
     ):
-        """A range exceeding MAX_CODE_GATED_RANGE (366 days) is rejected on a group field."""
+        """A range exceeding MAX_CODE_GATED_RANGE (366 days) is rejected on an appointment type field."""
         mock_rate_limiter.return_value = iter([None])
-        _token, code = group_booking_code
+        _token, code = appointment_type_booking_code
 
         data = post_graphql(
             anon_client,
-            CALENDAR_GROUP_BOOKABLE_SLOTS_WITH_CODE,
+            APPOINTMENT_TYPE_BOOKABLE_SLOTS_WITH_CODE,
             {
                 "code": code,
                 "searchWindowStart": "2025-01-01T00:00:00Z",
@@ -1460,10 +1466,12 @@ class TestCalendarBookableSlotsWithCode:
         assert data["errors"][0]["message"] == "Invalid or expired code."
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_group_code_rejected(self, mock_rate_limiter, anon_client, group_booking_code):
-        """A group-scoped code is rejected (single/bundle calendars only)."""
+    def test_appointment_type_code_rejected(
+        self, mock_rate_limiter, anon_client, appointment_type_booking_code
+    ):
+        """An appointment-type-scoped code is rejected (single/bundle calendars only)."""
         mock_rate_limiter.return_value = iter([None])
-        _token, code = group_booking_code
+        _token, code = appointment_type_booking_code
 
         data = post_graphql(
             anon_client,

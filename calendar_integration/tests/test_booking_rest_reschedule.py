@@ -1,9 +1,9 @@
 """Integration tests for ``POST /public/booking/events/reschedule/`` and
-``POST /public/booking/group-events/reschedule/``.
+``POST /public/booking/appointment-type-events/reschedule/``.
 
 Ports the scenarios in ``public_api/tests/test_reschedule_with_code.py`` and
-``public_api/tests/test_reschedule_group_with_code.py`` (the GraphQL
-``rescheduleCalendarEventWithCode`` / ``rescheduleCalendarGroupEventWithCode``
+``public_api/tests/test_reschedule_appointment_type_with_code.py`` (the GraphQL
+``rescheduleCalendarEventWithCode`` / ``rescheduleAppointmentTypeEventWithCode``
 equivalents) to the REST surface, plus the byte-identical-preserved-details,
 cross-event, and pinned-duration cases the plan's Phase 4 body calls for.
 
@@ -24,13 +24,13 @@ from rest_framework.test import APIClient
 from calendar_integration.booking_auth import BOOKING_CODE_HEADER
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
     CalendarManagementToken,
     EventAttendance,
     EventExternalAttendance,
@@ -44,7 +44,9 @@ from users.factories import UserFactory
 
 
 RESCHEDULE_URL_NAME = "calendar_booking_api:booking-events-reschedule-list"
-GROUP_RESCHEDULE_URL_NAME = "calendar_booking_api:booking-group-events-reschedule-list"
+APPOINTMENT_TYPE_RESCHEDULE_URL_NAME = (
+    "calendar_booking_api:booking-appointment-type-events-reschedule-list"
+)
 
 ORIGINAL_START = datetime.datetime(2030, 6, 1, 10, 0, tzinfo=datetime.UTC)
 ORIGINAL_END = datetime.datetime(2030, 6, 1, 11, 0, tzinfo=datetime.UTC)
@@ -110,8 +112,10 @@ def calendar(organization):
 
 
 @pytest.fixture
-def calendar_group(organization):
-    return baker.make(CalendarGroup, organization=organization, name="Cross-Scope Test Group")
+def cross_scope_appointment_type(organization):
+    return baker.make(
+        AppointmentType, organization=organization, name="Cross-Scope Test AppointmentType"
+    )
 
 
 @pytest.fixture
@@ -227,12 +231,14 @@ def create_code(permission_service, organization, calendar):
 
 
 @pytest.fixture
-def group_reschedule_code(permission_service, organization, calendar_group, existing_event):
-    """A group-scoped RESCHEDULE code -- wrong scope for the single-calendar endpoint."""
+def appointment_type_reschedule_code(
+    permission_service, organization, cross_scope_appointment_type, existing_event
+):
+    """An appointment-type-scoped RESCHEDULE code -- wrong scope for the single-calendar endpoint."""
     token, code = permission_service.create_booking_token(
         organization_id=organization.id,
         permissions=[EventManagementPermissions.RESCHEDULE],
-        calendar_group_id=calendar_group.id,
+        appointment_type_id=cross_scope_appointment_type.id,
         event_id=existing_event.id,
     )
     return token, code
@@ -448,25 +454,25 @@ class TestRescheduleCalendarEventWithCodeWrongPermission:
 
 
 # ---------------------------------------------------------------------------
-# Cross-routing: group code on the single-calendar endpoint, and vice versa
+# Cross-routing: appointment type code on the single-calendar endpoint, and vice versa
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
 class TestRescheduleCalendarEventWithCodeCrossRouting:
-    def test_group_code_on_single_endpoint_returns_not_permitted(
+    def test_appointment_type_code_on_single_endpoint_returns_not_permitted(
         self,
         anon_client,
-        group_reschedule_code,
+        appointment_type_reschedule_code,
         existing_event,
     ):
-        _token, code = group_reschedule_code
+        _token, code = appointment_type_reschedule_code
 
         response = _post(anon_client, RESCHEDULE_URL_NAME, code, _reschedule_payload())
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert response.json()["error_code"] == "NOT_PERMITTED"
-        assert "group" in response.json()["detail"].lower()
+        assert "appointment type" in response.json()["detail"].lower()
 
         existing_event.refresh_from_db()
         assert existing_event.start_time_tz_unaware.replace(tzinfo=None) == ORIGINAL_START.replace(
@@ -572,7 +578,7 @@ class TestRescheduleCalendarEventWithCodeLifecycleRejections:
 
 
 # ---------------------------------------------------------------------------
-# Group reschedule
+# Appointment type reschedule
 # ---------------------------------------------------------------------------
 
 
@@ -605,25 +611,29 @@ def secondary_calendar(organization):
 
 
 @pytest.fixture
-def group(organization, primary_calendar, secondary_calendar):
-    grp = baker.make(CalendarGroup, organization=organization, name="Test Group")
-    slot_a = CalendarGroupSlot.objects.create(
-        organization=organization, group=grp, name="Physicians", order=0, required_count=1
+def appointment_type(organization, primary_calendar, secondary_calendar):
+    grp = baker.make(AppointmentType, organization=organization, name="Test AppointmentType")
+    slot_a = AppointmentTypeSlot.objects.create(
+        organization=organization,
+        appointment_type=grp,
+        name="Physicians",
+        order=0,
+        required_count=1,
     )
-    slot_b = CalendarGroupSlot.objects.create(
-        organization=organization, group=grp, name="Rooms", order=1, required_count=1
+    slot_b = AppointmentTypeSlot.objects.create(
+        organization=organization, appointment_type=grp, name="Rooms", order=1, required_count=1
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot_a, calendar=primary_calendar
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot_b, calendar=secondary_calendar
     )
     return grp
 
 
 @pytest.fixture
-def group_availability_windows(organization, primary_calendar, secondary_calendar):
+def appointment_type_availability_windows(organization, primary_calendar, secondary_calendar):
     windows = []
     for cal in (primary_calendar, secondary_calendar):
         windows.append(
@@ -639,9 +649,9 @@ def group_availability_windows(organization, primary_calendar, secondary_calenda
 
 
 @pytest.fixture
-def grouped_event(
+def appointment_type_event(
     organization,
-    group,
+    appointment_type,
     primary_calendar,
     secondary_calendar,
     attendee_membership,
@@ -651,9 +661,9 @@ def grouped_event(
         CalendarEvent,
         organization=organization,
         calendar=primary_calendar,
-        calendar_group=group,
-        title="Original Group Title",
-        description="Original group description.",
+        appointment_type=appointment_type,
+        title="Original AppointmentType Title",
+        description="Original appointment type description.",
         timezone="UTC",
         start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
         end_time_tz_unaware=datetime.datetime(2030, 6, 1, 11, 0),
@@ -665,8 +675,8 @@ def grouped_event(
         start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
         end_time_tz_unaware=datetime.datetime(2030, 6, 1, 11, 0),
         timezone="UTC",
-        reason=f"Group booking: {event.title}",
-        external_id=f"group-event-{event.id}-cal-{secondary_calendar.id}",
+        reason=f"AppointmentType booking: {event.title}",
+        external_id=f"appointment-type-event-{event.id}-cal-{secondary_calendar.id}",
     )
     external_attendee = baker.make(
         ExternalAttendee, organization=organization, email="patient@example.com", name="Pat Patient"
@@ -693,62 +703,66 @@ def grouped_event(
 
 
 @pytest.fixture
-def group_reschedule_own_code(permission_service, organization, group, grouped_event):
-    """A valid single-use GROUP RESCHEDULE code bound to ``grouped_event``."""
+def appointment_type_reschedule_own_code(
+    permission_service, organization, appointment_type, appointment_type_event
+):
+    """A valid single-use APPOINTMENT_TYPE RESCHEDULE code bound to ``appointment_type_event``."""
     token, code = permission_service.create_booking_token(
         organization_id=organization.id,
         permissions=[EventManagementPermissions.RESCHEDULE],
-        calendar_group_id=group.id,
-        event_id=grouped_event.id,
+        appointment_type_id=appointment_type.id,
+        event_id=appointment_type_event.id,
     )
     return token, code
 
 
 @pytest.fixture
 def calendar_scoped_reschedule_code(
-    permission_service, organization, primary_calendar, grouped_event
+    permission_service, organization, primary_calendar, appointment_type_event
 ):
-    """A RESCHEDULE code scoped to a single calendar only -- wrong scope for the group endpoint."""
+    """A RESCHEDULE code scoped to a single calendar only -- wrong scope for the appointment type endpoint."""
     token, code = permission_service.create_booking_token(
         organization_id=organization.id,
         permissions=[EventManagementPermissions.RESCHEDULE],
         calendar_id=primary_calendar.id,
-        event_id=grouped_event.id,
+        event_id=appointment_type_event.id,
     )
     return token, code
 
 
 @pytest.mark.django_db
-class TestRescheduleCalendarGroupEventWithCodeHappyPath:
-    def test_happy_path_reschedules_grouped_event_and_updates_blocked_times(
+class TestRescheduleAppointmentTypeEventWithCodeHappyPath:
+    def test_happy_path_reschedules_appointment_type_event_and_updates_blocked_times(
         self,
         anon_client,
-        group_reschedule_own_code,
+        appointment_type_reschedule_own_code,
         organization,
         secondary_calendar,
-        grouped_event,
-        group_availability_windows,  # noqa: ARG002
+        appointment_type_event,
+        appointment_type_availability_windows,  # noqa: ARG002
     ):
-        token, code = group_reschedule_own_code
+        token, code = appointment_type_reschedule_own_code
 
-        response = _post(anon_client, GROUP_RESCHEDULE_URL_NAME, code, _reschedule_payload())
+        response = _post(
+            anon_client, APPOINTMENT_TYPE_RESCHEDULE_URL_NAME, code, _reschedule_payload()
+        )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
         body = response.json()
-        assert body["id"] == grouped_event.id
+        assert body["id"] == appointment_type_event.id
 
         token.refresh_from_db()
         assert token.used_at is not None
 
-        grouped_event.refresh_from_db()
-        assert grouped_event.start_time_tz_unaware.replace(tzinfo=None) == NEW_START.replace(
+        appointment_type_event.refresh_from_db()
+        assert appointment_type_event.start_time_tz_unaware.replace(
             tzinfo=None
-        )
-        assert grouped_event.calendar_group_fk_id == token.calendar_group_fk_id
+        ) == NEW_START.replace(tzinfo=None)
+        assert appointment_type_event.appointment_type_fk_id == token.appointment_type_fk_id
 
         # Non-primary BlockedTime moved with it.
         blocked_time = BlockedTime.objects.filter_by_organization(organization.id).get(
-            external_id=f"group-event-{grouped_event.id}-cal-{secondary_calendar.id}"
+            external_id=f"appointment-type-event-{appointment_type_event.id}-cal-{secondary_calendar.id}"
         )
         assert blocked_time.start_time_tz_unaware.replace(tzinfo=None) == NEW_START.replace(
             tzinfo=None
@@ -757,31 +771,33 @@ class TestRescheduleCalendarGroupEventWithCodeHappyPath:
     def test_title_description_attendees_and_resource_allocations_preserved(
         self,
         anon_client,
-        group_reschedule_own_code,
+        appointment_type_reschedule_own_code,
         organization,
-        grouped_event,
+        appointment_type_event,
         attendee_membership,
         resource_calendar,
-        group_availability_windows,  # noqa: ARG002
+        appointment_type_availability_windows,  # noqa: ARG002
     ):
-        """Group-endpoint counterpart of
+        """Appointment-type-endpoint counterpart of
         ``TestRescheduleCalendarEventWithCodePreservedDetails``'s same-named
         test -- also asserts internal ``EventAttendance`` and
         ``ResourceAllocation`` survive byte-identical, not just title /
         description / external attendee."""
-        _token, code = group_reschedule_own_code
+        _token, code = appointment_type_reschedule_own_code
 
-        response = _post(anon_client, GROUP_RESCHEDULE_URL_NAME, code, _reschedule_payload())
+        response = _post(
+            anon_client, APPOINTMENT_TYPE_RESCHEDULE_URL_NAME, code, _reschedule_payload()
+        )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
 
-        grouped_event.refresh_from_db()
-        assert grouped_event.title == "Original Group Title"
-        assert grouped_event.description == "Original group description."
+        appointment_type_event.refresh_from_db()
+        assert appointment_type_event.title == "Original AppointmentType Title"
+        assert appointment_type_event.description == "Original appointment type description."
 
         attendances = list(
             EventAttendance.objects.filter_by_organization(organization.id).filter(
-                event=grouped_event
+                event=appointment_type_event
             )
         )
         assert len(attendances) == 1
@@ -790,14 +806,14 @@ class TestRescheduleCalendarGroupEventWithCodeHappyPath:
         external_attendances = list(
             EventExternalAttendance.objects.filter_by_organization(organization.id)
             .select_related("external_attendee")
-            .filter(event=grouped_event)
+            .filter(event=appointment_type_event)
         )
         assert len(external_attendances) == 1
         assert external_attendances[0].external_attendee.email == "patient@example.com"
 
         resource_allocations = list(
             ResourceAllocation.objects.filter_by_organization(organization.id).filter(
-                event=grouped_event
+                event=appointment_type_event
             )
         )
         assert len(resource_allocations) == 1
@@ -805,41 +821,43 @@ class TestRescheduleCalendarGroupEventWithCodeHappyPath:
 
 
 @pytest.mark.django_db
-class TestRescheduleCalendarGroupEventWithCodeCrossRouting:
-    def test_calendar_scoped_code_on_group_endpoint_returns_not_permitted(
+class TestRescheduleAppointmentTypeEventWithCodeCrossRouting:
+    def test_calendar_scoped_code_on_appointment_type_endpoint_returns_not_permitted(
         self,
         anon_client,
         calendar_scoped_reschedule_code,
-        grouped_event,
+        appointment_type_event,
     ):
         _token, code = calendar_scoped_reschedule_code
 
-        response = _post(anon_client, GROUP_RESCHEDULE_URL_NAME, code, _reschedule_payload())
+        response = _post(
+            anon_client, APPOINTMENT_TYPE_RESCHEDULE_URL_NAME, code, _reschedule_payload()
+        )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert response.json()["error_code"] == "NOT_PERMITTED"
         assert "single-calendar" in response.json()["detail"].lower()
 
-        grouped_event.refresh_from_db()
-        assert grouped_event.start_time_tz_unaware.replace(tzinfo=None) == ORIGINAL_START.replace(
+        appointment_type_event.refresh_from_db()
+        assert appointment_type_event.start_time_tz_unaware.replace(
             tzinfo=None
-        )
+        ) == ORIGINAL_START.replace(tzinfo=None)
 
 
 @pytest.mark.django_db
-class TestRescheduleCalendarGroupEventWithCodeSlotUnavailable:
+class TestRescheduleAppointmentTypeEventWithCodeSlotUnavailable:
     def test_slot_outside_window_does_not_consume(
         self,
         anon_client,
-        group_reschedule_own_code,
-        grouped_event,
-        group_availability_windows,  # noqa: ARG002 -- windows are 09:00-17:00 UTC
+        appointment_type_reschedule_own_code,
+        appointment_type_event,
+        appointment_type_availability_windows,  # noqa: ARG002 -- windows are 09:00-17:00 UTC
     ):
-        token, code = group_reschedule_own_code
+        token, code = appointment_type_reschedule_own_code
 
         response = _post(
             anon_client,
-            GROUP_RESCHEDULE_URL_NAME,
+            APPOINTMENT_TYPE_RESCHEDULE_URL_NAME,
             code,
             _reschedule_payload(start_time=OOW_START.isoformat(), end_time=OOW_END.isoformat()),
         )
@@ -852,20 +870,27 @@ class TestRescheduleCalendarGroupEventWithCodeSlotUnavailable:
 
 
 @pytest.mark.django_db
-class TestRescheduleCalendarGroupEventWithCodeLifecycleRejections:
+class TestRescheduleAppointmentTypeEventWithCodeLifecycleRejections:
     def test_expired_code_returns_expired(
-        self, anon_client, permission_service, organization, group, grouped_event
+        self,
+        anon_client,
+        permission_service,
+        organization,
+        appointment_type,
+        appointment_type_event,
     ):
         past = datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC)
         _token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.RESCHEDULE],
-            calendar_group_id=group.id,
-            event_id=grouped_event.id,
+            appointment_type_id=appointment_type.id,
+            event_id=appointment_type_event.id,
             expires_at=past,
         )
 
-        response = _post(anon_client, GROUP_RESCHEDULE_URL_NAME, code, _reschedule_payload())
+        response = _post(
+            anon_client, APPOINTMENT_TYPE_RESCHEDULE_URL_NAME, code, _reschedule_payload()
+        )
 
         assert response.status_code == status.HTTP_410_GONE
         assert response.json()["error_code"] == "EXPIRED"
@@ -911,67 +936,69 @@ class TestRescheduleCalendarEventWithCodeNotBoundToEvent:
 
 
 @pytest.mark.django_db
-class TestRescheduleCalendarGroupEventWithCodeNotBoundToEvent:
+class TestRescheduleAppointmentTypeEventWithCodeNotBoundToEvent:
     def test_code_without_event_binding_returns_not_permitted(
         self,
         anon_client,
         permission_service,
         organization,
-        group,
-        grouped_event,
+        appointment_type,
+        appointment_type_event,
     ):
-        """Group-endpoint counterpart -- a code that carries RESCHEDULE and a
-        calendar_group_id, but no event_id, passes the permission check and
+        """Appointment-type-endpoint counterpart -- a code that carries RESCHEDULE and a
+        appointment_type_id, but no event_id, passes the permission check and
         only then trips ``if token.event is None`` (booking_views.py ~L810)."""
         _token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.RESCHEDULE],
-            calendar_group_id=group.id,
+            appointment_type_id=appointment_type.id,
         )
 
-        response = _post(anon_client, GROUP_RESCHEDULE_URL_NAME, code, _reschedule_payload())
+        response = _post(
+            anon_client, APPOINTMENT_TYPE_RESCHEDULE_URL_NAME, code, _reschedule_payload()
+        )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         body = response.json()
         assert body["error_code"] == "NOT_PERMITTED"
         assert body["detail"] == "This code is not bound to a specific event."
 
-        grouped_event.refresh_from_db()
-        assert grouped_event.start_time_tz_unaware.replace(tzinfo=None) == ORIGINAL_START.replace(
+        appointment_type_event.refresh_from_db()
+        assert appointment_type_event.start_time_tz_unaware.replace(
             tzinfo=None
-        )
+        ) == ORIGINAL_START.replace(tzinfo=None)
 
 
 # ---------------------------------------------------------------------------
-# Pinned duration -- group endpoint. The pin lives on CalendarGroup.duration,
+# Pinned duration -- appointment type endpoint. The pin lives on AppointmentType.duration,
 # not on the code (single-calendar reschedule codes carry no duration
 # constraint at all -- see Phase 0's rewrite) -- pinned_duration_error is
-# called with the token's resolved group in booking_views.py.
+# called with the token's resolved appointment type in booking_views.py.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestRescheduleCalendarGroupEventWithCodePinnedDuration:
+class TestRescheduleAppointmentTypeEventWithCodePinnedDuration:
     def test_pin_refuses_wrong_span_even_when_event_currently_matches_it(
         self,
         anon_client,
         permission_service,
         organization,
-        group,
+        appointment_type,
         primary_calendar,
     ):
-        """A group pinned to 30 minutes refuses a move to a 45-minute span,
+        """An appointment type pinned to 30 minutes refuses a move to a 45-minute span,
         EVEN THOUGH the event being moved is currently 45 minutes long -- the
         pin constrains the target span, not the event's present one. The
         refusal must not consume the code."""
-        group.duration = datetime.timedelta(minutes=30)
-        group.save()
+        appointment_type.duration = datetime.timedelta(minutes=30)
+        appointment_type.save()
         event = baker.make(
             CalendarEvent,
             organization=organization,
             calendar=primary_calendar,
-            calendar_group=group,
-            title="Currently 45 Minutes (Group)",
+            appointment_type=appointment_type,
+            title="Currently 45 Minutes (AppointmentType)",
             timezone="UTC",
             start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
             end_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 45),
@@ -980,18 +1007,18 @@ class TestRescheduleCalendarGroupEventWithCodePinnedDuration:
         token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.RESCHEDULE],
-            calendar_group_id=group.id,
+            appointment_type_id=appointment_type.id,
             event_id=event.id,
         )
 
         # Move to a NEW 45-minute span -- same duration as the event's CURRENT
-        # span, but not the group's pinned 30 minutes.
+        # span, but not the appointment type's pinned 30 minutes.
         payload = _reschedule_payload(
             start_time=NEW_START.isoformat(),
             end_time=(NEW_START + datetime.timedelta(minutes=45)).isoformat(),
         )
 
-        response = _post(anon_client, GROUP_RESCHEDULE_URL_NAME, code, payload)
+        response = _post(anon_client, APPOINTMENT_TYPE_RESCHEDULE_URL_NAME, code, payload)
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         body = response.json()
@@ -1011,23 +1038,23 @@ class TestRescheduleCalendarGroupEventWithCodePinnedDuration:
         anon_client,
         permission_service,
         organization,
-        group,
-        grouped_event,
-        group_availability_windows,  # noqa: ARG002
+        appointment_type,
+        appointment_type_event,
+        appointment_type_availability_windows,  # noqa: ARG002
     ):
-        group.duration = datetime.timedelta(minutes=30)
-        group.save()
+        appointment_type.duration = datetime.timedelta(minutes=30)
+        appointment_type.save()
         token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.RESCHEDULE],
-            calendar_group_id=group.id,
-            event_id=grouped_event.id,
+            appointment_type_id=appointment_type.id,
+            event_id=appointment_type_event.id,
         )
         payload = _reschedule_payload(
             end_time=(NEW_START + datetime.timedelta(minutes=30)).isoformat()
         )
 
-        response = _post(anon_client, GROUP_RESCHEDULE_URL_NAME, code, payload)
+        response = _post(anon_client, APPOINTMENT_TYPE_RESCHEDULE_URL_NAME, code, payload)
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
         token.refresh_from_db()

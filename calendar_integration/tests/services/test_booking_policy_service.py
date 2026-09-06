@@ -5,7 +5,7 @@ Covers:
   ``most_restrictive``).
 - ``BookingPolicyService.resolve_for_calendar``: full precedence matrix.
 - Owning-membership ambiguity (zero / one / multiple with is_default).
-- ``resolve_for_bundle`` and ``resolve_for_group`` precedence.
+- ``resolve_for_bundle`` and ``resolve_for_appointment_type`` precedence.
 - Create-uniqueness rejection (``DuplicateBookingPolicyError``).
 - Update with field diffs.
 - Delete-absent idempotent no-op.
@@ -27,11 +27,11 @@ from calendar_integration.exceptions import (
 )
 from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     BookingPolicy,
     Calendar,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
     CalendarOwnership,
     ChildrenCalendarRelationship,
 )
@@ -557,7 +557,7 @@ class TestResolveForBundle:
 
     def test_bundle_unconstrained_when_children_have_owners_but_no_policies(self):
         """Bundle whose children have CalendarOwnership rows but no policy anywhere
-        (no calendar/membership/group/bundle policy AND no org-default) →
+        (no calendar/membership/appointment type/bundle policy AND no org-default) →
         resolve_for_bundle returns EffectivePolicy.unconstrained().
 
         This exercises the ``combined != unconstrained()`` short-circuit's false branch
@@ -579,84 +579,96 @@ class TestResolveForBundle:
 
 
 # ---------------------------------------------------------------------------
-# resolve_for_group
+# resolve_for_appointment_type
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestResolveForGroup:
-    def _make_group_with_calendars(self, org: Organization, calendar_count: int):
-        """Create a CalendarGroup with one slot and ``calendar_count`` calendars."""
-        group = baker.make(CalendarGroup, organization=org, name=f"Group-{id(org)}")
-        slot = baker.make(CalendarGroupSlot, organization=org, group=group, name="Slot A")
+class TestResolveForAppointmentType:
+    def _make_appointment_type_with_calendars(self, org: Organization, calendar_count: int):
+        """Create an AppointmentType with one slot and ``calendar_count`` calendars."""
+        appointment_type = baker.make(
+            AppointmentType, organization=org, name=f"AppointmentType-{id(org)}"
+        )
+        slot = baker.make(
+            AppointmentTypeSlot, organization=org, appointment_type=appointment_type, name="Slot A"
+        )
         calendars = []
         for _ in range(calendar_count):
             cal = _calendar(org)
-            CalendarGroupSlotMembership.objects.create(
+            AppointmentTypeSlotMembership.objects.create(
                 organization=org,
                 slot=slot,
                 calendar=cal,
             )
             calendars.append(cal)
-        return group, calendars
+        return appointment_type, calendars
 
-    def test_explicit_group_policy_overrides_participants(self):
+    def test_explicit_appointment_type_policy_overrides_participants(self):
         org = _org()
-        group, calendars = self._make_group_with_calendars(org, 2)
-        create_booking_policy(calendar_group=group, lead_time_seconds=30)
+        appointment_type, calendars = self._make_appointment_type_with_calendars(org, 2)
+        create_booking_policy(appointment_type=appointment_type, lead_time_seconds=30)
         create_booking_policy(calendar=calendars[0], lead_time_seconds=9000)
 
         svc = _service(org)
-        result = svc.resolve_for_group(group)
+        result = svc.resolve_for_appointment_type(appointment_type)
 
         assert result.lead_time == datetime.timedelta(seconds=30)
 
-    def test_most_restrictive_across_participants_when_no_group_policy(self):
+    def test_most_restrictive_across_participants_when_no_appointment_type_policy(self):
         org = _org()
-        group, calendars = self._make_group_with_calendars(org, 2)
+        appointment_type, calendars = self._make_appointment_type_with_calendars(org, 2)
         create_booking_policy(calendar=calendars[0], lead_time_seconds=1800)
         create_booking_policy(calendar=calendars[1], buffer_before_seconds=600)
 
         svc = _service(org)
-        result = svc.resolve_for_group(group)
+        result = svc.resolve_for_appointment_type(appointment_type)
 
         assert result.lead_time == datetime.timedelta(seconds=1800)
         assert result.buffer_before == datetime.timedelta(seconds=600)
 
     def test_unconstrained_when_no_participant_policies(self):
         org = _org()
-        group, _ = self._make_group_with_calendars(org, 2)
+        appointment_type, _ = self._make_appointment_type_with_calendars(org, 2)
 
         svc = _service(org)
-        result = svc.resolve_for_group(group)
+        result = svc.resolve_for_appointment_type(appointment_type)
 
         assert result == EffectivePolicy.unconstrained()
 
     def test_unconstrained_when_no_participants(self):
         org = _org()
-        group = baker.make(CalendarGroup, organization=org, name="Empty Group")
+        appointment_type = baker.make(
+            AppointmentType, organization=org, name="Empty AppointmentType"
+        )
 
         svc = _service(org)
-        result = svc.resolve_for_group(group)
+        result = svc.resolve_for_appointment_type(appointment_type)
 
         assert result == EffectivePolicy.unconstrained()
 
     def test_participants_from_multiple_slots_all_considered(self):
         """All calendars across all slots participate in the combination."""
         org = _org()
-        group = baker.make(CalendarGroup, organization=org, name="Multi Slot Group")
-        slot_a = baker.make(CalendarGroupSlot, organization=org, group=group, name="Slot A")
-        slot_b = baker.make(CalendarGroupSlot, organization=org, group=group, name="Slot B")
+        appointment_type = baker.make(
+            AppointmentType, organization=org, name="Multi Slot AppointmentType"
+        )
+        slot_a = baker.make(
+            AppointmentTypeSlot, organization=org, appointment_type=appointment_type, name="Slot A"
+        )
+        slot_b = baker.make(
+            AppointmentTypeSlot, organization=org, appointment_type=appointment_type, name="Slot B"
+        )
         cal_a = _calendar(org)
         cal_b = _calendar(org)
-        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot_a, calendar=cal_a)
-        CalendarGroupSlotMembership.objects.create(organization=org, slot=slot_b, calendar=cal_b)
+        AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot_a, calendar=cal_a)
+        AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot_b, calendar=cal_b)
 
         create_booking_policy(calendar=cal_a, lead_time_seconds=900)
         create_booking_policy(calendar=cal_b, max_horizon_seconds=14 * 86400)
 
         svc = _service(org)
-        result = svc.resolve_for_group(group)
+        result = svc.resolve_for_appointment_type(appointment_type)
 
         assert result.lead_time == datetime.timedelta(seconds=900)
         assert result.max_horizon == datetime.timedelta(days=14)
@@ -699,14 +711,14 @@ class TestCreateBookingPolicy:
         with pytest.raises(DuplicateBookingPolicyError, match="membership"):
             svc.create_booking_policy(membership_user_id=uid)
 
-    def test_raises_on_duplicate_group_policy(self):
+    def test_raises_on_duplicate_appointment_type_policy(self):
         org = _org()
-        group = baker.make(CalendarGroup, organization=org, name="G")
-        create_booking_policy(calendar_group=group)
+        appointment_type = baker.make(AppointmentType, organization=org, name="G")
+        create_booking_policy(appointment_type=appointment_type)
         svc = _service(org)
 
-        with pytest.raises(DuplicateBookingPolicyError, match="calendar group"):
-            svc.create_booking_policy(calendar_group=group)
+        with pytest.raises(DuplicateBookingPolicyError, match="appointment type"):
+            svc.create_booking_policy(appointment_type=appointment_type)
 
     def test_raises_on_duplicate_org_default(self):
         org = _org()
@@ -909,14 +921,14 @@ class TestDeleteBookingPolicy:
         svc.delete_policy_for_membership(uid)
         mock_audit.record.assert_not_called()
 
-    def test_delete_policy_for_group_noop_when_absent(self):
-        """delete_policy_for_group is a no-op and emits no audit record when absent."""
+    def test_delete_policy_for_appointment_type_noop_when_absent(self):
+        """delete_policy_for_appointment_type is a no-op and emits no audit record when absent."""
         org = _org()
-        group = baker.make(CalendarGroup, organization=org, name="G-noop")
+        appointment_type = baker.make(AppointmentType, organization=org, name="G-noop")
         mock_audit = MagicMock()
         svc = _service(org, audit_service=mock_audit)
-        # No policy for this group — should not raise.
-        svc.delete_policy_for_group(group)
+        # No policy for this appointment type — should not raise.
+        svc.delete_policy_for_appointment_type(appointment_type)
         mock_audit.record.assert_not_called()
 
 
@@ -1103,36 +1115,38 @@ class TestResolveForCalendarAnnotationEquivalence:
 
 
 @pytest.mark.django_db
-class TestResolveForGroupAnnotationEquivalence:
-    def _group_with_calendars(self, org: Organization, n: int):
-        group = baker.make(CalendarGroup, organization=org, name=f"G-{id(org)}-{n}")
-        slot = baker.make(CalendarGroupSlot, organization=org, group=group, name="S")
+class TestResolveForAppointmentTypeAnnotationEquivalence:
+    def _appointment_type_with_calendars(self, org: Organization, n: int):
+        appointment_type = baker.make(AppointmentType, organization=org, name=f"G-{id(org)}-{n}")
+        slot = baker.make(
+            AppointmentTypeSlot, organization=org, appointment_type=appointment_type, name="S"
+        )
         calendars = []
         for _ in range(n):
             cal = _calendar(org)
-            CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=cal)
+            AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot, calendar=cal)
             calendars.append(cal)
-        return group, calendars
+        return appointment_type, calendars
 
-    def test_explicit_group_policy_whole(self):
+    def test_explicit_appointment_type_policy_whole(self):
         org = _org()
-        group, cals = self._group_with_calendars(org, 2)
-        # Group policy with an unbounded horizon must stay unbounded even though
+        appointment_type, cals = self._appointment_type_with_calendars(org, 2)
+        # Appointment type policy with an unbounded horizon must stay unbounded even though
         # participants have finite horizons (whole-policy short-circuit).
         create_booking_policy(
-            calendar_group=group,
+            appointment_type=appointment_type,
             lead_time_seconds=30,
             max_horizon_seconds=0,
             buffer_before_seconds=5,
             buffer_after_seconds=0,
         )
         create_booking_policy(calendar=cals[0], max_horizon_seconds=3600, lead_time_seconds=9000)
-        result = _service(org).resolve_for_group(group)
+        result = _service(org).resolve_for_appointment_type(appointment_type)
         assert result == _ep(lead=30, horizon=None, before=5, after=0)
 
     def test_most_restrictive_field_by_field(self):
         org = _org()
-        group, cals = self._group_with_calendars(org, 2)
+        appointment_type, cals = self._appointment_type_with_calendars(org, 2)
         create_booking_policy(
             calendar=cals[0],
             lead_time_seconds=7200,
@@ -1147,42 +1161,42 @@ class TestResolveForGroupAnnotationEquivalence:
             buffer_before_seconds=1800,
             buffer_after_seconds=600,
         )
-        result = _service(org).resolve_for_group(group)
+        result = _service(org).resolve_for_appointment_type(appointment_type)
         # max lead, min horizon, max before, max after.
         assert result == _ep(lead=7200, horizon=7 * 86400, before=1800, after=600)
 
     def test_all_unbounded_horizons_stay_unbounded(self):
         org = _org()
-        group, cals = self._group_with_calendars(org, 2)
+        appointment_type, cals = self._appointment_type_with_calendars(org, 2)
         create_booking_policy(calendar=cals[0], lead_time_seconds=60, max_horizon_seconds=0)
         create_booking_policy(calendar=cals[1], lead_time_seconds=120, max_horizon_seconds=0)
-        result = _service(org).resolve_for_group(group)
+        result = _service(org).resolve_for_appointment_type(appointment_type)
         assert result == _ep(lead=120, horizon=None)
 
     def test_mixed_bounded_and_unbounded_horizon_takes_finite_min(self):
         org = _org()
-        group, cals = self._group_with_calendars(org, 2)
+        appointment_type, cals = self._appointment_type_with_calendars(org, 2)
         create_booking_policy(calendar=cals[0], max_horizon_seconds=0)  # unbounded
         create_booking_policy(calendar=cals[1], max_horizon_seconds=14 * 86400)
-        result = _service(org).resolve_for_group(group)
+        result = _service(org).resolve_for_appointment_type(appointment_type)
         assert result == _ep(horizon=14 * 86400)
 
     def test_no_participant_policies_unconstrained(self):
         org = _org()
-        group, _ = self._group_with_calendars(org, 3)
-        result = _service(org).resolve_for_group(group)
+        appointment_type, _ = self._appointment_type_with_calendars(org, 3)
+        result = _service(org).resolve_for_appointment_type(appointment_type)
         assert result == EffectivePolicy.unconstrained()
 
     def test_participant_resolved_through_own_chain(self):
         """A participant with no direct policy but an owner+membership policy
         contributes that membership policy to the combination."""
         org = _org()
-        group, cals = self._group_with_calendars(org, 2)
+        appointment_type, cals = self._appointment_type_with_calendars(org, 2)
         uid = _membership(org)
         _own(cals[0], uid)
         create_booking_policy(membership_user_id=uid, organization=org, lead_time_seconds=4500)
         create_booking_policy(calendar=cals[1], lead_time_seconds=600)
-        result = _service(org).resolve_for_group(group)
+        result = _service(org).resolve_for_appointment_type(appointment_type)
         assert result == _ep(lead=4500)
 
 
@@ -1248,7 +1262,7 @@ class TestResolveForBundleAnnotationEquivalence:
 
 
 # ---------------------------------------------------------------------------
-# Query-count: bundle/group resolution must be bounded regardless of the number
+# Query-count: bundle/appointment type resolution must be bounded regardless of the number
 # of participant calendars — the N+1 walk collapsed into a bounded set of
 # queries.
 # ---------------------------------------------------------------------------
@@ -1256,48 +1270,52 @@ class TestResolveForBundleAnnotationEquivalence:
 
 @pytest.mark.django_db
 class TestResolutionQueryCount:
-    def test_group_resolution_bounded_regardless_of_participant_count(
+    def test_appointment_type_resolution_bounded_regardless_of_participant_count(
         self, django_assert_num_queries
     ):
         org = _org()
-        group = baker.make(CalendarGroup, organization=org, name="Big Group")
-        slot = baker.make(CalendarGroupSlot, organization=org, group=group, name="S")
+        appointment_type = baker.make(AppointmentType, organization=org, name="Big AppointmentType")
+        slot = baker.make(
+            AppointmentTypeSlot, organization=org, appointment_type=appointment_type, name="S"
+        )
         for _ in range(8):
             cal = _calendar(org)
-            CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=cal)
+            AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot, calendar=cal)
             create_booking_policy(calendar=cal, lead_time_seconds=300)
 
         svc = _service(org)
-        # Group resolution is a single annotated SELECT — it does NOT scale with
+        # Appointment type resolution is a single annotated SELECT — it does NOT scale with
         # the participant count.
         with django_assert_num_queries(1):
-            svc.resolve_for_group(group)
+            svc.resolve_for_appointment_type(appointment_type)
 
-    def test_group_resolution_same_query_count_for_more_participants(
+    def test_appointment_type_resolution_same_query_count_for_more_participants(
         self, django_assert_num_queries
     ):
-        """Resolution for a 2-participant and a 12-participant group issues the
+        """Resolution for a 2-participant and a 12-participant appointment type issues the
         same (constant) number of queries."""
         org = _org()
 
-        def _build(n: int) -> CalendarGroup:
-            group = baker.make(CalendarGroup, organization=org, name=f"QC-{n}")
-            slot = baker.make(CalendarGroupSlot, organization=org, group=group, name="S")
+        def _build(n: int) -> AppointmentType:
+            appointment_type = baker.make(AppointmentType, organization=org, name=f"QC-{n}")
+            slot = baker.make(
+                AppointmentTypeSlot, organization=org, appointment_type=appointment_type, name="S"
+            )
             for _ in range(n):
                 cal = _calendar(org)
-                CalendarGroupSlotMembership.objects.create(
+                AppointmentTypeSlotMembership.objects.create(
                     organization=org, slot=slot, calendar=cal
                 )
                 create_booking_policy(calendar=cal, max_horizon_seconds=86400)
-            return group
+            return appointment_type
 
         small = _build(2)
         large = _build(12)
         svc = _service(org)
         with django_assert_num_queries(1):
-            svc.resolve_for_group(small)
+            svc.resolve_for_appointment_type(small)
         with django_assert_num_queries(1):
-            svc.resolve_for_group(large)
+            svc.resolve_for_appointment_type(large)
 
     def test_bundle_resolution_bounded(self, django_assert_num_queries):
         org = _org()
@@ -1345,29 +1363,33 @@ class TestResolutionOrgScope:
         result = _service(org_a).resolve_for_calendar(cal_a)
         assert result == _ep(lead=300)
 
-    def test_group_resolution_ignores_other_org(self):
+    def test_appointment_type_resolution_ignores_other_org(self):
         org_a = _org()
         org_b = _org()
 
-        group_a = baker.make(CalendarGroup, organization=org_a, name="GA")
-        slot_a = baker.make(CalendarGroupSlot, organization=org_a, group=group_a, name="S")
+        appointment_type_a = baker.make(AppointmentType, organization=org_a, name="GA")
+        slot_a = baker.make(
+            AppointmentTypeSlot, organization=org_a, appointment_type=appointment_type_a, name="S"
+        )
         ca1 = _calendar(org_a)
         ca2 = _calendar(org_a)
-        CalendarGroupSlotMembership.objects.create(organization=org_a, slot=slot_a, calendar=ca1)
-        CalendarGroupSlotMembership.objects.create(organization=org_a, slot=slot_a, calendar=ca2)
+        AppointmentTypeSlotMembership.objects.create(organization=org_a, slot=slot_a, calendar=ca1)
+        AppointmentTypeSlotMembership.objects.create(organization=org_a, slot=slot_a, calendar=ca2)
         create_booking_policy(calendar=ca1, lead_time_seconds=600)
         create_booking_policy(calendar=ca2, lead_time_seconds=1200)
 
-        # org_b: an explicit group-default and conflicting calendar policies.
-        group_b = baker.make(CalendarGroup, organization=org_b, name="GB")
-        slot_b = baker.make(CalendarGroupSlot, organization=org_b, group=group_b, name="S")
+        # org_b: an explicit appointment-type-default and conflicting calendar policies.
+        appointment_type_b = baker.make(AppointmentType, organization=org_b, name="GB")
+        slot_b = baker.make(
+            AppointmentTypeSlot, organization=org_b, appointment_type=appointment_type_b, name="S"
+        )
         cb1 = _calendar(org_b)
-        CalendarGroupSlotMembership.objects.create(organization=org_b, slot=slot_b, calendar=cb1)
-        create_booking_policy(calendar_group=group_b, lead_time_seconds=99999)
+        AppointmentTypeSlotMembership.objects.create(organization=org_b, slot=slot_b, calendar=cb1)
+        create_booking_policy(appointment_type=appointment_type_b, lead_time_seconds=99999)
         create_booking_policy(calendar=cb1, lead_time_seconds=77777)
         create_booking_policy(is_organization_default=True, organization=org_b, lead_time_seconds=1)
 
-        result = _service(org_a).resolve_for_group(group_a)
+        result = _service(org_a).resolve_for_appointment_type(appointment_type_a)
         # max(600, 1200) = 1200, untouched by org_b.
         assert result == _ep(lead=1200)
 

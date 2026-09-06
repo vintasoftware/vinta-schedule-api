@@ -1,13 +1,13 @@
-"""Cross-surface proof that a CalendarGroup's pinned duration is unbypassable.
+"""Cross-surface proof that an AppointmentType's pinned duration is unbypassable.
 
 History correction: an earlier draft of this file proved a per-code
 ``token.duration`` pin was unbypassable across GraphQL's
 ``createCalendarEventWithCode`` / ``rescheduleCalendarEventWithCode`` (single
-calendar), ``createCalendarGroupEventWithCode`` (group), and the legacy
+calendar), ``createAppointmentTypeEventWithCode`` (appointment type), and the legacy
 ``public/organizations/<id>/events/`` management-token surface (single
 calendar). Duration pinning has moved off ``CalendarManagementToken`` onto
-``CalendarGroup`` (see that field's help_text for why: a codeless
-public-group booking presents no code, so a per-code pin can never reach it).
+``AppointmentType`` (see that field's help_text for why: a codeless
+public-appointment-type booking presents no code, so a per-code pin can never reach it).
 That has two consequences for this file:
 
 - The single-calendar scenarios (``TestDurationPinGraphQLCreate``,
@@ -15,18 +15,18 @@ That has two consequences for this file:
   no longer apply at all -- there is no ``Calendar.duration`` and single-calendar
   codes carry no duration constraint any more. DELETED, not re-pointed:
   there is nothing left to assert once the pin they exercised does not exist.
-- The group scenario (``TestDurationPinGraphQLGroupCreate``) still applies,
-  re-pointed at ``group.duration`` instead of ``token.duration``. It remains
-  the regression test that proves ``CalendarGroupService.create_grouped_event``
+- The appointment type scenario (``TestDurationPinGraphQLAppointmentTypeCreate``) still applies,
+  re-pointed at ``appointment_type.duration`` instead of ``token.duration``. It remains
+  the regression test that proves ``AppointmentTypeService.create_appointment_type_event``
   still passes ``start_time`` / ``end_time`` into
-  ``can_perform_group_scheduling`` -- the only gate a group booking passes
-  through (``create_event`` is called with ``group_authorized=True``,
+  ``can_perform_appointment_type_scheduling`` -- the only gate an appointment type booking passes
+  through (``create_event`` is called with ``appointment_type_authorized=True``,
   skipping its own ``can_perform_scheduling`` call entirely).
 
 If enforcement had instead been placed in a REST view (a future phase's), a
-client could launder a pinned group by presenting its code to GraphQL or the
+client could launder a pinned appointment type by presenting its code to GraphQL or the
 legacy surface instead -- this file is the regression test that proves that
-is not possible for the group-booking path.
+is not possible for the appointment-type-booking path.
 """
 
 import datetime
@@ -38,12 +38,12 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     AvailableTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
     EventManagementPermissions,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
@@ -54,9 +54,9 @@ from organizations.models import Organization
 # GraphQL mutation strings
 # ---------------------------------------------------------------------------
 
-CREATE_GROUP_EVENT_WITH_CODE = """
-mutation CreateCalendarGroupEventWithCode($input: CreateGroupEventWithCodeInput!) {
-    createCalendarGroupEventWithCode(input: $input) {
+CREATE_APPOINTMENT_TYPE_EVENT_WITH_CODE = """
+mutation CreateAppointmentTypeEventWithCode($input: CreateAppointmentTypeEventWithCodeInput!) {
+    createAppointmentTypeEventWithCode(input: $input) {
         success
         errorCode
         errorMessage
@@ -88,7 +88,7 @@ def organization():
 
 @pytest.fixture
 def calendar(organization):
-    """A RESTRICTED calendar -- the group-scoped code alone must authorize scheduling."""
+    """A RESTRICTED calendar -- the appointment-type-scoped code alone must authorize scheduling."""
     return baker.make(
         Calendar,
         organization=organization,
@@ -115,7 +115,7 @@ def available_window(organization, calendar):
 
 @pytest.fixture
 def secondary_calendar(organization):
-    """A second RESTRICTED calendar, the other slot member of ``group`` below."""
+    """A second RESTRICTED calendar, the other slot member of ``appointment_type`` below."""
     return baker.make(
         Calendar,
         organization=organization,
@@ -142,27 +142,27 @@ def secondary_available_window(organization, secondary_calendar):
 
 
 @pytest.fixture
-def group(organization, calendar, secondary_calendar):
-    """A CalendarGroup with two slots (``calendar``, ``secondary_calendar``),
+def appointment_type(organization, calendar, secondary_calendar):
+    """An AppointmentType with two slots (``calendar``, ``secondary_calendar``),
     pinned to a 30-minute duration -- private (``accepts_public_scheduling=False``,
-    the default), so the group-scoped CODE is what must authorize booking; the
+    the default), so the appointment-type-scoped CODE is what must authorize booking; the
     duration pin is independent of that and enforced regardless."""
     grp = baker.make(
-        CalendarGroup,
+        AppointmentType,
         organization=organization,
-        name="Duration Pin Group",
+        name="Duration Pin AppointmentType",
         duration=datetime.timedelta(minutes=30),
     )
-    slot_a = CalendarGroupSlot.objects.create(
-        organization=organization, group=grp, name="Primary", order=0, required_count=1
+    slot_a = AppointmentTypeSlot.objects.create(
+        organization=organization, appointment_type=grp, name="Primary", order=0, required_count=1
     )
-    slot_b = CalendarGroupSlot.objects.create(
-        organization=organization, group=grp, name="Secondary", order=1, required_count=1
+    slot_b = AppointmentTypeSlot.objects.create(
+        organization=organization, appointment_type=grp, name="Secondary", order=1, required_count=1
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot_a, calendar=calendar
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot_b, calendar=secondary_calendar
     )
     return grp
@@ -179,30 +179,30 @@ def anon_client():
 
 
 # ---------------------------------------------------------------------------
-# GraphQL: createCalendarGroupEventWithCode
+# GraphQL: createAppointmentTypeEventWithCode
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestDurationPinGraphQLGroupCreate:
-    """Regression test for the group-booking call site duration pinning depends on.
+class TestDurationPinGraphQLAppointmentTypeCreate:
+    """Regression test for the appointment-type-booking call site duration pinning depends on.
 
-    ``CalendarGroupService.create_grouped_event`` is the ONLY gate a group
+    ``AppointmentTypeService.create_appointment_type_event`` is the ONLY gate an appointment type
     booking passes through -- ``create_event`` is called with
-    ``group_authorized=True``, which skips its own ``can_perform_scheduling``
+    ``appointment_type_authorized=True``, which skips its own ``can_perform_scheduling``
     call for the primary calendar entirely. Swapping the ``start_time`` /
     ``end_time`` arguments at that call site would leave the rest of the
-    suite green while silently unpinning every group booking.
+    suite green while silently unpinning every appointment type booking.
     """
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_pinned_30_minute_group_rejects_60_minute_create(
+    def test_pinned_30_minute_appointment_type_rejects_60_minute_create(
         self,
         mock_rate_limiter,
         anon_client,
         permission_service,
         organization,
-        group,
+        appointment_type,
         calendar,
         secondary_calendar,
         available_window,  # noqa: ARG002 — seeds DB rows consumed by create_event
@@ -212,16 +212,16 @@ class TestDurationPinGraphQLGroupCreate:
         token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CREATE],
-            calendar_group_id=group.id,
+            appointment_type_id=appointment_type.id,
         )
         start = datetime.datetime(2030, 6, 1, 10, 0, tzinfo=datetime.UTC)
         end = start + datetime.timedelta(hours=1)  # 60 minutes -- mismatched.
-        slot_a = group.slots.get(name="Primary")
-        slot_b = group.slots.get(name="Secondary")
+        slot_a = appointment_type.slots.get(name="Primary")
+        slot_b = appointment_type.slots.get(name="Secondary")
 
         data = post_graphql(
             anon_client,
-            CREATE_GROUP_EVENT_WITH_CODE,
+            CREATE_APPOINTMENT_TYPE_EVENT_WITH_CODE,
             {
                 "input": {
                     "code": code,
@@ -238,7 +238,7 @@ class TestDurationPinGraphQLGroupCreate:
                 }
             },
         )
-        result = data["data"]["createCalendarGroupEventWithCode"]
+        result = data["data"]["createAppointmentTypeEventWithCode"]
         assert result["success"] is False
         assert result["errorCode"] == "NOT_PERMITTED"
         assert result["event"] is None
@@ -252,13 +252,13 @@ class TestDurationPinGraphQLGroupCreate:
         assert token.used_at is None
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_pinned_30_minute_group_accepts_exact_30_minute_create(
+    def test_pinned_30_minute_appointment_type_accepts_exact_30_minute_create(
         self,
         mock_rate_limiter,
         anon_client,
         permission_service,
         organization,
-        group,
+        appointment_type,
         calendar,
         secondary_calendar,
         available_window,  # noqa: ARG002
@@ -268,16 +268,16 @@ class TestDurationPinGraphQLGroupCreate:
         token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CREATE],
-            calendar_group_id=group.id,
+            appointment_type_id=appointment_type.id,
         )
         start = datetime.datetime(2030, 6, 1, 10, 0, tzinfo=datetime.UTC)
         end = start + datetime.timedelta(minutes=30)  # exact match.
-        slot_a = group.slots.get(name="Primary")
-        slot_b = group.slots.get(name="Secondary")
+        slot_a = appointment_type.slots.get(name="Primary")
+        slot_b = appointment_type.slots.get(name="Secondary")
 
         data = post_graphql(
             anon_client,
-            CREATE_GROUP_EVENT_WITH_CODE,
+            CREATE_APPOINTMENT_TYPE_EVENT_WITH_CODE,
             {
                 "input": {
                     "code": code,
@@ -294,7 +294,7 @@ class TestDurationPinGraphQLGroupCreate:
                 }
             },
         )
-        result = data["data"]["createCalendarGroupEventWithCode"]
+        result = data["data"]["createAppointmentTypeEventWithCode"]
         assert result["success"] is True, result
         assert result["event"] is not None
         token.refresh_from_db()

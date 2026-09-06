@@ -1,11 +1,11 @@
 """Reprojects a slot's roster the moment a ``CalendarPool``'s own roster changes.
 
-``CalendarGroupService._reconcile_slot_pools`` is the write path when an admin
+``AppointmentTypeService._reconcile_slot_pools`` is the write path when an admin
 attaches or detaches a *pool* from a *slot*. It does not run when a pool's own
 roster changes without anyone touching a slot -- e.g. an org admin editing
 ``CalendarPoolMembershipInline`` on ``CalendarPoolAdmin``, a `manage.py shell`
 edit, or a future data migration. Left alone, that gap lets
-``CalendarGroupSlotMembership`` drift from the pools it is derived from: a
+``AppointmentTypeSlotMembership`` drift from the pools it is derived from: a
 calendar dropped from a pool stays bookable through every slot that pool is
 attached to, and a calendar added to a pool stays silently unbookable. Per the
 Calendar Pools plan's Drift mitigation decision, every write that can change a
@@ -16,7 +16,7 @@ edits to the slot <-> pool attachment.
 Both receivers reproject every slot the affected pool is attached to, inside
 the same transaction as the roster edit -- never ``transaction.on_commit`` --
 because a booking read can follow the edit immediately, before any commit
-hook would run. They reuse ``CalendarGroupService._reconcile_slot_pools``
+hook would run. They reuse ``AppointmentTypeService._reconcile_slot_pools``
 rather than duplicating its diff/upsert logic; that method already recomputes
 a slot's desired projected rows from the pools' current rosters and is
 idempotent, so calling it with the slot's *unchanged* set of attached pools
@@ -40,7 +40,7 @@ Bulk-safety:
   ``.create()`` per calendar) -- a caller that starts to must call
   ``reconcile_pools`` explicitly afterwards, in the same transaction.
 - ``reconcile_calendar_pool_projections --fix`` (the management command) never
-  writes to ``CalendarPoolMembership`` -- it repairs ``CalendarGroupSlotMembership``
+  writes to ``CalendarPoolMembership`` -- it repairs ``AppointmentTypeSlotMembership``
   directly, which is the projection these receivers maintain, not its source.
   Its bulk insert/delete therefore cannot recurse into these receivers; see
   the comment at its own write site.
@@ -94,10 +94,10 @@ def reconcile_pools(pool_ids: Iterable[int], organization_id: int) -> None:
     data migration.
 
     Worst case per call: one query to resolve the affected slot ids, plus one
-    ``CalendarGroupService._reconcile_slot_pools`` call per distinct slot the
+    ``AppointmentTypeService._reconcile_slot_pools`` call per distinct slot the
     changed pool is attached to (N slots -> N reconciles, never more).
     """
-    from calendar_integration.models import CalendarGroupSlot, CalendarGroupSlotPool
+    from calendar_integration.models import AppointmentTypeSlot, AppointmentTypeSlotPool
     from di_core.containers import container
     from organizations.models import Organization
 
@@ -106,7 +106,7 @@ def reconcile_pools(pool_ids: Iterable[int], organization_id: int) -> None:
         return
 
     slot_ids = list(
-        CalendarGroupSlotPool.objects.filter_by_organization(organization_id)
+        AppointmentTypeSlotPool.objects.filter_by_organization(organization_id)
         .filter(pool_fk_id__in=pool_id_set)
         .values_list("slot_fk_id", flat=True)
         .distinct()
@@ -117,15 +117,15 @@ def reconcile_pools(pool_ids: Iterable[int], organization_id: int) -> None:
     if container is None:
         raise RuntimeError(
             "DI container is not wired; the calendar-pool reprojection signal "
-            "cannot resolve calendar_group_service before "
+            "cannot resolve appointment_type_service before "
             "di_core.apps.DICoreConfig.ready() runs."
         )
 
     organization = Organization.objects.get(id=organization_id)
-    service = container.calendar_group_service()
+    service = container.appointment_type_service()
     service.initialize(organization)
 
-    slots = CalendarGroupSlot.objects.filter_by_organization(organization_id).filter(
+    slots = AppointmentTypeSlot.objects.filter_by_organization(organization_id).filter(
         id__in=slot_ids
     )
     for slot in slots:
@@ -133,7 +133,7 @@ def reconcile_pools(pool_ids: Iterable[int], organization_id: int) -> None:
         # roster did -- so the desired end state passed to
         # `_reconcile_slot_pools` is simply "whatever is attached today."
         attached_pool_ids = list(
-            CalendarGroupSlotPool.objects.filter_by_organization(organization_id)
+            AppointmentTypeSlotPool.objects.filter_by_organization(organization_id)
             .filter(slot_fk_id=slot.id)
             .values_list("pool_fk_id", flat=True)
         )

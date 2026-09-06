@@ -31,12 +31,12 @@ from vintasend_django.services.notification_template_renderers.django_templated_
 
 from audit_integration.repositories import OrganizationAuditRepository
 from audit_integration.services import OrganizationAuditService
+from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.bookable_slots_service import BookableSlotsService
 from calendar_integration.services.booking_policy_permission_service import (
     BookingPolicyPermissionService,
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
-from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
@@ -306,8 +306,8 @@ class AppContainer(containers.DeclarativeContainer):
         booking_policy_service=booking_policy_service,
     )
 
-    calendar_group_service = providers.Factory(
-        CalendarGroupService,
+    appointment_type_service = providers.Factory(
+        AppointmentTypeService,
         calendar_service=calendar_service,
         calendar_permission_service=calendar_permission_service,
         audit_service=audit_service,

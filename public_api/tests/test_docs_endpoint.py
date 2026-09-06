@@ -15,7 +15,7 @@ CONCEPTS_DIR = Path(settings.BASE_DIR) / "docs" / "concepts"
 EXPECTED_SLUGS = (
     "availability",
     "calendar-bundles",
-    "calendar-groups",
+    "appointment-types",
     "calendars",
     "events",
     "recurrence",
@@ -46,16 +46,16 @@ class TestPublicApiDocsList:
 @pytest.mark.django_db
 class TestPublicApiDocsRetrieve:
     def test_retrieve_returns_markdown_verbatim(self, anonymous_client):
-        response = anonymous_client.get("/public-api-docs/calendar-groups/")
+        response = anonymous_client.get("/public-api-docs/appointment-types/")
 
         assert response.status_code == status.HTTP_200_OK
         body = response.json()
-        assert body["slug"] == "calendar-groups"
+        assert body["slug"] == "appointment-types"
         assert body["title"]
-        assert body["markdown"] == (CONCEPTS_DIR / "calendar-groups.md").read_text()
+        assert body["markdown"] == (CONCEPTS_DIR / "appointment-types.md").read_text()
 
     def test_retrieve_succeeds_unauthenticated(self, anonymous_client):
-        response = anonymous_client.get("/public-api-docs/calendar-groups/")
+        response = anonymous_client.get("/public-api-docs/appointment-types/")
 
         assert response.status_code == status.HTTP_200_OK
 

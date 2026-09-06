@@ -1,30 +1,30 @@
 """Calendar Pools Phase 6: the stale-selection sweep query.
 
-``CalendarGroupService.find_stale_selections`` lists every `(event, slot,
-calendar)` triple booked under a group whose calendar has since left its
+``AppointmentTypeService.find_stale_selections`` lists every `(event, slot,
+calendar)` triple booked under an appointment type whose calendar has since left its
 slot's roster -- the exact predicate Phase 2 already surfaced per-selection
-as ``is_in_current_roster``: no ``CalendarGroupSlotMembership`` row exists for
+as ``is_in_current_roster``: no ``AppointmentTypeSlotMembership`` row exists for
 the selection's ``(slot, calendar)`` pair, regardless of whether that row was
 inline or projected from a ``CalendarPool`` (Phase 3). This phase adds the
-ops-sweep counterpart -- list the whole backlog for a group in one query --
+ops-sweep counterpart -- list the whole backlog for an appointment type in one query --
 on the service, REST, and public GraphQL surfaces.
 
 Covers:
 - The service returns exactly the stale triples, excludes fully-rostered
-  events, honours the date window, returns nothing for an untouched group,
+  events, honours the date window, returns nothing for an untouched appointment type,
   and reports a calendar that departed a POOL (not an inline roster) as
   stale -- proving the single predicate covers both origins.
 - Query-count invariance: the same query, measured at two stale-selection
   counts, costs the same number of round trips.
-- REST (``CalendarGroupViewSet.stale_selections``): reachable by a
+- REST (``AppointmentTypeViewSet.stale_selections``): reachable by a
   participating member, honours the window, 401 for anonymous, 404 for a
   same-org non-participant (REST has no "wrong resource" axis -- the
   permission gate is participant vs not, verified by DB state, not just the
   status code).
-- GraphQL (``calendarGroupStaleSelections``): org-wide sees a group's
-  backlog, a scoped-member sees it only for groups it participates in (empty,
+- GraphQL (``appointmentTypeStaleSelections``): org-wide sees an appointment type's
+  backlog, a scoped-member sees it only for appointment types it participates in (empty,
   not an error, for one it does not), refused for both an anonymous caller
-  and a token missing the ``CALENDAR_GROUP`` resource, and every new field
+  and a token missing the ``APPOINTMENT_TYPE`` resource, and every new field
   name is present in ``FIELD_TO_RESOURCE_MAPPING``.
 """
 
@@ -44,21 +44,21 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
-from calendar_integration.exceptions import CalendarGroupValidationError
+from calendar_integration.exceptions import AppointmentTypeValidationError
 from calendar_integration.factories import create_calendar_ownership, create_calendar_pool
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     Calendar,
     CalendarEvent,
-    CalendarEventGroupSelection,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
+    CalendarEventAppointmentTypeSelection,
     CalendarPoolMembership,
 )
-from calendar_integration.services.calendar_group_service import CalendarGroupService
+from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.dataclasses import (
-    CalendarGroupInputData,
-    CalendarGroupSlotInputData,
+    AppointmentTypeInputData,
+    AppointmentTypeSlotInputData,
 )
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
@@ -99,7 +99,7 @@ def _make_calendar(org: Organization, label: str) -> Calendar:
 def _make_event(
     org: Organization,
     calendar: Calendar,
-    group: CalendarGroup,
+    appointment_type: AppointmentType,
     start: datetime.datetime = _DEFAULT_START,
 ) -> CalendarEvent:
     return CalendarEvent.objects.create(
@@ -111,38 +111,38 @@ def _make_event(
         start_time_tz_unaware=start,
         end_time_tz_unaware=start + datetime.timedelta(minutes=30),
         timezone="UTC",
-        calendar_group=group,
+        appointment_type=appointment_type,
     )
 
 
 def _select(
-    org: Organization, event: CalendarEvent, slot: CalendarGroupSlot, calendar: Calendar
-) -> CalendarEventGroupSelection:
-    return CalendarEventGroupSelection.objects.create(
+    org: Organization, event: CalendarEvent, slot: AppointmentTypeSlot, calendar: Calendar
+) -> CalendarEventAppointmentTypeSelection:
+    return CalendarEventAppointmentTypeSelection.objects.create(
         organization=org, event=event, slot=slot, calendar=calendar
     )
 
 
-def _drop_membership(org: Organization, slot: CalendarGroupSlot, calendar: Calendar) -> None:
+def _drop_membership(org: Organization, slot: AppointmentTypeSlot, calendar: Calendar) -> None:
     """Make `calendar` leave `slot`'s roster -- simulates the state Phase 1's
     lenient removal makes reachable, without going through the full
-    ``update_group`` reconcile (the query under test does not care how the
+    ``update_appointment_type`` reconcile (the query under test does not care how the
     row disappeared, only that it did)."""
-    CalendarGroupSlotMembership.objects.filter_by_organization(org.id).filter(
+    AppointmentTypeSlotMembership.objects.filter_by_organization(org.id).filter(
         slot=slot, calendar=calendar
     ).delete()
 
 
-def _make_group_with_service(
+def _make_appointment_type_with_service(
     org: Organization, *, slot_name: str = "Physicians", calendar_ids: list[int], pool_ids=None
-) -> tuple[CalendarGroupService, CalendarGroup, CalendarGroupSlot]:
-    service = CalendarGroupService()
+) -> tuple[AppointmentTypeService, AppointmentType, AppointmentTypeSlot]:
+    service = AppointmentTypeService()
     service.initialize(organization=org)
-    group = service.create_group(
-        CalendarGroupInputData(
+    appointment_type = service.create_appointment_type(
+        AppointmentTypeInputData(
             name=f"Clinic {uuid.uuid4().hex[:6]}",
             slots=[
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name=slot_name,
                     calendar_ids=calendar_ids,
                     pool_ids=pool_ids,
@@ -151,8 +151,8 @@ def _make_group_with_service(
             ],
         )
     )
-    slot = group.slots.get(name=slot_name)
-    return service, group, slot
+    slot = appointment_type.slots.get(name=slot_name)
+    return service, appointment_type, slot
 
 
 # ---------------------------------------------------------------------------
@@ -166,17 +166,19 @@ class TestFindStaleSelectionsService:
         org = _make_org()
         phys_a = _make_calendar(org, "Dr A")
         phys_b = _make_calendar(org, "Dr B")
-        service, group, slot = _make_group_with_service(org, calendar_ids=[phys_a.id, phys_b.id])
+        service, appointment_type, slot = _make_appointment_type_with_service(
+            org, calendar_ids=[phys_a.id, phys_b.id]
+        )
 
-        rostered_event = _make_event(org, phys_a, group)
+        rostered_event = _make_event(org, phys_a, appointment_type)
         _select(org, rostered_event, slot, phys_a)
 
-        stale_event = _make_event(org, phys_b, group)
+        stale_event = _make_event(org, phys_b, appointment_type)
         _select(org, stale_event, slot, phys_b)
 
         _drop_membership(org, slot, phys_b)
 
-        results = service.find_stale_selections(group_id=group.id)
+        results = service.find_stale_selections(appointment_type_id=appointment_type.id)
         assert [(r.event_id, r.slot_id, r.calendar_id) for r in results] == [
             (stale_event.id, slot.id, phys_b.id)
         ]
@@ -184,11 +186,17 @@ class TestFindStaleSelectionsService:
     def test_honours_the_date_window(self):
         org = _make_org()
         phys_b = _make_calendar(org, "Dr B")
-        service, group, slot = _make_group_with_service(org, calendar_ids=[phys_b.id])
+        service, appointment_type, slot = _make_appointment_type_with_service(
+            org, calendar_ids=[phys_b.id]
+        )
 
-        early_event = _make_event(org, phys_b, group, datetime.datetime(2026, 1, 1, 9, 0))
+        early_event = _make_event(
+            org, phys_b, appointment_type, datetime.datetime(2026, 1, 1, 9, 0)
+        )
         _select(org, early_event, slot, phys_b)
-        late_event = _make_event(org, phys_b, group, datetime.datetime(2026, 12, 1, 9, 0))
+        late_event = _make_event(
+            org, phys_b, appointment_type, datetime.datetime(2026, 12, 1, 9, 0)
+        )
         _select(org, late_event, slot, phys_b)
 
         _drop_membership(org, slot, phys_b)
@@ -196,12 +204,14 @@ class TestFindStaleSelectionsService:
         window_start = datetime.datetime(2026, 11, 1, tzinfo=datetime.UTC)
         window_end = datetime.datetime(2026, 12, 31, tzinfo=datetime.UTC)
         results = service.find_stale_selections(
-            group_id=group.id, window_start=window_start, window_end=window_end
+            appointment_type_id=appointment_type.id,
+            window_start=window_start,
+            window_end=window_end,
         )
         assert [r.event_id for r in results] == [late_event.id]
 
         # No window: both stale selections are returned.
-        unbounded_results = service.find_stale_selections(group_id=group.id)
+        unbounded_results = service.find_stale_selections(appointment_type_id=appointment_type.id)
         assert {r.event_id for r in unbounded_results} == {early_event.id, late_event.id}
 
     def test_boundary_event_ending_exactly_at_window_start_is_excluded(self):
@@ -210,23 +220,31 @@ class TestFindStaleSelectionsService:
         not overlap it and must not be reported."""
         org = _make_org()
         cal = _make_calendar(org, "Dr A")
-        service, group, slot = _make_group_with_service(org, calendar_ids=[cal.id])
+        service, appointment_type, slot = _make_appointment_type_with_service(
+            org, calendar_ids=[cal.id]
+        )
 
         window_start = datetime.datetime(2026, 6, 1, 10, 0, tzinfo=datetime.UTC)
         window_end = datetime.datetime(2026, 6, 1, 12, 0, tzinfo=datetime.UTC)
 
         # 30-minute event starting 9:30, ending exactly at window_start.
-        boundary_event = _make_event(org, cal, group, datetime.datetime(2026, 6, 1, 9, 30))
+        boundary_event = _make_event(
+            org, cal, appointment_type, datetime.datetime(2026, 6, 1, 9, 30)
+        )
         _select(org, boundary_event, slot, cal)
 
         # Genuinely inside the window -- control, proves the query still runs.
-        inside_event = _make_event(org, cal, group, datetime.datetime(2026, 6, 1, 10, 30))
+        inside_event = _make_event(
+            org, cal, appointment_type, datetime.datetime(2026, 6, 1, 10, 30)
+        )
         _select(org, inside_event, slot, cal)
 
         _drop_membership(org, slot, cal)
 
         results = service.find_stale_selections(
-            group_id=group.id, window_start=window_start, window_end=window_end
+            appointment_type_id=appointment_type.id,
+            window_start=window_start,
+            window_end=window_end,
         )
         assert [r.event_id for r in results] == [inside_event.id]
 
@@ -236,56 +254,66 @@ class TestFindStaleSelectionsService:
         not overlap it and must not be reported."""
         org = _make_org()
         cal = _make_calendar(org, "Dr A")
-        service, group, slot = _make_group_with_service(org, calendar_ids=[cal.id])
+        service, appointment_type, slot = _make_appointment_type_with_service(
+            org, calendar_ids=[cal.id]
+        )
 
         window_start = datetime.datetime(2026, 6, 1, 10, 0, tzinfo=datetime.UTC)
         window_end = datetime.datetime(2026, 6, 1, 12, 0, tzinfo=datetime.UTC)
 
         # Starts exactly at window_end.
-        boundary_event = _make_event(org, cal, group, datetime.datetime(2026, 6, 1, 12, 0))
+        boundary_event = _make_event(
+            org, cal, appointment_type, datetime.datetime(2026, 6, 1, 12, 0)
+        )
         _select(org, boundary_event, slot, cal)
 
-        inside_event = _make_event(org, cal, group, datetime.datetime(2026, 6, 1, 10, 30))
+        inside_event = _make_event(
+            org, cal, appointment_type, datetime.datetime(2026, 6, 1, 10, 30)
+        )
         _select(org, inside_event, slot, cal)
 
         _drop_membership(org, slot, cal)
 
         results = service.find_stale_selections(
-            group_id=group.id, window_start=window_start, window_end=window_end
+            appointment_type_id=appointment_type.id,
+            window_start=window_start,
+            window_end=window_end,
         )
         assert [r.event_id for r in results] == [inside_event.id]
 
-    def test_returns_nothing_for_a_group_whose_rosters_never_changed(self):
+    def test_returns_nothing_for_an_appointment_type_whose_rosters_never_changed(self):
         org = _make_org()
         phys_a = _make_calendar(org, "Dr A")
-        service, group, slot = _make_group_with_service(org, calendar_ids=[phys_a.id])
+        service, appointment_type, slot = _make_appointment_type_with_service(
+            org, calendar_ids=[phys_a.id]
+        )
 
-        event = _make_event(org, phys_a, group)
+        event = _make_event(org, phys_a, appointment_type)
         _select(org, event, slot, phys_a)
 
-        assert service.find_stale_selections(group_id=group.id) == []
+        assert service.find_stale_selections(appointment_type_id=appointment_type.id) == []
 
     def test_calendar_that_left_a_pool_is_reported_stale(self):
         """The projection means one predicate covers both origins: this pins
         the POOL half (Phase 3 projects a pool's roster into the same
-        ``CalendarGroupSlotMembership`` table an inline calendar uses), the
+        ``AppointmentTypeSlotMembership`` table an inline calendar uses), the
         sibling correctness test above already pins the inline half."""
         org = _make_org()
         phys_a = _make_calendar(org, "Dr A")
         nurse = _make_calendar(org, "Nurse")
         pool = create_calendar_pool(organization=org, name="Nurses", calendars=[nurse])
-        service, group, slot = _make_group_with_service(
+        service, appointment_type, slot = _make_appointment_type_with_service(
             org, calendar_ids=[phys_a.id], pool_ids=[pool.id]
         )
 
         # Sanity: the pool's calendar really did get projected into the slot.
         assert (
-            CalendarGroupSlotMembership.objects.filter_by_organization(org.id)
+            AppointmentTypeSlotMembership.objects.filter_by_organization(org.id)
             .filter(slot=slot, calendar=nurse)
             .exists()
         )
 
-        event = _make_event(org, nurse, group)
+        event = _make_event(org, nurse, appointment_type)
         _select(org, event, slot, nurse)
 
         # The nurse leaves the POOL -- not the slot -- which reprojects via
@@ -294,28 +322,28 @@ class TestFindStaleSelectionsService:
             pool=pool, calendar=nurse
         ).delete()
         assert not (
-            CalendarGroupSlotMembership.objects.filter_by_organization(org.id)
+            AppointmentTypeSlotMembership.objects.filter_by_organization(org.id)
             .filter(slot=slot, calendar=nurse)
             .exists()
         )
 
-        results = service.find_stale_selections(group_id=group.id)
+        results = service.find_stale_selections(appointment_type_id=appointment_type.id)
         assert [(r.event_id, r.slot_id, r.calendar_id) for r in results] == [
             (event.id, slot.id, nurse.id)
         ]
 
-    def test_cross_organization_group_id_not_found(self):
+    def test_cross_organization_appointment_type_id_not_found(self):
         org = _make_org()
         other_org = _make_org()
         other_cal = _make_calendar(other_org, "Foreign")
-        _other_service, other_group, _other_slot = _make_group_with_service(
+        _other_service, other_appointment_type, _other_slot = _make_appointment_type_with_service(
             other_org, calendar_ids=[other_cal.id]
         )
 
-        service = CalendarGroupService()
+        service = AppointmentTypeService()
         service.initialize(organization=org)
-        with pytest.raises(CalendarGroup.DoesNotExist):
-            service.find_stale_selections(group_id=other_group.id)
+        with pytest.raises(AppointmentType.DoesNotExist):
+            service.find_stale_selections(appointment_type_id=other_appointment_type.id)
 
 
 # ---------------------------------------------------------------------------
@@ -325,28 +353,34 @@ class TestFindStaleSelectionsService:
 
 @pytest.mark.django_db
 class TestFindStaleSelectionsQueryCount:
-    def _make_group_with_n_stale(
+    def _make_appointment_type_with_n_stale(
         self, org: Organization, n: int
-    ) -> tuple[CalendarGroupService, CalendarGroup]:
+    ) -> tuple[AppointmentTypeService, AppointmentType]:
         calendars = [_make_calendar(org, f"Dr {uuid.uuid4().hex[:6]}") for _ in range(n)]
-        service, group, slot = _make_group_with_service(org, calendar_ids=[c.id for c in calendars])
+        service, appointment_type, slot = _make_appointment_type_with_service(
+            org, calendar_ids=[c.id for c in calendars]
+        )
         for cal in calendars:
-            event = _make_event(org, cal, group)
+            event = _make_event(org, cal, appointment_type)
             _select(org, event, slot, cal)
             _drop_membership(org, slot, cal)
-        return service, group
+        return service, appointment_type
 
     def test_query_count_independent_of_result_size(self):
         org = _make_org()
 
-        small_service, small_group = self._make_group_with_n_stale(org, 1)
+        small_service, small_appointment_type = self._make_appointment_type_with_n_stale(org, 1)
         with CaptureQueriesContext(connection) as small_ctx:
-            small_results = small_service.find_stale_selections(group_id=small_group.id)
+            small_results = small_service.find_stale_selections(
+                appointment_type_id=small_appointment_type.id
+            )
         assert len(small_results) == 1
 
-        big_service, big_group = self._make_group_with_n_stale(org, 20)
+        big_service, big_appointment_type = self._make_appointment_type_with_n_stale(org, 20)
         with CaptureQueriesContext(connection) as big_ctx:
-            big_results = big_service.find_stale_selections(group_id=big_group.id)
+            big_results = big_service.find_stale_selections(
+                appointment_type_id=big_appointment_type.id
+            )
         assert len(big_results) == 20
 
         small_count = len(small_ctx.captured_queries)
@@ -363,51 +397,55 @@ class TestFindStaleSelectionsQueryCount:
 
 @pytest.mark.django_db
 class TestFindStaleSelectionsPagination:
-    def _make_group_with_n_stale(
+    def _make_appointment_type_with_n_stale(
         self, org: Organization, n: int
-    ) -> tuple[CalendarGroupService, CalendarGroup]:
+    ) -> tuple[AppointmentTypeService, AppointmentType]:
         calendars = [_make_calendar(org, f"Dr {uuid.uuid4().hex[:6]}") for _ in range(n)]
-        service, group, slot = _make_group_with_service(org, calendar_ids=[c.id for c in calendars])
+        service, appointment_type, slot = _make_appointment_type_with_service(
+            org, calendar_ids=[c.id for c in calendars]
+        )
         for cal in calendars:
-            event = _make_event(org, cal, group)
+            event = _make_event(org, cal, appointment_type)
             _select(org, event, slot, cal)
             _drop_membership(org, slot, cal)
-        return service, group
+        return service, appointment_type
 
     def test_limit_pages_the_result_set(self):
         org = _make_org()
-        service, group = self._make_group_with_n_stale(org, 5)
+        service, appointment_type = self._make_appointment_type_with_n_stale(org, 5)
 
-        page = service.find_stale_selections(group_id=group.id, limit=2)
+        page = service.find_stale_selections(appointment_type_id=appointment_type.id, limit=2)
         assert len(page) == 2
 
     def test_offset_skips_rows_in_a_stable_order(self):
         org = _make_org()
-        service, group = self._make_group_with_n_stale(org, 5)
+        service, appointment_type = self._make_appointment_type_with_n_stale(org, 5)
 
-        full = service.find_stale_selections(group_id=group.id, limit=100)
+        full = service.find_stale_selections(appointment_type_id=appointment_type.id, limit=100)
         assert len(full) == 5
 
-        second_page = service.find_stale_selections(group_id=group.id, offset=2, limit=2)
+        second_page = service.find_stale_selections(
+            appointment_type_id=appointment_type.id, offset=2, limit=2
+        )
         assert [r.event_id for r in second_page] == [r.event_id for r in full[2:4]]
 
     def test_negative_offset_rejected(self):
         org = _make_org()
-        service, group = self._make_group_with_n_stale(org, 1)
-        with pytest.raises(CalendarGroupValidationError, match="Offset must be non-negative"):
-            service.find_stale_selections(group_id=group.id, offset=-1)
+        service, appointment_type = self._make_appointment_type_with_n_stale(org, 1)
+        with pytest.raises(AppointmentTypeValidationError, match="Offset must be non-negative"):
+            service.find_stale_selections(appointment_type_id=appointment_type.id, offset=-1)
 
     def test_zero_limit_rejected(self):
         org = _make_org()
-        service, group = self._make_group_with_n_stale(org, 1)
-        with pytest.raises(CalendarGroupValidationError, match="Limit must be between 1 and 100"):
-            service.find_stale_selections(group_id=group.id, limit=0)
+        service, appointment_type = self._make_appointment_type_with_n_stale(org, 1)
+        with pytest.raises(AppointmentTypeValidationError, match="Limit must be between 1 and 100"):
+            service.find_stale_selections(appointment_type_id=appointment_type.id, limit=0)
 
     def test_over_cap_limit_rejected(self):
         org = _make_org()
-        service, group = self._make_group_with_n_stale(org, 1)
-        with pytest.raises(CalendarGroupValidationError, match="Limit must be between 1 and 100"):
-            service.find_stale_selections(group_id=group.id, limit=101)
+        service, appointment_type = self._make_appointment_type_with_n_stale(org, 1)
+        with pytest.raises(AppointmentTypeValidationError, match="Limit must be between 1 and 100"):
+            service.find_stale_selections(appointment_type_id=appointment_type.id, limit=101)
 
     def test_large_stale_set_is_not_fully_materialized_for_a_small_page(self):
         """The bound is applied at the queryset level (``LIMIT``/``OFFSET`` in
@@ -417,16 +455,16 @@ class TestFindStaleSelectionsPagination:
         fully materialized list would still return 3 rows here, but the SQL
         sent to the database would show no LIMIT at all."""
         org = _make_org()
-        service, group = self._make_group_with_n_stale(org, 20)
+        service, appointment_type = self._make_appointment_type_with_n_stale(org, 20)
 
         with CaptureQueriesContext(connection) as ctx:
-            page = service.find_stale_selections(group_id=group.id, limit=3)
+            page = service.find_stale_selections(appointment_type_id=appointment_type.id, limit=3)
         assert len(page) == 3
 
         selection_queries = [
             q["sql"]
             for q in ctx.captured_queries
-            if "calendar_integration_calendareventgroupselection" in q["sql"]
+            if "calendar_integration_calendareventappointmenttypeselection" in q["sql"]
         ]
         assert selection_queries, "expected the stale-selection query to run"
         assert "LIMIT 3" in selection_queries[0], (
@@ -435,7 +473,7 @@ class TestFindStaleSelectionsPagination:
 
 
 # ---------------------------------------------------------------------------
-# REST: calendar-groups/{id}/stale-selections/
+# REST: appointment-types/{id}/stale-selections/
 # ---------------------------------------------------------------------------
 
 
@@ -469,27 +507,31 @@ def rest_calendars(organization):
 
 
 @pytest.fixture
-def rest_group_with_stale_selection(user, organization, rest_calendars):
-    """A group `user` participates in (owns phys_a), with one rostered
+def rest_appointment_type_with_stale_selection(user, organization, rest_calendars):
+    """An appointment type `user` participates in (owns phys_a), with one rostered
     selection (phys_a) and one stale selection (phys_b, since removed)."""
     create_calendar_ownership(calendar=rest_calendars["phys_a"], user=user)
-    _service, group, slot = _make_group_with_service(
+    _service, appointment_type, slot = _make_appointment_type_with_service(
         organization,
         calendar_ids=[rest_calendars["phys_a"].id, rest_calendars["phys_b"].id],
     )
-    rostered_event = _make_event(organization, rest_calendars["phys_a"], group)
+    rostered_event = _make_event(organization, rest_calendars["phys_a"], appointment_type)
     _select(organization, rostered_event, slot, rest_calendars["phys_a"])
-    stale_event = _make_event(organization, rest_calendars["phys_b"], group)
+    stale_event = _make_event(organization, rest_calendars["phys_b"], appointment_type)
     _select(organization, stale_event, slot, rest_calendars["phys_b"])
     _drop_membership(organization, slot, rest_calendars["phys_b"])
-    return group, slot, stale_event, rest_calendars["phys_b"]
+    return appointment_type, slot, stale_event, rest_calendars["phys_b"]
 
 
 @pytest.mark.django_db
 class TestStaleSelectionsRest:
-    def test_returns_exactly_the_stale_triple(self, auth_client, rest_group_with_stale_selection):
-        group, slot, stale_event, stale_calendar = rest_group_with_stale_selection
-        url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": group.id})
+    def test_returns_exactly_the_stale_triple(
+        self, auth_client, rest_appointment_type_with_stale_selection
+    ):
+        appointment_type, slot, stale_event, stale_calendar = (
+            rest_appointment_type_with_stale_selection
+        )
+        url = reverse("api:AppointmentTypes-stale-selections", kwargs={"pk": appointment_type.id})
         response = auth_client.get(url)
         _assert_status(response, status.HTTP_200_OK)
         assert response.data == [
@@ -499,24 +541,30 @@ class TestStaleSelectionsRest:
     def test_honours_the_date_window(self, auth_client, user, organization, rest_calendars):
         # Own phys_a too, and never drop its membership: `only_member_of`
         # scopes on CURRENTLY rostered calendars, so without a surviving
-        # anchor the user would lose visibility into the group the moment
+        # anchor the user would lose visibility into the appointment type the moment
         # phys_b (the only calendar they'd otherwise own here) goes stale.
         create_calendar_ownership(calendar=rest_calendars["phys_a"], user=user)
-        _service, group, slot = _make_group_with_service(
+        _service, appointment_type, slot = _make_appointment_type_with_service(
             organization,
             calendar_ids=[rest_calendars["phys_a"].id, rest_calendars["phys_b"].id],
         )
         early = _make_event(
-            organization, rest_calendars["phys_b"], group, datetime.datetime(2026, 1, 1, 9, 0)
+            organization,
+            rest_calendars["phys_b"],
+            appointment_type,
+            datetime.datetime(2026, 1, 1, 9, 0),
         )
         _select(organization, early, slot, rest_calendars["phys_b"])
         late = _make_event(
-            organization, rest_calendars["phys_b"], group, datetime.datetime(2026, 12, 1, 9, 0)
+            organization,
+            rest_calendars["phys_b"],
+            appointment_type,
+            datetime.datetime(2026, 12, 1, 9, 0),
         )
         _select(organization, late, slot, rest_calendars["phys_b"])
         _drop_membership(organization, slot, rest_calendars["phys_b"])
 
-        url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": group.id})
+        url = reverse("api:AppointmentTypes-stale-selections", kwargs={"pk": appointment_type.id})
         response = auth_client.get(
             url,
             {"window_start": "2026-11-01T00:00:00Z", "window_end": "2026-12-31T00:00:00Z"},
@@ -524,57 +572,74 @@ class TestStaleSelectionsRest:
         _assert_status(response, status.HTTP_200_OK)
         assert [row["event_id"] for row in response.data] == [late.id]
 
-    def test_unauthenticated_refused(self, anonymous_client, rest_group_with_stale_selection):
-        group, _slot, stale_event, stale_calendar = rest_group_with_stale_selection
-        url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": group.id})
+    def test_unauthenticated_refused(
+        self, anonymous_client, rest_appointment_type_with_stale_selection
+    ):
+        appointment_type, _slot, stale_event, stale_calendar = (
+            rest_appointment_type_with_stale_selection
+        )
+        url = reverse("api:AppointmentTypes-stale-selections", kwargs={"pk": appointment_type.id})
         response = anonymous_client.get(url)
         _assert_status(response, status.HTTP_401_UNAUTHORIZED)
         # The row genuinely exists -- the refusal is the auth gate, not an
         # accident of the fixture producing no data.
         assert (
-            CalendarEventGroupSelection.objects.filter_by_organization(group.organization_id)
+            CalendarEventAppointmentTypeSelection.objects.filter_by_organization(
+                appointment_type.organization_id
+            )
             .filter(event_fk=stale_event, calendar_fk=stale_calendar)
             .exists()
         )
 
     def test_non_participant_member_gets_404(self, auth_client, user, organization, rest_calendars):
-        """Same-org group `user` does not participate in -- REST has no
+        """Same-org appointment type `user` does not participate in -- REST has no
         resource-scope axis, so the fail-closed gate here is participant vs
         not, enforced by `get_queryset()`: absent from the queryset, 404
-        rather than 403 (matches `CalendarGroupViewSet`'s existing contract).
+        rather than 403 (matches `AppointmentTypeViewSet`'s existing contract).
         """
-        _service, foreign_group, foreign_slot = _make_group_with_service(
+        _service, foreign_appointment_type, foreign_slot = _make_appointment_type_with_service(
             organization, calendar_ids=[rest_calendars["phys_b"].id]
         )
-        event = _make_event(organization, rest_calendars["phys_b"], foreign_group)
+        event = _make_event(organization, rest_calendars["phys_b"], foreign_appointment_type)
         _select(organization, event, foreign_slot, rest_calendars["phys_b"])
         _drop_membership(organization, foreign_slot, rest_calendars["phys_b"])
         # Prove the stale row is really there -- the 404 below must be the
         # permission gate, not an empty fixture.
         assert (
-            CalendarEventGroupSelection.objects.filter_by_organization(organization.id)
+            CalendarEventAppointmentTypeSelection.objects.filter_by_organization(organization.id)
             .filter(event_fk=event)
             .exists()
         )
 
-        url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": foreign_group.id})
+        url = reverse(
+            "api:AppointmentTypes-stale-selections", kwargs={"pk": foreign_appointment_type.id}
+        )
         response = auth_client.get(url)
         _assert_status(response, status.HTTP_404_NOT_FOUND)
 
-    def test_scoped_member_sees_stale_selections_only_for_participating_groups(
-        self, auth_client, user, organization, rest_calendars, rest_group_with_stale_selection
+    def test_scoped_member_sees_stale_selections_only_for_participating_appointment_types(
+        self,
+        auth_client,
+        user,
+        organization,
+        rest_calendars,
+        rest_appointment_type_with_stale_selection,
     ):
-        group, slot, stale_event, stale_calendar = rest_group_with_stale_selection
+        appointment_type, slot, stale_event, stale_calendar = (
+            rest_appointment_type_with_stale_selection
+        )
 
         foreign_cal = _make_calendar(organization, "Foreign")
-        _service, foreign_group, foreign_slot = _make_group_with_service(
+        _service, foreign_appointment_type, foreign_slot = _make_appointment_type_with_service(
             organization, calendar_ids=[foreign_cal.id]
         )
-        foreign_event = _make_event(organization, foreign_cal, foreign_group)
+        foreign_event = _make_event(organization, foreign_cal, foreign_appointment_type)
         _select(organization, foreign_event, foreign_slot, foreign_cal)
         _drop_membership(organization, foreign_slot, foreign_cal)
 
-        own_url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": group.id})
+        own_url = reverse(
+            "api:AppointmentTypes-stale-selections", kwargs={"pk": appointment_type.id}
+        )
         own_response = auth_client.get(own_url)
         _assert_status(own_response, status.HTTP_200_OK)
         assert own_response.data == [
@@ -582,22 +647,22 @@ class TestStaleSelectionsRest:
         ]
 
         foreign_url = reverse(
-            "api:CalendarGroups-stale-selections", kwargs={"pk": foreign_group.id}
+            "api:AppointmentTypes-stale-selections", kwargs={"pk": foreign_appointment_type.id}
         )
         foreign_response = auth_client.get(foreign_url)
         _assert_status(foreign_response, status.HTTP_404_NOT_FOUND)
 
-    def test_admin_sees_stale_selections_for_a_group_they_do_not_participate_in(
+    def test_admin_sees_stale_selections_for_an_appointment_type_they_do_not_participate_in(
         self, auth_client, admin_user, organization, rest_calendars
     ):
-        _service, group, slot = _make_group_with_service(
+        _service, appointment_type, slot = _make_appointment_type_with_service(
             organization, calendar_ids=[rest_calendars["phys_b"].id]
         )
-        event = _make_event(organization, rest_calendars["phys_b"], group)
+        event = _make_event(organization, rest_calendars["phys_b"], appointment_type)
         _select(organization, event, slot, rest_calendars["phys_b"])
         _drop_membership(organization, slot, rest_calendars["phys_b"])
 
-        url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": group.id})
+        url = reverse("api:AppointmentTypes-stale-selections", kwargs={"pk": appointment_type.id})
         response = auth_client.get(url)
         _assert_status(response, status.HTTP_200_OK)
         assert response.data == [
@@ -610,15 +675,15 @@ class TestStaleSelectionsRest:
 
     def test_limit_and_offset_page_the_results(self, auth_client, admin_user, organization):
         calendars = [_make_calendar(organization, f"Dr {uuid.uuid4().hex[:6]}") for _ in range(3)]
-        _service, group, slot = _make_group_with_service(
+        _service, appointment_type, slot = _make_appointment_type_with_service(
             organization, calendar_ids=[c.id for c in calendars]
         )
         for cal in calendars:
-            event = _make_event(organization, cal, group)
+            event = _make_event(organization, cal, appointment_type)
             _select(organization, event, slot, cal)
             _drop_membership(organization, slot, cal)
 
-        url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": group.id})
+        url = reverse("api:AppointmentTypes-stale-selections", kwargs={"pk": appointment_type.id})
         response = auth_client.get(url, {"limit": 2})
         _assert_status(response, status.HTTP_200_OK)
         assert len(response.data) == 2
@@ -626,32 +691,32 @@ class TestStaleSelectionsRest:
     def test_invalid_offset_returns_400(
         self, auth_client, admin_user, organization, rest_calendars
     ):
-        _service, group, _slot = _make_group_with_service(
+        _service, appointment_type, _slot = _make_appointment_type_with_service(
             organization, calendar_ids=[rest_calendars["phys_a"].id]
         )
-        url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": group.id})
+        url = reverse("api:AppointmentTypes-stale-selections", kwargs={"pk": appointment_type.id})
         response = auth_client.get(url, {"offset": -1})
         _assert_status(response, status.HTTP_400_BAD_REQUEST)
 
     def test_over_cap_limit_returns_400(
         self, auth_client, admin_user, organization, rest_calendars
     ):
-        _service, group, _slot = _make_group_with_service(
+        _service, appointment_type, _slot = _make_appointment_type_with_service(
             organization, calendar_ids=[rest_calendars["phys_a"].id]
         )
-        url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": group.id})
+        url = reverse("api:AppointmentTypes-stale-selections", kwargs={"pk": appointment_type.id})
         response = auth_client.get(url, {"limit": 101})
         _assert_status(response, status.HTTP_400_BAD_REQUEST)
 
 
 # ---------------------------------------------------------------------------
-# GraphQL: calendarGroupStaleSelections
+# GraphQL: appointmentTypeStaleSelections
 # ---------------------------------------------------------------------------
 
 
 STALE_SELECTIONS_QUERY = """
-query StaleSelections($groupId: Int!) {
-    calendarGroupStaleSelections(groupId: $groupId) {
+query StaleSelections($appointmentTypeId: Int!) {
+    appointmentTypeStaleSelections(appointmentTypeId: $appointmentTypeId) {
         eventId
         slotId
         calendarId
@@ -660,9 +725,9 @@ query StaleSelections($groupId: Int!) {
 """
 
 STALE_SELECTIONS_WINDOWED_QUERY = """
-query StaleSelections($groupId: Int!, $windowStart: DateTime, $windowEnd: DateTime) {
-    calendarGroupStaleSelections(
-        groupId: $groupId, windowStart: $windowStart, windowEnd: $windowEnd
+query StaleSelections($appointmentTypeId: Int!, $windowStart: DateTime, $windowEnd: DateTime) {
+    appointmentTypeStaleSelections(
+        appointmentTypeId: $appointmentTypeId, windowStart: $windowStart, windowEnd: $windowEnd
     ) {
         eventId
     }
@@ -670,8 +735,8 @@ query StaleSelections($groupId: Int!, $windowStart: DateTime, $windowEnd: DateTi
 """
 
 STALE_SELECTIONS_PAGED_QUERY = """
-query StaleSelections($groupId: Int!, $offset: Int!, $limit: Int!) {
-    calendarGroupStaleSelections(groupId: $groupId, offset: $offset, limit: $limit) {
+query StaleSelections($appointmentTypeId: Int!, $offset: Int!, $limit: Int!) {
+    appointmentTypeStaleSelections(appointmentTypeId: $appointmentTypeId, offset: $offset, limit: $limit) {
         eventId
     }
 }
@@ -721,7 +786,7 @@ def _post_anon(client, query, variables):
 
 
 @pytest.mark.django_db
-class TestCalendarGroupStaleSelectionsGraphQL:
+class TestAppointmentTypeStaleSelectionsGraphQL:
     def setup_method(self):
         self.client = APIClient()
 
@@ -729,7 +794,10 @@ class TestCalendarGroupStaleSelectionsGraphQL:
         return baker.make(Organization, name=f"Org {uuid.uuid4().hex[:6]}")
 
     def _member(
-        self, org: Organization, *, groups: tuple[str, ...] = (GROUP_ORGANIZATION_MEMBER,)
+        self,
+        org: Organization,
+        *,
+        groups: tuple[str, ...] = (GROUP_ORGANIZATION_MEMBER,),
     ) -> tuple[User, OrganizationMembership]:
         unique = uuid.uuid4().hex[:8]
         member = UserFactory().create_user()
@@ -738,52 +806,63 @@ class TestCalendarGroupStaleSelectionsGraphQL:
         membership = make_membership(user=member, organization=org, groups=groups, is_active=True)
         return member, membership
 
-    def _make_group_with_stale_selection(
+    def _make_appointment_type_with_stale_selection(
         self, org: Organization, *, owner=None
-    ) -> tuple[CalendarGroup, CalendarGroupSlot, CalendarEvent, Calendar]:
-        """A group with two rostered calendars: `anchor` stays rostered for
+    ) -> tuple[AppointmentType, AppointmentTypeSlot, CalendarEvent, Calendar]:
+        """An appointment type with two rostered calendars: `anchor` stays rostered for
         the whole test (so `owner`, if given, remains a `only_member_of`
         participant), `calendar` is the one whose membership is dropped,
         producing exactly one stale selection. Without the anchor, an owner
         who only owned the calendar that goes stale would lose visibility
-        into the group at the same moment -- `only_member_of` scopes on
+        into the appointment type at the same moment -- `only_member_of` scopes on
         CURRENTLY rostered calendars, not on selection history.
         """
         anchor = _make_calendar(org, "Anchor")
         calendar = _make_calendar(org, "Dr A")
         if owner is not None:
             create_calendar_ownership(calendar=anchor, user=owner)
-        _service, group, slot = _make_group_with_service(org, calendar_ids=[anchor.id, calendar.id])
-        event = _make_event(org, calendar, group)
+        _service, appointment_type, slot = _make_appointment_type_with_service(
+            org, calendar_ids=[anchor.id, calendar.id]
+        )
+        event = _make_event(org, calendar, appointment_type)
         _select(org, event, slot, calendar)
         _drop_membership(org, slot, calendar)
-        return group, slot, event, calendar
+        return appointment_type, slot, event, calendar
 
-    def test_org_wide_sees_stale_selections_for_the_group(self):
+    def test_org_wide_sees_stale_selections_for_the_appointment_type(self):
         org = self._org()
-        group, slot, event, calendar = self._make_group_with_stale_selection(org)
-        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        appointment_type, slot, event, calendar = self._make_appointment_type_with_stale_selection(
+            org
+        )
+        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
 
         response = _post(
-            self.client, STALE_SELECTIONS_QUERY, system_user, token, auth, {"groupId": group.id}
+            self.client,
+            STALE_SELECTIONS_QUERY,
+            system_user,
+            token,
+            auth,
+            {"appointmentTypeId": appointment_type.id},
         )
         assert response.status_code == 200
         data = response.json()
         assert data.get("errors", []) == []
-        rows = data["data"]["calendarGroupStaleSelections"]
+        rows = data["data"]["appointmentTypeStaleSelections"]
         assert rows == [{"eventId": event.id, "slotId": slot.id, "calendarId": calendar.id}]
 
     def test_honours_the_date_window(self):
         org = self._org()
         calendar = _make_calendar(org, "Dr A")
-        _service, group, slot = _make_group_with_service(org, calendar_ids=[calendar.id])
-        early = _make_event(org, calendar, group, datetime.datetime(2026, 1, 1, 9, 0))
+        _service, appointment_type, slot = _make_appointment_type_with_service(
+            org, calendar_ids=[calendar.id]
+        )
+        early = _make_event(org, calendar, appointment_type, datetime.datetime(2026, 1, 1, 9, 0))
         _select(org, early, slot, calendar)
-        late = _make_event(org, calendar, group, datetime.datetime(2026, 12, 1, 9, 0))
+        late = _make_event(org, calendar, appointment_type, datetime.datetime(2026, 12, 1, 9, 0))
         _select(org, late, slot, calendar)
         _drop_membership(org, slot, calendar)
 
-        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
         response = _post(
             self.client,
             STALE_SELECTIONS_WINDOWED_QUERY,
@@ -791,7 +870,7 @@ class TestCalendarGroupStaleSelectionsGraphQL:
             token,
             auth,
             {
-                "groupId": group.id,
+                "appointmentTypeId": appointment_type.id,
                 "windowStart": "2026-11-01T00:00:00Z",
                 "windowEnd": "2026-12-31T00:00:00Z",
             },
@@ -799,28 +878,37 @@ class TestCalendarGroupStaleSelectionsGraphQL:
         assert response.status_code == 200
         data = response.json()
         assert data.get("errors", []) == []
-        assert [row["eventId"] for row in data["data"]["calendarGroupStaleSelections"]] == [late.id]
+        assert [row["eventId"] for row in data["data"]["appointmentTypeStaleSelections"]] == [
+            late.id
+        ]
 
-    def test_scoped_member_sees_stale_selections_only_for_participating_groups(self):
+    def test_scoped_member_sees_stale_selections_only_for_participating_appointment_types(self):
         org = self._org()
         member, membership = self._member(org)
-        group, slot, event, calendar = self._make_group_with_stale_selection(org, owner=member)
+        appointment_type, slot, event, calendar = self._make_appointment_type_with_stale_selection(
+            org, owner=member
+        )
 
-        foreign_group, _foreign_slot, _foreign_event, _foreign_calendar = (
-            self._make_group_with_stale_selection(org)
+        foreign_appointment_type, _foreign_slot, _foreign_event, _foreign_calendar = (
+            self._make_appointment_type_with_stale_selection(org)
         )
 
         system_user, token, auth = _scoped_token(
-            org, membership, [PublicAPIResources.CALENDAR_GROUP]
+            org, membership, [PublicAPIResources.APPOINTMENT_TYPE]
         )
 
         own_response = _post(
-            self.client, STALE_SELECTIONS_QUERY, system_user, token, auth, {"groupId": group.id}
+            self.client,
+            STALE_SELECTIONS_QUERY,
+            system_user,
+            token,
+            auth,
+            {"appointmentTypeId": appointment_type.id},
         )
         assert own_response.status_code == 200
         own_data = own_response.json()
         assert own_data.get("errors", []) == []
-        assert own_data["data"]["calendarGroupStaleSelections"] == [
+        assert own_data["data"]["appointmentTypeStaleSelections"] == [
             {"eventId": event.id, "slotId": slot.id, "calendarId": calendar.id}
         ]
 
@@ -830,7 +918,7 @@ class TestCalendarGroupStaleSelectionsGraphQL:
             system_user,
             token,
             auth,
-            {"groupId": foreign_group.id},
+            {"appointmentTypeId": foreign_appointment_type.id},
         )
         assert foreign_response.status_code == 200
         foreign_data = foreign_response.json()
@@ -838,121 +926,146 @@ class TestCalendarGroupStaleSelectionsGraphQL:
         # Fail closed, not an error -- the row genuinely exists (proven by
         # the org-wide test above using the identical builder), it's just
         # not visible to a token scoped to a different member.
-        assert foreign_data["data"]["calendarGroupStaleSelections"] == []
+        assert foreign_data["data"]["appointmentTypeStaleSelections"] == []
 
     def test_scoped_member_inactive_membership_sees_none(self):
         org = self._org()
         member, membership = self._member(org)
-        group, _slot, _event, _calendar = self._make_group_with_stale_selection(org, owner=member)
+        appointment_type, _slot, _event, _calendar = (
+            self._make_appointment_type_with_stale_selection(org, owner=member)
+        )
 
         system_user, token, auth = _scoped_token(
-            org, membership, [PublicAPIResources.CALENDAR_GROUP]
+            org, membership, [PublicAPIResources.APPOINTMENT_TYPE]
         )
         membership.is_active = False
         membership.save(update_fields=["is_active"])
 
         response = _post(
-            self.client, STALE_SELECTIONS_QUERY, system_user, token, auth, {"groupId": group.id}
+            self.client,
+            STALE_SELECTIONS_QUERY,
+            system_user,
+            token,
+            auth,
+            {"appointmentTypeId": appointment_type.id},
         )
         assert response.status_code == 200
         data = response.json()
         assert data.get("errors", []) == []
-        assert data["data"]["calendarGroupStaleSelections"] == []
+        assert data["data"]["appointmentTypeStaleSelections"] == []
 
     def test_unauthenticated_refused(self):
         org = self._org()
-        group, _slot, event, calendar = self._make_group_with_stale_selection(org)
+        appointment_type, _slot, event, calendar = self._make_appointment_type_with_stale_selection(
+            org
+        )
 
-        response = _post_anon(self.client, STALE_SELECTIONS_QUERY, {"groupId": group.id})
+        response = _post_anon(
+            self.client, STALE_SELECTIONS_QUERY, {"appointmentTypeId": appointment_type.id}
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["data"] is None
         assert data["errors"][0]["message"] == "You must be authenticated to access this resource."
         # The row genuinely exists -- confirms the refusal is the auth gate.
         assert (
-            CalendarEventGroupSelection.objects.filter_by_organization(org.id)
+            CalendarEventAppointmentTypeSelection.objects.filter_by_organization(org.id)
             .filter(event_fk_id=event.id, calendar_fk_id=calendar.id)
             .exists()
         )
 
     def test_wrong_resource_token_refused(self):
         org = self._org()
-        group, _slot, _event, _calendar = self._make_group_with_stale_selection(org)
-        # Holds CALENDAR_POOL but not the CALENDAR_GROUP this field is mapped to.
+        appointment_type, _slot, _event, _calendar = (
+            self._make_appointment_type_with_stale_selection(org)
+        )
+        # Holds CALENDAR_POOL but not the APPOINTMENT_TYPE this field is mapped to.
         system_user, token, auth = _org_wide_token(org, [PublicAPIResources.CALENDAR_POOL])
 
         response = _post(
-            self.client, STALE_SELECTIONS_QUERY, system_user, token, auth, {"groupId": group.id}
+            self.client,
+            STALE_SELECTIONS_QUERY,
+            system_user,
+            token,
+            auth,
+            {"appointmentTypeId": appointment_type.id},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["data"] is None
         assert data["errors"][0]["message"] == "You don't have access to query this resource."
 
-    def _query_count(self, org, group_id, n, system_user, token, auth):
+    def _query_count(self, org, appointment_type_id, n, system_user, token, auth):
         with CaptureQueriesContext(connection) as ctx:
             response = _post(
-                self.client, STALE_SELECTIONS_QUERY, system_user, token, auth, {"groupId": group_id}
+                self.client,
+                STALE_SELECTIONS_QUERY,
+                system_user,
+                token,
+                auth,
+                {"appointmentTypeId": appointment_type_id},
             )
         assert response.status_code == 200
         data = response.json()
         assert data.get("errors", []) == []
-        assert len(data["data"]["calendarGroupStaleSelections"]) == n
+        assert len(data["data"]["appointmentTypeStaleSelections"]) == n
         return len(ctx.captured_queries)
 
     def test_query_count_independent_of_result_size(self):
         org = self._org()
 
-        def _make_group_with_n_stale(n: int) -> CalendarGroup:
+        def _make_appointment_type_with_n_stale(n: int) -> AppointmentType:
             calendars = [_make_calendar(org, f"Dr {uuid.uuid4().hex[:6]}") for _ in range(n)]
-            _service, group, slot = _make_group_with_service(
+            _service, appointment_type, slot = _make_appointment_type_with_service(
                 org, calendar_ids=[c.id for c in calendars]
             )
             for cal in calendars:
-                event = _make_event(org, cal, group)
+                event = _make_event(org, cal, appointment_type)
                 _select(org, event, slot, cal)
                 _drop_membership(org, slot, cal)
-            return group
+            return appointment_type
 
-        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
 
-        small_group = _make_group_with_n_stale(1)
-        small = self._query_count(org, small_group.id, 1, system_user, token, auth)
+        small_appointment_type = _make_appointment_type_with_n_stale(1)
+        small = self._query_count(org, small_appointment_type.id, 1, system_user, token, auth)
 
-        big_group = _make_group_with_n_stale(20)
-        big = self._query_count(org, big_group.id, 20, system_user, token, auth)
+        big_appointment_type = _make_appointment_type_with_n_stale(20)
+        big = self._query_count(org, big_appointment_type.id, 20, system_user, token, auth)
 
         assert small == big, f"N+1: {small} queries for 1 stale selection vs {big} for 20"
 
     def test_limit_and_offset_page_the_results(self):
         org = self._org()
         calendars = [_make_calendar(org, f"Dr {uuid.uuid4().hex[:6]}") for _ in range(3)]
-        _service, group, slot = _make_group_with_service(
+        _service, appointment_type, slot = _make_appointment_type_with_service(
             org, calendar_ids=[c.id for c in calendars]
         )
         for cal in calendars:
-            event = _make_event(org, cal, group)
+            event = _make_event(org, cal, appointment_type)
             _select(org, event, slot, cal)
             _drop_membership(org, slot, cal)
 
-        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
         response = _post(
             self.client,
             STALE_SELECTIONS_PAGED_QUERY,
             system_user,
             token,
             auth,
-            {"groupId": group.id, "offset": 0, "limit": 2},
+            {"appointmentTypeId": appointment_type.id, "offset": 0, "limit": 2},
         )
         assert response.status_code == 200
         data = response.json()
         assert data.get("errors", []) == []
-        assert len(data["data"]["calendarGroupStaleSelections"]) == 2
+        assert len(data["data"]["appointmentTypeStaleSelections"]) == 2
 
     def test_invalid_offset_returns_a_graphql_error(self):
         org = self._org()
-        group, _slot, _event, _calendar = self._make_group_with_stale_selection(org)
-        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        appointment_type, _slot, _event, _calendar = (
+            self._make_appointment_type_with_stale_selection(org)
+        )
+        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
 
         response = _post(
             self.client,
@@ -960,7 +1073,7 @@ class TestCalendarGroupStaleSelectionsGraphQL:
             system_user,
             token,
             auth,
-            {"groupId": group.id, "offset": -1, "limit": 10},
+            {"appointmentTypeId": appointment_type.id, "offset": -1, "limit": 10},
         )
         assert response.status_code == 200
         data = response.json()
@@ -969,8 +1082,10 @@ class TestCalendarGroupStaleSelectionsGraphQL:
 
     def test_over_cap_limit_returns_a_graphql_error(self):
         org = self._org()
-        group, _slot, _event, _calendar = self._make_group_with_stale_selection(org)
-        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        appointment_type, _slot, _event, _calendar = (
+            self._make_appointment_type_with_stale_selection(org)
+        )
+        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
 
         response = _post(
             self.client,
@@ -978,7 +1093,7 @@ class TestCalendarGroupStaleSelectionsGraphQL:
             system_user,
             token,
             auth,
-            {"groupId": group.id, "offset": 0, "limit": 101},
+            {"appointmentTypeId": appointment_type.id, "offset": 0, "limit": 101},
         )
         assert response.status_code == 200
         data = response.json()
@@ -989,5 +1104,5 @@ class TestCalendarGroupStaleSelectionsGraphQL:
 class TestStaleSelectionsFieldMapped:
     def test_field_is_present_in_resource_mapping(self):
         mapped = OrganizationResourceAccess.FIELD_TO_RESOURCE_MAPPING
-        assert "calendarGroupStaleSelections" in mapped
-        assert mapped["calendarGroupStaleSelections"] == PublicAPIResources.CALENDAR_GROUP
+        assert "appointmentTypeStaleSelections" in mapped
+        assert mapped["appointmentTypeStaleSelections"] == PublicAPIResources.APPOINTMENT_TYPE

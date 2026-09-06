@@ -124,44 +124,44 @@ Mutations follow the same shape, on `Mutation` in `public_api/mutations.py` (or 
    ```python
    @dataclass
    class MutationDependencies:
-       calendar_group_service: CalendarGroupService
+       appointment_type_service: AppointmentTypeService
 
 
    @inject
    def get_mutation_dependencies(
-       calendar_group_service: Annotated[
-           CalendarGroupService | None,
-           Provide["calendar_group_service"],
+       appointment_type_service: Annotated[
+           AppointmentTypeService | None,
+           Provide["appointment_type_service"],
        ] = None,
    ) -> MutationDependencies:
-       required = [calendar_group_service]
+       required = [appointment_type_service]
        if any(d is None for d in required):
            raise GraphQLError("Missing required dependency")
        return MutationDependencies(
-           calendar_group_service=cast(CalendarGroupService, calendar_group_service),
+           appointment_type_service=cast(AppointmentTypeService, appointment_type_service),
        )
 
 
    @strawberry.mutation
-   def create_calendar_group(
+   def create_appointment_type(
        self,
        info: strawberry.Info,
        name: str,
        primary_calendar_id: int,
-   ) -> CalendarGroupGraphQLType:
+   ) -> AppointmentTypeGraphQLType:
        deps = get_mutation_dependencies()
        org = _get_org(info)
-       group = deps.calendar_group_service.create_calendar_group(
+       appointment_type = deps.appointment_type_service.create_appointment_type(
            organization_id=org.id,
            name=name,
            primary_calendar_id=primary_calendar_id,
        )
-       return group
+       return appointment_type
    ```
 
 3. **Register the service in `di_core/containers.py`** if it's new. See [AGENTS.md](../../AGENTS.md) → Dependency Injection.
 
-4. **Per-app mutation classes** — `<app>/mutations.py` defines a `@strawberry.type` class (e.g. `CalendarGroupMutations`), then `Mutation(CalendarGroupMutations, ...)` inherits it in `public_api/mutations.py`. Match the existing pattern.
+4. **Per-app mutation classes** — `<app>/mutations.py` defines a `@strawberry.type` class (e.g. `AppointmentTypeMutations`), then `Mutation(AppointmentTypeMutations, ...)` inherits it in `public_api/mutations.py`. Match the existing pattern.
 
 5. **Test the off-path:** failed auth, failed service call (`GraphQLError` propagation), tenant isolation (org A's mutation can't touch org B's data).
 

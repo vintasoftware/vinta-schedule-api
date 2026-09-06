@@ -13,7 +13,7 @@ Design notes:
   (``is_primary`` gets no availability special-casing).
 - **Free check** reuses :mod:`calendar_integration.services.slot_engine`'s
   management split + ``calendar_free_for_window`` so a one-calendar discovery
-  yields exactly what a one-calendar group would.
+  yields exactly what a one-appointment type would.
 - **No-policy identical-output guarantee**: when the resolved policy is
   ``EffectivePolicy.unconstrained()`` we skip ALL policy work — no managed-calendar
   blocking-span fetch, no envelope math — so the candidate set is exactly the

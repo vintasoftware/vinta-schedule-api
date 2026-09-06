@@ -18,13 +18,13 @@ from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlem
 
 from calendar_integration.constants import CalendarType, CalendarVisibility
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
     CalendarOwnership,
     ChildrenCalendarRelationship,
     EventAttendance,
@@ -2718,7 +2718,7 @@ _CHILD_ORG_ANALYTICS_QUERY = """
             membershipCount
             calendarCount
             eventCount
-            calendarGroupCount
+            appointmentTypeCount
         }
     }
 """
@@ -2749,7 +2749,7 @@ class TestChildOrganizationsQuery:
         """Counts are exact per child; distinct metrics detect join fan-out.
 
         Seeds a child with intentionally different values for each metric
-        (3 memberships, 2 calendars, 5 events, 1 group) so that any
+        (3 memberships, 2 calendars, 5 events, 1 appointment type) so that any
         join-based multi-relation fan-out would produce obviously wrong numbers.
         """
         mock_rate_limiter.return_value = iter([None])
@@ -2776,8 +2776,8 @@ class TestChildOrganizationsQuery:
                 timezone="UTC",
             )
 
-        # 1 calendar group
-        baker.make(CalendarGroup, organization=child)
+        # 1 appointment type
+        baker.make(AppointmentType, organization=child)
 
         response = client.post(
             "/graphql/",
@@ -2795,7 +2795,7 @@ class TestChildOrganizationsQuery:
         assert row["membershipCount"] == 3, f"expected 3, got {row['membershipCount']}"
         assert row["calendarCount"] == 2, f"expected 2, got {row['calendarCount']}"
         assert row["eventCount"] == 5, f"expected 5, got {row['eventCount']}"
-        assert row["calendarGroupCount"] == 1, f"expected 1, got {row['calendarGroupCount']}"
+        assert row["appointmentTypeCount"] == 1, f"expected 1, got {row['appointmentTypeCount']}"
 
     def test_multiple_children_counted_independently(self, mock_rate_limiter):
         """Each child's counts are independent (no cross-child leakage)."""
@@ -2806,17 +2806,17 @@ class TestChildOrganizationsQuery:
         child2 = baker.make(Organization, name="Child2", parent=reseller)
         client = _make_reseller_client(reseller)
 
-        # child1: 2 memberships, 1 calendar, 0 events, 0 groups
+        # child1: 2 memberships, 1 calendar, 0 events, 0 appointment types
         for i in range(2):
             u = baker.make("users.User", email=f"mc1-{i}@test.com")
             baker.make(OrganizationMembership, user=u, organization=child1)
         baker.make(Calendar, organization=child1, external_id="c1-cal")
 
-        # child2: 0 memberships, 0 calendars, 3 events, 2 groups
+        # child2: 0 memberships, 0 calendars, 3 events, 2 appointment types
         for i in range(3):
             baker.make(CalendarEvent, organization=child2, external_id=f"c2-ev-{i}", timezone="UTC")
         for i in range(2):
-            baker.make(CalendarGroup, organization=child2, name=f"grp-{i}")
+            baker.make(AppointmentType, organization=child2, name=f"grp-{i}")
 
         response = client.post(
             "/graphql/",
@@ -2830,12 +2830,12 @@ class TestChildOrganizationsQuery:
         assert children[child1.id]["membershipCount"] == 2
         assert children[child1.id]["calendarCount"] == 1
         assert children[child1.id]["eventCount"] == 0
-        assert children[child1.id]["calendarGroupCount"] == 0
+        assert children[child1.id]["appointmentTypeCount"] == 0
 
         assert children[child2.id]["membershipCount"] == 0
         assert children[child2.id]["calendarCount"] == 0
         assert children[child2.id]["eventCount"] == 3
-        assert children[child2.id]["calendarGroupCount"] == 2
+        assert children[child2.id]["appointmentTypeCount"] == 2
 
     def test_no_cross_reseller_leak(self, mock_rate_limiter):
         """Only the acting reseller's own children are returned (no cross-reseller data)."""
@@ -2965,7 +2965,7 @@ class TestChildOrganizationsQuery:
         assert page2[1]["id"] == children_by_id[3].id
 
     def test_zero_counts_for_empty_child(self, mock_rate_limiter):
-        """A child with no members / calendars / events / groups returns zero counts."""
+        """A child with no members / calendars / events / appointment types returns zero counts."""
         mock_rate_limiter.return_value = iter([None])
 
         reseller = baker.make(Organization, name="ResellerEmpty", can_invite_organizations=True)
@@ -2985,7 +2985,7 @@ class TestChildOrganizationsQuery:
         assert row["membershipCount"] == 0
         assert row["calendarCount"] == 0
         assert row["eventCount"] == 0
-        assert row["calendarGroupCount"] == 0
+        assert row["appointmentTypeCount"] == 0
 
     def test_only_direct_children_returned(self, mock_rate_limiter):
         """Only direct children (parent=reseller) are returned; grandchildren are excluded."""
@@ -4942,12 +4942,12 @@ class TestCalendarOwnersField:
 
 
 # ---------------------------------------------------------------------------
-# N+1 hardening: calendarGroups and calendarBundles entry points
+# N+1 hardening: appointmentTypes and calendarBundles entry points
 # ---------------------------------------------------------------------------
 
-_CALENDAR_GROUPS_WITH_OWNERS_QUERY = """
-    query GetCalendarGroupsWithOwners {
-        calendarGroups {
+_APPOINTMENT_TYPES_WITH_OWNERS_QUERY = """
+    query GetAppointmentTypesWithOwners {
+        appointmentTypes {
             id
             name
             slots {
@@ -4992,23 +4992,25 @@ _CALENDAR_BUNDLES_WITH_OWNERS_QUERY = """
 """
 
 
-def _make_group_with_owned_slot_calendars(
+def _make_appointment_type_with_owned_slot_calendars(
     organization: Organization,
-    group_name: str,
+    appointment_type_name: str,
     calendar_count: int = 2,
-) -> tuple[CalendarGroup, CalendarGroupSlot, list[Calendar], list[CalendarOwnership]]:
-    """Create a CalendarGroup with one slot holding `calendar_count` calendars, each with one owner.
+) -> tuple[AppointmentType, AppointmentTypeSlot, list[Calendar], list[CalendarOwnership]]:
+    """Create an AppointmentType with one slot holding `calendar_count` calendars, each with one owner.
 
     Uses .objects.create() for OrganizationForeignKey models (baker.make cannot resolve the
-    virtual ForeignObject field on CalendarGroupSlot.group and CalendarGroupSlotMembership.slot).
+    virtual ForeignObject field on AppointmentTypeSlot.appointment type and AppointmentTypeSlotMembership.slot).
 
-    Returns (group, slot, calendars, ownerships).
+    Returns (appointment type, slot, calendars, ownerships).
     """
-    group = baker.make(CalendarGroup, organization=organization, name=group_name)
-    slot = CalendarGroupSlot.objects.create(
+    appointment_type = baker.make(
+        AppointmentType, organization=organization, name=appointment_type_name
+    )
+    slot = AppointmentTypeSlot.objects.create(
         organization=organization,
-        group=group,
-        name=f"{group_name} slot",
+        appointment_type=appointment_type,
+        name=f"{appointment_type_name} slot",
     )
     calendars = []
     ownerships = []
@@ -5016,16 +5018,16 @@ def _make_group_with_owned_slot_calendars(
         cal = baker.make(
             Calendar,
             organization=organization,
-            name=f"{group_name} cal {i}",
+            name=f"{appointment_type_name} cal {i}",
             external_id=str(uuid.uuid4()),
         )
-        CalendarGroupSlotMembership.objects.create(
+        AppointmentTypeSlotMembership.objects.create(
             organization=organization,
             slot=slot,
             calendar=cal,
         )
         owner = UserFactory().create_user(
-            email=f"owner_{group_name.lower().replace(' ', '_')}_{i}@test.local",
+            email=f"owner_{appointment_type_name.lower().replace(' ', '_')}_{i}@test.local",
             first_name=f"First{i}",
             last_name=f"Last{i}",
         )
@@ -5039,21 +5041,21 @@ def _make_group_with_owned_slot_calendars(
         )
         calendars.append(cal)
         ownerships.append(ownership)
-    return group, slot, calendars, ownerships
+    return appointment_type, slot, calendars, ownerships
 
 
-def _make_group_wide_client(organization: Organization) -> tuple[APIClient, SystemUser]:
-    """Create an org-wide API client with CALENDAR_GROUP resource grant.
+def _make_appointment_type_wide_client(organization: Organization) -> tuple[APIClient, SystemUser]:
+    """Create an org-wide API client with APPOINTMENT_TYPE resource grant.
 
-    Only CALENDAR_GROUP is needed: the calendarGroups resolver checks that resource;
+    Only APPOINTMENT_TYPE is needed: the appointmentTypes resolver checks that resource;
     there is no separate CALENDAR gate on the slots/calendars sub-fields.
     """
     auth_service = PublicAPIAuthService()
     system_user, token = auth_service.create_system_user(
-        integration_name=f"group_wide_{organization.pk}", organization=organization
+        integration_name=f"appointment_type_wide_{organization.pk}", organization=organization
     )
     baker.make(
-        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.CALENDAR_GROUP
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.APPOINTMENT_TYPE
     )
     client = APIClient()
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
@@ -5080,54 +5082,60 @@ def _make_bundle_wide_client(organization: Organization) -> tuple[APIClient, Sys
 
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-class TestCalendarGroupOwnersN1:
-    """calendarGroups -> slots -> calendars -> owners is N+1-free.
+class TestAppointmentTypeOwnersN1:
+    """appointmentTypes -> slots -> calendars -> owners is N+1-free.
 
     Tests:
-        (a) Shape: owners are returned correctly through the group -> slot -> calendar path.
-        (b) N+1: resolving owners for N slot calendars in groups issues a constant
+        (a) Shape: owners are returned correctly through the appointment type -> slot -> calendar path.
+        (b) N+1: resolving owners for N slot calendars in appointment types issues a constant
             number of queries.
     """
 
     @pytest.fixture
     def organization(self):
-        return baker.make(Organization, name="GroupOwnersTestOrg")
+        return baker.make(Organization, name="AppointmentTypeOwnersTestOrg")
 
     @pytest.fixture
     def org_wide_client(self, organization):
-        client, _ = _make_group_wide_client(organization)
+        client, _ = _make_appointment_type_wide_client(organization)
         return client
 
     # ------------------------------------------------------------------ #
     # (a) Shape test                                                       #
     # ------------------------------------------------------------------ #
 
-    def test_group_slot_calendars_owners_shape(
+    def test_appointment_type_slot_calendars_owners_shape(
         self, mock_rate_limiter, organization, org_wide_client
     ):
-        """Owners are returned for slot calendars when queried through calendarGroups."""
+        """Owners are returned for slot calendars when queried through appointmentTypes."""
         mock_rate_limiter.return_value = iter([None])
 
-        _group, _slot, _calendars, _ownerships = _make_group_with_owned_slot_calendars(
-            organization, group_name="ShapeGroup", calendar_count=2
+        _appointment_type, _slot, _calendars, _ownerships = (
+            _make_appointment_type_with_owned_slot_calendars(
+                organization, appointment_type_name="ShapeGroup", calendar_count=2
+            )
         )
 
         response = org_wide_client.post(
             "/graphql/",
-            data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+            data=json.dumps({"query": _APPOINTMENT_TYPES_WITH_OWNERS_QUERY}),
             content_type="application/json",
         )
 
         data = assert_graphql_success(response)
-        groups = data["calendarGroups"]
-        assert len(groups) >= 1
+        appointment_types = data["appointmentTypes"]
+        assert len(appointment_types) >= 1
 
-        # Find the group we created
-        target_group = next((g for g in groups if g["name"] == "ShapeGroup"), None)
-        assert target_group is not None, "ShapeGroup not found in calendarGroups response"
+        # Find the appointment type we created
+        target_appointment_type = next(
+            (g for g in appointment_types if g["name"] == "ShapeGroup"), None
+        )
+        assert target_appointment_type is not None, (
+            "ShapeGroup not found in appointmentTypes response"
+        )
 
-        assert len(target_group["slots"]) == 1
-        slot_data = target_group["slots"][0]
+        assert len(target_appointment_type["slots"]) == 1
+        slot_data = target_appointment_type["slots"][0]
         returned_calendars = slot_data["calendars"]
         assert len(returned_calendars) == 2
 
@@ -5143,83 +5151,93 @@ class TestCalendarGroupOwnersN1:
     # (b) N+1 guard                                                        #
     # ------------------------------------------------------------------ #
 
-    def test_group_slot_calendars_owners_no_n_plus_1(
+    def test_appointment_type_slot_calendars_owners_no_n_plus_1(
         self, mock_rate_limiter, organization, org_wide_client
     ):
-        """Resolving owners through calendarGroups issues a constant number of queries.
+        """Resolving owners through appointmentTypes issues a constant number of queries.
 
-        Two-point comparison: 1 slot calendar vs 3 slot calendars in a group.
+        Two-point comparison: 1 slot calendar vs 3 slot calendars in an appointment type.
         With prefetch_related wiring the count must not grow per slot calendar.
         """
         mock_rate_limiter.side_effect = lambda *a, **k: iter([None])
 
-        # Point 1: group with 1 slot calendar
-        _make_group_with_owned_slot_calendars(organization, group_name="N1Group1", calendar_count=1)
+        # Point 1: appointment type with 1 slot calendar
+        _make_appointment_type_with_owned_slot_calendars(
+            organization, appointment_type_name="N1AppointmentType1", calendar_count=1
+        )
 
         with CaptureQueriesContext(connection) as ctx_1:
             response_1 = org_wide_client.post(
                 "/graphql/",
-                data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+                data=json.dumps({"query": _APPOINTMENT_TYPES_WITH_OWNERS_QUERY}),
                 content_type="application/json",
             )
         assert_graphql_success(response_1)
         queries_n1 = len(ctx_1.captured_queries)
 
-        # Point 2: add another group with 3 slot calendars (total groups = 2)
-        _make_group_with_owned_slot_calendars(organization, group_name="N1Group3", calendar_count=3)
+        # Point 2: add another appointment type with 3 slot calendars (total appointment types = 2)
+        _make_appointment_type_with_owned_slot_calendars(
+            organization, appointment_type_name="N1AppointmentType3", calendar_count=3
+        )
 
         with CaptureQueriesContext(connection) as ctx_2:
             response_2 = org_wide_client.post(
                 "/graphql/",
-                data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+                data=json.dumps({"query": _APPOINTMENT_TYPES_WITH_OWNERS_QUERY}),
                 content_type="application/json",
             )
         assert_graphql_success(response_2)
         queries_n2 = len(ctx_2.captured_queries)
 
         # Query count must not grow per slot calendar added.
-        # With correct prefetch there is no per-group/per-item overhead; allow a slack of 1
+        # With correct prefetch there is no per-appointment-type/per-item overhead; allow a slack of 1
         # only to tolerate incidental auth/middleware jitter between the two requests.
         assert abs(queries_n2 - queries_n1) <= 1, (
-            f"N+1 detected through calendarGroups: 1 slot-cal used {queries_n1} queries, "
+            f"N+1 detected through appointmentTypes: 1 slot-cal used {queries_n1} queries, "
             f"adding 3 more slot-cals used {queries_n2} queries. "
             "With prefetch_related the count must not grow per calendar. "
-            "Check slots__calendars__ownerships__user__profile prefetch on calendar_groups resolver."
+            "Check slots__calendars__ownerships__user__profile prefetch on appointment_types resolver."
         )
 
     # ------------------------------------------------------------------ #
     # (c) Org-scoping                                                      #
     # ------------------------------------------------------------------ #
 
-    def test_group_slot_calendars_owners_org_scoping(self, mock_rate_limiter):
-        """An org-A token querying calendarGroups sees no org-B group, calendar, or owner data."""
+    def test_appointment_type_slot_calendars_owners_org_scoping(self, mock_rate_limiter):
+        """An org-A token querying appointmentTypes sees no org-B appointment type, calendar, or owner data."""
         mock_rate_limiter.return_value = iter([None])
 
-        org_a = baker.make(Organization, name="OrgA-GroupOwners")
-        org_b = baker.make(Organization, name="OrgB-GroupOwners")
+        org_a = baker.make(Organization, name="OrgA-AppointmentTypeOwners")
+        org_b = baker.make(Organization, name="OrgB-AppointmentTypeOwners")
 
-        # Org A: group with 1 owned slot calendar
-        _group_a, _slot_a, _calendars_a, ownerships_a = _make_group_with_owned_slot_calendars(
-            org_a, group_name="GroupA", calendar_count=1
+        # Org A: appointment type with 1 owned slot calendar
+        _appointment_type_a, _slot_a, _calendars_a, ownerships_a = (
+            _make_appointment_type_with_owned_slot_calendars(
+                org_a, appointment_type_name="AppointmentTypeA", calendar_count=1
+            )
         )
 
-        # Org B: group with 1 slot calendar owned by a distinctly-named user —
+        # Org B: appointment type with 1 slot calendar owned by a distinctly-named user —
         # must never appear in org-A response.
-        group_b = baker.make(CalendarGroup, organization=org_b, name="GroupB")
-        slot_b = CalendarGroupSlot.objects.create(
-            organization=org_b, group=group_b, name="GroupB slot"
+        appointment_type_b = baker.make(
+            AppointmentType, organization=org_b, name="AppointmentTypeB"
+        )
+        slot_b = AppointmentTypeSlot.objects.create(
+            organization=org_b, appointment_type=appointment_type_b, name="AppointmentTypeB slot"
         )
         cal_b = baker.make(
             Calendar,
             organization=org_b,
-            name="GroupB cal 0",
+            name="AppointmentTypeB cal 0",
             external_id=str(uuid.uuid4()),
         )
-        CalendarGroupSlotMembership.objects.create(organization=org_b, slot=slot_b, calendar=cal_b)
+        AppointmentTypeSlotMembership.objects.create(
+            organization=org_b, slot=slot_b, calendar=cal_b
+        )
         owner_b = UserFactory().create_user(
-            email="owner_b@group_scope.test",
-            first_name="OrgBGroupFirst",
-            last_name="OrgBGroupLast",
+            email="owner_b@appointment_type_scope.test",
+            first_name="OrgBAppointmentTypeFirst",
+            last_name="OrgBAppointmentTypeLast",
         )
         OrganizationMembership.objects.get_or_create(user=owner_b, organization=org_b)
         baker.make(
@@ -5230,24 +5248,24 @@ class TestCalendarGroupOwnersN1:
             is_default=True,
         )
 
-        client_a, _ = _make_group_wide_client(org_a)
+        client_a, _ = _make_appointment_type_wide_client(org_a)
 
         response = client_a.post(
             "/graphql/",
-            data=json.dumps({"query": _CALENDAR_GROUPS_WITH_OWNERS_QUERY}),
+            data=json.dumps({"query": _APPOINTMENT_TYPES_WITH_OWNERS_QUERY}),
             content_type="application/json",
         )
 
         data = assert_graphql_success(response)
-        groups = data["calendarGroups"]
+        appointment_types = data["appointmentTypes"]
 
-        returned_group_ids = {int(g["id"]) for g in groups}
+        returned_appointment_type_ids = {int(g["id"]) for g in appointment_types}
         all_calendar_ids = {
-            int(c["id"]) for g in groups for s in g["slots"] for c in s["calendars"]
+            int(c["id"]) for g in appointment_types for s in g["slots"] for c in s["calendars"]
         }
         all_owner_user_ids = {
             o["membership"]["userId"]
-            for g in groups
+            for g in appointment_types
             for s in g["slots"]
             for c in s["calendars"]
             for o in c["owners"]
@@ -5255,19 +5273,21 @@ class TestCalendarGroupOwnersN1:
         }
         all_owner_org_ids = {
             o["membership"]["organizationId"]
-            for g in groups
+            for g in appointment_types
             for s in g["slots"]
             for c in s["calendars"]
             for o in c["owners"]
             if o["membership"]
         }
 
-        # Org A group must appear
-        assert _group_a.id in returned_group_ids, "Org A group must be visible"
+        # Org An appointment type must appear
+        assert _appointment_type_a.id in returned_appointment_type_ids, (
+            "Org An appointment type must be visible"
+        )
 
-        # Org B group must NOT appear
-        assert group_b.id not in returned_group_ids, (
-            "Org B group must not be visible to an org-A token"
+        # Org B appointment type must NOT appear
+        assert appointment_type_b.id not in returned_appointment_type_ids, (
+            "Org B appointment type must not be visible to an org-A token"
         )
 
         # Org B calendar must NOT appear

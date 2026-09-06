@@ -23,9 +23,9 @@ from rest_framework.test import APIClient
 
 from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import (
+    AppointmentType,
     BookingPolicy,
     Calendar,
-    CalendarGroup,
     CalendarOwnership,
 )
 from organizations.models import Organization, OrganizationMembership
@@ -67,8 +67,8 @@ def _make_calendar(org: Organization) -> Calendar:
     return baker.make(Calendar, organization=org, external_id=f"cal-{org.id}")
 
 
-def _make_group(org: Organization) -> CalendarGroup:
-    return baker.make(CalendarGroup, organization=org, name="Group")
+def _make_appointment_type(org: Organization) -> AppointmentType:
+    return baker.make(AppointmentType, organization=org, name="AppointmentType")
 
 
 LIST_URL = "api:BookingPolicies-list"
@@ -207,14 +207,14 @@ class TestBookingPolicyCreate:
         assert response.status_code == status.HTTP_201_CREATED, response.json()
         assert response.json()["is_organization_default"] is True
 
-    def test_create_group_policy(self):
+    def test_create_appointment_type_policy(self):
         org, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
-        group = _make_group(org)
+        appointment_type = _make_appointment_type(org)
 
         response = client.post(
             _list_url(),
-            {"calendar_group": group.pk, "lead_time_seconds": 1800},
+            {"appointment_type": appointment_type.pk, "lead_time_seconds": 1800},
         )
         assert response.status_code == status.HTTP_201_CREATED, response.json()
         assert response.json()["lead_time_seconds"] == 1800
@@ -630,7 +630,7 @@ def _own(org: Organization, calendar: Calendar, membership: OrganizationMembersh
 
 @pytest.mark.django_db
 class TestBookingPolicySelfService:
-    """Non-admin members manage their OWN personal/calendar policies; group and
+    """Non-admin members manage their OWN personal/calendar policies; appointment type and
     organization-default policies stay admin-only."""
 
     # -- create ------------------------------------------------------------
@@ -681,12 +681,14 @@ class TestBookingPolicySelfService:
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    def test_member_cannot_create_calendar_group_policy(self):
+    def test_member_cannot_create_appointment_type_policy(self):
         org, membership = _make_org_with_member(is_admin=False)
-        group = _make_group(org)
+        appointment_type = _make_appointment_type(org)
         client = _auth_client(membership)
 
-        response = client.post(_list_url(), {"calendar_group": group.pk, "lead_time_seconds": 60})
+        response = client.post(
+            _list_url(), {"appointment_type": appointment_type.pk, "lead_time_seconds": 60}
+        )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
@@ -700,17 +702,21 @@ class TestBookingPolicySelfService:
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    def test_admin_can_create_group_and_org_default(self):
+    def test_admin_can_create_appointment_type_and_org_default(self):
         org, membership = _make_org_with_member(is_admin=True)
-        group = _make_group(org)
+        appointment_type = _make_appointment_type(org)
         client = _auth_client(membership)
 
-        group_resp = client.post(_list_url(), {"calendar_group": group.pk, "lead_time_seconds": 60})
+        appointment_type_resp = client.post(
+            _list_url(), {"appointment_type": appointment_type.pk, "lead_time_seconds": 60}
+        )
         org_resp = client.post(
             _list_url(), {"is_organization_default": True, "lead_time_seconds": 60}
         )
 
-        assert group_resp.status_code == status.HTTP_201_CREATED, group_resp.json()
+        assert appointment_type_resp.status_code == status.HTTP_201_CREATED, (
+            appointment_type_resp.json()
+        )
         assert org_resp.status_code == status.HTTP_201_CREATED, org_resp.json()
 
     # -- update ------------------------------------------------------------
@@ -727,10 +733,10 @@ class TestBookingPolicySelfService:
         assert response.status_code == status.HTTP_200_OK, response.json()
         assert response.json()["lead_time_seconds"] == 999
 
-    def test_member_cannot_update_group_policy(self):
+    def test_member_cannot_update_appointment_type_policy(self):
         org, membership = _make_org_with_member(is_admin=False)
-        group = _make_group(org)
-        policy = create_booking_policy(calendar_group=group, lead_time_seconds=60)
+        appointment_type = _make_appointment_type(org)
+        policy = create_booking_policy(appointment_type=appointment_type, lead_time_seconds=60)
         client = _auth_client(membership)
 
         response = client.patch(_detail_url(policy.pk), {"lead_time_seconds": 999})

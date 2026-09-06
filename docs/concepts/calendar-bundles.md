@@ -12,7 +12,7 @@ bundle, the service creates the canonical event on a designated
 
 Use a bundle when:
 
-- You always need the **same group** of calendars together for every
+- You always need the **same appointment type** of calendars together for every
   booking.
 - You want **one** authoritative event in an external provider
   (Google/Microsoft) and the other calendars to merely reflect "busy."
@@ -21,7 +21,7 @@ Use a bundle when:
 
 If any of those don't hold (you want to pick a physician from a pool, or
 the booking should be free of one canonical primary), prefer a
-[**CalendarGroup**](calendar-groups.md) instead.
+[**AppointmentType**](appointment-types.md) instead.
 
 ## Anatomy
 
@@ -104,9 +104,9 @@ A specific surgical configuration always requires:
 Same shape: a bundle with four children, primary = the surgeon. Every
 booking blocks all four.
 
-### Example C — Group-therapy room + facilitator
+### Example C — Appointment-type-therapy room + facilitator
 
-A weekly recurring group therapy session uses Therapist Maya + Group
+A weekly recurring appointment type therapy session uses Therapist Maya + Appointment type
 Room B together. The bundle sits behind a public scheduling URL that
 patients use to enrol — but enrolment never reassigns to a different
 therapist or room, so a fixed bundle is the right model.
@@ -116,16 +116,16 @@ therapist or room, so a fixed bundle is the right model.
 Bundle events support recurrence: passing `recurrence_rule` to the
 booking flow creates a recurring primary event and recurring
 representations/blocked times on the children. Cancelling a single
-occurrence (e.g. one week's group therapy because the therapist is
+occurrence (e.g. one week's appointment type therapy because the therapist is
 sick) flows through the standard recurrence-exception machinery on
 the primary; the children's representations follow the primary.
 
-## Why groups exist on top of bundles
+## Why appointment types exist on top of bundles
 
 Bundles answer "always book these N calendars together." They don't
 answer "pick any one of these physicians and any one of these rooms."
-That's the case `CalendarGroup` handles — see
-[calendar-groups.md](calendar-groups.md). For new flows where the
-caller picks calendars at booking time, prefer groups; bundles are the
+That's the case `AppointmentType` handles — see
+[appointment-types.md](appointment-types.md). For new flows where the
+caller picks calendars at booking time, prefer appointment types; bundles are the
 right call when the membership is fixed and you want a single primary
 calendar that owns the provider sync.

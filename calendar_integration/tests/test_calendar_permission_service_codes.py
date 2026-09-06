@@ -5,7 +5,7 @@ Covers:
 - validate_code() returns the token on a valid active code.
 - validate_code() raises the right exception for each terminal state
   (expired / used / revoked / unknown).
-- can_perform_scheduling() group-scoped token branch, including the cross-org
+- can_perform_scheduling() appointment-type-scoped token branch, including the cross-org
   isolation case.
 """
 
@@ -26,11 +26,11 @@ from calendar_integration.exceptions import (
     TokenRevokedError,
 )
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
     CalendarManagementToken,
     CalendarManagementTokenPermission,
 )
@@ -56,8 +56,8 @@ def calendar(org) -> Calendar:
 
 
 @pytest.fixture
-def calendar_group(org) -> CalendarGroup:
-    return CalendarGroup.objects.create(name="Test Group", organization=org)
+def appointment_type(org) -> AppointmentType:
+    return AppointmentType.objects.create(name="Test AppointmentType", organization=org)
 
 
 @pytest.fixture
@@ -105,7 +105,7 @@ def test_create_booking_token_calendar_scope(service, org, calendar):
     assert token.organization_id == org.id
     assert token.calendar_fk_id == calendar.id
     assert token.event_fk_id is None
-    assert token.calendar_group_fk_id is None
+    assert token.appointment_type_fk_id is None
     assert code  # non-empty string
     # Permissions persisted
     perms = list(token.permissions.values_list("permission", flat=True))
@@ -113,15 +113,15 @@ def test_create_booking_token_calendar_scope(service, org, calendar):
 
 
 @pytest.mark.django_db
-def test_create_booking_token_calendar_group_scope(service, org, calendar_group):
-    """create_booking_token scoped to a calendar_group persists the FK."""
+def test_create_booking_token_appointment_type_scope(service, org, appointment_type):
+    """create_booking_token scoped to an appointment type persists the FK."""
     token, code = service.create_booking_token(
         organization_id=org.id,
         permissions=[EventManagementPermissions.CREATE],
-        calendar_group_id=calendar_group.id,
+        appointment_type_id=appointment_type.id,
     )
 
-    assert token.calendar_group_fk_id == calendar_group.id
+    assert token.appointment_type_fk_id == appointment_type.id
     assert token.calendar_fk_id is None
     assert code
 
@@ -230,8 +230,8 @@ def test_create_booking_token_neither_new_argument_behaves_unchanged(service, or
     the phase's acceptance criterion, not incidental coverage. There is no
     ``duration`` parameter on this method any more -- see
     ``test_calendar_permission_service_duration.py`` for that: duration
-    pinning lives on ``CalendarGroup.duration`` now, set through
-    ``CalendarGroupService``, not through this method.
+    pinning lives on ``AppointmentType.duration`` now, set through
+    ``AppointmentTypeService``, not through this method.
     """
     token, code = service.create_booking_token(
         organization_id=org.id,
@@ -394,7 +394,7 @@ def test_validate_code_future_expiry_is_valid(service, org, calendar):
 
 
 # ---------------------------------------------------------------------------
-# can_perform_scheduling() — group-scoped token branch
+# can_perform_scheduling() — appointment-type-scoped token branch
 # ---------------------------------------------------------------------------
 
 
@@ -421,16 +421,16 @@ def _dummy_event_data() -> CalendarEventInputData:
 
 
 @pytest.fixture
-def group_with_member_calendar(org, calendar):
-    """A CalendarGroup with one slot containing `calendar`."""
-    grp = CalendarGroup.objects.create(organization=org, name="Test Group")
-    slot = CalendarGroupSlot.objects.create(
+def appointment_type_with_member_calendar(org, calendar):
+    """An AppointmentType with one slot containing `calendar`."""
+    grp = AppointmentType.objects.create(organization=org, name="Test AppointmentType")
+    slot = AppointmentTypeSlot.objects.create(
         organization=org,
-        group=grp,
+        appointment_type=grp,
         name="Physicians",
         order=0,
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=org,
         slot=slot,
         calendar=calendar,
@@ -440,7 +440,7 @@ def group_with_member_calendar(org, calendar):
 
 @pytest.fixture
 def non_member_calendar(org):
-    """A calendar that does NOT belong to any group slot."""
+    """A calendar that does NOT belong to any appointment type slot."""
     return Calendar.objects.create(
         name="Non-Member Calendar",
         organization=org,
@@ -449,17 +449,17 @@ def non_member_calendar(org):
 
 
 @pytest.mark.django_db
-def test_can_perform_scheduling_group_token_member_calendar_with_create_returns_true(
-    service, org, calendar, group_with_member_calendar
+def test_can_perform_scheduling_appointment_type_token_member_calendar_with_create_returns_true(
+    service, org, calendar, appointment_type_with_member_calendar
 ):
-    """Group-scoped token + CREATE + member calendar → True.
+    """Appointment-type-scoped token + CREATE + member calendar → True.
 
     Before the fix, this returned False for a restricted calendar.
     """
     token, _ = service.create_booking_token(
         organization_id=org.id,
         permissions=[EventManagementPermissions.CREATE],
-        calendar_group_id=group_with_member_calendar.id,
+        appointment_type_id=appointment_type_with_member_calendar.id,
     )
     # Simulate what initialize_with_token does: set the token on the service.
     service.token = token
@@ -473,14 +473,14 @@ def test_can_perform_scheduling_group_token_member_calendar_with_create_returns_
 
 
 @pytest.mark.django_db
-def test_can_perform_scheduling_group_token_non_member_calendar_returns_false(
-    service, org, non_member_calendar, group_with_member_calendar
+def test_can_perform_scheduling_appointment_type_token_non_member_calendar_returns_false(
+    service, org, non_member_calendar, appointment_type_with_member_calendar
 ):
-    """Group-scoped token + CREATE + calendar NOT in the group → False."""
+    """Appointment-type-scoped token + CREATE + calendar NOT in the appointment type → False."""
     token, _ = service.create_booking_token(
         organization_id=org.id,
         permissions=[EventManagementPermissions.CREATE],
-        calendar_group_id=group_with_member_calendar.id,
+        appointment_type_id=appointment_type_with_member_calendar.id,
     )
     service.token = token
 
@@ -493,14 +493,14 @@ def test_can_perform_scheduling_group_token_non_member_calendar_returns_false(
 
 
 @pytest.mark.django_db
-def test_can_perform_scheduling_group_token_without_create_returns_false(
-    service, org, calendar, group_with_member_calendar
+def test_can_perform_scheduling_appointment_type_token_without_create_returns_false(
+    service, org, calendar, appointment_type_with_member_calendar
 ):
-    """Group-scoped token without CREATE permission → False even for a member calendar."""
+    """Appointment-type-scoped token without CREATE permission → False even for a member calendar."""
     token, _ = service.create_booking_token(
         organization_id=org.id,
         permissions=[EventManagementPermissions.RESCHEDULE],
-        calendar_group_id=group_with_member_calendar.id,
+        appointment_type_id=appointment_type_with_member_calendar.id,
     )
     service.token = token
 
@@ -514,7 +514,7 @@ def test_can_perform_scheduling_group_token_without_create_returns_false(
 
 @pytest.mark.django_db
 def test_can_perform_scheduling_public_calendar_always_returns_true(
-    service, org, calendar, group_with_member_calendar
+    service, org, calendar, appointment_type_with_member_calendar
 ):
     """accepts_public_scheduling=True bypasses token check (existing behaviour)."""
     # No token set.
@@ -547,42 +547,46 @@ def test_can_perform_scheduling_calendar_scoped_token_own_calendar_returns_true(
 
 
 @pytest.mark.django_db
-def test_can_perform_scheduling_group_token_member_calendar_in_other_org_returns_false(
+def test_can_perform_scheduling_appointment_type_token_member_calendar_in_other_org_returns_false(
     service, org
 ):
-    """Group-scoped token in org A must NOT authorize a calendar that belongs to org B.
+    """Appointment-type-scoped token in org A must NOT authorize a calendar that belongs to org B.
 
     This test proves that the ``filter_by_organization(self.token.organization_id)``
     guard inside ``can_perform_scheduling`` prevents cross-org access even when org B's
-    calendar happens to be a member of a structurally similar group.
+    calendar happens to be a member of a structurally similar appointment type.
 
     Setup:
-    - org A has a group (grp_a) with one slot containing cal_a.
-    - org B has its own group (grp_b) with one slot containing cal_b.
+    - org A has an appointment type (grp_a) with one slot containing cal_a.
+    - org B has its own appointment type (grp_b) with one slot containing cal_b.
     - A CREATE token is minted in org A scoped to grp_a.
     - can_perform_scheduling is called with org B's calendar id → must return False.
     """
     other_org = baker.make("organizations.Organization")
 
     # Org A side
-    grp_a = CalendarGroup.objects.create(organization=org, name="Org-A Group")
-    slot_a = CalendarGroupSlot.objects.create(organization=org, group=grp_a, name="Slot A", order=0)
+    grp_a = AppointmentType.objects.create(organization=org, name="Org-An AppointmentType")
+    slot_a = AppointmentTypeSlot.objects.create(
+        organization=org, appointment_type=grp_a, name="Slot A", order=0
+    )
     cal_a = Calendar.objects.create(name="Org-A Calendar", organization=org)
-    CalendarGroupSlotMembership.objects.create(organization=org, slot=slot_a, calendar=cal_a)
+    AppointmentTypeSlotMembership.objects.create(organization=org, slot=slot_a, calendar=cal_a)
 
     # Org B side — mirrors org A's structure with distinct DB rows
-    grp_b = CalendarGroup.objects.create(organization=other_org, name="Org-B Group")
-    slot_b = CalendarGroupSlot.objects.create(
-        organization=other_org, group=grp_b, name="Slot B", order=0
+    grp_b = AppointmentType.objects.create(organization=other_org, name="Org-B AppointmentType")
+    slot_b = AppointmentTypeSlot.objects.create(
+        organization=other_org, appointment_type=grp_b, name="Slot B", order=0
     )
     cal_b = Calendar.objects.create(name="Org-B Calendar", organization=other_org)
-    CalendarGroupSlotMembership.objects.create(organization=other_org, slot=slot_b, calendar=cal_b)
+    AppointmentTypeSlotMembership.objects.create(
+        organization=other_org, slot=slot_b, calendar=cal_b
+    )
 
     # Token minted in org A scoped to grp_a
     token, _ = service.create_booking_token(
         organization_id=org.id,
         permissions=[EventManagementPermissions.CREATE],
-        calendar_group_id=grp_a.id,
+        appointment_type_id=grp_a.id,
     )
     service.token = token
 

@@ -10,7 +10,7 @@ IANA `timezone`. Around that core, it carries:
 | `external_attendees` (via `EventExternalAttendance`) | Non-user attendees identified by email + name. |
 | `resources` (via `ResourceAllocation`) | Resource calendars allocated to the event. |
 | `bundle_calendar`, `bundle_primary_event`, `is_bundle_primary` | Bundle membership (see [calendar-bundles.md](calendar-bundles.md)). |
-| `calendar_group`, `group_selections` | Group booking metadata (see [calendar-groups.md](calendar-groups.md)). |
+| `appointment_type`, `appointment_type_selections` | Appointment type booking metadata (see [appointment-types.md](appointment-types.md)). |
 | `recurrence_rule`, `recurrence_id`, `parent_recurring_object`, `is_recurring_exception` | Recurrence (see [recurrence.md](recurrence.md)). |
 | `bulk_modification_parent` | If the event is a continuation produced by a bulk modification split. |
 | `external_id` | Stable id from the upstream provider for synced events. |
@@ -56,14 +56,14 @@ Examples:
 - **Infusion-bay chair + IV pump**: two allocations on a 4-hour infusion
   appointment.
 
-> **Note on bookings via `CalendarGroup`**: when a slot of a group is
+> **Note on bookings via `AppointmentType`**: when a slot of an appointment type is
 > filled with a *resource* calendar, the per-slot picks are stored in
-> `CalendarEventGroupSelection` rather than `ResourceAllocation`. The two
+> `CalendarEventAppointmentTypeSelection` rather than `ResourceAllocation`. The two
 > models coexist: `ResourceAllocation` is the older "this event uses
-> these resources" mechanism; `CalendarEventGroupSelection` is the
+> these resources" mechanism; `CalendarEventAppointmentTypeSelection` is the
 > "which calendars satisfied each slot of the booking template" record.
 
-## Bundle and group fields
+## Bundle and appointment type fields
 
 A `CalendarEvent` knows whether it was created through a higher-level
 booking primitive:
@@ -73,13 +73,13 @@ booking primitive:
   (the one synced to the external provider); other child calendars get a
   representation event or a `BlockedTime`. See
   [calendar-bundles.md](calendar-bundles.md).
-- `calendar_group` is non-null when the event was booked via a
-  `CalendarGroup`. The companion `CalendarEventGroupSelection` rows
+- `appointment_type` is non-null when the event was booked via a
+  `AppointmentType`. The companion `CalendarEventAppointmentTypeSelection` rows
   record which calendar from each slot's pool was picked. See
-  [calendar-groups.md](calendar-groups.md).
+  [appointment-types.md](appointment-types.md).
 
 Both fields are independent of recurrence — a recurring weekly tumour
-board can absolutely be a grouped event, with each occurrence inheriting
+board can absolutely be an appointment-type event, with each occurrence inheriting
 the same selections.
 
 ## Lifecycle — creating, updating, cancelling
@@ -92,8 +92,8 @@ is the main entry point. It:
 - Triggers side-effects (provider sync, attendee invites,
   notifications).
 
-For grouped/bundled bookings, callers should use the higher-level
-services (`CalendarGroupService.create_grouped_event`,
+For appointment-type/bundled bookings, callers should use the higher-level
+services (`AppointmentTypeService.create_appointment_type_event`,
 `CalendarService.create_bundle_calendar` + `_create_bundle_event`)
 rather than `create_event` directly — those services handle picking the
 primary calendar, propagating to children, and writing the per-slot or

@@ -20,9 +20,9 @@ from audit_integration.constants import AuditAction
 from audit_integration.services import OrganizationAuditService
 from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
+    AppointmentTypeSlotConfigNotFoundError,
+    AppointmentTypeValidationError,
     BookingPolicyViolationError,
-    CalendarGroupSlotConfigNotFoundError,
-    CalendarGroupValidationError,
     CalendarIntegrationError,
     CalendarPoolError,
     CalendarPoolInUseError,
@@ -30,6 +30,9 @@ from calendar_integration.exceptions import (
     NoAvailableTimeWindowsError,
 )
 from calendar_integration.graphql import (
+    AppointmentTypeScopedAvailabilityWindowGraphQLType,
+    AppointmentTypeScopedBlockedTimeGraphQLType,
+    AppointmentTypeScopedQuotaRuleGraphQLType,
     AvailableTimeGraphQLType,
     BlockedTimeGraphQLType,
     BookingPolicyResult,
@@ -43,24 +46,21 @@ from calendar_integration.graphql import (
     DeleteBookingPolicyResult,
     DeleteCalendarPoolInput,
     DeleteCalendarPoolResult,
-    GroupScopedAvailabilityWindowGraphQLType,
-    GroupScopedBlockedTimeGraphQLType,
-    GroupScopedQuotaRuleGraphQLType,
     UpdateBookingPolicyInput,
     UpdateCalendarPoolInput,
-    group_scoped_availability_window_from_model,
-    group_scoped_blocked_time_from_model,
-    group_scoped_quota_rule_from_model,
+    appointment_type_scoped_availability_window_from_model,
+    appointment_type_scoped_blocked_time_from_model,
+    appointment_type_scoped_quota_rule_from_model,
 )
 from calendar_integration.models import (
+    AppointmentType,
     BookingPolicy,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
     CalendarPool,
 )
 from calendar_integration.mutations import (
-    CalendarGroupMutations,
+    AppointmentTypeMutations,
     ExternalEventChangeRequestMutations,
 )
 from calendar_integration.services.calendar_service import _UNCHANGED
@@ -134,11 +134,11 @@ if TYPE_CHECKING:
 
 
 if TYPE_CHECKING:
+    from calendar_integration.services.appointment_type_service import AppointmentTypeService
     from calendar_integration.services.booking_policy_permission_service import (
         BookingPolicyPermissionService,
     )
     from calendar_integration.services.booking_policy_service import BookingPolicyService
-    from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_service import CalendarService
 
 
@@ -270,25 +270,25 @@ class CalendarMutationDependencies:
     """Dependencies for calendar mutations."""
 
     calendar_service: "CalendarService"
-    calendar_group_service: "CalendarGroupService"
+    appointment_type_service: "AppointmentTypeService"
 
 
 @inject
 def get_calendar_mutation_dependencies(
     calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
-    calendar_group_service: Annotated[
-        "CalendarGroupService | None", Provide["calendar_group_service"]
+    appointment_type_service: Annotated[
+        "AppointmentTypeService | None", Provide["appointment_type_service"]
     ] = None,
 ) -> CalendarMutationDependencies:
     """Get calendar mutation dependencies from DI container."""
-    required_dependencies = [calendar_service, calendar_group_service]
+    required_dependencies = [calendar_service, appointment_type_service]
     if any(dep is None for dep in required_dependencies):
         missing = [d for d in required_dependencies if d is None]
         raise GraphQLError(f"Missing required dependencies: {missing}")
 
     return CalendarMutationDependencies(
         calendar_service=cast("CalendarService", calendar_service),
-        calendar_group_service=cast("CalendarGroupService", calendar_group_service),
+        appointment_type_service=cast("AppointmentTypeService", appointment_type_service),
     )
 
 
@@ -356,21 +356,21 @@ def _get_org_and_init_calendar_service(
     return deps.calendar_service, org
 
 
-def _get_org_and_init_calendar_group_service(
+def _get_org_and_init_appointment_type_service(
     info: strawberry.Info,
-) -> tuple["CalendarGroupService", Organization]:
-    """Resolve org from request context and initialize ``calendar_group_service``.
+) -> tuple["AppointmentTypeService", Organization]:
+    """Resolve org from request context and initialize ``appointment_type_service``.
 
     Also wires its ``calendar_service`` to the token-authenticated instance
     -- necessary because the DI container's Factory provider gives
-    ``CalendarGroupService`` its OWN ``CalendarService`` instance via its
-    ``@inject __init__`` (see ``create_calendar_group_event_with_code``'s
+    ``AppointmentTypeService`` its OWN ``CalendarService`` instance via its
+    ``@inject __init__`` (see ``create_appointment_type_event_with_code``'s
     docstring for the fuller explanation of this wiring). Without it,
-    ``CalendarGroupService._audit_group_write`` would resolve every actor to
+    ``AppointmentTypeService._audit_appointment_type_write`` would resolve every actor to
     "system" instead of the acting ``SystemUser`` token.
 
     Returns:
-        Tuple of (initialized calendar_group_service, organization)
+        Tuple of (initialized appointment_type_service, organization)
 
     Raises:
         GraphQLError: If organization is not found in request context
@@ -384,10 +384,10 @@ def _get_org_and_init_calendar_group_service(
     deps.calendar_service.initialize_without_provider(
         user_or_token=request.public_api_system_user, organization=org
     )
-    deps.calendar_group_service.calendar_service = deps.calendar_service
-    deps.calendar_group_service.initialize(organization=org)
+    deps.appointment_type_service.calendar_service = deps.calendar_service
+    deps.appointment_type_service.initialize(organization=org)
 
-    return deps.calendar_group_service, org
+    return deps.appointment_type_service, org
 
 
 def _assert_can_write_calendar_pools(
@@ -679,8 +679,8 @@ class BatchUpdateAvailabilityWindowsResult:
 
 
 @strawberry.input
-class GroupScopedAvailabilityWindowOperationInput:
-    """A single create/update/delete operation in a batch group-scoped
+class AppointmentTypeScopedAvailabilityWindowOperationInput:
+    """A single create/update/delete operation in a batch appointment-type-scoped
     availability window upsert.
 
     ``calendarId`` is required on every operation (not only ``create``) so
@@ -691,7 +691,7 @@ class GroupScopedAvailabilityWindowOperationInput:
 
     For action='create': calendarId, startTime, endTime, and timezone are
     required; rruleString is optional. An identical create (same calendar,
-    group slot, start/end time, timezone, and rrule as an existing window)
+    appointment type slot, start/end time, timezone, and rrule as an existing window)
     is a no-op — replaying the same batch never duplicates a window (spec
     UC-5).
     For action='update': windowId is required; other fields are optional
@@ -709,42 +709,42 @@ class GroupScopedAvailabilityWindowOperationInput:
 
 
 @strawberry.input
-class BatchGroupScopedAvailabilityWindowsInput:
-    """Input for applying an atomic batch of group-scoped availability window
-    operations within one group slot's roster."""
+class BatchAppointmentTypeScopedAvailabilityWindowsInput:
+    """Input for applying an atomic batch of appointment-type-scoped availability window
+    operations within one appointment type slot's roster."""
 
     organization_id: int
-    group_slot_id: int
-    operations: list[GroupScopedAvailabilityWindowOperationInput]
+    appointment_type_slot_id: int
+    operations: list[AppointmentTypeScopedAvailabilityWindowOperationInput]
 
 
 @strawberry.type
-class BatchUpsertGroupScopedAvailabilityWindowsResult:
-    """Result of the batchUpsertGroupScopedAvailabilityWindows mutation.
+class BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult:
+    """Result of the batchUpsertAppointmentTypeScopedAvailabilityWindows mutation.
 
-    On success, ``windows`` contains every group-scoped window in the group
+    On success, ``windows`` contains every appointment-type-scoped window in the appointment type
     slot's roster (all calendars) after the batch is applied. On failure,
     ``windows`` is an empty list and nothing was written.
     """
 
     success: bool
     error_message: str | None = None
-    windows: list[GroupScopedAvailabilityWindowGraphQLType]
+    windows: list[AppointmentTypeScopedAvailabilityWindowGraphQLType]
 
 
 @strawberry.input
-class GroupScopedBlockedTimeOperationInput:
-    """A single create/update/delete operation in a batch group-scoped
+class AppointmentTypeScopedBlockedTimeOperationInput:
+    """A single create/update/delete operation in a batch appointment-type-scoped
     blocked-time upsert.
 
-    Mirrors ``GroupScopedAvailabilityWindowOperationInput`` exactly, plus
+    Mirrors ``AppointmentTypeScopedAvailabilityWindowOperationInput`` exactly, plus
     ``reason``. ``calendarId`` is required on every operation (not only
     ``create``) so the owner-scope guard can be applied per-operation before
     any service call.
 
     For action='create': calendarId, startTime, endTime, and timezone are
     required; reason and rruleString are optional. An identical create
-    (same calendar, group slot, start/end time, timezone, reason, and rrule
+    (same calendar, appointment type slot, start/end time, timezone, reason, and rrule
     as an existing block) is a no-op — replaying the same batch never
     duplicates a block (spec UC-5).
     For action='update': blockId is required; other fields are optional
@@ -763,35 +763,35 @@ class GroupScopedBlockedTimeOperationInput:
 
 
 @strawberry.input
-class BatchGroupScopedBlockedTimesInput:
-    """Input for applying an atomic batch of group-scoped blocked-time
-    operations within one group slot's roster."""
+class BatchAppointmentTypeScopedBlockedTimesInput:
+    """Input for applying an atomic batch of appointment-type-scoped blocked-time
+    operations within one appointment type slot's roster."""
 
     organization_id: int
-    group_slot_id: int
-    operations: list[GroupScopedBlockedTimeOperationInput]
+    appointment_type_slot_id: int
+    operations: list[AppointmentTypeScopedBlockedTimeOperationInput]
 
 
 @strawberry.type
-class BatchUpsertGroupScopedBlockedTimesResult:
-    """Result of the batchUpsertGroupScopedBlockedTimes mutation.
+class BatchUpsertAppointmentTypeScopedBlockedTimesResult:
+    """Result of the batchUpsertAppointmentTypeScopedBlockedTimes mutation.
 
-    On success, ``blockedTimes`` contains every group-scoped block in the
-    group slot's roster (all calendars) after the batch is applied. On
+    On success, ``blockedTimes`` contains every appointment-type-scoped block in the
+    appointment type slot's roster (all calendars) after the batch is applied. On
     failure, ``blockedTimes`` is an empty list and nothing was written.
     """
 
     success: bool
     error_message: str | None = None
-    blocked_times: list[GroupScopedBlockedTimeGraphQLType]
+    blocked_times: list[AppointmentTypeScopedBlockedTimeGraphQLType]
 
 
 @strawberry.input
-class GroupScopedQuotaRuleOperationInput:
-    """A single create/update/delete operation in a batch group-scoped
+class AppointmentTypeScopedQuotaRuleOperationInput:
+    """A single create/update/delete operation in a batch appointment-type-scoped
     quota-rule upsert.
 
-    Simpler than ``GroupScopedBlockedTimeOperationInput``: quota rules are
+    Simpler than ``AppointmentTypeScopedBlockedTimeOperationInput``: quota rules are
     non-recurring and have no time range, so there is no ``startTime``/
     ``endTime``/``timezone``/``rruleString`` -- just ``period`` and ``cap``.
     ``calendarId`` is required on every operation (not only ``create``) so
@@ -799,7 +799,7 @@ class GroupScopedQuotaRuleOperationInput:
     call.
 
     For action='create': calendarId, period, and cap are required. An
-    identical create (same calendar, group slot, period, and cap as an
+    identical create (same calendar, appointment type slot, period, and cap as an
     existing rule) is a no-op — replaying the same batch never duplicates a
     rule (spec UC-5). A create naming an ALREADY-USED period with a
     DIFFERENT cap is rejected as a validation error (the model's unique
@@ -817,27 +817,27 @@ class GroupScopedQuotaRuleOperationInput:
 
 
 @strawberry.input
-class BatchGroupScopedQuotaRulesInput:
-    """Input for applying an atomic batch of group-scoped quota-rule
-    operations within one group slot's roster."""
+class BatchAppointmentTypeScopedQuotaRulesInput:
+    """Input for applying an atomic batch of appointment-type-scoped quota-rule
+    operations within one appointment type slot's roster."""
 
     organization_id: int
-    group_slot_id: int
-    operations: list[GroupScopedQuotaRuleOperationInput]
+    appointment_type_slot_id: int
+    operations: list[AppointmentTypeScopedQuotaRuleOperationInput]
 
 
 @strawberry.type
-class BatchUpsertGroupScopedQuotaRulesResult:
-    """Result of the batchUpsertGroupScopedQuotaRules mutation.
+class BatchUpsertAppointmentTypeScopedQuotaRulesResult:
+    """Result of the batchUpsertAppointmentTypeScopedQuotaRules mutation.
 
-    On success, ``quotaRules`` contains every group-scoped quota rule in the
-    group slot's roster (all calendars) after the batch is applied. On
+    On success, ``quotaRules`` contains every appointment-type-scoped quota rule in the
+    appointment type slot's roster (all calendars) after the batch is applied. On
     failure, ``quotaRules`` is an empty list and nothing was written.
     """
 
     success: bool
     error_message: str | None = None
-    quota_rules: list[GroupScopedQuotaRuleGraphQLType]
+    quota_rules: list[AppointmentTypeScopedQuotaRuleGraphQLType]
 
 
 @strawberry.input
@@ -1156,16 +1156,16 @@ class RescheduleCalendarEventInput:
 
 
 @strawberry.input
-class RescheduleCalendarGroupEventInput:
-    """Input for rescheduling a grouped calendar event via a public-API token.
+class RescheduleAppointmentTypeEventInput:
+    """Input for rescheduling an appointment-type calendar event via a public-API token.
 
-    Grouped events consist of a primary ``CalendarEvent`` on the primary calendar plus
-    linked non-primary ``BlockedTime`` rows on each additional calendar in the group.
+    Appointment-type events consist of a primary ``CalendarEvent`` on the primary calendar plus
+    linked non-primary ``BlockedTime`` rows on each additional calendar in the appointment type.
     All of them move together when this mutation succeeds.
 
-    Whole-event only — group events are not recurring in v1 (no ``recurrenceId``).
+    Whole-event only — appointment type events are not recurring in v1 (no ``recurrenceId``).
 
-    An owner-scoped token may only reschedule grouped events whose primary calendar is
+    An owner-scoped token may only reschedule appointment-type events whose primary calendar is
     owned by the token's owner; an org-wide token acts org-wide.
     """
 
@@ -1262,7 +1262,7 @@ class CancelEventResult:
 
 @strawberry.input
 class CancelEventInput:
-    """Input for cancelling a single-calendar or grouped calendar event via a public-API token.
+    """Input for cancelling a single-calendar or appointment-type calendar event via a public-API token.
 
     Supports three cancellation modes:
 
@@ -1300,7 +1300,7 @@ class CancelEventInput:
 
 
 @strawberry.type
-class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
+class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
     @strawberry.mutation
     def check_token(
         self,
@@ -2585,13 +2585,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def batch_upsert_group_scoped_availability_windows(
+    def batch_upsert_appointment_type_scoped_availability_windows(
         self,
         info: strawberry.Info,
-        input: BatchGroupScopedAvailabilityWindowsInput,  # noqa: A002
-    ) -> BatchUpsertGroupScopedAvailabilityWindowsResult:
-        """Apply an atomic create/update/delete batch of group-scoped
-        availability windows within one group slot's roster.
+        input: BatchAppointmentTypeScopedAvailabilityWindowsInput,  # noqa: A002
+    ) -> BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult:
+        """Apply an atomic create/update/delete batch of appointment-type-scoped
+        availability windows within one appointment type slot's roster.
 
         Mirrors ``batchUpdateAvailabilityWindows``'s all-or-nothing and
         over-limit behavior exactly (same transaction/entitlement structure,
@@ -2610,30 +2610,30 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
            may span several calendars in the slot's roster. This only proves
            the token owns each op's ``calendarId``; it does not prove that an
            update/delete op's ``windowId`` belongs to that calendar.
-        3. Delegates to ``CalendarGroupService.batch_upsert_group_scoped_availability_windows``,
+        3. Delegates to ``AppointmentTypeService.batch_upsert_appointment_type_scoped_availability_windows``,
            which resolves every touched row, cross-checks that an
            update/delete op's resolved window actually belongs to that op's
            own ``calendarId`` (closing the gap step 2 leaves open), checks the
            ``availability_windows`` plan limit against the batch's net
            genuine-create growth, and applies the whole batch inside its own
            transaction.
-        4. Returns every group-scoped window in the slot's roster after the
+        4. Returns every appointment-type-scoped window in the slot's roster after the
            batch is applied.
 
         The token's OrganizationResourceAccess must include the
-        BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS resource.
+        BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_AVAILABILITY_WINDOWS resource.
         """
         _valid_actions = {"create", "update", "delete"}
 
         org = info.context.request.public_api_organization
         if not org:
-            return BatchUpsertGroupScopedAvailabilityWindowsResult(
+            return BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult(
                 success=False,
                 error_message="Organization not found in request context.",
                 windows=[],
             )
         if input.organization_id != org.id:
-            return BatchUpsertGroupScopedAvailabilityWindowsResult(
+            return BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult(
                 success=False,
                 error_message="Organization not found in request context.",
                 windows=[],
@@ -2642,7 +2642,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # Validate all operations before touching anything -- fail fast, no writes.
         for op_input in input.operations:
             if op_input.action not in _valid_actions:
-                return BatchUpsertGroupScopedAvailabilityWindowsResult(
+                return BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult(
                     success=False,
                     error_message=f"Invalid operation action: {op_input.action}",
                     windows=[],
@@ -2652,13 +2652,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 or op_input.end_time is None
                 or op_input.timezone is None
             ):
-                return BatchUpsertGroupScopedAvailabilityWindowsResult(
+                return BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult(
                     success=False,
                     error_message="create operation requires startTime, endTime, and timezone",
                     windows=[],
                 )
             if op_input.action in ("update", "delete") and op_input.window_id is None:
-                return BatchUpsertGroupScopedAvailabilityWindowsResult(
+                return BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult(
                     success=False,
                     error_message=f"{op_input.action} operation requires windowId",
                     windows=[],
@@ -2670,7 +2670,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # batch rejects the whole thing before any service call. This only
         # proves the token owns op.calendarId; it does NOT prove that an
         # update/delete op's windowId actually resolves to that calendar --
-        # CalendarGroupService.batch_upsert_group_scoped_availability_windows
+        # AppointmentTypeService.batch_upsert_appointment_type_scoped_availability_windows
         # cross-checks that itself (window.calendar_fk_id == op.calendar_id)
         # before applying anything, so a token can't pair a calendarId it owns
         # with a windowId belonging to a different calendar.
@@ -2680,7 +2680,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             for op_input in input.operations:
                 assert_calendar_in_owner_scope(system_user, org, op_input.calendar_id)
         except Calendar.DoesNotExist:
-            return BatchUpsertGroupScopedAvailabilityWindowsResult(
+            return BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult(
                 success=False, error_message="Calendar not found.", windows=[]
             )
 
@@ -2700,68 +2700,68 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             ops.append(op)
 
         deps = get_calendar_mutation_dependencies()
-        deps.calendar_group_service.initialize(organization=org)
+        deps.appointment_type_service.initialize(organization=org)
 
         if system_user is None:
-            return BatchUpsertGroupScopedAvailabilityWindowsResult(
+            return BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult(
                 success=False,
                 error_message="Organization not found in request context.",
                 windows=[],
             )
 
         try:
-            windows = deps.calendar_group_service.batch_upsert_group_scoped_availability_windows(
-                group_slot_id=input.group_slot_id,
+            windows = deps.appointment_type_service.batch_upsert_appointment_type_scoped_availability_windows(
+                appointment_type_slot_id=input.appointment_type_slot_id,
                 operations=ops,
                 acting_principal=system_user,
             )
         except OverLimitError as exc:
             raise_over_limit_graphql_error(exc)
-        except CalendarGroupSlotConfigNotFoundError:
-            return BatchUpsertGroupScopedAvailabilityWindowsResult(
-                success=False, error_message="Group slot not found.", windows=[]
+        except AppointmentTypeSlotConfigNotFoundError:
+            return BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult(
+                success=False, error_message="AppointmentType slot not found.", windows=[]
             )
         except (CalendarIntegrationError, ValueError, DjangoValidationError) as e:
-            return BatchUpsertGroupScopedAvailabilityWindowsResult(
+            return BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult(
                 success=False, error_message=str(e), windows=[]
             )
 
-        return BatchUpsertGroupScopedAvailabilityWindowsResult(
+        return BatchUpsertAppointmentTypeScopedAvailabilityWindowsResult(
             success=True,
-            windows=[group_scoped_availability_window_from_model(w) for w in windows],
+            windows=[appointment_type_scoped_availability_window_from_model(w) for w in windows],
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def batch_upsert_group_scoped_blocked_times(
+    def batch_upsert_appointment_type_scoped_blocked_times(
         self,
         info: strawberry.Info,
-        input: BatchGroupScopedBlockedTimesInput,  # noqa: A002
-    ) -> BatchUpsertGroupScopedBlockedTimesResult:
-        """Apply an atomic create/update/delete batch of group-scoped blocked
-        times within one group slot's roster.
+        input: BatchAppointmentTypeScopedBlockedTimesInput,  # noqa: A002
+    ) -> BatchUpsertAppointmentTypeScopedBlockedTimesResult:
+        """Apply an atomic create/update/delete batch of appointment-type-scoped blocked
+        times within one appointment type slot's roster.
 
-        Direct mirror of ``batchUpsertGroupScopedAvailabilityWindows`` -- same
+        Direct mirror of ``batchUpsertAppointmentTypeScopedAvailabilityWindows`` -- same
         validation, owner-scope, and IDOR cross-check structure -- with ONE
         deliberate difference: blocked time is not metered yet, so this
         mutation never surfaces an ``OverLimitError`` for a plan-limit
-        ceiling; ``CalendarGroupService.batch_upsert_group_scoped_blocked_times``
+        ceiling; ``AppointmentTypeService.batch_upsert_appointment_type_scoped_blocked_times``
         still enforces ``check_not_restricted`` (a ``RESTRICTED`` billing
         root still blocks the write), but there is no delta/limit check.
 
         The token's OrganizationResourceAccess must include the
-        BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES resource.
+        BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_BLOCKED_TIMES resource.
         """
         _valid_actions = {"create", "update", "delete"}
 
         org = info.context.request.public_api_organization
         if not org:
-            return BatchUpsertGroupScopedBlockedTimesResult(
+            return BatchUpsertAppointmentTypeScopedBlockedTimesResult(
                 success=False,
                 error_message="Organization not found in request context.",
                 blocked_times=[],
             )
         if input.organization_id != org.id:
-            return BatchUpsertGroupScopedBlockedTimesResult(
+            return BatchUpsertAppointmentTypeScopedBlockedTimesResult(
                 success=False,
                 error_message="Organization not found in request context.",
                 blocked_times=[],
@@ -2770,7 +2770,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # Validate all operations before touching anything -- fail fast, no writes.
         for op_input in input.operations:
             if op_input.action not in _valid_actions:
-                return BatchUpsertGroupScopedBlockedTimesResult(
+                return BatchUpsertAppointmentTypeScopedBlockedTimesResult(
                     success=False,
                     error_message=f"Invalid operation action: {op_input.action}",
                     blocked_times=[],
@@ -2780,13 +2780,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 or op_input.end_time is None
                 or op_input.timezone is None
             ):
-                return BatchUpsertGroupScopedBlockedTimesResult(
+                return BatchUpsertAppointmentTypeScopedBlockedTimesResult(
                     success=False,
                     error_message="create operation requires startTime, endTime, and timezone",
                     blocked_times=[],
                 )
             if op_input.action in ("update", "delete") and op_input.block_id is None:
-                return BatchUpsertGroupScopedBlockedTimesResult(
+                return BatchUpsertAppointmentTypeScopedBlockedTimesResult(
                     success=False,
                     error_message=f"{op_input.action} operation requires blockId",
                     blocked_times=[],
@@ -2798,7 +2798,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # batch rejects the whole thing before any service call. This only
         # proves the token owns op.calendarId; it does NOT prove that an
         # update/delete op's blockId actually resolves to that calendar --
-        # CalendarGroupService.batch_upsert_group_scoped_blocked_times
+        # AppointmentTypeService.batch_upsert_appointment_type_scoped_blocked_times
         # cross-checks that itself (block.calendar_fk_id == op.calendar_id)
         # before applying anything, so a token can't pair a calendarId it owns
         # with a blockId belonging to a different calendar.
@@ -2808,7 +2808,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             for op_input in input.operations:
                 assert_calendar_in_owner_scope(system_user, org, op_input.calendar_id)
         except Calendar.DoesNotExist:
-            return BatchUpsertGroupScopedBlockedTimesResult(
+            return BatchUpsertAppointmentTypeScopedBlockedTimesResult(
                 success=False, error_message="Calendar not found.", blocked_times=[]
             )
 
@@ -2830,75 +2830,77 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             ops.append(op)
 
         deps = get_calendar_mutation_dependencies()
-        deps.calendar_group_service.initialize(organization=org)
+        deps.appointment_type_service.initialize(organization=org)
 
         if system_user is None:
-            return BatchUpsertGroupScopedBlockedTimesResult(
+            return BatchUpsertAppointmentTypeScopedBlockedTimesResult(
                 success=False,
                 error_message="Organization not found in request context.",
                 blocked_times=[],
             )
 
         try:
-            blocks = deps.calendar_group_service.batch_upsert_group_scoped_blocked_times(
-                group_slot_id=input.group_slot_id,
-                operations=ops,
-                acting_principal=system_user,
+            blocks = (
+                deps.appointment_type_service.batch_upsert_appointment_type_scoped_blocked_times(
+                    appointment_type_slot_id=input.appointment_type_slot_id,
+                    operations=ops,
+                    acting_principal=system_user,
+                )
             )
         except OverLimitError as exc:
             raise_over_limit_graphql_error(exc)
-        except CalendarGroupSlotConfigNotFoundError:
-            return BatchUpsertGroupScopedBlockedTimesResult(
-                success=False, error_message="Group slot not found.", blocked_times=[]
+        except AppointmentTypeSlotConfigNotFoundError:
+            return BatchUpsertAppointmentTypeScopedBlockedTimesResult(
+                success=False, error_message="AppointmentType slot not found.", blocked_times=[]
             )
         except (CalendarIntegrationError, ValueError, DjangoValidationError) as e:
-            return BatchUpsertGroupScopedBlockedTimesResult(
+            return BatchUpsertAppointmentTypeScopedBlockedTimesResult(
                 success=False, error_message=str(e), blocked_times=[]
             )
 
-        return BatchUpsertGroupScopedBlockedTimesResult(
+        return BatchUpsertAppointmentTypeScopedBlockedTimesResult(
             success=True,
-            blocked_times=[group_scoped_blocked_time_from_model(b) for b in blocks],
+            blocked_times=[appointment_type_scoped_blocked_time_from_model(b) for b in blocks],
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def batch_upsert_group_scoped_quota_rules(
+    def batch_upsert_appointment_type_scoped_quota_rules(
         self,
         info: strawberry.Info,
-        input: BatchGroupScopedQuotaRulesInput,  # noqa: A002
-    ) -> BatchUpsertGroupScopedQuotaRulesResult:
-        """Apply an atomic create/update/delete batch of group-scoped quota
-        rules within one group slot's roster.
+        input: BatchAppointmentTypeScopedQuotaRulesInput,  # noqa: A002
+    ) -> BatchUpsertAppointmentTypeScopedQuotaRulesResult:
+        """Apply an atomic create/update/delete batch of appointment-type-scoped quota
+        rules within one appointment type slot's roster.
 
-        Direct mirror of ``batchUpsertGroupScopedBlockedTimes`` -- same
+        Direct mirror of ``batchUpsertAppointmentTypeScopedBlockedTimes`` -- same
         validation, owner-scope, and IDOR cross-check structure -- with two
         deliberate differences: quota rules are non-recurring (no
         startTime/endTime/timezone/rruleString, just period and cap) and are
         NOT metered (spec: "Windows and blocks both consume the limit; quota
         rules do not") -- this mutation never surfaces an ``OverLimitError``,
-        and ``CalendarGroupService.batch_upsert_group_scoped_quota_rules``
+        and ``AppointmentTypeService.batch_upsert_appointment_type_scoped_quota_rules``
         still enforces ``check_not_restricted`` (a ``RESTRICTED`` billing
         root still blocks the write) but there is no delta/limit check.
 
         The (calendar, slot, period) uniqueness constraint is surfaced as a
-        clean ``success=False`` result (``CalendarGroupValidationError`` ->
+        clean ``success=False`` result (``AppointmentTypeValidationError`` ->
         the ``CalendarIntegrationError`` branch below), never an unhandled
         server error.
 
         The token's OrganizationResourceAccess must include the
-        BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES resource.
+        BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_QUOTA_RULES resource.
         """
         _valid_actions = {"create", "update", "delete"}
 
         org = info.context.request.public_api_organization
         if not org:
-            return BatchUpsertGroupScopedQuotaRulesResult(
+            return BatchUpsertAppointmentTypeScopedQuotaRulesResult(
                 success=False,
                 error_message="Organization not found in request context.",
                 quota_rules=[],
             )
         if input.organization_id != org.id:
-            return BatchUpsertGroupScopedQuotaRulesResult(
+            return BatchUpsertAppointmentTypeScopedQuotaRulesResult(
                 success=False,
                 error_message="Organization not found in request context.",
                 quota_rules=[],
@@ -2907,19 +2909,19 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # Validate all operations before touching anything -- fail fast, no writes.
         for op_input in input.operations:
             if op_input.action not in _valid_actions:
-                return BatchUpsertGroupScopedQuotaRulesResult(
+                return BatchUpsertAppointmentTypeScopedQuotaRulesResult(
                     success=False,
                     error_message=f"Invalid operation action: {op_input.action}",
                     quota_rules=[],
                 )
             if op_input.action == "create" and (op_input.period is None or op_input.cap is None):
-                return BatchUpsertGroupScopedQuotaRulesResult(
+                return BatchUpsertAppointmentTypeScopedQuotaRulesResult(
                     success=False,
                     error_message="create operation requires period and cap",
                     quota_rules=[],
                 )
             if op_input.action in ("update", "delete") and op_input.rule_id is None:
-                return BatchUpsertGroupScopedQuotaRulesResult(
+                return BatchUpsertAppointmentTypeScopedQuotaRulesResult(
                     success=False,
                     error_message=f"{op_input.action} operation requires ruleId",
                     quota_rules=[],
@@ -2931,7 +2933,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # batch rejects the whole thing before any service call. This only
         # proves the token owns op.calendarId; it does NOT prove that an
         # update/delete op's ruleId actually resolves to that calendar --
-        # CalendarGroupService.batch_upsert_group_scoped_quota_rules
+        # AppointmentTypeService.batch_upsert_appointment_type_scoped_quota_rules
         # cross-checks that itself (rule.calendar_fk_id == op.calendar_id)
         # before applying anything, so a token can't pair a calendarId it owns
         # with a ruleId belonging to a different calendar.
@@ -2941,7 +2943,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             for op_input in input.operations:
                 assert_calendar_in_owner_scope(system_user, org, op_input.calendar_id)
         except Calendar.DoesNotExist:
-            return BatchUpsertGroupScopedQuotaRulesResult(
+            return BatchUpsertAppointmentTypeScopedQuotaRulesResult(
                 success=False, error_message="Calendar not found.", quota_rules=[]
             )
 
@@ -2957,18 +2959,18 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             ops.append(op)
 
         deps = get_calendar_mutation_dependencies()
-        deps.calendar_group_service.initialize(organization=org)
+        deps.appointment_type_service.initialize(organization=org)
 
         if system_user is None:
-            return BatchUpsertGroupScopedQuotaRulesResult(
+            return BatchUpsertAppointmentTypeScopedQuotaRulesResult(
                 success=False,
                 error_message="Organization not found in request context.",
                 quota_rules=[],
             )
 
         try:
-            rules = deps.calendar_group_service.batch_upsert_group_scoped_quota_rules(
-                group_slot_id=input.group_slot_id,
+            rules = deps.appointment_type_service.batch_upsert_appointment_type_scoped_quota_rules(
+                appointment_type_slot_id=input.appointment_type_slot_id,
                 operations=ops,
                 acting_principal=system_user,
             )
@@ -2978,18 +2980,18 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             # raises the same `OverLimitError` subclass and renders through
             # the same GraphQL error shape every other guarded write uses.
             raise_over_limit_graphql_error(exc)
-        except CalendarGroupSlotConfigNotFoundError:
-            return BatchUpsertGroupScopedQuotaRulesResult(
-                success=False, error_message="Group slot not found.", quota_rules=[]
+        except AppointmentTypeSlotConfigNotFoundError:
+            return BatchUpsertAppointmentTypeScopedQuotaRulesResult(
+                success=False, error_message="AppointmentType slot not found.", quota_rules=[]
             )
         except (CalendarIntegrationError, ValueError, DjangoValidationError) as e:
-            return BatchUpsertGroupScopedQuotaRulesResult(
+            return BatchUpsertAppointmentTypeScopedQuotaRulesResult(
                 success=False, error_message=str(e), quota_rules=[]
             )
 
-        return BatchUpsertGroupScopedQuotaRulesResult(
+        return BatchUpsertAppointmentTypeScopedQuotaRulesResult(
             success=True,
-            quota_rules=[group_scoped_quota_rule_from_model(r) for r in rules],
+            quota_rules=[appointment_type_scoped_quota_rule_from_model(r) for r in rules],
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
@@ -3845,22 +3847,22 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         return event  # type: ignore[return-value]
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def reschedule_calendar_group_event(
+    def reschedule_appointment_type_event(
         self,
         info: strawberry.Info,
-        input: RescheduleCalendarGroupEventInput,  # noqa: A002
+        input: RescheduleAppointmentTypeEventInput,  # noqa: A002
     ) -> CalendarEventGraphQLType:
-        """Reschedule a grouped event's times while preserving all other details.
+        """Reschedule an appointment-type event's times while preserving all other details.
 
         Moves the primary ``CalendarEvent`` on the primary calendar AND the linked
         non-primary ``BlockedTime`` rows (identified by the
-        ``group-event-{event_id}-cal-{cid}`` external_id convention) to the new
+        ``appointment-type-event-{event_id}-cal-{cid}`` external_id convention) to the new
         start/end/timezone simultaneously.
 
-        Whole-event only — group events are not recurring in v1 (no ``recurrenceId``).
+        Whole-event only — appointment type events are not recurring in v1 (no ``recurrenceId``).
 
         Authorization:
-        - Owner-scoped token: restricted to grouped events whose primary calendar is
+        - Owner-scoped token: restricted to appointment-type events whose primary calendar is
           owned by the token's owner; cross-owner → ``"Event not found."`` (same
           as missing event — no existence leak).
         - Org-wide token: acts org-wide.
@@ -3879,10 +3881,10 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # input.organization_id is intentionally ignored: org is derived from the
         # authenticated request context, not from caller-supplied input.
 
-        # Load the grouped event scoped to the organization to derive the primary
-        # calendar and validate that it is actually a grouped event.
+        # Load the appointment-type event scoped to the organization to derive the primary
+        # calendar and validate that it is actually an appointment-type event.
         try:
-            grouped_event = (
+            appointment_type_event = (
                 CalendarEvent.objects.filter_by_organization(org.id)
                 .select_related("calendar")
                 .get(id=input.event_id)
@@ -3890,14 +3892,14 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         except CalendarEvent.DoesNotExist as exc:
             raise GraphQLError("Event not found.") from exc
 
-        if grouped_event.calendar_group_fk_id is None:
-            # Non-grouped event — uniform not-found, no existence leak.
+        if appointment_type_event.appointment_type_fk_id is None:
+            # Non-appointment-type event — uniform not-found, no existence leak.
             raise GraphQLError("Event not found.")
 
-        primary_calendar_id: int = grouped_event.calendar_fk_id  # type: ignore[assignment]
+        primary_calendar_id: int = appointment_type_event.calendar_fk_id  # type: ignore[assignment]
 
         # Owner-scope guard on the PRIMARY calendar: a scoped token may only target
-        # grouped events whose primary calendar its owner owns. The grouped event was
+        # appointment-type events whose primary calendar its owner owns. The appointment-type event was
         # already loaded org-scoped with select_related("calendar"), so the derived
         # primary calendar provably exists — only the ownership check can fail here.
         # Map Calendar.DoesNotExist (cross-owner) to "Event not found." — uniform
@@ -3907,20 +3909,22 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         except Calendar.DoesNotExist as exc:
             raise GraphQLError("Event not found.") from exc
 
-        # Wire the group service: inject the already-initialized calendar_service so
-        # that the public-token auth context flows into reschedule_grouped_event →
-        # update_event. This mirrors exactly how rescheduleCalendarGroupEventWithCode
-        # wires its deps (deps.calendar_group_service.calendar_service = deps.calendar_service).
-        group_deps = get_calendar_mutation_dependencies()
-        group_deps.calendar_group_service.calendar_service = calendar_service
-        group_deps.calendar_group_service.initialize(organization=org)
+        # Wire the appointment type service: inject the already-initialized calendar_service so
+        # that the public-token auth context flows into reschedule_appointment_type_event →
+        # update_event. This mirrors exactly how rescheduleAppointmentTypeEventWithCode
+        # wires its deps (deps.appointment_type_service.calendar_service = deps.calendar_service).
+        appointment_type_deps = get_calendar_mutation_dependencies()
+        appointment_type_deps.appointment_type_service.calendar_service = calendar_service
+        appointment_type_deps.appointment_type_service.initialize(organization=org)
 
         try:
-            event = group_deps.calendar_group_service.reschedule_grouped_event(
-                event_id=input.event_id,
-                start_time=input.start_time,
-                end_time=input.end_time,
-                tz=input.timezone,
+            event = (
+                appointment_type_deps.appointment_type_service.reschedule_appointment_type_event(
+                    event_id=input.event_id,
+                    start_time=input.start_time,
+                    end_time=input.end_time,
+                    tz=input.timezone,
+                )
             )
         except Calendar.DoesNotExist as exc:
             # Derived-calendar miss must not leak existence either (caller addresses by event).
@@ -3936,7 +3940,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError(
                 str(exc) or "You do not have permission to reschedule this event."
             ) from exc
-        except CalendarGroupValidationError as exc:
+        except AppointmentTypeValidationError as exc:
             raise GraphQLError(str(exc)) from exc
         except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
             raise GraphQLError(str(exc)) from exc
@@ -3949,7 +3953,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         info: strawberry.Info,
         input: CancelEventInput,  # noqa: A002
     ) -> CancelEventResult:
-        """Cancel a single-calendar or grouped event, an entire series, or one occurrence.
+        """Cancel a single-calendar or appointment-type event, an entire series, or one occurrence.
 
         Three distinct execution paths share a single resolver:
 
@@ -3958,13 +3962,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
            ``EventRecurrenceException`` (``is_cancelled=True``) for that occurrence without
            touching the master event or the series rule.
 
-        2. **Grouped event** (``event.calendar_group_fk_id is not None``, no ``recurrence_id``):
-           delegates to ``CalendarGroupService.cancel_grouped_event``, which deletes the
+        2. **Appointment-type event** (``event.appointment_type_fk_id is not None``, no ``recurrence_id``):
+           delegates to ``AppointmentTypeService.cancel_appointment_type_event``, which deletes the
            primary ``CalendarEvent`` AND the linked non-primary ``BlockedTime`` rows
-           identified by the ``group-event-{event_id}-cal-{cid}`` external_id convention.
-           ``input.delete_series`` is forwarded to the group service.
+           identified by the ``appointment-type-event-{event_id}-cal-{cid}`` external_id convention.
+           ``input.delete_series`` is forwarded to the appointment type service.
 
-        3. **Single-calendar event** (no ``recurrence_id``, not grouped): delegates to
+        3. **Single-calendar event** (no ``recurrence_id``, not appointment-type): delegates to
            ``CalendarService.delete_event`` with ``delete_series=input.delete_series``.
 
            .. warning::
@@ -3994,7 +3998,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         except Calendar.DoesNotExist as exc:
             raise GraphQLError("Calendar not found.") from exc
 
-        # Load the event — needed to detect grouped-ness before branching.
+        # Load the event — needed to detect appointment-type-ness before branching.
         try:
             event = (
                 CalendarEvent.objects.filter_by_organization(org.id)
@@ -4013,15 +4017,15 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                     master_event_id=input.event_id,
                     recurrence_id=input.recurrence_id,
                 )
-            elif event.calendar_group_fk_id is not None:
-                # Grouped-event path: wire the group service with the already-initialized
+            elif event.appointment_type_fk_id is not None:
+                # Appointment-type-event path: wire the appointment type service with the already-initialized
                 # calendar_service so that the public-token auth context flows through
-                # cancel_grouped_event → delete_event.  Mirrors how cancel_event_with_code
-                # and reschedule_calendar_group_event wire their deps.
-                group_deps = get_calendar_mutation_dependencies()
-                group_deps.calendar_group_service.calendar_service = calendar_service
-                group_deps.calendar_group_service.initialize(organization=org)
-                group_deps.calendar_group_service.cancel_grouped_event(
+                # cancel_appointment_type_event → delete_event.  Mirrors how cancel_event_with_code
+                # and reschedule_appointment_type_event wire their deps.
+                appointment_type_deps = get_calendar_mutation_dependencies()
+                appointment_type_deps.appointment_type_service.calendar_service = calendar_service
+                appointment_type_deps.appointment_type_service.initialize(organization=org)
+                appointment_type_deps.appointment_type_service.cancel_appointment_type_event(
                     event_id=input.event_id,
                     delete_series=input.delete_series,
                 )
@@ -4040,7 +4044,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError(
                 str(exc) or "You do not have permission to cancel this event."
             ) from exc
-        except CalendarGroupValidationError as exc:
+        except AppointmentTypeValidationError as exc:
             raise GraphQLError(str(exc)) from exc
         except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
             raise GraphQLError(str(exc)) from exc
@@ -4060,7 +4064,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         """Create a new BookingPolicy for the caller's organization.
 
         Exactly one of ``calendar_id``, ``membership_user_id``,
-        ``calendar_group_id``, or ``is_organization_default=True`` must be set.
+        ``appointment_type_id``, or ``is_organization_default=True`` must be set.
         Returns an error when a policy already exists for the given target.
         Write is audited via ``BookingPolicyService``.
 
@@ -4085,7 +4089,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             organization_id=org.id,
             calendar_id=input.calendar_id,
             membership_user_id=input.membership_user_id,
-            calendar_group_id=input.calendar_group_id,
+            appointment_type_id=input.appointment_type_id,
             is_organization_default=input.is_organization_default,
         ):
             raise GraphQLError(
@@ -4100,20 +4104,20 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             except Calendar.DoesNotExist as exc:
                 raise GraphQLError("Calendar not found.") from exc
 
-        calendar_group: CalendarGroup | None = None
-        if input.calendar_group_id is not None:
+        appointment_type: AppointmentType | None = None
+        if input.appointment_type_id is not None:
             try:
-                calendar_group = CalendarGroup.objects.filter_by_organization(org.id).get(
-                    id=input.calendar_group_id
+                appointment_type = AppointmentType.objects.filter_by_organization(org.id).get(
+                    id=input.appointment_type_id
                 )
-            except CalendarGroup.DoesNotExist as exc:
-                raise GraphQLError("Calendar group not found.") from exc
+            except AppointmentType.DoesNotExist as exc:
+                raise GraphQLError("Appointment type not found.") from exc
 
         try:
             policy = service.create_booking_policy(
                 calendar=calendar,
                 membership_user_id=input.membership_user_id,
-                calendar_group=calendar_group,
+                appointment_type=appointment_type,
                 is_organization_default=input.is_organization_default,
                 lead_time_seconds=input.lead_time_seconds,
                 max_horizon_seconds=input.max_horizon_seconds,
@@ -4224,7 +4228,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
     # CalendarPool mutations
     # ------------------------------------------------------------------
     # A non-admin scope is refused as data (`success=False`), never raised,
-    # matching how `CalendarGroupMutations` reports domain failures on this
+    # matching how `AppointmentTypeMutations` reports domain failures on this
     # API -- see `_assert_can_write_calendar_pools` for the scoping rule.
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
@@ -4239,7 +4243,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         CALENDAR_POOL resource. See the class-level note above for the
         org-wide/scoped-admin/scoped-member write scoping.
         """
-        group_service, org = _get_org_and_init_calendar_group_service(info)
+        appointment_type_service, org = _get_org_and_init_appointment_type_service(info)
         request: PublicApiHttpRequest = info.context.request
         if error_message := _assert_can_write_calendar_pools(request, org):
             return CalendarPoolResult(success=False, error_message=error_message)
@@ -4249,7 +4253,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # REST 402 body via raise_over_limit_graphql_error, which also rolls back
         # the request transaction -- see that function's docstring.
         try:
-            pool = group_service.create_pool(
+            pool = appointment_type_service.create_pool(
                 CalendarPoolInputData(
                     name=input.name,
                     description=input.description,
@@ -4275,7 +4279,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         ``create_calendar_pool``. The token's OrganizationResourceAccess must
         include the CALENDAR_POOL resource.
         """
-        group_service, org = _get_org_and_init_calendar_group_service(info)
+        appointment_type_service, org = _get_org_and_init_appointment_type_service(info)
         request: PublicApiHttpRequest = info.context.request
         if error_message := _assert_can_write_calendar_pools(request, org):
             return CalendarPoolResult(success=False, error_message=error_message)
@@ -4285,7 +4289,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # REST 402 body via raise_over_limit_graphql_error, which also rolls back
         # the request transaction -- see that function's docstring.
         try:
-            pool = group_service.update_pool(
+            pool = appointment_type_service.update_pool(
                 pool_id=input.pool_id,
                 data=CalendarPoolInputData(
                     name=input.name,
@@ -4310,20 +4314,20 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         """Delete a CalendarPool (org-scoped).
 
         Refused while any slot still references it -- returns
-        ``success=False`` naming the referencing groups in
-        ``referencing_groups`` (mirrors the REST 409 payload), not a GraphQL
+        ``success=False`` naming the referencing appointment types in
+        ``referencing_appointment_types`` (mirrors the REST 409 payload), not a GraphQL
         error. Same write scoping as ``create_calendar_pool``. The token's
         OrganizationResourceAccess must include the CALENDAR_POOL resource.
 
-        ``referencing_groups`` names ``CalendarGroup`` rows, which is a
-        different resource (``CALENDAR_GROUP``) than the one this mutation is
+        ``referencing_appointment_types`` names ``AppointmentType`` rows, which is a
+        different resource (``APPOINTMENT_TYPE``) than the one this mutation is
         gated on. A token holding only ``CALENDAR_POOL`` -- explicitly denied
-        ``CALENDAR_GROUP`` -- must not learn those names through this refusal;
-        ``referencing_groups`` is returned empty for it, with a count-only
+        ``APPOINTMENT_TYPE`` -- must not learn those names through this refusal;
+        ``referencing_appointment_types`` is returned empty for it, with a count-only
         ``error_message`` so the caller still learns why the delete failed.
-        A token that also holds ``CALENDAR_GROUP`` gets the full, named list.
+        A token that also holds ``APPOINTMENT_TYPE`` gets the full, named list.
         """
-        group_service, org = _get_org_and_init_calendar_group_service(info)
+        appointment_type_service, org = _get_org_and_init_appointment_type_service(info)
         request: PublicApiHttpRequest = info.context.request
         if error_message := _assert_can_write_calendar_pools(request, org):
             return DeleteCalendarPoolResult(success=False, error_message=error_message)
@@ -4333,29 +4337,31 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # REST 402 body via raise_over_limit_graphql_error, which also rolls back
         # the request transaction -- see that function's docstring.
         try:
-            group_service.delete_pool(pool_id=input.pool_id)
+            appointment_type_service.delete_pool(pool_id=input.pool_id)
         except CalendarPool.DoesNotExist:
             return DeleteCalendarPoolResult(success=False, error_message="Pool not found.")
         except OverLimitError as exc:
             raise_over_limit_graphql_error(exc)
         except CalendarPoolInUseError as e:
             system_user = request.public_api_system_user
-            can_see_group_names = system_user is not None and (
+            can_see_appointment_type_names = system_user is not None and (
                 system_user.available_resources.filter(
-                    resource_name=PublicAPIResources.CALENDAR_GROUP
+                    resource_name=PublicAPIResources.APPOINTMENT_TYPE
                 ).exists()
             )
-            if can_see_group_names:
+            if can_see_appointment_type_names:
                 return DeleteCalendarPoolResult(
-                    success=False, error_message=str(e), referencing_groups=e.group_names
+                    success=False,
+                    error_message=str(e),
+                    referencing_appointment_types=e.appointment_type_names,
                 )
             return DeleteCalendarPoolResult(
                 success=False,
                 error_message=(
                     "Cannot delete CalendarPool because it is still attached to slots "
-                    f"in {len(e.group_names)} group(s)."
+                    f"in {len(e.appointment_type_names)} appointment type(s)."
                 ),
-                referencing_groups=[],
+                referencing_appointment_types=[],
             )
         except CalendarPoolError as e:
             return DeleteCalendarPoolResult(success=False, error_message=str(e))

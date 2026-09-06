@@ -1,4 +1,4 @@
-"""Tests for the is_private field on Calendar, CalendarGroup, and CalendarBundle."""
+"""Tests for the is_private field on Calendar, AppointmentType, and CalendarBundle."""
 
 import json
 from unittest.mock import patch
@@ -8,7 +8,7 @@ from model_bakery import baker
 from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarType
-from calendar_integration.models import Calendar, CalendarGroup
+from calendar_integration.models import AppointmentType, Calendar
 from organizations.models import Organization
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
@@ -57,7 +57,7 @@ def system_user_with_resources(organization):
         PublicAPIResources.CALENDAR,
         PublicAPIResources.CALENDAR_EVENT,
         PublicAPIResources.CALENDAR_BUNDLE,
-        PublicAPIResources.CALENDAR_GROUP,
+        PublicAPIResources.APPOINTMENT_TYPE,
     ]
 
     for resource in resources:
@@ -82,7 +82,7 @@ def graphql_client(system_user_with_resources):
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
 class TestIsPrivateField:
-    """Test the is_private field on Calendar, CalendarGroup, and CalendarBundle."""
+    """Test the is_private field on Calendar, AppointmentType, and CalendarBundle."""
 
     def test_calendar_is_private_when_not_accepts_public_scheduling(
         self, mock_rate_limiter, graphql_client, organization
@@ -158,23 +158,23 @@ class TestIsPrivateField:
         assert len(calendars) == 1
         assert calendars[0]["isPrivate"] is False
 
-    def test_calendar_group_is_private_when_not_accepts_public_scheduling(
+    def test_appointment_type_is_private_when_not_accepts_public_scheduling(
         self, mock_rate_limiter, graphql_client, organization
     ):
-        """Test that is_private is true on CalendarGroup when accepts_public_scheduling is false."""
+        """Test that is_private is true on AppointmentType when accepts_public_scheduling is false."""
         mock_rate_limiter.return_value = iter([None])
 
-        # Create a private calendar group (default)
-        group = baker.make(
-            CalendarGroup,
+        # Create a private appointment type (default)
+        appointment_type = baker.make(
+            AppointmentType,
             organization=organization,
-            name="Private Group",
+            name="Private AppointmentType",
             accepts_public_scheduling=False,
         )
 
         query = """
-            query GetCalendarGroup($groupId: Int!) {
-                calendarGroup(groupId: $groupId) {
+            query GetAppointmentType($appointmentTypeId: Int!) {
+                appointmentType(appointmentTypeId: $appointmentTypeId) {
                     id
                     name
                     isPrivate
@@ -182,7 +182,7 @@ class TestIsPrivateField:
             }
         """
 
-        variables = {"groupId": group.id}
+        variables = {"appointmentTypeId": appointment_type.id}
 
         response = graphql_client.post(
             "/graphql/",
@@ -191,25 +191,25 @@ class TestIsPrivateField:
         )
 
         data = assert_graphql_success(response)
-        assert data["calendarGroup"]["isPrivate"] is True
+        assert data["appointmentType"]["isPrivate"] is True
 
-    def test_calendar_group_is_private_false_when_accepts_public_scheduling(
+    def test_appointment_type_is_private_false_when_accepts_public_scheduling(
         self, mock_rate_limiter, graphql_client, organization
     ):
-        """Test that is_private is false on CalendarGroup when accepts_public_scheduling is true."""
+        """Test that is_private is false on AppointmentType when accepts_public_scheduling is true."""
         mock_rate_limiter.return_value = iter([None])
 
-        # Create a public calendar group
-        group = baker.make(
-            CalendarGroup,
+        # Create a public appointment type
+        appointment_type = baker.make(
+            AppointmentType,
             organization=organization,
-            name="Public Group",
+            name="Public AppointmentType",
             accepts_public_scheduling=True,
         )
 
         query = """
-            query GetCalendarGroup($groupId: Int!) {
-                calendarGroup(groupId: $groupId) {
+            query GetAppointmentType($appointmentTypeId: Int!) {
+                appointmentType(appointmentTypeId: $appointmentTypeId) {
                     id
                     name
                     isPrivate
@@ -217,7 +217,7 @@ class TestIsPrivateField:
             }
         """
 
-        variables = {"groupId": group.id}
+        variables = {"appointmentTypeId": appointment_type.id}
 
         response = graphql_client.post(
             "/graphql/",
@@ -226,7 +226,7 @@ class TestIsPrivateField:
         )
 
         data = assert_graphql_success(response)
-        assert data["calendarGroup"]["isPrivate"] is False
+        assert data["appointmentType"]["isPrivate"] is False
 
     def test_bundle_is_private_when_not_accepts_public_scheduling(
         self, mock_rate_limiter, graphql_client, organization

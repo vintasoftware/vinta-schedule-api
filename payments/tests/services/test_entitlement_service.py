@@ -29,11 +29,11 @@ from vinta_billing.registry import resources
 from vinta_billing.services.entitlement_service import EntitlementService
 
 from calendar_integration.constants import CalendarType, CalendarVisibility
-from calendar_integration.models import Calendar, CalendarGroup
+from calendar_integration.models import AppointmentType, Calendar
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from payments.seams.resource_keys import (
+    APPOINTMENT_TYPES,
     BUNDLE_CALENDARS,
-    CALENDAR_GROUPS,
     EVENT_OCCURRENCES,
     ORGANIZATION_MEMBERS,
     PARTNER_API,
@@ -241,21 +241,21 @@ class TestUsageCounters:
         assert service.get_current_usage(organization, RESOURCE_CALENDARS) == 2
         assert service.get_current_usage(organization, BUNDLE_CALENDARS) == 1
 
-    def test_calendar_group_and_webhook_counters(self, service, organization, subscription):
-        baker.make(CalendarGroup, organization=organization, _quantity=2)
+    def test_appointment_type_and_webhook_counters(self, service, organization, subscription):
+        baker.make(AppointmentType, organization=organization, _quantity=2)
         baker.make(WebhookConfiguration, organization=organization, deleted_at=None)
         baker.make(WebhookConfiguration, organization=organization, deleted_at=timezone.now())
 
-        assert service.get_current_usage(organization, CALENDAR_GROUPS) == 2
+        assert service.get_current_usage(organization, APPOINTMENT_TYPES) == 2
         assert service.get_current_usage(organization, WEBHOOK_SUBSCRIPTIONS) == 1
 
     def test_usage_is_scoped_to_the_organization(self, service, organization, subscription):
         """A sibling organization's rows must never leak into this one's count."""
         other = baker.make(Organization, parent=None, can_invite_organizations=False)
-        baker.make(CalendarGroup, organization=other, _quantity=3)
-        baker.make(CalendarGroup, organization=organization)
+        baker.make(AppointmentType, organization=other, _quantity=3)
+        baker.make(AppointmentType, organization=organization)
 
-        assert service.get_current_usage(organization, CALENDAR_GROUPS) == 1
+        assert service.get_current_usage(organization, APPOINTMENT_TYPES) == 1
 
 
 @pytest.mark.django_db
@@ -286,10 +286,10 @@ class TestCheckLimit:
     ):
         subscription.billing_state = billing_state
         subscription.save(update_fields=["billing_state"])
-        make_limit(subscription, CALENDAR_GROUPS, 1)
-        baker.make(CalendarGroup, organization=organization)
+        make_limit(subscription, APPOINTMENT_TYPES, 1)
+        baker.make(AppointmentType, organization=organization)
 
-        result = service.check_limit(organization, CALENDAR_GROUPS)
+        result = service.check_limit(organization, APPOINTMENT_TYPES)
 
         assert result.allowed is False
         assert result.remedy == LimitRemedy.RESOLVE_BILLING
@@ -304,10 +304,10 @@ class TestCheckLimit:
         guarantee rests on this one statement being emitted against the right row,
         so the SQL itself is what gets asserted.
         """
-        make_limit(subscription, CALENDAR_GROUPS, 3)
+        make_limit(subscription, APPOINTMENT_TYPES, 3)
 
         with transaction.atomic(), CaptureQueriesContext(connection) as captured:
-            result = service.check_limit(organization, CALENDAR_GROUPS, lock=True)
+            result = service.check_limit(organization, APPOINTMENT_TYPES, lock=True)
 
         assert result.allowed is True
         locking_queries = [
@@ -324,10 +324,10 @@ class TestCheckLimit:
     def test_no_lock_takes_no_row_lock(self, service, organization, subscription):
         """The negative half — otherwise the assertion above could pass on a lock
         somebody took unconditionally."""
-        make_limit(subscription, CALENDAR_GROUPS, 3)
+        make_limit(subscription, APPOINTMENT_TYPES, 3)
 
         with transaction.atomic(), CaptureQueriesContext(connection) as captured:
-            service.check_limit(organization, CALENDAR_GROUPS, lock=False)
+            service.check_limit(organization, APPOINTMENT_TYPES, lock=False)
 
         assert not [query for query in captured.captured_queries if "FOR UPDATE" in query["sql"]]
 
@@ -340,11 +340,11 @@ class TestCheckLimit:
         Asserted as "no query touched the counted tables", which is what actually
         matters, rather than a brittle absolute query number.
         """
-        make_limit(subscription, CALENDAR_GROUPS, None)
-        baker.make(CalendarGroup, organization=organization, _quantity=3)
+        make_limit(subscription, APPOINTMENT_TYPES, None)
+        baker.make(AppointmentType, organization=organization, _quantity=3)
 
         with CaptureQueriesContext(connection) as captured:
-            result = service.check_limit(organization, CALENDAR_GROUPS)
+            result = service.check_limit(organization, APPOINTMENT_TYPES)
 
         assert result.allowed is True
         assert result.ceiling is None
@@ -354,7 +354,7 @@ class TestCheckLimit:
         assert not [
             query
             for query in captured.captured_queries
-            if "calendar_integration_calendargroup" in query["sql"]
+            if "calendar_integration_appointmenttype" in query["sql"]
         ], "The unlimited path counted usage nobody reads."
 
     def test_check_limit_resolves_the_billing_root_and_subscription_once(
@@ -371,10 +371,10 @@ class TestCheckLimit:
         root = subscription.organization
         mid = baker.make(Organization, parent=root, can_invite_organizations=False)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
-        make_limit(subscription, CALENDAR_GROUPS, 3)
+        make_limit(subscription, APPOINTMENT_TYPES, 3)
 
         with CaptureQueriesContext(connection) as captured:
-            service.check_limit(leaf, CALENDAR_GROUPS)
+            service.check_limit(leaf, APPOINTMENT_TYPES)
 
         subscription_reads = [
             query

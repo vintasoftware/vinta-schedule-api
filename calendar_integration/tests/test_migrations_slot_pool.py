@@ -1,6 +1,6 @@
 """Calendar Pools Phase 3: the uniqueness contract after the constraint swap.
 
-``calendargroupslotmembership_unique_slot_calendar`` on ``(slot_fk,
+``appointmenttypeslotmembership_unique_slot_calendar`` on ``(slot_fk,
 calendar_fk)`` was replaced, because the projected union deliberately allows one
 calendar to reach a slot from several sources. The replacement has to behave as
 "unique on ``(slot_fk, calendar_fk, source_pool_fk)`` **with NULL treated as a
@@ -24,10 +24,10 @@ import pytest
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.factories import create_calendar_pool
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     Calendar,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
 )
 from organizations.models import Organization
 
@@ -51,10 +51,10 @@ def calendar(organization):
 
 @pytest.fixture
 def slot(organization):
-    group = CalendarGroup.objects.create(organization=organization, name="Clinic")
-    return CalendarGroupSlot.objects.create(
+    appointment_type = AppointmentType.objects.create(organization=organization, name="Clinic")
+    return AppointmentTypeSlot.objects.create(
         organization=organization,
-        group=group,
+        appointment_type=appointment_type,
         name="Physicians",
         order=0,
     )
@@ -73,7 +73,7 @@ def other_pool(organization, calendar):
 
 
 def _membership(organization, slot, calendar, source_pool=None):
-    return CalendarGroupSlotMembership.objects.create(
+    return AppointmentTypeSlotMembership.objects.create(
         organization=organization,
         slot=slot,
         calendar=calendar,
@@ -119,7 +119,7 @@ def test_inline_plus_projected_row_for_the_same_slot_calendar_is_accepted(
     inline = _membership(organization, slot, calendar)
     projected = _membership(organization, slot, calendar, source_pool=pool)
 
-    rows = CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).filter(
+    rows = AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id).filter(
         slot_fk=slot, calendar_fk=calendar
     )
     assert set(rows.values_list("id", flat=True)) == {inline.id, projected.id}
@@ -134,7 +134,7 @@ def test_two_projected_rows_from_different_pools_are_accepted(
     _membership(organization, slot, calendar, source_pool=other_pool)
 
     assert (
-        CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .filter(slot_fk=slot, calendar_fk=calendar)
         .count()
         == 2
@@ -159,18 +159,18 @@ def test_constraint_swap_left_the_expected_partial_indexes(db):
     with connection.cursor() as cursor:
         cursor.execute(
             "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = %s ORDER BY indexname",
-            ["calendar_integration_calendargroupslotmembership"],
+            ["calendar_integration_appointmenttypeslotmembership"],
         )
         indexes = dict(cursor.fetchall())
 
-    assert "calendargroupslotmembership_unique_slot_calendar" not in indexes
+    assert "appointmenttypeslotmembership_unique_slot_calendar" not in indexes
 
-    inline_def = indexes["calendargroupslotmembership_uniq_inline"]
+    inline_def = indexes["appointmenttypeslotmembership_uniq_inline"]
     assert "UNIQUE INDEX" in inline_def
     assert "(slot_fk_id, calendar_fk_id)" in inline_def
     assert "source_pool_fk_id IS NULL" in inline_def
 
-    projected_def = indexes["calendargroupslotmembership_uniq_projected"]
+    projected_def = indexes["appointmenttypeslotmembership_uniq_projected"]
     assert "UNIQUE INDEX" in projected_def
     assert "(slot_fk_id, calendar_fk_id, source_pool_fk_id)" in projected_def
     assert "source_pool_fk_id IS NOT NULL" in projected_def

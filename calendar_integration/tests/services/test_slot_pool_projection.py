@@ -2,7 +2,7 @@
 
 A slot's bookable roster is the UNION of its inline calendars and the calendars
 of every attached ``CalendarPool``, projected into
-``CalendarGroupSlotMembership`` with ``source_pool`` naming the origin. These
+``AppointmentTypeSlotMembership`` with ``source_pool`` naming the origin. These
 tests pin the four properties that make the union safe:
 
 1. Attaching makes the pool's calendars bookable; detaching removes exactly the
@@ -10,7 +10,7 @@ tests pin the four properties that make the union safe:
 2. A calendar reachable from two sources survives losing one.
 3. ``required_count`` counts distinct CALENDARS, not membership rows, so one
    calendar present twice never satisfies a slot needing two.
-4. A group with no pools attached is byte-identical, query count included, to
+4. An appointment type with no pools attached is byte-identical, query count included, to
    what it was before pools existed.
 """
 
@@ -27,21 +27,21 @@ import pytest
 import calendar_integration.signals as signals_module
 from audit_integration.constants import AuditAction
 from calendar_integration.constants import CalendarProvider, CalendarType
-from calendar_integration.exceptions import CalendarGroupValidationError
+from calendar_integration.exceptions import AppointmentTypeValidationError
 from calendar_integration.factories import create_calendar_pool, create_calendar_pool_membership
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlotMembership,
+    AppointmentTypeSlotPool,
     AvailableTime,
     Calendar,
-    CalendarGroup,
-    CalendarGroupSlotMembership,
-    CalendarGroupSlotPool,
     CalendarPool,
 )
-from calendar_integration.services.calendar_group_service import CalendarGroupService
+from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.dataclasses import (
-    CalendarGroupInputData,
-    CalendarGroupSlotInputData,
-    CalendarGroupSlotSelectionInputData,
+    AppointmentTypeInputData,
+    AppointmentTypeSlotInputData,
+    AppointmentTypeSlotSelectionInputData,
 )
 from organizations.models import Organization
 
@@ -58,7 +58,7 @@ def organization(db):
 
 @pytest.fixture
 def service(organization):
-    svc = CalendarGroupService()
+    svc = AppointmentTypeService()
     svc.initialize(organization=organization)
     return svc
 
@@ -74,7 +74,7 @@ def audit_service():
 def audited_service(organization, audit_service):
     """`service`, but with a real `audit_service` bound -- for tests that
     inspect what gets audited rather than just what gets projected."""
-    svc = CalendarGroupService(audit_service=audit_service)
+    svc = AppointmentTypeService(audit_service=audit_service)
     svc.initialize(organization=organization)
     return svc
 
@@ -117,25 +117,25 @@ def seniors_pool(organization, calendars):
     )
 
 
-# Query count `update_group` issues for `_group_input`'s two-slot fixture when
+# Query count `update_appointment_type` issues for `_appointment_type_input`'s two-slot fixture when
 # no slot in the payload sends `pool_ids` -- see
-# test_update_group_on_a_no_pool_group_issues_no_calendar_pool_queries.
-_NO_POOL_UPDATE_GROUP_QUERY_COUNT = 11
+# test_update_appointment_type_on_a_no_pool_appointment_type_issues_no_calendar_pool_queries.
+_NO_POOL_UPDATE_APPOINTMENT_TYPE_QUERY_COUNT = 11
 
 
-def _group_input(calendars, *, physician_calendar_ids, pool_ids=None, required_count=1):
-    return CalendarGroupInputData(
+def _appointment_type_input(calendars, *, physician_calendar_ids, pool_ids=None, required_count=1):
+    return AppointmentTypeInputData(
         name="Clinic Appointments",
         description="",
         slots=[
-            CalendarGroupSlotInputData(
+            AppointmentTypeSlotInputData(
                 name="Physicians",
                 calendar_ids=physician_calendar_ids,
                 pool_ids=pool_ids,
                 required_count=required_count,
                 order=0,
             ),
-            CalendarGroupSlotInputData(
+            AppointmentTypeSlotInputData(
                 name="Rooms",
                 calendar_ids=[calendars["room_1"].id],
                 required_count=1,
@@ -148,7 +148,7 @@ def _group_input(calendars, *, physician_calendar_ids, pool_ids=None, required_c
 def _roster(organization, slot) -> set[int]:
     """The slot's resolved roster: distinct calendar ids, whatever the source."""
     return set(
-        CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .filter(slot_fk=slot)
         .values_list("calendar_fk_id", flat=True)
     )
@@ -163,15 +163,15 @@ def _roster(organization, slot) -> set[int]:
 def test_attaching_a_pool_makes_its_calendars_bookable_in_the_slot(
     service, organization, calendars, nurses_pool
 ):
-    group = service.create_group(
-        _group_input(calendars, physician_calendar_ids=[calendars["phys_a"].id])
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(calendars, physician_calendar_ids=[calendars["phys_a"].id])
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
     assert _roster(organization, physicians) == {calendars["phys_a"].id}
 
-    service.update_group(
-        group.id,
-        _group_input(
+    service.update_appointment_type(
+        appointment_type.id,
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
@@ -180,13 +180,13 @@ def test_attaching_a_pool_makes_its_calendars_bookable_in_the_slot(
 
     physicians.refresh_from_db()
     assert _roster(organization, physicians) == {calendars["phys_a"].id, calendars["phys_b"].id}
-    projected = CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).filter(
-        slot_fk=physicians, calendar_fk=calendars["phys_b"]
-    )
+    projected = AppointmentTypeSlotMembership.objects.filter_by_organization(
+        organization.id
+    ).filter(slot_fk=physicians, calendar_fk=calendars["phys_b"])
     assert projected.count() == 1
     assert projected.get().source_pool_fk_id == nurses_pool.id
     assert (
-        CalendarGroupSlotPool.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotPool.objects.filter_by_organization(organization.id)
         .filter(slot_fk=physicians, pool_fk=nurses_pool)
         .exists()
     )
@@ -196,23 +196,25 @@ def test_attaching_a_pool_makes_its_calendars_bookable_in_the_slot(
 def test_detaching_a_pool_removes_its_projected_calendars(
     service, organization, calendars, nurses_pool
 ):
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
         )
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
     assert _roster(organization, physicians) == {calendars["phys_a"].id, calendars["phys_b"].id}
 
-    service.update_group(
-        group.id,
-        _group_input(calendars, physician_calendar_ids=[calendars["phys_a"].id], pool_ids=[]),
+    service.update_appointment_type(
+        appointment_type.id,
+        _appointment_type_input(
+            calendars, physician_calendar_ids=[calendars["phys_a"].id], pool_ids=[]
+        ),
     )
 
     assert _roster(organization, physicians) == {calendars["phys_a"].id}
-    assert not CalendarGroupSlotPool.objects.filter_by_organization(organization.id).exists()
+    assert not AppointmentTypeSlotPool.objects.filter_by_organization(organization.id).exists()
 
 
 @pytest.mark.django_db
@@ -220,24 +222,24 @@ def test_omitted_pool_ids_leaves_attachments_unchanged(
     service, organization, calendars, nurses_pool
 ):
     """The omit-versus-empty-list distinction: `None` is not `[]`."""
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
         )
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
 
     # pool_ids omitted entirely -- the shape every pre-pools client sends.
-    service.update_group(
-        group.id,
-        _group_input(calendars, physician_calendar_ids=[calendars["phys_a"].id]),
+    service.update_appointment_type(
+        appointment_type.id,
+        _appointment_type_input(calendars, physician_calendar_ids=[calendars["phys_a"].id]),
     )
 
     assert _roster(organization, physicians) == {calendars["phys_a"].id, calendars["phys_b"].id}
     assert (
-        CalendarGroupSlotPool.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotPool.objects.filter_by_organization(organization.id)
         .filter(slot_fk=physicians)
         .count()
         == 1
@@ -253,24 +255,24 @@ def test_omitted_pool_ids_leaves_attachments_unchanged(
 def test_calendar_inline_and_in_pool_survives_the_pool_being_detached(
     service, organization, calendars, nurses_pool
 ):
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             # phys_b is BOTH inline and on the Nurses roster.
             physician_calendar_ids=[calendars["phys_a"].id, calendars["phys_b"].id],
             pool_ids=[nurses_pool.id],
         )
     )
-    physicians = group.slots.get(name="Physicians")
-    rows = CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).filter(
+    physicians = appointment_type.slots.get(name="Physicians")
+    rows = AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id).filter(
         slot_fk=physicians, calendar_fk=calendars["phys_b"]
     )
     assert rows.count() == 2
     assert {row.source_pool_fk_id for row in rows} == {None, nurses_pool.id}
 
-    service.update_group(
-        group.id,
-        _group_input(
+    service.update_appointment_type(
+        appointment_type.id,
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id, calendars["phys_b"].id],
             pool_ids=[],
@@ -278,9 +280,9 @@ def test_calendar_inline_and_in_pool_survives_the_pool_being_detached(
     )
 
     assert _roster(organization, physicians) == {calendars["phys_a"].id, calendars["phys_b"].id}
-    surviving = CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).filter(
-        slot_fk=physicians, calendar_fk=calendars["phys_b"]
-    )
+    surviving = AppointmentTypeSlotMembership.objects.filter_by_organization(
+        organization.id
+    ).filter(slot_fk=physicians, calendar_fk=calendars["phys_b"])
     assert surviving.count() == 1
     assert surviving.get().source_pool_fk_id is None
 
@@ -289,22 +291,22 @@ def test_calendar_inline_and_in_pool_survives_the_pool_being_detached(
 def test_calendar_in_two_pools_survives_one_being_detached(
     service, organization, calendars, nurses_pool, seniors_pool
 ):
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id, seniors_pool.id],
         )
     )
-    physicians = group.slots.get(name="Physicians")
-    rows = CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).filter(
+    physicians = appointment_type.slots.get(name="Physicians")
+    rows = AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id).filter(
         slot_fk=physicians, calendar_fk=calendars["phys_b"]
     )
     assert {row.source_pool_fk_id for row in rows} == {nurses_pool.id, seniors_pool.id}
 
-    service.update_group(
-        group.id,
-        _group_input(
+    service.update_appointment_type(
+        appointment_type.id,
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[seniors_pool.id],
@@ -312,9 +314,9 @@ def test_calendar_in_two_pools_survives_one_being_detached(
     )
 
     assert _roster(organization, physicians) == {calendars["phys_a"].id, calendars["phys_b"].id}
-    surviving = CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).filter(
-        slot_fk=physicians, calendar_fk=calendars["phys_b"]
-    )
+    surviving = AppointmentTypeSlotMembership.objects.filter_by_organization(
+        organization.id
+    ).filter(slot_fk=physicians, calendar_fk=calendars["phys_b"])
     assert surviving.count() == 1
     assert surviving.get().source_pool_fk_id == seniors_pool.id
 
@@ -324,28 +326,28 @@ def test_removing_an_inline_calendar_does_not_touch_the_projected_row(
     service, organization, calendars, nurses_pool
 ):
     """The inline path must not reach across into projected rows either."""
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id, calendars["phys_b"].id],
             pool_ids=[nurses_pool.id],
         )
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
 
     # Drop phys_b from the INLINE roster; the pool still lists it.
-    service.update_group(
-        group.id,
-        _group_input(
+    service.update_appointment_type(
+        appointment_type.id,
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
         ),
     )
 
-    remaining = CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).filter(
-        slot_fk=physicians, calendar_fk=calendars["phys_b"]
-    )
+    remaining = AppointmentTypeSlotMembership.objects.filter_by_organization(
+        organization.id
+    ).filter(slot_fk=physicians, calendar_fk=calendars["phys_b"])
     assert remaining.count() == 1
     assert remaining.get().source_pool_fk_id == nurses_pool.id
     assert _roster(organization, physicians) == {calendars["phys_a"].id, calendars["phys_b"].id}
@@ -360,20 +362,20 @@ def test_removing_an_inline_calendar_does_not_touch_the_projected_row(
 def test_deleting_a_slot_removes_its_attachments_and_projected_rows(
     service, organization, calendars, nurses_pool
 ):
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
         )
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
 
     physicians.delete()
 
-    assert not CalendarGroupSlotPool.objects.filter_by_organization(organization.id).exists()
+    assert not AppointmentTypeSlotPool.objects.filter_by_organization(organization.id).exists()
     assert (
-        not CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        not AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .filter(slot_fk_id=physicians.id)
         .exists()
     )
@@ -385,9 +387,9 @@ def test_deleting_a_slot_removes_its_attachments_and_projected_rows(
 
 @pytest.mark.django_db
 def test_deleting_a_referenced_pool_is_refused(service, organization, calendars, nurses_pool):
-    """PROTECT on ``CalendarGroupSlotPool.pool`` is the schema-level refusal."""
-    service.create_group(
-        _group_input(
+    """PROTECT on ``AppointmentTypeSlotPool.pool`` is the schema-level refusal."""
+    service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
@@ -406,16 +408,18 @@ def test_deleting_a_referenced_pool_is_refused(service, organization, calendars,
 
 @pytest.mark.django_db
 def test_deleting_an_unreferenced_pool_succeeds(service, organization, calendars, nurses_pool):
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
         )
     )
-    service.update_group(
-        group.id,
-        _group_input(calendars, physician_calendar_ids=[calendars["phys_a"].id], pool_ids=[]),
+    service.update_appointment_type(
+        appointment_type.id,
+        _appointment_type_input(
+            calendars, physician_calendar_ids=[calendars["phys_a"].id], pool_ids=[]
+        ),
     )
 
     nurses_pool.delete()
@@ -455,8 +459,8 @@ def test_required_count_two_is_not_satisfied_by_one_calendar_from_two_sources(
             timezone="UTC",
         )
 
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             # phys_a inline AND on the Solo roster; phys_c pads the roster so
             # required_count=2 passes input validation.
@@ -465,19 +469,19 @@ def test_required_count_two_is_not_satisfied_by_one_calendar_from_two_sources(
             required_count=2,
         )
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
     # Two rows, one calendar -- exactly the shape that fools a row count.
     assert (
-        CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .filter(slot_fk=physicians, calendar_fk=calendars["phys_a"])
         .count()
         == 2
     )
 
     bookable = list(
-        CalendarGroup.objects.filter_by_organization(
+        AppointmentType.objects.filter_by_organization(
             organization.id
-        ).only_groups_bookable_in_ranges([window])
+        ).only_appointment_types_bookable_in_ranges([window])
     )
     assert bookable == []
 
@@ -498,8 +502,8 @@ def test_required_count_two_is_satisfied_by_two_distinct_available_calendars(
             timezone="UTC",
         )
 
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
@@ -508,11 +512,11 @@ def test_required_count_two_is_satisfied_by_two_distinct_available_calendars(
     )
 
     bookable = list(
-        CalendarGroup.objects.filter_by_organization(
+        AppointmentType.objects.filter_by_organization(
             organization.id
-        ).only_groups_bookable_in_ranges([window])
+        ).only_appointment_types_bookable_in_ranges([window])
     )
-    assert bookable == [group]
+    assert bookable == [appointment_type]
 
 
 @pytest.mark.django_db
@@ -520,10 +524,10 @@ def test_required_count_may_be_satisfied_entirely_by_pool_calendars(
     service, organization, calendars, nurses_pool
 ):
     """A slot may be made of pool calendars alone -- no inline calendar required."""
-    group = service.create_group(
-        _group_input(calendars, physician_calendar_ids=[], pool_ids=[nurses_pool.id])
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(calendars, physician_calendar_ids=[], pool_ids=[nurses_pool.id])
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
     assert _roster(organization, physicians) == {calendars["phys_b"].id}
 
 
@@ -531,9 +535,9 @@ def test_required_count_may_be_satisfied_entirely_by_pool_calendars(
 def test_required_count_above_effective_roster_size_is_rejected(
     service, organization, calendars, nurses_pool
 ):
-    with pytest.raises(CalendarGroupValidationError, match="exceeds pool size"):
-        service.create_group(
-            _group_input(
+    with pytest.raises(AppointmentTypeValidationError, match="exceeds pool size"):
+        service.create_appointment_type(
+            _appointment_type_input(
                 calendars,
                 physician_calendar_ids=[calendars["phys_a"].id],
                 pool_ids=[nurses_pool.id],
@@ -547,9 +551,9 @@ def test_pool_from_another_organization_is_rejected(service, calendars, db):
     other_org = Organization.objects.create(name="Other Org", should_sync_rooms=False)
     foreign_pool = CalendarPool.objects.create(organization=other_org, name="Theirs")
 
-    with pytest.raises(CalendarGroupValidationError, match="do not belong to this organization"):
-        service.create_group(
-            _group_input(
+    with pytest.raises(AppointmentTypeValidationError, match="do not belong to this organization"):
+        service.create_appointment_type(
+            _appointment_type_input(
                 calendars,
                 physician_calendar_ids=[calendars["phys_a"].id],
                 pool_ids=[foreign_pool.id],
@@ -558,53 +562,55 @@ def test_pool_from_another_organization_is_rejected(service, calendars, db):
 
 
 @pytest.mark.django_db
-def test_one_pool_attached_to_two_slots_of_a_group_is_rejected(service, calendars, nurses_pool):
+def test_one_pool_attached_to_two_slots_of_an_appointment_type_is_rejected(
+    service, calendars, nurses_pool
+):
     """The one-calendar-per-slot rule is judged on the effective roster."""
-    data = _group_input(
+    data = _appointment_type_input(
         calendars,
         physician_calendar_ids=[calendars["phys_a"].id],
         pool_ids=[nurses_pool.id],
     )
     data.slots[1].pool_ids = [nurses_pool.id]
 
-    with pytest.raises(CalendarGroupValidationError, match="appears in multiple slots"):
-        service.create_group(data)
+    with pytest.raises(AppointmentTypeValidationError, match="appears in multiple slots"):
+        service.create_appointment_type(data)
 
 
 # ---------------------------------------------------------------------------
-# Self-gating: a group with no pools is unchanged
+# Self-gating: an appointment type with no pools is unchanged
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-def test_group_with_no_pools_has_no_projected_rows_and_no_attachments(
+def test_appointment_type_with_no_pools_has_no_projected_rows_and_no_attachments(
     service, organization, calendars
 ):
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id, calendars["phys_b"].id],
         )
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
 
     assert _roster(organization, physicians) == {calendars["phys_a"].id, calendars["phys_b"].id}
     assert (
-        CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .projected()
         .count()
         == 0
     )
-    assert not CalendarGroupSlotPool.objects.filter_by_organization(organization.id).exists()
+    assert not AppointmentTypeSlotPool.objects.filter_by_organization(organization.id).exists()
 
 
 @pytest.mark.django_db
 def test_no_pools_bookable_slot_query_count_is_unchanged(
     service, organization, calendars, django_assert_num_queries
 ):
-    """A group with no pools issues exactly one query for the bookable check.
+    """An appointment type with no pools issues exactly one query for the bookable check.
 
-    ``only_groups_bookable_in_ranges`` is a single correlated query before and
+    ``only_appointment_types_bookable_in_ranges`` is a single correlated query before and
     after this phase -- the ``Count`` fix changes the counted expression, not the
     query shape, and the projection adds no read.
     """
@@ -618,22 +624,22 @@ def test_no_pools_bookable_slot_query_count_is_unchanged(
             end_time_tz_unaware=window[1],
             timezone="UTC",
         )
-    group = service.create_group(
-        _group_input(calendars, physician_calendar_ids=[calendars["phys_a"].id])
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(calendars, physician_calendar_ids=[calendars["phys_a"].id])
     )
 
     with django_assert_num_queries(1):
         bookable = list(
-            CalendarGroup.objects.filter_by_organization(
+            AppointmentType.objects.filter_by_organization(
                 organization.id
-            ).only_groups_bookable_in_ranges([window])
+            ).only_appointment_types_bookable_in_ranges([window])
         )
-    assert bookable == [group]
+    assert bookable == [appointment_type]
 
 
 @pytest.mark.django_db
 def test_no_pools_availability_output_is_unchanged(service, organization, calendars):
-    """``check_group_availability`` reports the same rosters with pools in the schema."""
+    """``check_appointment_type_availability`` reports the same rosters with pools in the schema."""
     now = timezone.now().replace(microsecond=0)
     window = (now + timedelta(hours=1), now + timedelta(hours=2))
     for calendar in (calendars["phys_a"], calendars["phys_b"], calendars["room_1"]):
@@ -644,18 +650,18 @@ def test_no_pools_availability_output_is_unchanged(service, organization, calend
             end_time_tz_unaware=window[1],
             timezone="UTC",
         )
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id, calendars["phys_b"].id],
         )
     )
 
-    availability = service.check_group_availability(group.id, [window])
+    availability = service.check_appointment_type_availability(appointment_type.id, [window])
 
     assert len(availability) == 1
     by_slot_name = {
-        group.slots.get(id=slot.slot_id).name: sorted(slot.available_calendar_ids)
+        appointment_type.slots.get(id=slot.slot_id).name: sorted(slot.available_calendar_ids)
         for slot in availability[0].slots
     }
     assert by_slot_name == {
@@ -679,51 +685,51 @@ def test_availability_reports_each_calendar_once_when_reachable_twice(
             end_time_tz_unaware=window[1],
             timezone="UTC",
         )
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_b"].id],
             pool_ids=[nurses_pool.id],
         )
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
 
-    availability = service.check_group_availability(group.id, [window])
+    availability = service.check_appointment_type_availability(appointment_type.id, [window])
 
     physicians_slot = next(s for s in availability[0].slots if s.slot_id == physicians.id)
     assert physicians_slot.available_calendar_ids == [calendars["phys_b"].id]
 
 
 # ---------------------------------------------------------------------------
-# Group-scoped writes still resolve when a calendar has several roster rows
+# Appointment-type-scoped writes still resolve when a calendar has several roster rows
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-def test_group_scoped_membership_resolves_when_a_calendar_has_several_roster_rows(
+def test_appointment_type_scoped_membership_resolves_when_a_calendar_has_several_roster_rows(
     service, organization, calendars, nurses_pool
 ):
-    """Every group-scoped write (window / block / quota rule) funnels through
-    ``_resolve_group_scoped_membership``, which used ``get()``. Once a calendar
+    """Every appointment-type-scoped write (window / block / quota rule) funnels through
+    ``_resolve_appointment_type_scoped_membership``, which used ``get()``. Once a calendar
     can hold both an inline and a projected row for one slot, ``get()`` raises
     ``MultipleObjectsReturned`` -- a 500 on an otherwise valid write.
     """
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_b"].id],
             pool_ids=[nurses_pool.id],
         )
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
     assert (
-        CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .filter(slot_fk=physicians, calendar_fk=calendars["phys_b"])
         .count()
         == 2
     )
 
-    membership = service._resolve_group_scoped_membership(  # noqa: SLF001
+    membership = service._resolve_appointment_type_scoped_membership(  # noqa: SLF001
         physicians.id, calendars["phys_b"].id
     )
 
@@ -735,7 +741,7 @@ def test_group_scoped_membership_resolves_when_a_calendar_has_several_roster_row
 # Drift closed: a direct pool-roster edit reprojects immediately (BLOCKER)
 #
 # Everything above exercises `_reconcile_slot_pools` through the attach/detach
-# path (`CalendarGroupService.update_group`). These tests instead edit
+# path (`AppointmentTypeService.update_appointment_type`). These tests instead edit
 # `CalendarPoolMembership` directly -- what the admin inline, a shell session,
 # or a data migration does -- and pin that the slot's projection reacts
 # without anyone calling `_reconcile_slot_pools` themselves.
@@ -748,30 +754,30 @@ def test_removing_a_calendar_from_an_attached_pool_reprojects_immediately(
 ):
     """The finding's exact scenario: dropping a calendar from a pool attached
     to a slot must make it immediately non-bookable through that slot, even
-    though nobody called `update_group`."""
-    group = service.create_group(
-        _group_input(
+    though nobody called `update_appointment_type`."""
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
         )
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
     assert _roster(organization, physicians) == {calendars["phys_a"].id, calendars["phys_b"].id}
 
     # What the admin inline does: delete the CalendarPoolMembership row
-    # directly, never touching CalendarGroupSlotMembership or the slot.
+    # directly, never touching AppointmentTypeSlotMembership or the slot.
     nurses_pool.memberships.get(calendar_fk=calendars["phys_b"]).delete()
 
     assert _roster(organization, physicians) == {calendars["phys_a"].id}
     # A brand-new booking against the calendar that just left the roster is
     # rejected -- the projected row cannot still be there to let it through.
-    with pytest.raises(CalendarGroupValidationError, match="not in the pool"):
+    with pytest.raises(AppointmentTypeValidationError, match="not in the pool"):
         service._validate_selections(  # noqa: SLF001
-            group,
+            appointment_type,
             [physicians],
             [
-                CalendarGroupSlotSelectionInputData(
+                AppointmentTypeSlotSelectionInputData(
                     slot_id=physicians.id, calendar_ids=[calendars["phys_b"].id]
                 )
             ],
@@ -784,14 +790,14 @@ def test_adding_a_calendar_to_an_attached_pool_reprojects_immediately(
 ):
     """The mirror case: a calendar added to an already-attached pool must be
     immediately bookable through every slot that pool is attached to."""
-    group = service.create_group(
-        _group_input(
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
         )
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
     assert calendars["phys_c"].id not in _roster(organization, physicians)
 
     create_calendar_pool_membership(
@@ -804,10 +810,10 @@ def test_adding_a_calendar_to_an_attached_pool_reprojects_immediately(
         calendars["phys_c"].id,
     }
     selections = service._validate_selections(  # noqa: SLF001
-        group,
+        appointment_type,
         [physicians],
         [
-            CalendarGroupSlotSelectionInputData(
+            AppointmentTypeSlotSelectionInputData(
                 slot_id=physicians.id, calendar_ids=[calendars["phys_c"].id]
             )
         ],
@@ -819,15 +825,15 @@ def test_adding_a_calendar_to_an_attached_pool_reprojects_immediately(
 def test_pool_roster_edit_reprojection_leaves_inline_rows_untouched(
     service, organization, calendars, nurses_pool
 ):
-    service.create_group(
-        _group_input(
+    service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
         )
     )
     inline_ids_before = set(
-        CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .inline()
         .values_list("id", flat=True)
     )
@@ -839,7 +845,7 @@ def test_pool_roster_edit_reprojection_leaves_inline_rows_untouched(
 
     assert (
         set(
-            CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+            AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
             .inline()
             .values_list("id", flat=True)
         )
@@ -852,8 +858,8 @@ def test_direct_pool_roster_edit_reports_no_drift(organization, service, calenda
     """The regression test for the closed hole: the drift sweep finds nothing
     to repair after a direct pool-roster edit, because the signal already
     reconciled it -- before this fix, this would have reported drift."""
-    service.create_group(
-        _group_input(
+    service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
@@ -880,8 +886,8 @@ def test_bulk_pool_roster_delete_reconciles_each_pool_once(
     delete; Django's deletion collector still sends `post_delete` once per
     row, but the affected slots must be reconciled once for the whole
     operation, not once per deleted row."""
-    service.create_group(
-        _group_input(
+    service.create_appointment_type(
+        _appointment_type_input(
             calendars,
             physician_calendar_ids=[calendars["phys_a"].id],
             pool_ids=[nurses_pool.id],
@@ -911,7 +917,7 @@ def test_bulk_pool_roster_delete_reconciles_each_pool_once(
 #
 # `_validate_slots_input` used to re-resolve a slot's UNCHANGED pool
 # attachment (`pool_ids=None`) from the live database on every call, which
-# meant a third party mutating a pool could make an unrelated `update_group`
+# meant a third party mutating a pool could make an unrelated `update_appointment_type`
 # call fail -- naming a slot the caller never touched. These tests pin the
 # two repro scenarios from the finding and that strict validation still
 # applies where there is nothing persisted to trust.
@@ -922,8 +928,8 @@ def test_bulk_pool_roster_delete_reconciles_each_pool_once(
 def test_update_omitting_pool_ids_survives_a_third_party_pool_overlap(
     service, organization, calendars
 ):
-    """Group G: slot A <- pool P {phys_a}, slot B <- pool Q {phys_b}. A third
-    party adds phys_a to pool Q too. `update_group` on G that only changes the
+    """Appointment type G: slot A <- pool P {phys_a}, slot B <- pool Q {phys_b}. A third
+    party adds phys_a to pool Q too. `update_appointment_type` on G that only changes the
     description, sending `pool_ids=None` for both slots, must still succeed --
     it must not re-derive the (now overlapping) rosters of pools it was never
     told about."""
@@ -933,15 +939,15 @@ def test_update_omitting_pool_ids_survives_a_third_party_pool_overlap(
     pool_q = create_calendar_pool(
         organization=organization, name="Q", calendars=[calendars["phys_b"]]
     )
-    group = service.create_group(
-        CalendarGroupInputData(
+    appointment_type = service.create_appointment_type(
+        AppointmentTypeInputData(
             name="Clinic",
             description="",
             slots=[
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Slot A", calendar_ids=[], pool_ids=[pool_p.id], required_count=1, order=0
                 ),
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Slot B", calendar_ids=[], pool_ids=[pool_q.id], required_count=1, order=1
                 ),
             ],
@@ -954,24 +960,24 @@ def test_update_omitting_pool_ids_survives_a_third_party_pool_overlap(
         organization=organization, pool=pool_q, calendar=calendars["phys_a"]
     )
 
-    service.update_group(
-        group.id,
-        CalendarGroupInputData(
+    service.update_appointment_type(
+        appointment_type.id,
+        AppointmentTypeInputData(
             name="Clinic",
             description="updated",
             slots=[
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Slot A", calendar_ids=[], required_count=1, order=0
                 ),
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Slot B", calendar_ids=[], required_count=1, order=1
                 ),
             ],
         ),
     )
 
-    group.refresh_from_db()
-    assert group.description == "updated"
+    appointment_type.refresh_from_db()
+    assert appointment_type.description == "updated"
 
 
 @pytest.mark.django_db
@@ -979,17 +985,17 @@ def test_update_omitting_pool_ids_survives_a_shrunk_pool_below_required_count(
     service, organization, calendars, nurses_pool
 ):
     """Slot S: calendar_ids=[], required_count=2, pool P {phys_b, phys_c}. A
-    third party removes phys_c from P. `update_group` that only changes the
+    third party removes phys_c from P. `update_appointment_type` that only changes the
     description, sending `pool_ids=None` for S, must still succeed."""
     create_calendar_pool_membership(
         organization=organization, pool=nurses_pool, calendar=calendars["phys_c"]
     )
-    group = service.create_group(
-        CalendarGroupInputData(
+    appointment_type = service.create_appointment_type(
+        AppointmentTypeInputData(
             name="Clinic",
             description="",
             slots=[
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Slot S",
                     calendar_ids=[],
                     pool_ids=[nurses_pool.id],
@@ -1002,21 +1008,21 @@ def test_update_omitting_pool_ids_survives_a_shrunk_pool_below_required_count(
 
     nurses_pool.memberships.get(calendar_fk=calendars["phys_c"]).delete()
 
-    service.update_group(
-        group.id,
-        CalendarGroupInputData(
+    service.update_appointment_type(
+        appointment_type.id,
+        AppointmentTypeInputData(
             name="Clinic",
             description="updated",
             slots=[
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Slot S", calendar_ids=[], required_count=2, order=0
                 ),
             ],
         ),
     )
 
-    group.refresh_from_db()
-    assert group.description == "updated"
+    appointment_type.refresh_from_db()
+    assert appointment_type.description == "updated"
 
 
 @pytest.mark.django_db
@@ -1024,13 +1030,13 @@ def test_a_new_slot_with_no_calendars_and_no_pool_ids_is_still_rejected(service)
     """The trust only covers an EXISTING slot's omitted attachment; a
     brand-new slot (a create, or a name new to this update) has nothing
     persisted to trust and is still validated strictly."""
-    with pytest.raises(CalendarGroupValidationError, match="must include at least one calendar"):
-        service.create_group(
-            CalendarGroupInputData(
+    with pytest.raises(AppointmentTypeValidationError, match="must include at least one calendar"):
+        service.create_appointment_type(
+            AppointmentTypeInputData(
                 name="Clinic",
                 description="",
                 slots=[
-                    CalendarGroupSlotInputData(
+                    AppointmentTypeSlotInputData(
                         name="Empty", calendar_ids=[], required_count=1, order=0
                     ),
                 ],
@@ -1039,31 +1045,31 @@ def test_a_new_slot_with_no_calendars_and_no_pool_ids_is_still_rejected(service)
 
 
 @pytest.mark.django_db
-def test_update_group_on_a_no_pool_group_issues_no_calendar_pool_queries(
+def test_update_appointment_type_on_a_no_pool_appointment_type_issues_no_calendar_pool_queries(
     service, organization, calendars, django_assert_num_queries
 ):
     """The related finding: `_resolve_effective_pool_ids` used to fire a
-    `CalendarGroupSlotPool` query on every `update_group` call, even for a
-    group that never had a pool. Restricting validation to explicitly
+    `AppointmentTypeSlotPool` query on every `update_appointment_type` call, even for a
+    appointment type that never had a pool. Restricting validation to explicitly
     submitted `pool_ids` removes it entirely for a payload that never sends
-    one -- pinned as a total query count for `update_group` on this fixture,
+    one -- pinned as a total query count for `update_appointment_type` on this fixture,
     so a regression (pool-related or otherwise) shows up as a query-count
     failure, not just a slow one.
     """
-    group = service.create_group(
-        _group_input(calendars, physician_calendar_ids=[calendars["phys_a"].id])
+    appointment_type = service.create_appointment_type(
+        _appointment_type_input(calendars, physician_calendar_ids=[calendars["phys_a"].id])
     )
 
-    with django_assert_num_queries(_NO_POOL_UPDATE_GROUP_QUERY_COUNT) as captured:
-        service.update_group(
-            group.id,
-            _group_input(calendars, physician_calendar_ids=[calendars["phys_a"].id]),
+    with django_assert_num_queries(_NO_POOL_UPDATE_APPOINTMENT_TYPE_QUERY_COUNT) as captured:
+        service.update_appointment_type(
+            appointment_type.id,
+            _appointment_type_input(calendars, physician_calendar_ids=[calendars["phys_a"].id]),
         )
 
     pool_queries = [
         q["sql"]
         for q in captured.captured_queries
-        if "calendargroupslotpool" in q["sql"].lower() or "calendarpool" in q["sql"].lower()
+        if "appointmenttypeslotpool" in q["sql"].lower() or "calendarpool" in q["sql"].lower()
     ]
     assert pool_queries == []
 
@@ -1079,48 +1085,48 @@ def _slot_update_audit_payloads(mock_task, physicians_id):
         p
         for p in payloads
         if p["action_key"] == AuditAction.UPDATE
-        and p["subject"]["subject_type"] == "calendar_integration.calendargroupslot"
+        and p["subject"]["subject_type"] == "calendar_integration.appointmenttypeslot"
         and p["subject"]["subject_id"] == str(physicians_id)
     ]
 
 
 @pytest.mark.django_db
-def test_create_group_with_pools_emits_no_slot_update_audit(
+def test_create_appointment_type_with_pools_emits_no_slot_update_audit(
     audited_service, calendars, nurses_pool, django_capture_on_commit_callbacks
 ):
     """Attaching a pool inside `_create_slots` must not audit an UPDATE on a
     slot that was itself created in the same call -- an audit reader must not
-    see an UPDATE nested inside the group's own CREATE."""
+    see an UPDATE nested inside the appointment type's own CREATE."""
     with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
-            group = audited_service.create_group(
-                _group_input(
+            appointment_type = audited_service.create_appointment_type(
+                _appointment_type_input(
                     calendars,
                     physician_calendar_ids=[calendars["phys_a"].id],
                     pool_ids=[nurses_pool.id],
                 )
             )
 
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
     assert _slot_update_audit_payloads(mock_task, physicians.id) == []
 
 
 @pytest.mark.django_db
-def test_update_group_attaching_a_pool_still_emits_slot_update_audit(
+def test_update_appointment_type_attaching_a_pool_still_emits_slot_update_audit(
     audited_service, calendars, nurses_pool, django_capture_on_commit_callbacks
 ):
     """The audit skip is scoped to slot creation only -- attaching a pool to an
-    already-existing slot through `update_group` still audits the change."""
-    group = audited_service.create_group(
-        _group_input(calendars, physician_calendar_ids=[calendars["phys_a"].id])
+    already-existing slot through `update_appointment_type` still audits the change."""
+    appointment_type = audited_service.create_appointment_type(
+        _appointment_type_input(calendars, physician_calendar_ids=[calendars["phys_a"].id])
     )
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
 
     with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
-            audited_service.update_group(
-                group.id,
-                _group_input(
+            audited_service.update_appointment_type(
+                appointment_type.id,
+                _appointment_type_input(
                     calendars,
                     physician_calendar_ids=[calendars["phys_a"].id],
                     pool_ids=[nurses_pool.id],

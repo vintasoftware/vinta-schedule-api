@@ -2,7 +2,7 @@
 
 Ports the scenarios in ``public_api/tests/test_cancel_with_code.py`` (the
 GraphQL ``cancelEventWithCode`` equivalent) to the REST surface. Covers BOTH
-the calendar-bound (non-grouped) path and the calendar-group-bound (grouped
+the calendar-bound (non-appointment-type) path and the appointment-type-bound (appointment-type
 event) path via the SAME endpoint, exactly as the GraphQL original does.
 
 All requests are unauthenticated (no session/JWT). The booking code -- carried
@@ -23,13 +23,13 @@ from rest_framework.test import APIClient
 from calendar_integration.booking_auth import BOOKING_CODE_HEADER
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     BlockedTime,
     Calendar,
     CalendarEvent,
-    CalendarEventGroupSelection,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
+    CalendarEventAppointmentTypeSelection,
     CalendarManagementToken,
     EventManagementPermissions,
 )
@@ -90,7 +90,7 @@ def existing_event(organization, calendar):
         start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
         end_time_tz_unaware=datetime.datetime(2030, 6, 1, 11, 0),
         external_id="",
-        calendar_group=None,
+        appointment_type=None,
     )
 
 
@@ -128,7 +128,7 @@ def create_code(permission_service, organization, calendar):
 
 
 # ---------------------------------------------------------------------------
-# Fixtures -- group path
+# Fixtures -- appointment type path
 # ---------------------------------------------------------------------------
 
 
@@ -161,48 +161,52 @@ def secondary_calendar(organization):
 
 
 @pytest.fixture
-def group(organization, primary_calendar, secondary_calendar):
-    grp = baker.make(CalendarGroup, organization=organization, name="Test Group")
-    slot_a = CalendarGroupSlot.objects.create(
-        organization=organization, group=grp, name="Physicians", order=0, required_count=1
+def appointment_type(organization, primary_calendar, secondary_calendar):
+    grp = baker.make(AppointmentType, organization=organization, name="Test AppointmentType")
+    slot_a = AppointmentTypeSlot.objects.create(
+        organization=organization,
+        appointment_type=grp,
+        name="Physicians",
+        order=0,
+        required_count=1,
     )
-    slot_b = CalendarGroupSlot.objects.create(
-        organization=organization, group=grp, name="Rooms", order=1, required_count=1
+    slot_b = AppointmentTypeSlot.objects.create(
+        organization=organization, appointment_type=grp, name="Rooms", order=1, required_count=1
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot_a, calendar=primary_calendar
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot_b, calendar=secondary_calendar
     )
     return grp
 
 
 @pytest.fixture
-def grouped_event(organization, group, primary_calendar, secondary_calendar):
+def appointment_type_event(organization, appointment_type, primary_calendar, secondary_calendar):
     event = baker.make(
         CalendarEvent,
         organization=organization,
         calendar=primary_calendar,
-        calendar_group=group,
-        title="Group Appointment",
-        description="A grouped appointment.",
+        appointment_type=appointment_type,
+        title="AppointmentType Appointment",
+        description="An appointment type appointment.",
         timezone="UTC",
         start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
         end_time_tz_unaware=datetime.datetime(2030, 6, 1, 11, 0),
         external_id="",
     )
 
-    slot_a = CalendarGroupSlot.objects.filter_by_organization(organization.id).get(
-        group=group, name="Physicians"
+    slot_a = AppointmentTypeSlot.objects.filter_by_organization(organization.id).get(
+        appointment_type=appointment_type, name="Physicians"
     )
-    slot_b = CalendarGroupSlot.objects.filter_by_organization(organization.id).get(
-        group=group, name="Rooms"
+    slot_b = AppointmentTypeSlot.objects.filter_by_organization(organization.id).get(
+        appointment_type=appointment_type, name="Rooms"
     )
-    CalendarEventGroupSelection.objects.create(
+    CalendarEventAppointmentTypeSelection.objects.create(
         organization=organization, event=event, slot=slot_a, calendar=primary_calendar
     )
-    CalendarEventGroupSelection.objects.create(
+    CalendarEventAppointmentTypeSelection.objects.create(
         organization=organization, event=event, slot=slot_b, calendar=secondary_calendar
     )
 
@@ -212,20 +216,22 @@ def grouped_event(organization, group, primary_calendar, secondary_calendar):
         start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
         end_time_tz_unaware=datetime.datetime(2030, 6, 1, 11, 0),
         timezone="UTC",
-        reason=f"Group booking: {event.title}",
-        external_id=f"group-event-{event.id}-cal-{secondary_calendar.id}",
+        reason=f"AppointmentType booking: {event.title}",
+        external_id=f"appointment-type-event-{event.id}-cal-{secondary_calendar.id}",
     )
 
     return event
 
 
 @pytest.fixture
-def group_cancel_code(permission_service, organization, group, grouped_event):
+def appointment_type_cancel_code(
+    permission_service, organization, appointment_type, appointment_type_event
+):
     token, code = permission_service.create_booking_token(
         organization_id=organization.id,
         permissions=[EventManagementPermissions.CANCEL],
-        calendar_group_id=group.id,
-        event_id=grouped_event.id,
+        appointment_type_id=appointment_type.id,
+        event_id=appointment_type_event.id,
     )
     return token, code
 
@@ -278,45 +284,50 @@ class TestCancelEventWithCodeCalendarHappyPath:
 
 
 # ---------------------------------------------------------------------------
-# Scenario 2: Group cancel happy path
+# Scenario 2: Appointment type cancel happy path
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestCancelEventWithCodeGroupHappyPath:
-    def test_happy_path_cancels_grouped_event(
-        self, anon_client, group_cancel_code, organization, secondary_calendar, grouped_event
+class TestCancelEventWithCodeAppointmentTypeHappyPath:
+    def test_happy_path_cancels_appointment_type_event(
+        self,
+        anon_client,
+        appointment_type_cancel_code,
+        organization,
+        secondary_calendar,
+        appointment_type_event,
     ):
-        token, code = group_cancel_code
-        event_id = grouped_event.id
+        token, code = appointment_type_cancel_code
+        event_id = appointment_type_event.id
 
         response = _post(anon_client, code)
 
         assert response.status_code == status.HTTP_204_NO_CONTENT, response.content
 
         assert not CalendarEvent.original_manager.filter(id=event_id).exists()
-        assert not CalendarEventGroupSelection.original_manager.filter(
+        assert not CalendarEventAppointmentTypeSelection.original_manager.filter(
             event_fk_id=event_id
         ).exists()
         assert not BlockedTime.original_manager.filter(
-            external_id__startswith=f"group-event-{event_id}-cal-"
+            external_id__startswith=f"appointment-type-event-{event_id}-cal-"
         ).exists()
         assert not CalendarManagementToken.original_manager.filter(pk=token.pk).exists()
 
     def test_non_primary_blocked_times_deleted_not_orphaned(
-        self, anon_client, group_cancel_code, secondary_calendar, grouped_event
+        self, anon_client, appointment_type_cancel_code, secondary_calendar, appointment_type_event
     ):
-        _token, code = group_cancel_code
-        event_id = grouped_event.id
+        _token, code = appointment_type_cancel_code
+        event_id = appointment_type_event.id
 
         assert BlockedTime.original_manager.filter(
-            external_id=f"group-event-{event_id}-cal-{secondary_calendar.id}"
+            external_id=f"appointment-type-event-{event_id}-cal-{secondary_calendar.id}"
         ).exists()
 
         _post(anon_client, code)
 
         assert not BlockedTime.original_manager.filter(
-            external_id__startswith=f"group-event-{event_id}-cal-"
+            external_id__startswith=f"appointment-type-event-{event_id}-cal-"
         ).exists()
 
 
@@ -337,8 +348,10 @@ class TestCancelEventWithCodeReplay:
         assert second.status_code == status.HTTP_404_NOT_FOUND
         assert second.json()["error_code"] == "INVALID_CODE"
 
-    def test_group_cancel_replay_returns_invalid_code(self, anon_client, group_cancel_code):
-        _token, code = group_cancel_code
+    def test_appointment_type_cancel_replay_returns_invalid_code(
+        self, anon_client, appointment_type_cancel_code
+    ):
+        _token, code = appointment_type_cancel_code
 
         first = _post(anon_client, code)
         assert first.status_code == status.HTTP_204_NO_CONTENT

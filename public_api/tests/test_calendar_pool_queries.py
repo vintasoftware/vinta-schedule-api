@@ -9,7 +9,7 @@ Covers:
   ``public_api.scoping.scoped_calendar_pool_queryset``.
 - The second-hop leak this phase's Scope item 1 calls out: a scoped-member
   token cannot read a non-member pool's roster through nested traversal
-  (``calendarGroup -> slots -> pools -> calendars``), even when it CAN see
+  (``appointmentType -> slots -> pools -> calendars``), even when it CAN see
   the slot for an unrelated reason.
 - Query-count guards so the new resolvers do not regress into N+1.
 - Every new GraphQL field name is present in
@@ -25,11 +25,11 @@ from rest_framework.test import APIClient
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.factories import create_calendar_pool
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
+    AppointmentTypeSlotPool,
     Calendar,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
-    CalendarGroupSlotPool,
     CalendarOwnership,
     CalendarPool,
 )
@@ -68,8 +68,8 @@ query CalendarPool($poolId: Int!) {
 """
 
 NESTED_TRAVERSAL_QUERY = """
-query CalendarGroup($groupId: Int!) {
-    calendarGroup(groupId: $groupId) {
+query AppointmentType($appointmentTypeId: Int!) {
+    appointmentType(appointmentTypeId: $appointmentTypeId) {
         id
         name
         slots {
@@ -93,7 +93,7 @@ class TestCalendarPoolQueries:
         self.client = APIClient()
 
     # ------------------------------------------------------------------
-    # Helpers (mirror public_api/tests/test_calendar_group_role_scoping.py)
+    # Helpers (mirror public_api/tests/test_appointment_type_role_scoping.py)
     # ------------------------------------------------------------------
 
     def _org(self) -> Organization:
@@ -116,7 +116,10 @@ class TestCalendarPoolQueries:
         return create_calendar_pool(organization=org, name=name, calendars=list(calendars))
 
     def _make_membership(
-        self, org: Organization, *, groups: tuple[str, ...] = (GROUP_ORGANIZATION_MEMBER,)
+        self,
+        org: Organization,
+        *,
+        groups: tuple[str, ...] = (GROUP_ORGANIZATION_MEMBER,),
     ) -> tuple[User, OrganizationMembership]:
         unique = uuid.uuid4().hex[:8]
         user = baker.make(User, email=f"user_{unique}@example.com")
@@ -314,7 +317,7 @@ class TestCalendarPoolQueries:
     def test_calendar_pool_roster_scoped_to_owner(self):
         """A scoped-member token reading a pool it participates in only sees the
         roster calendars it owns -- the same owner-scoping
-        ``CalendarGroupSlotGraphQLType.calendars`` already applies."""
+        ``AppointmentTypeSlotGraphQLType.calendars`` already applies."""
         org = self._org()
         member_user, membership = self._make_membership(org, groups=(GROUP_ORGANIZATION_MEMBER,))
         own_calendar = self._make_calendar(org)
@@ -337,14 +340,14 @@ class TestCalendarPoolQueries:
         assert other_calendar.id not in calendar_ids
 
     # ------------------------------------------------------------------
-    # Nested-traversal leak: calendarGroup -> slots -> pools -> calendars
+    # Nested-traversal leak: appointmentType -> slots -> pools -> calendars
     # ------------------------------------------------------------------
 
     def test_scoped_member_cannot_read_non_member_pool_roster_via_nested_traversal(self):
         """The attack: a scoped-member token that legitimately participates in a
-        group (via an INLINE calendar on one of its slots) tries to read the
+        appointment type (via an INLINE calendar on one of its slots) tries to read the
         roster of a DIFFERENT, foreign pool attached to that same slot by
-        walking ``calendarGroup -> slots -> pools -> calendars`` -- a path this
+        walking ``appointmentType -> slots -> pools -> calendars`` -- a path this
         token was never granted direct access to via ``calendarPool(s)``.
 
         Must not leak: neither the foreign pool's name (Open Question 4 --
@@ -355,11 +358,13 @@ class TestCalendarPoolQueries:
         own_calendar = self._make_calendar(org)
         self._own(org, member_user, own_calendar)
 
-        # A group the scoped member legitimately participates in, via an
+        # An appointment type the scoped member legitimately participates in, via an
         # inline calendar on the slot (not via any pool).
-        group = CalendarGroup.objects.create(organization=org, name="Group")
-        slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
-        CalendarGroupSlotMembership.objects.create(
+        appointment_type = AppointmentType.objects.create(organization=org, name="AppointmentType")
+        slot = AppointmentTypeSlot.objects.create(
+            organization=org, appointment_type=appointment_type, name="Slot"
+        )
+        AppointmentTypeSlotMembership.objects.create(
             organization=org, slot=slot, calendar=own_calendar
         )
 
@@ -367,24 +372,30 @@ class TestCalendarPoolQueries:
         # owns nothing in -- the attacker's target.
         foreign_calendar = self._make_calendar(org)
         foreign_pool = self._make_pool(org, name="SecretRoster", calendars=(foreign_calendar,))
-        CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=foreign_pool)
+        AppointmentTypeSlotPool.objects.create(organization=org, slot=slot, pool=foreign_pool)
 
         system_user, token, auth = self._scoped_token(
             org,
             membership,
-            [PublicAPIResources.CALENDAR_GROUP, PublicAPIResources.CALENDAR_POOL],
+            [PublicAPIResources.APPOINTMENT_TYPE, PublicAPIResources.CALENDAR_POOL],
         )
 
         response = self._post(
-            NESTED_TRAVERSAL_QUERY, system_user, token, auth, {"groupId": group.id}
+            NESTED_TRAVERSAL_QUERY,
+            system_user,
+            token,
+            auth,
+            {"appointmentTypeId": appointment_type.id},
         )
         assert response.status_code == 200
         data = response.json()
         assert data.get("errors", []) == []
 
-        returned_group = data["data"]["calendarGroup"]
-        assert returned_group is not None, "scoped member should see the group it participates in"
-        returned_slots = returned_group["slots"]
+        returned_appointment_type = data["data"]["appointmentType"]
+        assert returned_appointment_type is not None, (
+            "scoped member should see the appointment type it participates in"
+        )
+        returned_slots = returned_appointment_type["slots"]
         assert len(returned_slots) == 1
 
         returned_pools = returned_slots[0]["pools"]
@@ -407,32 +418,38 @@ class TestCalendarPoolQueries:
         _admin_user, admin_membership = self._make_membership(
             org, groups=(GROUP_ORGANIZATION_ADMIN,)
         )
-        group = CalendarGroup.objects.create(organization=org, name="Group")
-        slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
+        appointment_type = AppointmentType.objects.create(organization=org, name="AppointmentType")
+        slot = AppointmentTypeSlot.objects.create(
+            organization=org, appointment_type=appointment_type, name="Slot"
+        )
         calendar = self._make_calendar(org)
         pool = self._make_pool(org, name="Pool", calendars=(calendar,))
-        CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
+        AppointmentTypeSlotPool.objects.create(organization=org, slot=slot, pool=pool)
 
         system_user, token, auth = self._scoped_token(
             org,
             admin_membership,
-            [PublicAPIResources.CALENDAR_GROUP, PublicAPIResources.CALENDAR_POOL],
+            [PublicAPIResources.APPOINTMENT_TYPE, PublicAPIResources.CALENDAR_POOL],
         )
 
         response = self._post(
-            NESTED_TRAVERSAL_QUERY, system_user, token, auth, {"groupId": group.id}
+            NESTED_TRAVERSAL_QUERY,
+            system_user,
+            token,
+            auth,
+            {"appointmentTypeId": appointment_type.id},
         )
         assert response.status_code == 200
         data = response.json()
         assert data.get("errors", []) == []
-        returned_pools = data["data"]["calendarGroup"]["slots"][0]["pools"]
+        returned_pools = data["data"]["appointmentType"]["slots"][0]["pools"]
         assert {int(p["id"]) for p in returned_pools} == {pool.id}
         assert {int(c["id"]) for c in returned_pools[0]["calendars"]} == {calendar.id}
 
     # ------------------------------------------------------------------
     # Security guard: anonymous + wrong-resource tokens must be refused
     # (pins the gate that let the unauthenticated cross-tenant
-    # createCalendarGroup hole live undetected in this same file).
+    # createAppointmentType hole live undetected in this same file).
     # ------------------------------------------------------------------
 
     def test_calendar_pools_unauthenticated_refused(self):
@@ -448,7 +465,7 @@ class TestCalendarPoolQueries:
     def test_calendar_pools_wrong_resource_token_refused(self):
         org = self._org()
         self._make_pool(org, name="Secret")
-        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
 
         response = self._post(CALENDAR_POOLS_QUERY, system_user, token, auth, {})
         assert response.status_code == 200
@@ -472,7 +489,7 @@ class TestCalendarPoolQueries:
     def test_calendar_pool_wrong_resource_token_refused(self):
         org = self._org()
         pool = self._make_pool(org, name="Secret")
-        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
 
         response = self._post(CALENDAR_POOL_QUERY, system_user, token, auth, {"poolId": pool.id})
         assert response.status_code == 200
@@ -482,7 +499,7 @@ class TestCalendarPoolQueries:
 
     # ------------------------------------------------------------------
     # Nested `pools` resource gate (this phase's Scope item 4): a token
-    # holding CALENDAR_GROUP but explicitly denied CALENDAR_POOL must not
+    # holding APPOINTMENT_TYPE but explicitly denied CALENDAR_POOL must not
     # read pool names/rosters through the nested `slots.pools` path --
     # OrganizationResourceAccess only runs on root fields, so this has to be
     # enforced inside the resolver itself (`_scoped_pool_list`).
@@ -490,25 +507,31 @@ class TestCalendarPoolQueries:
 
     def test_nested_pools_empty_for_token_without_calendar_pool_resource(self):
         org = self._org()
-        group = CalendarGroup.objects.create(organization=org, name="Group")
-        slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
+        appointment_type = AppointmentType.objects.create(organization=org, name="AppointmentType")
+        slot = AppointmentTypeSlot.objects.create(
+            organization=org, appointment_type=appointment_type, name="Slot"
+        )
         cal = self._make_calendar(org)
         pool = self._make_pool(org, name="SecretRoster", calendars=(cal,))
-        CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
+        AppointmentTypeSlotPool.objects.create(organization=org, slot=slot, pool=pool)
 
-        # Org-wide token: unrestricted by owner-scope, holds CALENDAR_GROUP but
+        # Org-wide token: unrestricted by owner-scope, holds APPOINTMENT_TYPE but
         # deliberately NOT CALENDAR_POOL.
-        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
 
         response = self._post(
-            NESTED_TRAVERSAL_QUERY, system_user, token, auth, {"groupId": group.id}
+            NESTED_TRAVERSAL_QUERY,
+            system_user,
+            token,
+            auth,
+            {"appointmentTypeId": appointment_type.id},
         )
         assert response.status_code == 200
         data = response.json()
         assert data.get("errors", []) == []
-        returned_group = data["data"]["calendarGroup"]
-        assert returned_group is not None
-        assert returned_group["slots"][0]["pools"] == []
+        returned_appointment_type = data["data"]["appointmentType"]
+        assert returned_appointment_type is not None
+        assert returned_appointment_type["slots"][0]["pools"] == []
 
     # ------------------------------------------------------------------
     # Query-count guards -- invariance, not magic numbers: the same query is
@@ -550,10 +573,10 @@ class TestCalendarPoolQueries:
 
         assert small == big, f"N+1: {small} queries for 1 pool vs {big} queries for 6 pools"
 
-    def _nested_groups_query_count(self, n_groups, system_user, token, auth):
+    def _nested_appointment_types_query_count(self, n_groups, system_user, token, auth):
         query = """
-        query CalendarGroups {
-            calendarGroups {
+        query AppointmentTypes {
+            appointmentTypes {
                 id
                 slots {
                     id
@@ -573,34 +596,38 @@ class TestCalendarPoolQueries:
         assert response.status_code == 200
         data = response.json()
         assert data.get("errors", []) == []
-        assert len(data["data"]["calendarGroups"]) == n_groups
+        assert len(data["data"]["appointmentTypes"]) == n_groups
         return len(ctx)
 
-    def test_calendar_groups_nested_pools_no_n_plus_one(self):
-        """Fetching several groups, each with a slot carrying a pool, must not
-        scale query count with the number of groups/slots/pools -- the
+    def test_appointment_types_nested_pools_no_n_plus_one(self):
+        """Fetching several appointment types, each with a slot carrying a pool, must not
+        scale query count with the number of appointment types/slots/pools -- the
         prefetch this phase adds (``slots__pools__calendars__...``) is what
-        keeps ``CalendarGroupSlotGraphQLType.pools`` constant-query."""
+        keeps ``AppointmentTypeSlotGraphQLType.pools`` constant-query."""
         org = self._org()
         system_user, token, auth = self._org_wide_token(
-            org, [PublicAPIResources.CALENDAR_GROUP, PublicAPIResources.CALENDAR_POOL]
+            org, [PublicAPIResources.APPOINTMENT_TYPE, PublicAPIResources.CALENDAR_POOL]
         )
 
         def make_groups(count):
             for _i in range(count):
                 unique = uuid.uuid4().hex[:8]
-                group = CalendarGroup.objects.create(organization=org, name=f"Group {unique}")
-                slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
+                appointment_type = AppointmentType.objects.create(
+                    organization=org, name=f"AppointmentType {unique}"
+                )
+                slot = AppointmentTypeSlot.objects.create(
+                    organization=org, appointment_type=appointment_type, name="Slot"
+                )
                 cal = self._make_calendar(org)
                 pool = self._make_pool(org, name=f"Pool {unique}", calendars=(cal,))
-                CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
+                AppointmentTypeSlotPool.objects.create(organization=org, slot=slot, pool=pool)
 
         # Warm up.
         make_groups(1)
         self._post(
             """
-            query CalendarGroups {
-                calendarGroups { id slots { id pools { id calendars { id } } } }
+            query AppointmentTypes {
+                appointmentTypes { id slots { id pools { id calendars { id } } } }
             }
             """,
             system_user,
@@ -609,17 +636,21 @@ class TestCalendarPoolQueries:
             {},
         )
 
-        small = self._nested_groups_query_count(1, system_user, token, auth)
+        small = self._nested_appointment_types_query_count(1, system_user, token, auth)
 
         make_groups(2)
-        big = self._nested_groups_query_count(3, system_user, token, auth)
+        big = self._nested_appointment_types_query_count(3, system_user, token, auth)
 
-        assert small == big, f"N+1: {small} queries for 1 group vs {big} queries for 3 groups"
+        assert small == big, (
+            f"N+1: {small} queries for 1 appointment type vs {big} queries for 3 appointment_types"
+        )
 
-    def _singular_group_query_count(self, group_id, n_slots, system_user, token, auth):
+    def _singular_appointment_type_query_count(
+        self, appointment_type_id, n_slots, system_user, token, auth
+    ):
         query = """
-        query CalendarGroup($groupId: Int!) {
-            calendarGroup(groupId: $groupId) {
+        query AppointmentType($appointmentTypeId: Int!) {
+            appointmentType(appointmentTypeId: $appointmentTypeId) {
                 id
                 slots {
                     id
@@ -636,52 +667,58 @@ class TestCalendarPoolQueries:
         from django.test.utils import CaptureQueriesContext
 
         with CaptureQueriesContext(connection) as ctx:
-            response = self._post(query, system_user, token, auth, {"groupId": group_id})
+            response = self._post(
+                query, system_user, token, auth, {"appointmentTypeId": appointment_type_id}
+            )
         assert response.status_code == 200
         data = response.json()
         assert data.get("errors", []) == []
-        assert len(data["data"]["calendarGroup"]["slots"]) == n_slots
+        assert len(data["data"]["appointmentType"]["slots"]) == n_slots
         return len(ctx)
 
-    def test_calendar_group_singular_nested_pools_no_n_plus_one(self):
-        """The singular ``calendarGroup`` field must get the same
-        ``slots__pools__calendars__...`` prefetch the plural ``calendarGroups``
-        field does -- without it, one group with several slots each carrying a
+    def test_appointment_type_singular_nested_pools_no_n_plus_one(self):
+        """The singular ``appointmentType`` field must get the same
+        ``slots__pools__calendars__...`` prefetch the plural ``appointmentTypes``
+        field does -- without it, one appointment type with several slots each carrying a
         pool N+1s on the pools hop, unbounded by tenant configuration."""
         org = self._org()
         system_user, token, auth = self._org_wide_token(
-            org, [PublicAPIResources.CALENDAR_GROUP, PublicAPIResources.CALENDAR_POOL]
+            org, [PublicAPIResources.APPOINTMENT_TYPE, PublicAPIResources.CALENDAR_POOL]
         )
-        group = CalendarGroup.objects.create(organization=org, name="Group")
+        appointment_type = AppointmentType.objects.create(organization=org, name="AppointmentType")
 
         def make_slots(count):
             for _ in range(count):
                 unique = uuid.uuid4().hex[:8]
-                slot = CalendarGroupSlot.objects.create(
-                    organization=org, group=group, name=f"Slot {unique}"
+                slot = AppointmentTypeSlot.objects.create(
+                    organization=org, appointment_type=appointment_type, name=f"Slot {unique}"
                 )
                 cal = self._make_calendar(org)
                 pool = self._make_pool(org, name=f"Pool {unique}", calendars=(cal,))
-                CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
+                AppointmentTypeSlotPool.objects.create(organization=org, slot=slot, pool=pool)
 
         # Warm up.
         make_slots(1)
         self._post(
             """
-            query CalendarGroup($groupId: Int!) {
-                calendarGroup(groupId: $groupId) { id slots { id pools { id calendars { id } } } }
+            query AppointmentType($appointmentTypeId: Int!) {
+                appointmentType(appointmentTypeId: $appointmentTypeId) { id slots { id pools { id calendars { id } } } }
             }
             """,
             system_user,
             token,
             auth,
-            {"groupId": group.id},
+            {"appointmentTypeId": appointment_type.id},
         )
 
-        small = self._singular_group_query_count(group.id, 1, system_user, token, auth)
+        small = self._singular_appointment_type_query_count(
+            appointment_type.id, 1, system_user, token, auth
+        )
 
         make_slots(3)
-        big = self._singular_group_query_count(group.id, 4, system_user, token, auth)
+        big = self._singular_appointment_type_query_count(
+            appointment_type.id, 4, system_user, token, auth
+        )
 
         assert small == big, f"N+1: {small} queries for 1 slot vs {big} queries for 4 slots"
 

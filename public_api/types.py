@@ -259,4 +259,4 @@ class ChildOrganizationMetrics:
     membership_count: int
     calendar_count: int
     event_count: int
-    calendar_group_count: int
+    appointment_type_count: int

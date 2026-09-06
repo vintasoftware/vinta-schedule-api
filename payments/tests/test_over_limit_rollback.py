@@ -29,9 +29,9 @@ from rest_framework.views import APIView
 from vinta_billing.constants import LimitRemedy
 from vinta_billing.exceptions import OverLimitError, PaymentProviderNotConfiguredError
 
-from calendar_integration.models import CalendarGroup
+from calendar_integration.models import AppointmentType
 from organizations.models import Organization
-from payments.seams.resource_keys import CALENDAR_GROUPS
+from payments.seams.resource_keys import APPOINTMENT_TYPES
 
 
 #: The organization the two views below write against.
@@ -58,12 +58,12 @@ class WriteThenExceedLimitView(APIView):
     permission_classes = ()
 
     def post(self, request, *args, **kwargs):
-        CalendarGroup.objects.create(
+        AppointmentType.objects.create(
             organization_id=current_organization_id.get(),
             name="written-before-the-guard",
         )
         raise OverLimitError(
-            resource_key=CALENDAR_GROUPS,
+            resource_key=APPOINTMENT_TYPES,
             current_usage=1,
             limit=1,
             remedy=LimitRemedy.PURCHASE_ADD_ON,
@@ -79,7 +79,7 @@ class WriteOnlyView(APIView):
     permission_classes = ()
 
     def post(self, request, *args, **kwargs):
-        CalendarGroup.objects.create(
+        AppointmentType.objects.create(
             organization_id=current_organization_id.get(),
             name="written-and-kept",
         )
@@ -100,7 +100,7 @@ class WriteThenUnconfiguredProviderView(APIView):
     permission_classes = ()
 
     def post(self, request, *args, **kwargs):
-        CalendarGroup.objects.create(
+        AppointmentType.objects.create(
             organization_id=current_organization_id.get(),
             name="written-before-the-provider-call",
         )
@@ -155,7 +155,7 @@ class TestOverLimitErrorRollsBackTheRequestTransaction:
 
         assert response.status_code == status.HTTP_201_CREATED
         assert (
-            CalendarGroup.objects.filter_by_organization(organization.pk)
+            AppointmentType.objects.filter_by_organization(organization.pk)
             .filter(
                 name="written-and-kept",
             )
@@ -172,7 +172,7 @@ class TestOverLimitErrorRollsBackTheRequestTransaction:
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
         assert (
-            CalendarGroup.objects.filter_by_organization(organization.pk)
+            AppointmentType.objects.filter_by_organization(organization.pk)
             .filter(
                 name="written-before-the-guard",
             )
@@ -189,9 +189,9 @@ class TestOverLimitErrorRollsBackTheRequestTransaction:
         response = anonymous_client.post("/over-limit/")
 
         assert response.json() == {
-            "detail": "Organization is at its limit for calendar groups.",
+            "detail": "Organization is at its limit for appointment types.",
             "code": "limit_exceeded",
-            "resource": "calendar_groups",
+            "resource": "appointment_types",
             "current_usage": 1,
             "limit": 1,
             "remedy": "purchase_add_on",
@@ -219,7 +219,7 @@ class TestUnconfiguredProviderRollsBackTheRequestTransaction:
 
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert (
-            CalendarGroup.objects.filter_by_organization(organization.pk)
+            AppointmentType.objects.filter_by_organization(organization.pk)
             .filter(
                 name="written-before-the-provider-call",
             )

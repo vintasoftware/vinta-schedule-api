@@ -1,7 +1,7 @@
 from typing import Literal
 
 from calendar_integration.models import Calendar
-from calendar_integration.querysets import CalendarGroupQuerySet, CalendarPoolQuerySet
+from calendar_integration.querysets import AppointmentTypeQuerySet, CalendarPoolQuerySet
 from organizations.authorization import membership_holds_permission
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import MANAGE_MEMBERS
@@ -48,9 +48,8 @@ def _resolve_scope_and_membership(
 
     "Admin member" reads ``organizations.manage_members`` off the membership.
     It used to read the ``role`` column directly; the two name the same set,
-    since ``organization_admin`` -- the group every ``role == ADMIN``
-    membership was backfilled into -- is the only seeded group carrying that
-    permission. Asked
+    since ``organization_admin`` -- the group every ``role == ADMIN`` membership
+    was backfilled into -- is the only seeded group carrying that permission. Asked
     of the *membership* rather than of ``(user, organization)`` so the token's
     standing does not additionally depend on the underlying Django user's
     ``is_active``, which the column never consulted.
@@ -70,12 +69,12 @@ def system_user_scope(system_user: SystemUser, organization: Organization) -> Sy
       matches today's default token behavior exactly (unchanged by this).
     - ``"scoped_admin"``: the token is scoped to an active membership holding
       ``organizations.manage_members`` -- acts with that membership's admin
-      powers (all calendar groups, any calendar).
+      powers (all appointment types, any calendar).
     - ``"scoped_member"``: the token is scoped to a membership that is either
       not an admin, or missing/inactive. A missing/inactive scoped membership
       is deliberately collapsed into this same value with EMPTY access
       (fail closed) rather than a separate "unknown" state -- see
-      ``scoped_calendar_ids`` and ``scoped_calendar_group_queryset``, which
+      ``scoped_calendar_ids`` and ``scoped_appointment_type_queryset``, which
       both re-resolve the membership to distinguish "real member" from
       "missing/inactive" and return empty for the latter.
     """
@@ -97,7 +96,7 @@ def scoped_calendar_ids(system_user: SystemUser, organization: Organization) -> 
         None if the token is org-wide (``scoped_to_membership_user_id`` is
         ``None``) or scoped to an active admin membership (``scoped_admin``
         -- a scoped-admin token gets the same unrestricted powers an org-wide
-        token has for calendar-group operations); a set of calendar IDs
+        token has for appointment-type operations); a set of calendar IDs
         (empty when the scoped membership is missing/inactive -- fail
         closed, never elevate) otherwise.
     """
@@ -119,7 +118,7 @@ def scoped_calendar_ids(system_user: SystemUser, organization: Organization) -> 
     )
 
 
-def _scoped_only_member_of_queryset[QuerySetT: (CalendarGroupQuerySet, CalendarPoolQuerySet)](
+def _scoped_only_member_of_queryset[QuerySetT: (AppointmentTypeQuerySet, CalendarPoolQuerySet)](
     system_user: SystemUser | None,
     organization: Organization,
     base_qs: QuerySetT,
@@ -127,9 +126,9 @@ def _scoped_only_member_of_queryset[QuerySetT: (CalendarGroupQuerySet, CalendarP
     """Apply role-aware, "does the token own a participating row" visibility
     scoping to `base_qs`.
 
-    Shared by ``scoped_calendar_group_queryset`` and
+    Shared by ``scoped_appointment_type_queryset`` and
     ``scoped_calendar_pool_queryset`` -- the two are the same security
-    predicate over different querysets (``CalendarGroupQuerySet.only_member_of``
+    predicate over different querysets (``AppointmentTypeQuerySet.only_member_of``
     / ``CalendarPoolQuerySet.only_member_of``, both keyed on a membership's
     ``user_id``), extracted here so the two call sites cannot drift apart the
     way a byte-identical copy eventually does. PEP 695 type parameter syntax
@@ -164,35 +163,35 @@ def _scoped_only_member_of_queryset[QuerySetT: (CalendarGroupQuerySet, CalendarP
     return base_qs.only_member_of(membership.user_id)
 
 
-def scoped_calendar_group_queryset(
+def scoped_appointment_type_queryset(
     system_user: SystemUser | None,
     organization: Organization,
-    base_qs: CalendarGroupQuerySet,
-) -> CalendarGroupQuerySet:
-    """Apply role-aware ``CalendarGroup`` visibility scoping to `base_qs`.
+    base_qs: AppointmentTypeQuerySet,
+) -> AppointmentTypeQuerySet:
+    """Apply role-aware ``AppointmentType`` visibility scoping to `base_qs`.
 
     Delegates to ``_scoped_only_member_of_queryset`` -- see that function's
     docstring for the full reasoning, repeated here only for the
-    ``CalendarGroup`` specifics:
+    ``AppointmentType`` specifics:
 
     - ``system_user`` is ``None`` (non-public-API / internal path): no-op,
       returns `base_qs` unchanged.
     - ``org_wide`` / ``scoped_admin``: no-op, returns `base_qs` unchanged --
-      unrestricted, sees every group in the organization.
+      unrestricted, sees every appointment type in the organization.
     - ``scoped_member`` with an active resolved membership: filtered to the
-      groups that membership participates in
-      (``CalendarGroupQuerySet.only_member_of``).
+      appointment types that membership participates in
+      (``AppointmentTypeQuerySet.only_member_of``).
     - ``scoped_member`` whose membership is missing/inactive: empty (fail
       closed) -- a revoked/deactivated scoped token must not fall back to
-      seeing every group in the org.
+      seeing every appointment type in the org.
 
     Args:
         system_user: The SystemUser (token) making the request, or None.
         organization: The organization context.
-        base_qs: An already organization-filtered ``CalendarGroupQuerySet``.
+        base_qs: An already organization-filtered ``AppointmentTypeQuerySet``.
 
     Returns:
-        The (possibly further-filtered) ``CalendarGroupQuerySet``.
+        The (possibly further-filtered) ``AppointmentTypeQuerySet``.
     """
     return _scoped_only_member_of_queryset(system_user, organization, base_qs)
 
@@ -205,7 +204,7 @@ def scoped_calendar_pool_queryset(
     """Apply role-aware ``CalendarPool`` visibility scoping to `base_qs`.
 
     Delegates to ``_scoped_only_member_of_queryset`` -- see
-    ``scoped_calendar_group_queryset``'s docstring for the full reasoning,
+    ``scoped_appointment_type_queryset``'s docstring for the full reasoning,
     repeated here only for the ``CalendarPool`` specifics:
 
     - ``system_user`` is ``None`` (non-public-API / internal path): no-op,

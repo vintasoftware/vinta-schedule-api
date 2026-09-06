@@ -58,27 +58,27 @@ from calendar_integration.booking_exceptions import (
 )
 from calendar_integration.constants import EventManagementPermissions
 from calendar_integration.exceptions import (
-    CalendarGroupError,
-    CalendarGroupValidationError,
+    AppointmentTypeError,
+    AppointmentTypeValidationError,
     CalendarServiceNotInjectedError,
     InvalidTokenError,
 )
-from calendar_integration.models import CalendarEvent, CalendarGroup, CalendarManagementToken
+from calendar_integration.models import AppointmentType, CalendarEvent, CalendarManagementToken
 from calendar_integration.serializers import (
+    BookingCodeAppointmentTypeEventCreateSerializer,
     BookingCodeEventCreateSerializer,
-    BookingCodeGroupEventCreateSerializer,
     BookingCodeRescheduleSerializer,
     CalendarEventSerializer,
     CalendarEventWithManagementCodesSerializer,
 )
+from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.bookable_slots_service import BookableSlotsService
-from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
+    AppointmentTypeEventInputData,
+    AppointmentTypeSlotSelectionInputData,
     CalendarEventInputData,
-    CalendarGroupEventInputData,
-    CalendarGroupSlotSelectionInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
@@ -109,14 +109,14 @@ def mint_management_code_pair(
     organization_id: int,
     event: CalendarEvent,
     calendar_id: int | None = None,
-    calendar_group_id: int | None = None,
+    appointment_type_id: int | None = None,
 ) -> ManagementCodePair:
     """Mint a fresh RESCHEDULE + CANCEL booking-code pair for ``event``.
 
     Shared by every code-gated create/reschedule viewset in this module
-    (``BookingCodeCalendarEventViewSet``, ``BookingCodeGroupEventViewSet`` --
+    (``BookingCodeCalendarEventViewSet``, ``BookingCodeAppointmentTypeEventViewSet`` --
     both its coded and codeless branches --, ``BookingCodeRescheduleEventViewSet``,
-    and ``BookingCodeRescheduleGroupEventViewSet``) instead of repeating the
+    and ``BookingCodeRescheduleAppointmentTypeEventViewSet``) instead of repeating the
     two ``create_booking_token`` calls four times, per the plan's Phase 8
     body. ``BookingCodeCancelEventViewSet`` never calls this -- a cancel ends
     the chain, it does not extend it.
@@ -127,7 +127,7 @@ def mint_management_code_pair(
     whose event row does not survive the transaction must not leave orphan
     booking-code rows referencing it either.
 
-    Exactly one of ``calendar_id`` / ``calendar_group_id`` must be supplied,
+    Exactly one of ``calendar_id`` / ``appointment_type_id`` must be supplied,
     matching the SAME scope the booking/reschedule itself used -- never
     both, and never a wider scope than the operation that produced ``event``
     had. This endpoint hands a credential to an unauthenticated caller on
@@ -138,9 +138,9 @@ def mint_management_code_pair(
 
     No ``duration`` is passed to ``create_booking_token`` -- there is no such
     parameter (see that method's own docstring). The constraint lives on
-    ``CalendarGroup.duration``, so a re-issued reschedule code inherits it
+    ``AppointmentType.duration``, so a re-issued reschedule code inherits it
     automatically the next time it is presented, through
-    ``CalendarPermissionService.can_perform_group_scheduling`` /
+    ``CalendarPermissionService.can_perform_appointment_type_scheduling`` /
     ``can_perform_update`` -- it is not, and cannot be, pinned on the code
     itself.
 
@@ -155,7 +155,7 @@ def mint_management_code_pair(
         permissions=[EventManagementPermissions.RESCHEDULE],
         expires_at=expires_at,
         calendar_id=calendar_id,
-        calendar_group_id=calendar_group_id,
+        appointment_type_id=appointment_type_id,
         event_id=event.id,
     )
     _cancel_token, cancel_code = permission_service.create_booking_token(
@@ -163,7 +163,7 @@ def mint_management_code_pair(
         permissions=[EventManagementPermissions.CANCEL],
         expires_at=expires_at,
         calendar_id=calendar_id,
-        calendar_group_id=calendar_group_id,
+        appointment_type_id=appointment_type_id,
         event_id=event.id,
     )
     return ManagementCodePair(reschedule_code=reschedule_code, cancel_code=cancel_code)
@@ -187,7 +187,7 @@ class BookingCodeViewMixin:
 
     calendar_permission_service: "CalendarPermissionService | None"
     calendar_service: "CalendarService | None"
-    calendar_group_service: "CalendarGroupService | None"
+    appointment_type_service: "AppointmentTypeService | None"
     bookable_slots_service: "BookableSlotsService | None"
 
     # Typed to match ``APIView``'s own stub declarations (``Sequence[type[
@@ -205,8 +205,8 @@ class BookingCodeViewMixin:
             "CalendarPermissionService | None", Provide["calendar_permission_service"]
         ] = None,
         calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
-        calendar_group_service: Annotated[
-            "CalendarGroupService | None", Provide["calendar_group_service"]
+        appointment_type_service: Annotated[
+            "AppointmentTypeService | None", Provide["appointment_type_service"]
         ] = None,
         bookable_slots_service: Annotated[
             "BookableSlotsService | None", Provide["bookable_slots_service"]
@@ -216,7 +216,7 @@ class BookingCodeViewMixin:
         super().__init__(**kwargs)
         self.calendar_permission_service = calendar_permission_service
         self.calendar_service = calendar_service
-        self.calendar_group_service = calendar_group_service
+        self.appointment_type_service = appointment_type_service
         self.bookable_slots_service = bookable_slots_service
 
 
@@ -242,7 +242,7 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
                 location=OpenApiParameter.HEADER,
                 required=True,
                 description="Single-use booking code, minted with the CREATE "
-                "permission and scoped to a single calendar (not a group).",
+                "permission and scoped to a single calendar (not an appointment type).",
             ),
         ],
         summary="Book an event on a single calendar with a booking code",
@@ -279,7 +279,7 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
             request, permission_service, EventManagementPermissions.CREATE
         )
 
-        # --- Step 2: scope check -- must be single-calendar (not group) ---
+        # --- Step 2: scope check -- must be single-calendar (not appointment type) ---
         if token.calendar is None:
             raise NotPermittedAPIException("This code is not scoped to a single calendar.")
 
@@ -310,7 +310,7 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
         # order -- see the docstring above for what create-first actually changes
         # (both racers reach the provider adapter, instead of the loser being turned
         # away by consume_code's row lock first). ``translate_booking_write_errors``
-        # maps the exception vocabulary shared with the group-booking viewset onto
+        # maps the exception vocabulary shared with the appointment-type-booking viewset onto
         # the booking-code API exceptions.
         with translate_booking_write_errors(
             permission_denied_message="This code does not permit booking on this calendar."
@@ -358,60 +358,60 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
 
 
 @extend_schema(tags=["Booking Codes"])
-class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
-    """Unauthenticated group booking, code-gated or codeless.
+class BookingCodeAppointmentTypeEventViewSet(BookingCodeViewMixin, GenericViewSet):
+    """Unauthenticated appointment type booking, code-gated or codeless.
 
-    ``POST /public/booking/calendar-groups/<public_slug>/events/`` books a
-    grouped event through the ``CalendarGroup`` named by the path. Ports both
-    ``calendar_integration.mutations.create_calendar_group_event_with_code`` (when
+    ``POST /public/booking/appointment-types/<public_slug>/events/`` books a
+    appointment-type event through the ``AppointmentType`` named by the path. Ports both
+    ``calendar_integration.mutations.create_appointment_type_event_with_code`` (when
     ``X-Booking-Code`` is present) and the codeless
-    ``calendar_integration.mutations.create_calendar_group_event`` (when it is
+    ``calendar_integration.mutations.create_appointment_type_event`` (when it is
     absent) to REST -- see those mutations' docstrings for the flows this mirrors.
 
-    The path segment addresses ``CalendarGroup.public_booking_slug`` -- an
+    The path segment addresses ``AppointmentType.public_booking_slug`` -- an
     opaque, unguessable, globally-unique identifier (Phase 3b) -- never the
     integer primary key. Phase 3 shipped this route keyed by the integer id,
     which, with no ``organization_id`` anywhere in this surface's paths and
     throttling declined, made the codeless branch a cross-tenant enumeration
-    oracle: an anonymous caller could walk ``group_id`` 1..N and learn, from
-    the 404/403/201 split, which groups exist in ANY organization and which
+    oracle: an anonymous caller could walk ``appointment_type_id`` 1..N and learn, from
+    the 404/403/201 split, which appointment types exist in ANY organization and which
     accept public scheduling. The slug alone authorizes nothing -- every
-    group has one, public or private -- ``accepts_public_scheduling`` still
+    appointment type has one, public or private -- ``accepts_public_scheduling`` still
     gates codeless booking exactly as before.
 
-    **Coded** (header present): the addressed group comes STRICTLY from the
+    **Coded** (header present): the addressed appointment type comes STRICTLY from the
     resolved token, never from the path or the request body. The path
     segment is a routing convenience only, compared against the TOKEN'S OWN
-    ``calendar_group.public_booking_slug`` (never resolved by looking a group
+    ``appointment_type.public_booking_slug`` (never resolved by looking an appointment type
     up BY the path's slug -- see the ordering note on that comparison below)
     and rejected (``403 NOT_PERMITTED``, never a ``404``) on any mismatch -- a
-    ``404`` would confirm the code's real group to someone probing a
+    ``404`` would confirm the code's real appointment type to someone probing a
     different slug, which is an enumeration oracle this endpoint must not
     offer, exactly as it must not for the integer id Phase 3 replaced.
 
     **Codeless** (header absent): no code is resolved or consumed -- there is
-    none. The group comes from the path's slug, exactly as the client sent
+    none. The appointment type comes from the path's slug, exactly as the client sent
     it: it is the client's own input here, not a secret (unlike the coded
-    branch's token-bound group), so a ``404`` for a slug that resolves to no
-    group discloses nothing the client did not already know -- the mirror
+    branch's token-bound appointment type), so a ``404`` for a slug that resolves to no
+    appointment type discloses nothing the client did not already know -- the mirror
     image of the coded rule above, and now safe precisely because the
     identifier is unguessable rather than sequential. Authorization is
-    delegated entirely to ``CalendarGroupService.create_grouped_event``,
-    which allows the booking only when the group's own
+    delegated entirely to ``AppointmentTypeService.create_appointment_type_event``,
+    which allows the booking only when the appointment type's own
     ``accepts_public_scheduling`` is ``True`` (``403 NOT_PERMITTED``
-    otherwise). The group's pinned duration, if any, still applies on this
-    branch: the pin lives on the ``CalendarGroup``, not on the code, so a
+    otherwise). The appointment type's pinned duration, if any, still applies on this
+    branch: the pin lives on the ``AppointmentType``, not on the code, so a
     codeless booking is constrained by it exactly like a coded one.
 
-    The coded path always wins when the header is present -- a group that
-    accepts public scheduling but is handed a valid group code still books
+    The coded path always wins when the header is present -- an appointment type that
+    accepts public scheduling but is handed a valid appointment type code still books
     through the code and consumes it.
     """
 
-    serializer_class = BookingCodeGroupEventCreateSerializer
+    serializer_class = BookingCodeAppointmentTypeEventCreateSerializer
 
     @extend_schema(
-        request=BookingCodeGroupEventCreateSerializer,
+        request=BookingCodeAppointmentTypeEventCreateSerializer,
         responses={201: CalendarEventWithManagementCodesSerializer},
         parameters=[
             OpenApiParameter(
@@ -420,22 +420,22 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
                 location=OpenApiParameter.HEADER,
                 required=False,
                 description="Single-use booking code, minted with the CREATE "
-                "permission and scoped to a calendar group (not a single calendar). "
+                "permission and scoped to an appointment type (not a single calendar). "
                 "OPTIONAL on this endpoint only: when omitted, the booking is "
-                "authorized instead by the path group's own "
-                "accepts_public_scheduling flag (codeless public group booking, "
-                "GraphQL parity with createCalendarGroupEvent). When present, the "
-                "coded path always wins -- a public group handed a valid group "
+                "authorized instead by the path appointment type's own "
+                "accepts_public_scheduling flag (codeless public appointment type booking, "
+                "GraphQL parity with createAppointmentTypeEvent). When present, the "
+                "coded path always wins -- a public appointment type handed a valid appointment type "
                 "code still books through it and consumes it.",
             ),
         ],
-        summary="Book a grouped event through a calendar group, with or without a booking code",
+        summary="Book an appointment type event through an appointment type, with or without a booking code",
     )
     def create(self, request: Request, *args, **kwargs) -> Response:
-        """Create the grouped event, resolving and consuming a code only when one is presented.
+        """Create the appointment-type event, resolving and consuming a code only when one is presented.
 
         **Coded**: create FIRST, then consume, matching the GraphQL original
-        (``create_calendar_group_event_with_code``) and Phase 1's single-calendar
+        (``create_appointment_type_event_with_code``) and Phase 1's single-calendar
         endpoint. Both statements run inside the same outer ``transaction.atomic()``
         block below, so any exception either one raises -- including
         ``consume_code``'s ``TokenAlreadyUsedError`` on a lost race -- unwinds the
@@ -447,17 +447,21 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
         provider.
 
         **Codeless**: no code exists to create-then-consume around, so only the
-        create runs. Organization is derived from the path group itself (there is
-        no token to read it from), and the group-level
-        ``accepts_public_scheduling`` gate inside ``create_grouped_event`` is the
+        create runs. Organization is derived from the path appointment type itself (there is
+        no token to read it from), and the appointment-type-level
+        ``accepts_public_scheduling`` gate inside ``create_appointment_type_event`` is the
         entire authorization decision -- it is not restated here.
         """
         permission_service = self.calendar_permission_service
         calendar_service = self.calendar_service
-        calendar_group_service = self.calendar_group_service
-        if permission_service is None or calendar_service is None or calendar_group_service is None:
+        appointment_type_service = self.appointment_type_service
+        if (
+            permission_service is None
+            or calendar_service is None
+            or appointment_type_service is None
+        ):
             raise CalendarServiceNotInjectedError(
-                "calendar_permission_service / calendar_service / calendar_group_service "
+                "calendar_permission_service / calendar_service / appointment_type_service "
                 "not configured; check the DI container."
             )
 
@@ -472,8 +476,8 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
         if code is None:
             # --- Codeless branch: skip code resolution entirely. The slug is
             # the client's OWN input here (not a secret the way a coded
-            # token's group is), so a 404 for a slug that resolves to no
-            # group discloses nothing the client did not already know -- and
+            # token's appointment type is), so a 404 for a slug that resolves to no
+            # appointment type discloses nothing the client did not already know -- and
             # is now SAFE to disclose, because the slug is unguessable
             # (Phase 3b) rather than a sequential integer someone could walk.
             # Do NOT "fix" this to a 403 to mirror the coded branch's
@@ -485,80 +489,82 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
                 # yet. This is the codeless counterpart of resolving the
                 # organization from the token's organization_id on the coded
                 # branch.
-                group = (
-                    CalendarGroup.objects.unscoped()
+                appointment_type = (
+                    AppointmentType.objects.unscoped()
                     .select_related("organization")
                     .get(public_booking_slug=path_public_slug)
                 )
-            except CalendarGroup.DoesNotExist as exc:
-                raise NotFound("Calendar group not found.") from exc
-            org = group.organization
-            resolved_group_id = group.id
+            except AppointmentType.DoesNotExist as exc:
+                raise NotFound("Appointment type not found.") from exc
+            org = appointment_type.organization
+            resolved_appointment_type_id = appointment_type.id
         else:
             # --- resolve the code, check permission, and resolve org ---
             token, code, org = resolve_and_authorize_write(
                 request, permission_service, EventManagementPermissions.CREATE
             )
 
-            # --- scope check -- must be group-scoped (not single-calendar) ---
-            if token.calendar_group is None:
+            # --- scope check -- must be appointment-type-scoped (not single-calendar) ---
+            if token.appointment_type is None:
                 raise NotPermittedAPIException(
-                    "This code is not scoped to a calendar group. "
+                    "This code is not scoped to an appointment type. "
                     "Use the single-calendar booking endpoint for calendar-scoped codes."
                 )
 
             # --- path/token scope assertion -- the path <public_slug> is a
             # routing convenience only. Compare it against the TOKEN'S OWN
-            # resolved group's slug (``token.calendar_group`` was already
+            # resolved appointment type's slug (``token.appointment_type`` was already
             # fetched by the scope check above, keyed strictly by the
-            # token's own ``calendar_group_fk_id`` -- never by the path
-            # value) rather than resolving a group BY the path's slug and
+            # token's own ``appointment_type_fk_id`` -- never by the path
+            # value) rather than resolving an appointment type by the path's slug and
             # comparing ids. That ordering matters: a lookup keyed on the
             # untrusted path slug would perform a distinguishable "does a
-            # group with this slug exist" query, reintroducing exactly the
+            # appointment type with this slug exist" query, reintroducing exactly the
             # enumeration oracle this phase closes, even if the eventual
             # HTTP status stayed 403. Comparing two already-known strings in
             # memory (the token's own slug vs. the path's) means the coded
             # branch never queries the DB by the path's slug at all -- a
             # mismatch is 403 NOT_PERMITTED, never a 404: a 404 would confirm
-            # the code's real group to a caller probing a different slug.
+            # the code's real appointment type to a caller probing a different slug.
             # This is the mirror image of the codeless branch above, where
             # the path <public_slug> IS the client's own input and a 404 is
             # the correct, non-disclosing response for one that resolves to
-            # no group -- do NOT "fix" one of these two to match the other.
-            if path_public_slug != token.calendar_group.public_booking_slug:
-                raise NotPermittedAPIException("This code is not scoped to this calendar group.")
-            resolved_group_id = token.calendar_group.id
+            # no appointment type -- do NOT "fix" one of these two to match the other.
+            if path_public_slug != token.appointment_type.public_booking_slug:
+                raise NotPermittedAPIException("This code is not scoped to this appointment type.")
+            resolved_appointment_type_id = token.appointment_type.id
 
-            group = token.calendar_group
+            appointment_type = token.appointment_type
 
         # --- pinned-duration message, ahead of dispatch. The guarantee itself
-        # is enforced independently inside can_perform_group_scheduling -- this
+        # is enforced independently inside can_perform_appointment_type_scheduling -- this
         # exists purely so the response names the pinned duration instead of
         # the generic permission-denied message. Applies on BOTH branches: the
-        # pin lives on the CalendarGroup, not on the code, so a codeless
+        # pin lives on the AppointmentType, not on the code, so a codeless
         # booking is constrained by it exactly like a coded one -- a codeless
-        # booking presents no credential to carry a pin, but the group's own
+        # booking presents no credential to carry a pin, but the appointment type's own
         # duration is not a property of the code. ---
-        duration_error = pinned_duration_error(group, data["start_time"], data["end_time"])
+        duration_error = pinned_duration_error(
+            appointment_type, data["start_time"], data["end_time"]
+        )
         if duration_error is not None:
             raise duration_error
 
-        # --- build group event data -- resolved_group_id comes from the
-        # token's own resolved group when one was resolved (to enforce
-        # scope), otherwise from the group already resolved by slug on the
+        # --- build appointment type event data -- resolved_appointment_type_id comes from the
+        # token's own resolved appointment type when one was resolved (to enforce
+        # scope), otherwise from the appointment type already resolved by slug on the
         # codeless branch above (the codeless branch has no token to read it
         # from, and the path carries only the slug, never the integer id). ---
         external_attendee = data["external_attendee"]
-        group_event_data = CalendarGroupEventInputData(
-            group_id=resolved_group_id,
+        appointment_type_event_data = AppointmentTypeEventInputData(
+            appointment_type_id=resolved_appointment_type_id,
             title=data["title"],
             description=data.get("description", ""),
             start_time=data["start_time"],
             end_time=data["end_time"],
             timezone=data["timezone"],
             slot_selections=[
-                CalendarGroupSlotSelectionInputData(
+                AppointmentTypeSlotSelectionInputData(
                     slot_id=s["slot_id"],
                     calendar_ids=list(s["calendar_ids"]),
                 )
@@ -575,39 +581,39 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
         )
 
         permission_denied_message = (
-            "This code does not permit booking on this calendar group."
+            "This code does not permit booking on this appointment type."
             if token is not None
             else (
-                "This group does not accept public scheduling. "
+                "This appointment type does not accept public scheduling. "
                 "A token or scheduling code is required."
             )
         )
 
-        # ``calendar_group_service`` is the DI container's own Factory-provided
+        # ``appointment_type_service`` is the DI container's own Factory-provided
         # instance, wired with its own (uninitialized) ``CalendarService`` and
         # ``CalendarPermissionService``. Explicitly wire in the code-initialized
         # ``calendar_service`` (and its ``calendar_permission_service``, which
         # carries the resolved token, when there is one) so the primary-calendar
-        # create and the group-level ``can_perform_group_scheduling`` gate both
-        # see the same auth context -- without this the group service would
+        # create and the appointment-type-level ``can_perform_appointment_type_scheduling`` gate both
+        # see the same auth context -- without this the appointment type service would
         # authorize against an uninitialized permission service and deny every
-        # private-group booking. On the codeless branch ``code`` stays ``None``,
+        # private-appointment-type booking. On the codeless branch ``code`` stays ``None``,
         # matching the GraphQL codeless mutation's own
         # ``initialize_without_provider(organization=organization)`` call (no
         # ``user_or_token``). ``translate_booking_write_errors`` maps the
         # exception vocabulary shared with the single-calendar viewset onto the
-        # booking-code API exceptions, including a private group's denial on the
-        # codeless branch: ``can_perform_group_scheduling`` returns ``False`` via
-        # its ``token is None`` short-circuit, ``create_grouped_event`` raises a
+        # booking-code API exceptions, including a private appointment type's denial on the
+        # codeless branch: ``can_perform_appointment_type_scheduling`` returns ``False`` via
+        # its ``token is None`` short-circuit, ``create_appointment_type_event`` raises a
         # plain ``django.core.exceptions.PermissionDenied``, and that context
         # manager's own ``except DjangoPermissionDenied`` maps it to
         # ``NotPermittedAPIException`` above -- do not add an
         # ``except PermissionServiceInitializationError`` here for that case,
         # that exception is only raised by ``has_permission``, which this path
-        # never reaches (``accepts_public_scheduling`` and the group-scope check
+        # never reaches (``accepts_public_scheduling`` and the appointment-type-scope check
         # both return before it, and ``create_event`` skips its own permission
-        # check via ``group_authorized=True``). ``CalendarGroup.DoesNotExist``
-        # and ``CalendarGroupError`` are group-only and stay mapped here.
+        # check via ``appointment_type_authorized=True``). ``AppointmentType.DoesNotExist``
+        # and ``AppointmentTypeError`` are appointment-type-only and stay mapped here.
         try:
             with translate_booking_write_errors(
                 permission_denied_message=permission_denied_message
@@ -616,53 +622,55 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
                     calendar_service.initialize_without_provider(
                         user_or_token=code, organization=org
                     )
-                    calendar_group_service.calendar_service = calendar_service
-                    calendar_group_service.calendar_permission_service = (
+                    appointment_type_service.calendar_service = calendar_service
+                    appointment_type_service.calendar_permission_service = (
                         calendar_service.calendar_permission_service
                     )
-                    calendar_group_service.initialize(organization=org)
-                    event = calendar_group_service.create_grouped_event(group_event_data)
+                    appointment_type_service.initialize(organization=org)
+                    event = appointment_type_service.create_appointment_type_event(
+                        appointment_type_event_data
+                    )
                     # Mint the patient's self-service RESCHEDULE + CANCEL pair,
-                    # scoped to the SAME group the booking itself used -- on BOTH
+                    # scoped to the SAME appointment type the booking itself used -- on BOTH
                     # branches: the codeless branch has no token to bind a
                     # credential to at all, so this pair is the only way that
                     # patient can ever manage the appointment they just booked.
                     # Inside this atomic block, so a rolled-back booking mints
-                    # nothing. `group` is resolved on both branches above (by
+                    # nothing. `appointment_type` is resolved on both branches above (by
                     # slug on the codeless branch, from the token on the coded
-                    # one) -- always the group the booking actually used, never
+                    # one) -- always the appointment type the booking actually used, never
                     # the untrusted path slug directly.
                     management_codes = mint_management_code_pair(
                         permission_service,
                         organization_id=org.id,
                         event=event,
-                        calendar_group_id=group.id,
+                        appointment_type_id=appointment_type.id,
                     )
                     # No code to consume on the codeless branch -- there is none.
                     if token is not None:
                         permission_service.consume_code(token, client_ip_from_request(request))
-        except CalendarGroup.DoesNotExist as exc:
+        except AppointmentType.DoesNotExist as exc:
             if token is None:
                 # Codeless: public_slug is the client's own path input, not a
                 # secret -- see the branch comment above. Do not map this to
                 # 403 to mirror the coded branch below.
-                raise NotFound("Calendar group not found.") from exc
+                raise NotFound("Appointment type not found.") from exc
             # Coded: per the path/token scope rule above, never disclose
-            # whether a group with this slug exists via a bare 404. This is
+            # whether an appointment type with this slug exists via a bare 404. This is
             # effectively unreachable in practice -- the token's
-            # calendar_group FK is ON DELETE CASCADE, so a deleted group
+            # appointment_type FK is ON DELETE CASCADE, so a deleted appointment type
             # takes the token with it and code resolution above would
             # already have failed as INVALID_CODE -- but the mapping stays
             # defensive rather than leaking existence if that invariant ever
             # changes.
             raise NotPermittedAPIException(
-                "This code is not scoped to a valid calendar group."
+                "This code is not scoped to a valid appointment type."
             ) from exc
-        except CalendarGroupError as exc:
+        except AppointmentTypeError as exc:
             # Slot taken / invalid selection -- nothing consumed (txn rolled
             # back), patient may retry with a different slot.
             raise SlotUnavailableAPIException() from exc
-        # create_grouped_event raises OverLimitError at the organization's postpaid
+        # create_appointment_type_event raises OverLimitError at the organization's postpaid
         # event_occurrences allowance (no payment method on file). Unlike the domain
         # errors above, this is not a booking-code-specific outcome the patient can
         # retry around, so it is left to propagate to the shared vinta_exception_handler,
@@ -722,7 +730,7 @@ class BookingCodeRescheduleEventViewSet(BookingCodeViewMixin, GenericViewSet):
                 required=True,
                 description="Single-use booking code, minted with the RESCHEDULE "
                 "permission and bound to a specific event on a single calendar "
-                "(not a group).",
+                "(not an appointment type).",
             ),
         ],
         summary="Reschedule an event on a single calendar with a booking code",
@@ -759,13 +767,13 @@ class BookingCodeRescheduleEventViewSet(BookingCodeViewMixin, GenericViewSet):
         )
 
         # --- scope check -- must be bound to a specific event, and single-calendar
-        # (not group) -- a group-scoped code routes to the group reschedule endpoint. ---
+        # (not appointment type) -- an appointment-type-scoped code routes to the appointment type reschedule endpoint. ---
         if token.event is None:
             raise NotPermittedAPIException("This code is not bound to a specific event.")
-        if token.calendar_group is not None:
+        if token.appointment_type is not None:
             raise NotPermittedAPIException(
-                "This code is scoped to a calendar group. Use the group reschedule "
-                "endpoint for group-scoped codes."
+                "This code is scoped to an appointment type. Use the appointment type reschedule "
+                "endpoint for appointment-type-scoped codes."
             )
 
         source_ip = client_ip_from_request(request)
@@ -881,18 +889,18 @@ class BookingCodeRescheduleEventViewSet(BookingCodeViewMixin, GenericViewSet):
 
 
 @extend_schema(tags=["Booking Codes"])
-class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
-    """Unauthenticated, code-gated group reschedule.
+class BookingCodeRescheduleAppointmentTypeEventViewSet(BookingCodeViewMixin, GenericViewSet):
+    """Unauthenticated, code-gated appointment type reschedule.
 
-    ``POST /public/booking/group-events/reschedule/`` moves the grouped event
+    ``POST /public/booking/appointment-type-events/reschedule/`` moves the appointment-type event
     bound to the presented ``X-Booking-Code`` to a new time. Ports
-    ``calendar_integration.mutations.reschedule_calendar_group_event_with_code``
+    ``calendar_integration.mutations.reschedule_appointment_type_event_with_code``
     to REST -- see that mutation's docstring for the full flow this mirrors.
 
     ``event_id`` comes STRICTLY from the resolved token, never from the
     request. Only the times change -- title, description, attendances,
-    resource allocations, and the group's calendar selections are preserved
-    by ``CalendarGroupService.reschedule_grouped_event`` (time-only v1; full
+    resource allocations, and the appointment type's calendar selections are preserved
+    by ``AppointmentTypeService.reschedule_appointment_type_event`` (time-only v1; full
     slot re-selection is deferred, per the plan's Non-goals).
     """
 
@@ -908,14 +916,14 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
                 location=OpenApiParameter.HEADER,
                 required=True,
                 description="Single-use booking code, minted with the RESCHEDULE "
-                "permission and bound to a specific event on a calendar group "
+                "permission and bound to a specific event on an appointment type "
                 "(not a single calendar).",
             ),
         ],
-        summary="Reschedule a grouped event through a calendar group with a booking code",
+        summary="Reschedule an appointment type event through an appointment type with a booking code",
     )
     def create(self, request: Request, *args, **kwargs) -> Response:
-        """Reschedule the bound grouped event's times, then consume the code atomically.
+        """Reschedule the bound appointment-type event's times, then consume the code atomically.
 
         Update FIRST, then consume -- see
         ``BookingCodeRescheduleEventViewSet.create``'s docstring for what that
@@ -923,10 +931,14 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
         """
         permission_service = self.calendar_permission_service
         calendar_service = self.calendar_service
-        calendar_group_service = self.calendar_group_service
-        if permission_service is None or calendar_service is None or calendar_group_service is None:
+        appointment_type_service = self.appointment_type_service
+        if (
+            permission_service is None
+            or calendar_service is None
+            or appointment_type_service is None
+        ):
             raise CalendarServiceNotInjectedError(
-                "calendar_permission_service / calendar_service / calendar_group_service "
+                "calendar_permission_service / calendar_service / appointment_type_service "
                 "not configured; check the DI container."
             )
 
@@ -942,26 +954,26 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
             permission_denied_message="This code does not permit rescheduling.",
         )
 
-        # --- scope check -- must be bound to a specific event, and group-scoped
+        # --- scope check -- must be bound to a specific event, and appointment-type-scoped
         # (not single-calendar) -- a single-calendar code routes to the other
         # reschedule endpoint. ---
         if token.event is None:
             raise NotPermittedAPIException("This code is not bound to a specific event.")
-        if token.calendar_group is None:
+        if token.appointment_type is None:
             raise NotPermittedAPIException(
-                "This code is not scoped to a calendar group. Use the single-calendar "
+                "This code is not scoped to an appointment type. Use the single-calendar "
                 "reschedule endpoint for calendar-scoped codes."
             )
 
         # --- pinned-duration message, ahead of dispatch. The pin lives on the
-        # CalendarGroup (``token.calendar_group`` is guaranteed non-None by the
+        # AppointmentType (``token.appointment_type`` is guaranteed non-None by the
         # scope check above), not on the code, and constrains the NEW span, not
         # the event's current one -- refusing a move to a different span even
         # when the event's current span already matches it. The guarantee
         # itself is enforced independently inside can_perform_update; this
         # exists purely so the response names the pinned duration. ---
         duration_error = pinned_duration_error(
-            token.calendar_group, data["start_time"], data["end_time"]
+            token.appointment_type, data["start_time"], data["end_time"]
         )
         if duration_error is not None:
             raise duration_error
@@ -969,7 +981,7 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
         source_ip = client_ip_from_request(request)
 
         # event_id comes strictly from the token, never from client input, so the
-        # code can only ever affect the exact grouped event it was minted for.
+        # code can only ever affect the exact appointment-type event it was minted for.
         event_id: int = token.event_fk_id  # type: ignore[assignment]
 
         # --- availability pre-check (code-path only) against the bound event's
@@ -993,9 +1005,9 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
             if not available_windows:
                 raise SlotUnavailableAPIException()
 
-        # --- atomic reschedule + consume. calendar_group_service is wired with the
+        # --- atomic reschedule + consume. appointment_type_service is wired with the
         # code-initialized calendar_service so both the primary-calendar update
-        # and the group-level authorization checks see the same auth context. ---
+        # and the appointment-type-level authorization checks see the same auth context. ---
         try:
             with translate_booking_write_errors(
                 permission_denied_message="This code does not permit rescheduling this event."
@@ -1004,21 +1016,21 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
                     calendar_service.initialize_without_provider(
                         user_or_token=code, organization=org
                     )
-                    calendar_group_service.calendar_service = calendar_service
-                    calendar_group_service.initialize(organization=org)
-                    event = calendar_group_service.reschedule_grouped_event(
+                    appointment_type_service.calendar_service = calendar_service
+                    appointment_type_service.initialize(organization=org)
+                    event = appointment_type_service.reschedule_appointment_type_event(
                         event_id=event_id,
                         start_time=data["start_time"],
                         end_time=data["end_time"],
                         tz=data["timezone"],
                     )
                     # Re-issue a fresh RESCHEDULE + CANCEL pair, scoped to the
-                    # SAME group as the just-consumed code, so the patient can
+                    # SAME appointment type as the just-consumed code, so the patient can
                     # manage the appointment again -- the chain continues. No
-                    # duration is passed: the pin lives on token.calendar_group
-                    # (CalendarGroup.duration), so the re-issued reschedule code
+                    # duration is passed: the pin lives on token.appointment type
+                    # (AppointmentType.duration), so the re-issued reschedule code
                     # inherits it automatically the next time it is presented,
-                    # through can_perform_group_scheduling / can_perform_update
+                    # through can_perform_appointment_type_scheduling / can_perform_update
                     # -- see mint_management_code_pair's own docstring. Inside
                     # this atomic block, so a rolled-back reschedule mints
                     # nothing.
@@ -1026,15 +1038,15 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
                         permission_service,
                         organization_id=org.id,
                         event=event,
-                        calendar_group_id=token.calendar_group.id,
+                        appointment_type_id=token.appointment_type.id,
                     )
                     permission_service.consume_code(token, source_ip)
-        except CalendarGroupError as exc:
-            # Slot outside a group-scoped availability window / quota rule, or an
+        except AppointmentTypeError as exc:
+            # Slot outside an appointment-type-scoped availability window / quota rule, or an
             # invalid selection -- nothing consumed (txn rolled back), patient may
             # retry with a different slot. ``translate_booking_write_errors`` does
-            # not map this hierarchy (it is group-only); mapped here instead,
-            # matching ``BookingCodeGroupEventViewSet.create``'s own extra catch.
+            # not map this hierarchy (it is appointment-type-only); mapped here instead,
+            # matching ``BookingCodeAppointmentTypeEventViewSet.create``'s own extra catch.
             raise SlotUnavailableAPIException() from exc
 
         context = self.get_serializer_context()
@@ -1059,14 +1071,14 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
 
 @extend_schema(tags=["Booking Codes"])
 class BookingCodeCancelEventViewSet(BookingCodeViewMixin, GenericViewSet):
-    """Unauthenticated, code-gated cancellation -- single-calendar or group.
+    """Unauthenticated, code-gated cancellation -- single-calendar or appointment type.
 
     ``POST /public/booking/events/cancel/`` deletes the event bound to the
     presented ``X-Booking-Code``. Ports
     ``calendar_integration.mutations.cancel_event_with_code`` to REST -- see
     that mutation's docstring for the full flow this mirrors, including why it
-    handles BOTH a calendar-bound and a group-bound cancel code via the SAME
-    endpoint, dispatching on whether ``token.calendar_group`` is set.
+    handles BOTH a calendar-bound and an appointment-type-bound cancel code via the SAME
+    endpoint, dispatching on whether ``token.appointment_type`` is set.
 
     ``event_id`` comes STRICTLY from the resolved token, never from the
     request. No body is accepted. Returns ``204 No Content`` on success.
@@ -1085,7 +1097,7 @@ class BookingCodeCancelEventViewSet(BookingCodeViewMixin, GenericViewSet):
                 "permission and bound to a specific event.",
             ),
         ],
-        summary="Cancel an event, single-calendar or group-bound, with a booking code",
+        summary="Cancel an event, single-calendar or appointment-type-bound, with a booking code",
     )
     def create(self, request: Request, *args, **kwargs) -> Response:
         """Consume FIRST, then delete, matching the GraphQL original.
@@ -1101,10 +1113,14 @@ class BookingCodeCancelEventViewSet(BookingCodeViewMixin, GenericViewSet):
         """
         permission_service = self.calendar_permission_service
         calendar_service = self.calendar_service
-        calendar_group_service = self.calendar_group_service
-        if permission_service is None or calendar_service is None or calendar_group_service is None:
+        appointment_type_service = self.appointment_type_service
+        if (
+            permission_service is None
+            or calendar_service is None
+            or appointment_type_service is None
+        ):
             raise CalendarServiceNotInjectedError(
-                "calendar_permission_service / calendar_service / calendar_group_service "
+                "calendar_permission_service / calendar_service / appointment_type_service "
                 "not configured; check the DI container."
             )
 
@@ -1117,8 +1133,8 @@ class BookingCodeCancelEventViewSet(BookingCodeViewMixin, GenericViewSet):
         )
 
         # --- scope check -- must be bound to a specific event. Dispatch below on
-        # whether the token is group-scoped -- both the single-calendar and the
-        # group path are handled by this same endpoint, exactly as the GraphQL
+        # whether the token is appointment-type-scoped -- both the single-calendar and the
+        # appointment type path are handled by this same endpoint, exactly as the GraphQL
         # original does. ---
         if token.event is None:
             raise NotPermittedAPIException("This code is not bound to a specific event.")
@@ -1129,7 +1145,7 @@ class BookingCodeCancelEventViewSet(BookingCodeViewMixin, GenericViewSet):
         # the token, never from client input.
         event_id: int = token.event_fk_id  # type: ignore[assignment]
         single_calendar_id: int | None = (
-            None if token.calendar_group is not None else token.event.calendar_fk_id
+            None if token.appointment_type is not None else token.event.calendar_fk_id
         )
 
         try:
@@ -1141,10 +1157,10 @@ class BookingCodeCancelEventViewSet(BookingCodeViewMixin, GenericViewSet):
                     calendar_service.initialize_without_provider(
                         user_or_token=code, organization=org
                     )
-                    if token.calendar_group is not None:
-                        calendar_group_service.calendar_service = calendar_service
-                        calendar_group_service.initialize(organization=org)
-                        calendar_group_service.cancel_grouped_event(
+                    if token.appointment_type is not None:
+                        appointment_type_service.calendar_service = calendar_service
+                        appointment_type_service.initialize(organization=org)
+                        appointment_type_service.cancel_appointment_type_event(
                             event_id=event_id, delete_series=False
                         )
                     else:
@@ -1161,15 +1177,15 @@ class BookingCodeCancelEventViewSet(BookingCodeViewMixin, GenericViewSet):
         except CalendarEvent.DoesNotExist as exc:
             # The event was concurrently deleted between resolve and the delete call.
             raise InvalidCodeAPIException() from exc
-        except CalendarGroupValidationError as exc:
-            # Group path: the bound event is not actually a grouped event (scope
-            # mismatch), or a cancel_grouped_event precondition failed for a
+        except AppointmentTypeValidationError as exc:
+            # Appointment type path: the bound event is not actually an appointment-type event (scope
+            # mismatch), or a cancel_appointment_type_event precondition failed for a
             # structural reason -- a permission/scope issue, not a slot-availability
-            # one. Caught ahead of the broader CalendarGroupError below.
+            # one. Caught ahead of the broader AppointmentTypeError below.
             raise NotPermittedAPIException(
                 "This code does not permit cancellation of this event."
             ) from exc
-        except CalendarGroupError as exc:
+        except AppointmentTypeError as exc:
             raise SlotUnavailableAPIException("The event could not be cancelled.") from exc
 
         return Response(status=status.HTTP_204_NO_CONTENT)

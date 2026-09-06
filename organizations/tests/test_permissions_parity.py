@@ -81,22 +81,22 @@ from vinta_orgs import authorization as vinta_orgs_authorization
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     BookingPolicy,
     Calendar,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
     CalendarOwnership,
 )
 from calendar_integration.permissions import (
+    AppointmentTypePermission,
+    AppointmentTypeScopedAvailabilityWindowPermission,
+    AppointmentTypeScopedBlockedTimePermission,
+    AppointmentTypeScopedQuotaRulePermission,
     BookingPolicyPermission,
     CalendarAvailabilityPermission,
     CalendarEventPermission,
-    CalendarGroupPermission,
     ExternalEventChangeRequestPermission,
-    GroupScopedAvailabilityWindowPermission,
-    GroupScopedBlockedTimePermission,
-    GroupScopedQuotaRulePermission,
 )
 from calendar_integration.services.booking_policy_permission_service import (
     BookingPolicyPermissionService,
@@ -553,20 +553,20 @@ class TestBookingPolicyPermissionParity:
         self, factory, booking_policy_permission, admin, organization
     ):
         request = request_for(
-            factory, acting_in(admin, organization), method="post", data={"calendar_group": 1}
+            factory, acting_in(admin, organization), method="post", data={"appointment_type": 1}
         )
 
         assert booking_policy_permission.has_permission(request, _View("create")) is True
 
-    def test_a_plain_member_may_not_create_a_group_policy(
+    def test_a_plain_member_may_not_create_an_appointment_type_policy(
         self, factory, booking_policy_permission, member, organization
     ):
-        group = CalendarGroup.objects.create(organization=organization, name="Pool")
+        appointment_type = AppointmentType.objects.create(organization=organization, name="Pool")
         request = request_for(
             factory,
             acting_in(member, organization),
             method="post",
-            data={"calendar_group": group.id},
+            data={"appointment_type": appointment_type.id},
         )
 
         assert booking_policy_permission.has_permission(request, _View("create")) is False
@@ -598,9 +598,9 @@ class TestBookingPolicyPermissionParity:
         longer disagree at all; what stays pinned here is that a group-less
         membership is refused at both ends.
         """
-        group = CalendarGroup.objects.create(organization=organization, name="Pool 2")
+        appointment_type = AppointmentType.objects.create(organization=organization, name="Pool 2")
         request = request_for(
-            factory, ungrouped_admin, method="post", data={"calendar_group": group.id}
+            factory, ungrouped_admin, method="post", data={"appointment_type": appointment_type.id}
         )
 
         assert booking_policy_permission.has_permission(request, _View("create")) is False
@@ -616,21 +616,25 @@ class TestBookingPolicyPermissionParity:
         through the group-assignment endpoint. Such a caller passed
         ``has_permission``'s capability short-circuit and was then refused by the service on
         ``has_object_permission``, which re-derived privilege from the column:
-        they could create a group policy and not edit the row they had just
+        they could create an appointment type policy and not edit the row they had just
         created. Both ends now read the same answer.
         """
         membership = OrganizationMembership.objects.get(user=member, organization=organization)
         membership.groups.add(Group.objects.get(name=GROUP_ORGANIZATION_ADMIN))
-        group = CalendarGroup.objects.create(organization=organization, name="Pool 3")
+        appointment_type = AppointmentType.objects.create(organization=organization, name="Pool 3")
         assert (
             booking_policy_permission.has_permission(
-                request_for(factory, member, method="post", data={"calendar_group": group.id}),
+                request_for(
+                    factory, member, method="post", data={"appointment_type": appointment_type.id}
+                ),
                 _View("create"),
             )
             is True
         )
 
-        policy = BookingPolicy.objects.create(organization=organization, calendar_group=group)
+        policy = BookingPolicy.objects.create(
+            organization=organization, appointment_type=appointment_type
+        )
 
         assert (
             booking_policy_permission.has_object_permission(
@@ -732,13 +736,13 @@ class TestCalendarAvailabilityPermissionParity:
 
 
 # ---------------------------------------------------------------------------
-# 10-13. The four group-scoped classes
+# 10-13. The four appointment-type-scoped classes
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def group_fixture(organization):
-    """A group with one slot holding one calendar, owned by nobody yet."""
+def appointment_type_fixture(organization):
+    """An appointment type with one slot holding one calendar, owned by nobody yet."""
     calendar = Calendar.objects.create(
         organization=organization,
         name="Dr. A",
@@ -746,24 +750,26 @@ def group_fixture(organization):
         provider=CalendarProvider.INTERNAL,
         calendar_type=CalendarType.PERSONAL,
     )
-    group = CalendarGroup.objects.create(organization=organization, name="Appointments")
-    slot = CalendarGroupSlot.objects.create(
-        organization=organization, group=group, name="Physicians"
+    appointment_type = AppointmentType.objects.create(
+        organization=organization, name="Appointments"
     )
-    CalendarGroupSlotMembership.objects.create(
+    slot = AppointmentTypeSlot.objects.create(
+        organization=organization, appointment_type=appointment_type, name="Physicians"
+    )
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot, calendar=calendar
     )
-    return group, slot, calendar
+    return appointment_type, slot, calendar
 
 
 @pytest.fixture
-def calendar_group_permission():
-    return CalendarGroupPermission(calendar_permission_service=CalendarPermissionService())
+def appointment_type_permission():
+    return AppointmentTypePermission(calendar_permission_service=CalendarPermissionService())
 
 
 @pytest.mark.django_db
-class TestCalendarGroupPermissionParity:
-    """Composes an admin check with group-scoped object logic -- one of the
+class TestAppointmentTypePermissionParity:
+    """Composes an admin check with appointment-type-scoped object logic -- one of the
     rules kept hand-written rather than converted to a permission check, and
     the one where a mechanical swap could quietly widen.
 
@@ -771,10 +777,10 @@ class TestCalendarGroupPermissionParity:
 
     1. ``create`` (collection level) -- admin only.
     2. ``update`` / ``destroy`` -- admin only, through
-       ``can_manage_calendar_group``. **Owning a pool calendar is not enough**;
+       ``can_manage_appointment_type``. **Owning a pool calendar is not enough**;
        that is the widening this class is most exposed to.
     3. every other object action -- admin *or* a member who owns a calendar
-       somewhere in the group. The member half never read a role and is
+       somewhere in the appointment type. The member half never read a role and is
        untouched, so it is asserted here as the control: if it had been
        collapsed into the admin check, (2) would have gone green for a
        non-admin owner.
@@ -790,20 +796,20 @@ class TestCalendarGroupPermissionParity:
         ],
     )
     def test_create_is_admin_only(
-        self, request, factory, calendar_group_permission, organization, caller, expected
+        self, request, factory, appointment_type_permission, organization, caller, expected
     ):
         user = request.getfixturevalue(caller)
         assert (
-            calendar_group_permission.has_permission(
+            appointment_type_permission.has_permission(
                 request_for(factory, user, method="post"), _View("create")
             )
             is expected
         )
 
     def test_a_non_admin_owner_may_view_but_not_manage(
-        self, factory, calendar_group_permission, member, organization, group_fixture
+        self, factory, appointment_type_permission, member, organization, appointment_type_fixture
     ):
-        group, _slot, calendar = group_fixture
+        appointment_type, _slot, calendar = appointment_type_fixture
         CalendarOwnership.objects.create(
             organization=organization, calendar=calendar, membership_user_id=member.id
         )
@@ -811,85 +817,111 @@ class TestCalendarGroupPermissionParity:
 
         with organization_context(organization):
             assert (
-                calendar_group_permission.has_object_permission(request, _View("retrieve"), group)
+                appointment_type_permission.has_object_permission(
+                    request, _View("retrieve"), appointment_type
+                )
                 is True
             )
             assert (
-                calendar_group_permission.has_object_permission(request, _View("destroy"), group)
+                appointment_type_permission.has_object_permission(
+                    request, _View("destroy"), appointment_type
+                )
                 is False
             )
 
     def test_an_admin_who_owns_nothing_may_both_view_and_manage(
-        self, factory, calendar_group_permission, admin, organization, group_fixture
+        self, factory, appointment_type_permission, admin, organization, appointment_type_fixture
     ):
-        group, _slot, _calendar = group_fixture
+        appointment_type, _slot, _calendar = appointment_type_fixture
         request = request_for(factory, acting_in(admin, organization))
 
         with organization_context(organization):
             assert (
-                calendar_group_permission.has_object_permission(request, _View("retrieve"), group)
+                appointment_type_permission.has_object_permission(
+                    request, _View("retrieve"), appointment_type
+                )
                 is True
             )
             assert (
-                calendar_group_permission.has_object_permission(request, _View("destroy"), group)
+                appointment_type_permission.has_object_permission(
+                    request, _View("destroy"), appointment_type
+                )
                 is True
             )
 
     def test_a_member_who_owns_nothing_may_do_neither(
-        self, factory, calendar_group_permission, member, organization, group_fixture
+        self, factory, appointment_type_permission, member, organization, appointment_type_fixture
     ):
-        group, _slot, _calendar = group_fixture
+        appointment_type, _slot, _calendar = appointment_type_fixture
         request = request_for(factory, acting_in(member, organization))
 
         with organization_context(organization):
             assert (
-                calendar_group_permission.has_object_permission(request, _View("retrieve"), group)
+                appointment_type_permission.has_object_permission(
+                    request, _View("retrieve"), appointment_type
+                )
                 is False
             )
             assert (
-                calendar_group_permission.has_object_permission(request, _View("destroy"), group)
+                appointment_type_permission.has_object_permission(
+                    request, _View("destroy"), appointment_type
+                )
                 is False
             )
 
     def test_admin_rights_do_not_cross_organizations(
-        self, factory, calendar_group_permission, foreign_admin, other_organization, group_fixture
+        self,
+        factory,
+        appointment_type_permission,
+        foreign_admin,
+        other_organization,
+        appointment_type_fixture,
     ):
         """The organization-match gate runs first and is what keeps an admin of
         another organization out. Pinned because the capability check that
         follows it is now organization-aware too, and a reader could conclude
         either one is redundant -- neither is."""
-        group, _slot, _calendar = group_fixture
+        appointment_type, _slot, _calendar = appointment_type_fixture
         request = request_for(factory, acting_in(foreign_admin, other_organization))
 
         with organization_context(other_organization):
             assert (
-                calendar_group_permission.has_object_permission(request, _View("retrieve"), group)
+                appointment_type_permission.has_object_permission(
+                    request, _View("retrieve"), appointment_type
+                )
                 is False
             )
 
     def test_an_ungrouped_admin_who_owns_nothing_is_refused(
-        self, factory, calendar_group_permission, ungrouped_admin, organization, group_fixture
+        self,
+        factory,
+        appointment_type_permission,
+        ungrouped_admin,
+        organization,
+        appointment_type_fixture,
     ):
-        group, _slot, _calendar = group_fixture
+        appointment_type, _slot, _calendar = appointment_type_fixture
         request = request_for(factory, acting_in(ungrouped_admin, organization))
 
         with organization_context(organization):
             assert (
-                calendar_group_permission.has_object_permission(request, _View("retrieve"), group)
+                appointment_type_permission.has_object_permission(
+                    request, _View("retrieve"), appointment_type
+                )
                 is False
             )
 
 
-GROUP_SCOPED_CLASSES = [
-    GroupScopedAvailabilityWindowPermission,
-    GroupScopedBlockedTimePermission,
-    GroupScopedQuotaRulePermission,
+APPOINTMENT_TYPE_SCOPED_CLASSES = [
+    AppointmentTypeScopedAvailabilityWindowPermission,
+    AppointmentTypeScopedBlockedTimePermission,
+    AppointmentTypeScopedQuotaRulePermission,
 ]
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("permission_class", GROUP_SCOPED_CLASSES)
-class TestGroupScopedRouteGatesParity:
+@pytest.mark.parametrize("permission_class", APPOINTMENT_TYPE_SCOPED_CLASSES)
+class TestAppointmentTypeScopedRouteGatesParity:
     """The three nested-route gates, each asserted separately.
 
     They share an implementation, so a single shared test would have been
@@ -897,94 +929,108 @@ class TestGroupScopedRouteGatesParity:
     Parametrising over the class keeps one row per class in the report while
     stating the rule once.
 
-    The rule composes the admin capability with group-scoped object logic: a
-    caller sees the ``(group, slot)`` if they administer the organization **or**
-    own a calendar somewhere in the group. Every refusal is an ``Http404``, not
-    a 403 -- a member must not learn a group exists from the error shape.
+    The rule composes the admin capability with appointment-type-scoped object logic: a
+    caller sees the ``(appointment type, slot)`` if they administer the organization **or**
+    own a calendar somewhere in the appointment type. Every refusal is an ``Http404``, not
+    a 403 -- a member must not learn an appointment type exists from the error shape.
     """
 
     def _permission(self, permission_class):
         return permission_class(calendar_permission_service=CalendarPermissionService())
 
-    def _view(self, group, slot):
-        return _View(group_id=group.id, slot_id=slot.id)
+    def _view(self, appointment_type, slot):
+        return _View(appointment_type_id=appointment_type.id, slot_id=slot.id)
 
     def test_an_admin_who_owns_nothing_passes(
-        self, permission_class, factory, admin, organization, group_fixture
+        self, permission_class, factory, admin, organization, appointment_type_fixture
     ):
-        group, slot, _calendar = group_fixture
+        appointment_type, slot, _calendar = appointment_type_fixture
         request = request_for(factory, acting_in(admin, organization))
 
-        assert self._permission(permission_class).has_permission(request, self._view(group, slot))
+        assert self._permission(permission_class).has_permission(
+            request, self._view(appointment_type, slot)
+        )
 
     def test_a_non_admin_owner_passes(
-        self, permission_class, factory, member, organization, group_fixture
+        self, permission_class, factory, member, organization, appointment_type_fixture
     ):
-        group, slot, calendar = group_fixture
+        appointment_type, slot, calendar = appointment_type_fixture
         CalendarOwnership.objects.create(
             organization=organization, calendar=calendar, membership_user_id=member.id
         )
         request = request_for(factory, acting_in(member, organization))
 
-        assert self._permission(permission_class).has_permission(request, self._view(group, slot))
+        assert self._permission(permission_class).has_permission(
+            request, self._view(appointment_type, slot)
+        )
 
     def test_a_member_who_owns_nothing_gets_a_404(
-        self, permission_class, factory, member, organization, group_fixture
+        self, permission_class, factory, member, organization, appointment_type_fixture
     ):
-        group, slot, _calendar = group_fixture
+        appointment_type, slot, _calendar = appointment_type_fixture
         request = request_for(factory, acting_in(member, organization))
 
         with pytest.raises(Http404):
-            self._permission(permission_class).has_permission(request, self._view(group, slot))
+            self._permission(permission_class).has_permission(
+                request, self._view(appointment_type, slot)
+            )
 
-    def test_a_deactivated_admin_is_refused_before_the_group_is_reached(
-        self, permission_class, factory, deactivated_admin, organization, group_fixture
+    def test_a_deactivated_admin_is_refused_before_the_appointment_type_is_reached(
+        self, permission_class, factory, deactivated_admin, organization, appointment_type_fixture
     ):
-        group, slot, _calendar = group_fixture
+        appointment_type, slot, _calendar = appointment_type_fixture
         request = request_for(factory, deactivated_admin)
 
         assert (
-            self._permission(permission_class).has_permission(request, self._view(group, slot))
+            self._permission(permission_class).has_permission(
+                request, self._view(appointment_type, slot)
+            )
             is False
         )
 
     def test_an_ungrouped_admin_gets_a_404(
-        self, permission_class, factory, ungrouped_admin, organization, group_fixture
+        self, permission_class, factory, ungrouped_admin, organization, appointment_type_fixture
     ):
-        group, slot, _calendar = group_fixture
+        appointment_type, slot, _calendar = appointment_type_fixture
         request = request_for(factory, acting_in(ungrouped_admin, organization))
 
         with pytest.raises(Http404):
-            self._permission(permission_class).has_permission(request, self._view(group, slot))
+            self._permission(permission_class).has_permission(
+                request, self._view(appointment_type, slot)
+            )
 
     def test_an_admin_of_another_organization_gets_a_404(
-        self, permission_class, factory, foreign_admin, other_organization, group_fixture
+        self, permission_class, factory, foreign_admin, other_organization, appointment_type_fixture
     ):
         """The slot lookup is organization-scoped, so a foreign admin cannot
         even resolve it -- and the capability check that follows would refuse
-        them too, because it names *this* group's organization."""
-        group, slot, _calendar = group_fixture
+        them too, because it names *this* appointment type's organization."""
+        appointment_type, slot, _calendar = appointment_type_fixture
         request = request_for(factory, acting_in(foreign_admin, other_organization))
 
         with pytest.raises(Http404):
-            self._permission(permission_class).has_permission(request, self._view(group, slot))
+            self._permission(permission_class).has_permission(
+                request, self._view(appointment_type, slot)
+            )
 
-    def test_a_slot_belonging_to_a_different_group_gets_a_404(
-        self, permission_class, factory, admin, organization, group_fixture
+    def test_a_slot_belonging_to_a_different_appointment_type_gets_a_404(
+        self, permission_class, factory, admin, organization, appointment_type_fixture
     ):
-        _group, slot, _calendar = group_fixture
-        decoy = CalendarGroup.objects.create(organization=organization, name="Decoy")
+        _appointment_type, slot, _calendar = appointment_type_fixture
+        decoy = AppointmentType.objects.create(organization=organization, name="Decoy")
         request = request_for(factory, acting_in(admin, organization))
 
         with pytest.raises(Http404):
             self._permission(permission_class).has_permission(request, self._view(decoy, slot))
 
-    def test_an_unauthenticated_caller_is_refused(self, permission_class, factory, group_fixture):
-        group, slot, _calendar = group_fixture
+    def test_an_unauthenticated_caller_is_refused(
+        self, permission_class, factory, appointment_type_fixture
+    ):
+        appointment_type, slot, _calendar = appointment_type_fixture
 
         assert (
             self._permission(permission_class).has_permission(
-                request_for(factory, AnonymousUser()), self._view(group, slot)
+                request_for(factory, AnonymousUser()), self._view(appointment_type, slot)
             )
             is False
         )
@@ -1274,7 +1320,7 @@ class TestTheBackendsIsActiveGate:
     ``User.is_organization_admin(organization)`` is the counter-example, and it
     is the shape most of ``calendar_integration`` reaches admin-ness through
     (``CalendarPermissionService``, ``calendar_integration/views.py``,
-    ``CalendarGroupPermission``'s DI fallback). It names an organization and
+    ``AppointmentTypePermission``'s DI fallback). It names an organization and
     resolves no membership of its own, so the permission lookup is the whole
     decision -- and ``has_perm`` does not carry an ``is_active`` filter. What
     supplies it is ``vinta_orgs.auth_backends.OrganizationModelBackend
@@ -1309,25 +1355,41 @@ class TestTheBackendsIsActiveGate:
 
         assert reloaded.is_organization_admin(organization) is True
 
-    def test_a_deactivated_admin_cannot_see_or_manage_a_calendar_group(
-        self, deactivated_admin, organization, group_fixture
+    def test_a_deactivated_admin_cannot_see_or_manage_an_appointment_type(
+        self, deactivated_admin, organization, appointment_type_fixture
     ):
-        """The reachable consequence: the group-visibility service asks
+        """The reachable consequence: the appointment-type-visibility service asks
         ``is_organization_admin`` directly, with no membership resolution in
         front of it."""
-        group, _slot, _calendar = group_fixture
+        appointment_type, _slot, _calendar = appointment_type_fixture
         service = CalendarPermissionService()
 
         with organization_context(organization):
-            assert service.can_view_calendar_group(user=deactivated_admin, group=group) is False
-            assert service.can_manage_calendar_group(user=deactivated_admin, group=group) is False
+            assert (
+                service.can_view_appointment_type(
+                    user=deactivated_admin, appointment_type=appointment_type
+                )
+                is False
+            )
+            assert (
+                service.can_manage_appointment_type(
+                    user=deactivated_admin, appointment_type=appointment_type
+                )
+                is False
+            )
 
-    def test_an_active_admin_can(self, admin, organization, group_fixture):
+    def test_an_active_admin_can(self, admin, organization, appointment_type_fixture):
         """The control. Without it the assertions above would also pass against a
         service that refused everyone."""
-        group, _slot, _calendar = group_fixture
+        appointment_type, _slot, _calendar = appointment_type_fixture
         service = CalendarPermissionService()
 
         with organization_context(organization):
-            assert service.can_view_calendar_group(user=admin, group=group) is True
-            assert service.can_manage_calendar_group(user=admin, group=group) is True
+            assert (
+                service.can_view_appointment_type(user=admin, appointment_type=appointment_type)
+                is True
+            )
+            assert (
+                service.can_manage_appointment_type(user=admin, appointment_type=appointment_type)
+                is True
+            )

@@ -18,7 +18,7 @@ CONCEPTS_DIR = Path(settings.BASE_DIR) / "docs" / "concepts"
 EXPECTED_SLUGS = (
     "availability",
     "calendar-bundles",
-    "calendar-groups",
+    "appointment-types",
     "calendars",
     "events",
     "recurrence",
@@ -67,11 +67,11 @@ class TestExtractTitle:
 
 class TestGetConceptDoc:
     def test_returns_markdown_byte_identical_to_file_on_disk(self):
-        doc = get_concept_doc("calendar-groups")
+        doc = get_concept_doc("appointment-types")
 
-        on_disk = (CONCEPTS_DIR / "calendar-groups.md").read_text()
+        on_disk = (CONCEPTS_DIR / "appointment-types.md").read_text()
         assert doc["markdown"] == on_disk
-        assert doc["slug"] == "calendar-groups"
+        assert doc["slug"] == "appointment-types"
 
     def test_unknown_slug_raises_not_found(self):
         with pytest.raises(NotFound):

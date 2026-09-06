@@ -8,7 +8,7 @@ Scenario coverage:
 2. Replay — same code again → ALREADY_USED, no second event.
 3. Failed write does not consume — SLOT_UNAVAILABLE, code remains active.
 4. Wrong permission — code without CREATE → NOT_PERMITTED, no event.
-5. Wrong scope — group code used on single-calendar mutation → NOT_PERMITTED.
+5. Wrong scope — appointment type code used on single-calendar mutation → NOT_PERMITTED.
 6. Lifecycle rejections — expired / revoked / invalid → EXPIRED / REVOKED / INVALID_CODE.
 7. Cross-org: event is created in the code's org.
 """
@@ -22,10 +22,10 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AppointmentType,
     AvailableTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
     CalendarManagementToken,
     EventManagementPermissions,
 )
@@ -92,8 +92,8 @@ def calendar(organization):
 
 
 @pytest.fixture
-def calendar_group(organization):
-    return baker.make(CalendarGroup, organization=organization, name="Test Group")
+def appointment_type(organization):
+    return baker.make(AppointmentType, organization=organization, name="Test AppointmentType")
 
 
 @pytest.fixture
@@ -149,12 +149,12 @@ def reschedule_code(permission_service, organization, calendar):
 
 
 @pytest.fixture
-def group_booking_code(permission_service, organization, calendar_group):
-    """A CREATE code scoped to a calendar GROUP (wrong scope for single-calendar mutation)."""
+def appointment_type_booking_code(permission_service, organization, appointment_type):
+    """A CREATE code scoped to an appointment TYPE (wrong scope for single-calendar mutation)."""
     token, code = permission_service.create_booking_token(
         organization_id=organization.id,
         permissions=[EventManagementPermissions.CREATE],
-        calendar_group_id=calendar_group.id,
+        appointment_type_id=appointment_type.id,
     )
     return token, code
 
@@ -433,18 +433,18 @@ class TestCreateCalendarEventWithCodeWrongPermission:
 
 @pytest.mark.django_db
 class TestCreateCalendarEventWithCodeWrongScope:
-    """Scenario 5: Group-scoped code on single-calendar mutation → NOT_PERMITTED."""
+    """Scenario 5: Appointment-type-scoped code on single-calendar mutation → NOT_PERMITTED."""
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-    def test_group_code_returns_not_permitted(
+    def test_appointment_type_code_returns_not_permitted(
         self,
         mock_rate_limiter,
         anon_client,
-        group_booking_code,
+        appointment_type_booking_code,
         organization,
     ):
         mock_rate_limiter.return_value = iter([None])
-        _token, code = group_booking_code
+        _token, code = appointment_type_booking_code
 
         data = post_graphql(
             anon_client,

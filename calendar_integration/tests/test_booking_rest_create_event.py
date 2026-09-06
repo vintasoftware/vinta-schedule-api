@@ -4,7 +4,7 @@ Ports the seven scenarios in ``public_api/tests/test_book_with_code.py`` (the
 GraphQL ``createCalendarEventWithCode`` equivalent) to the REST surface, plus
 the concurrency cases the plan's Phase 1 body calls for. Single-calendar
 booking codes carry no duration constraint -- that pin now lives only on
-``CalendarGroup``, for group-scoped booking codes.
+``AppointmentType``, for appointment-type-scoped booking codes.
 
 All requests are unauthenticated (no session/JWT). The booking code -- carried
 in the ``X-Booking-Code`` header -- provides the org scope, calendar scope,
@@ -27,10 +27,10 @@ from rest_framework.test import APIClient
 from calendar_integration.booking_auth import BOOKING_CODE_HEADER
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AppointmentType,
     AvailableTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
     CalendarManagementToken,
     EventManagementPermissions,
 )
@@ -77,8 +77,8 @@ def calendar(organization):
 
 
 @pytest.fixture
-def calendar_group(organization):
-    return baker.make(CalendarGroup, organization=organization, name="Test Group")
+def appointment_type(organization):
+    return baker.make(AppointmentType, organization=organization, name="Test AppointmentType")
 
 
 @pytest.fixture
@@ -134,12 +134,12 @@ def reschedule_code(permission_service, organization, calendar):
 
 
 @pytest.fixture
-def group_booking_code(permission_service, organization, calendar_group):
-    """A CREATE code scoped to a calendar GROUP (wrong scope for this endpoint)."""
+def appointment_type_booking_code(permission_service, organization, appointment_type):
+    """A CREATE code scoped to an appointment TYPE (wrong scope for this endpoint)."""
     token, code = permission_service.create_booking_token(
         organization_id=organization.id,
         permissions=[EventManagementPermissions.CREATE],
-        calendar_group_id=calendar_group.id,
+        appointment_type_id=appointment_type.id,
     )
     return token, code
 
@@ -344,19 +344,19 @@ class TestCreateCalendarEventWithCodeWrongPermission:
 
 
 # ---------------------------------------------------------------------------
-# Scenario 5: Wrong scope (group code)
+# Scenario 5: Wrong scope (appointment type code)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
 class TestCreateCalendarEventWithCodeWrongScope:
-    def test_group_code_returns_not_permitted(
+    def test_appointment_type_code_returns_not_permitted(
         self,
         anon_client,
-        group_booking_code,
+        appointment_type_booking_code,
         organization,
     ):
-        _token, code = group_booking_code
+        _token, code = appointment_type_booking_code
 
         response = _post(anon_client, code, _booking_payload())
 

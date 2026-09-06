@@ -95,40 +95,40 @@ if TYPE_CHECKING:
     # Type-checking-only base so mypy resolves `self.filter(...)` below — at
     # runtime this mixin is only ever combined with `OrganizationScopedQuerySet`
     # subclasses (which already provide `filter`), never instantiated alone.
-    _GroupSlotScopedQuerySetBase = models.QuerySet
+    _AppointmentTypeSlotScopedQuerySetBase = models.QuerySet
 else:
-    _GroupSlotScopedQuerySetBase = object
+    _AppointmentTypeSlotScopedQuerySetBase = object
 
 
-class GroupSlotScopedQuerySetMixin(_GroupSlotScopedQuerySetBase):
-    """Chainable group-slot scoping shared by ``AvailableTimeQuerySet`` and ``BlockedTimeQuerySet``.
+class AppointmentTypeSlotScopedQuerySetMixin(_AppointmentTypeSlotScopedQuerySetBase):
+    """Chainable appointment-type-slot scoping shared by ``AvailableTimeQuerySet`` and ``BlockedTimeQuerySet``.
 
-    Both models carry a nullable ``group_slot`` reference: null means a base row —
+    Both models carry a nullable ``appointment_type_slot`` reference: null means a base row —
     today's behavior, visible on every existing read path. A non-null value
-    scopes the row to exactly one ``CalendarGroupSlot`` and must stay invisible
+    scopes the row to exactly one ``AppointmentTypeSlot`` and must stay invisible
     unless a caller explicitly opts in.
 
     These methods are the composable building blocks; the corresponding
     managers (``AvailableTimeManager`` / ``BlockedTimeManager``) wire
     :meth:`base_rows_only` into ``get_queryset`` so it is the *default* — every
     existing call site that goes through ``.objects`` keeps seeing only base
-    rows with zero edits. ``for_group_slot`` and an unfiltered queryset (the
+    rows with zero edits. ``for_appointment_type_slot`` and an unfiltered queryset (the
     "unscoped" view) are reached through the manager's explicit accessors,
     never through ``get_queryset``.
     """
 
     def base_rows_only(self):
-        """Exclude group-scoped rows — the default, tenant-unaware-of-groups view."""
-        return self.filter(group_slot_fk__isnull=True)
+        """Exclude appointment-type-scoped rows — the default, tenant-unaware-of-appointment-types view."""
+        return self.filter(appointment_type_slot_fk__isnull=True)
 
-    def for_group_slot(self, group_slot_id: int):
-        """Return only the rows scoped to exactly one ``CalendarGroupSlot``.
+    def for_appointment_type_slot(self, appointment_type_slot_id: int):
+        """Return only the rows scoped to exactly one ``AppointmentTypeSlot``.
 
         Explicit opt-in accessor. Never chain this onto a queryset that has
         already had :meth:`base_rows_only` applied — the two filters are
         mutually exclusive and would always return nothing.
         """
-        return self.filter(group_slot_fk_id=group_slot_id)
+        return self.filter(appointment_type_slot_fk_id=appointment_type_slot_id)
 
 
 class RecurringQuerySetMixin:
@@ -419,7 +419,7 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
                     # ``unscoped()`` + ``base_rows_only()``: correlated to the outer
                     # calendar row (already organization-scoped) through
                     # ``calendar_fk_id``, and ``base_rows_only`` preserves what
-                    # ``AvailableTime.objects`` applied here before -- group-slot-scoped
+                    # ``AvailableTime.objects`` applied here before -- appointment-type-slot-scoped
                     # windows must not narrow availability outside their slot.
                     AvailableTime.objects.unscoped()
                     .base_rows_only()
@@ -786,7 +786,7 @@ class CalendarSyncQuerySet(OrganizationScopedQuerySet):
 
 
 class BlockedTimeQuerySet(
-    OrganizationScopedQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
+    OrganizationScopedQuerySet, RecurringQuerySetMixin, AppointmentTypeSlotScopedQuerySetMixin
 ):
     """
     Custom QuerySet for BlockedTime model to handle specific queries.
@@ -861,53 +861,55 @@ class BlockedTimeQuerySet(
         )
 
 
-class CalendarGroupQuerySet(OrganizationScopedQuerySet):
+class AppointmentTypeQuerySet(OrganizationScopedQuerySet):
     """
-    Custom QuerySet for CalendarGroup model to handle specific queries.
+    Custom QuerySet for AppointmentType model to handle specific queries.
     """
 
-    def only_member_of(self, membership_user_id: int) -> "CalendarGroupQuerySet":
-        """Groups where `membership_user_id` owns a calendar in ANY slot's roster.
+    def only_member_of(self, membership_user_id: int) -> "AppointmentTypeQuerySet":
+        """Appointment types where `membership_user_id` owns a calendar in ANY slot's roster.
 
-        "Part of a group" == owns at least one ``CalendarOwnership`` row for a
-        calendar that is a member of any of the group's slots -- matches
-        ``CalendarPermissionService.can_view_calendar_group``. Used to scope
+        "Part of an appointment type" == owns at least one ``CalendarOwnership`` row for a
+        calendar that is a member of any of the appointment type's slots -- matches
+        ``CalendarPermissionService.can_view_appointment_type``. Used to scope
         list/retrieve visibility for non-admin members on both the internal
         REST surface and the public GraphQL surface (scoped-member tokens).
         ``distinct()`` because a user may own multiple calendars across
-        multiple slots of the same group.
+        multiple slots of the same appointment type.
         """
         return self.filter(
             slots__memberships__calendar_fk__ownerships__membership_user_id=membership_user_id
         ).distinct()
 
-    def only_groups_bookable_in_ranges(
+    def only_appointment_types_bookable_in_ranges(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):
         """
-        Returns groups where, for every range, every slot has at least
+        Returns appointment types where, for every range, every slot has at least
         `required_count` calendars from its pool available
         (per CalendarQuerySet.only_calendars_available_in_ranges).
         """
-        return self._only_groups_bookable_in_ranges(ranges, with_bulk_modifications=False)
+        return self._only_appointment_types_bookable_in_ranges(
+            ranges, with_bulk_modifications=False
+        )
 
-    def only_groups_bookable_in_ranges_with_bulk_modifications(
+    def only_appointment_types_bookable_in_ranges_with_bulk_modifications(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):
         """
-        Same as `only_groups_bookable_in_ranges` but expands recurring events
+        Same as `only_appointment_types_bookable_in_ranges` but expands recurring events
         through their bulk-modification continuation series so split-off
         occurrences count against availability.
         """
-        return self._only_groups_bookable_in_ranges(ranges, with_bulk_modifications=True)
+        return self._only_appointment_types_bookable_in_ranges(ranges, with_bulk_modifications=True)
 
-    def _only_groups_bookable_in_ranges(
+    def _only_appointment_types_bookable_in_ranges(
         self,
         ranges: Iterable[tuple[datetime.datetime, datetime.datetime]],
         *,
         with_bulk_modifications: bool,
     ):
-        from calendar_integration.models import Calendar, CalendarGroupSlot
+        from calendar_integration.models import AppointmentTypeSlot, Calendar
 
         ranges = list(ranges)
         if not ranges:
@@ -926,20 +928,23 @@ class CalendarGroupQuerySet(OrganizationScopedQuerySet):
                 calendar_method,
             )([(start_datetime, end_datetime)]).values("id")
             unsatisfied_slot = (
-                CalendarGroupSlot.objects.unscoped()
-                # Correlated on the organization as well as on the group key --
-                # the same two columns the ``group`` safe relation puts in its
+                AppointmentTypeSlot.objects.unscoped()
+                # Correlated on the organization as well as on the appointment type key --
+                # the same two columns the ``appointment_type`` safe relation puts in its
                 # ``ON`` clause. Without it a slot row belonging to another
-                # organization but pointing at this group counts towards
-                # ``~Exists(...)`` and silently hides this organization's group
+                # organization but pointing at this appointment type counts towards
+                # ``~Exists(...)`` and silently hides this organization's appointment type
                 # from availability results.
-                .filter(group_fk_id=OuterRef("id"), organization_id=OuterRef("organization_id"))
+                .filter(
+                    appointment_type_fk_id=OuterRef("id"),
+                    organization_id=OuterRef("organization_id"),
+                )
                 .annotate(
                     # Counts distinct CALENDARS, not distinct membership rows.
                     # Once a calendar can reach a slot from more than one source
                     # (inline plus one or more pools, per the Calendar Pools
                     # plan's Roster composition decision), it holds several
-                    # ``CalendarGroupSlotMembership`` rows for the same slot, and
+                    # ``AppointmentTypeSlotMembership`` rows for the same slot, and
                     # ``Count("memberships", distinct=True)`` would count each of
                     # them -- reporting a slot needing two calendars as satisfied
                     # by one calendar present twice.
@@ -956,47 +961,47 @@ class CalendarGroupQuerySet(OrganizationScopedQuerySet):
 
         return qs
 
-    def annotate_effective_policy(self) -> "CalendarGroupQuerySet":
+    def annotate_effective_policy(self) -> "AppointmentTypeQuerySet":
         """Annotate the four ``effective_*_seconds`` booking-policy columns.
 
-        Resolves, in a single query, the group precedence chain entirely in SQL:
+        Resolves, in a single query, the appointment type precedence chain entirely in SQL:
 
-        1. Explicit group policy (``calendar_group_fk == group``) — read whole.
+        1. Explicit appointment type policy (``appointment_type_fk == appointment_type``) — read whole.
         2. ``most_restrictive`` aggregate across every distinct participant
-           calendar (across all slots of the group), where each participant is
+           calendar (across all slots of the appointment type), where each participant is
            resolved via the single-calendar chain
            (``_winning_calendar_policy_id_subquery``): ``MAX`` of lead /
            buffer_before / buffer_after, and ``MIN`` over the POSITIVE horizons
-           (0/unbounded participants excluded; the group horizon is unbounded
+           (0/unbounded participants excluded; the appointment type horizon is unbounded
            only when every participant is unbounded).
-        3. Unconstrained (all NULL) when neither a group policy nor any
+        3. Unconstrained (all NULL) when neither an appointment type policy nor any
            participant constraint exists.
 
         Decode with ``EffectivePolicy.from_annotation(row)``. Org-scoped: the
-        group policy lookup, the participant traversal, and every per-participant
-        calendar subquery all filter by the group's own ``organization_id``.
+        appointment type policy lookup, the participant traversal, and every per-participant
+        calendar subquery all filter by the appointment type's own ``organization_id``.
         """
-        from calendar_integration.models import BookingPolicy, CalendarGroupSlotMembership
+        from calendar_integration.models import AppointmentTypeSlotMembership, BookingPolicy
 
         org_ref = OuterRef("organization_id")
-        group_ref = OuterRef("pk")
+        appointment_type_ref = OuterRef("pk")
 
-        # Layer 1: explicit group-level policy id (whole-policy precedence — when
+        # Layer 1: explicit appointment-type-level policy id (whole-policy precedence — when
         # present, ALL four fields are read from it, never mixed with the
         # participant aggregate).
-        group_policy_id = Subquery(
+        appointment_type_policy_id = Subquery(
             BookingPolicy.objects.unscoped()
-            .filter(organization_id=org_ref, calendar_group_fk_id=group_ref)
+            .filter(organization_id=org_ref, appointment_type_fk_id=appointment_type_ref)
             .values("id")[:1],
             output_field=IntegerField(),
         )
 
-        def _group_policy_field(column: str) -> Subquery:
+        def _appointment_type_policy_field(column: str) -> Subquery:
             return Subquery(
                 BookingPolicy.objects.unscoped()
                 .filter(
                     organization_id=OuterRef("organization_id"),
-                    id=OuterRef("_group_policy_id"),
+                    id=OuterRef("_appointment_type_policy_id"),
                 )
                 .values(column)[:1],
                 output_field=IntegerField(),
@@ -1004,16 +1009,16 @@ class CalendarGroupQuerySet(OrganizationScopedQuerySet):
 
         # Layer 2: most_restrictive over participant calendars. Each participant's
         # effective field is resolved through the single-calendar chain, then
-        # aggregated across the distinct participant calendars of the group.
+        # aggregated across the distinct participant calendars of the appointment type.
         def _participant_base():
             # One row per (slot-membership) participant. Each participant's
             # effective policy is resolved through the single-calendar chain,
             # correlated to the membership row's own calendar + org.
             return (
-                CalendarGroupSlotMembership.objects.unscoped()
+                AppointmentTypeSlotMembership.objects.unscoped()
                 .filter(
                     organization_id=OuterRef("organization_id"),
-                    slot_fk__group_fk_id=OuterRef("pk"),
+                    slot_fk__appointment_type_fk_id=OuterRef("pk"),
                 )
                 .annotate(
                     _p_owning_uid=_owning_membership_uid_expression(
@@ -1054,15 +1059,17 @@ class CalendarGroupQuerySet(OrganizationScopedQuerySet):
             )
 
         def _effective(column: str, *, positive_only: bool = False):
-            # Whole-policy precedence: when a group policy exists every field is
+            # Whole-policy precedence: when an appointment type policy exists every field is
             # read from it; otherwise the most_restrictive participant aggregate
             # applies. ``Value(0)`` provides the unconstrained fallback so the
             # column is never NULL.
             return Case(
                 When(
-                    _group_policy_id__isnull=False,
+                    _appointment_type_policy_id__isnull=False,
                     then=Coalesce(
-                        _group_policy_field(column), Value(0), output_field=IntegerField()
+                        _appointment_type_policy_field(column),
+                        Value(0),
+                        output_field=IntegerField(),
                     ),
                 ),
                 default=Coalesce(
@@ -1073,7 +1080,7 @@ class CalendarGroupQuerySet(OrganizationScopedQuerySet):
                 output_field=IntegerField(),
             )
 
-        qs = self.annotate(_group_policy_id=group_policy_id)
+        qs = self.annotate(_appointment_type_policy_id=appointment_type_policy_id)
         return qs.annotate(
             effective_lead_time_seconds=_effective("lead_time_seconds"),
             effective_max_horizon_seconds=_effective("max_horizon_seconds", positive_only=True),
@@ -1082,18 +1089,18 @@ class CalendarGroupQuerySet(OrganizationScopedQuerySet):
         )
 
 
-class CalendarGroupSlotQuerySet(OrganizationScopedQuerySet):
+class AppointmentTypeSlotQuerySet(OrganizationScopedQuerySet):
     """
-    Custom QuerySet for CalendarGroupSlot model to handle specific queries.
-    """
-
-
-class CalendarGroupSlotMembershipQuerySet(OrganizationScopedQuerySet):
-    """
-    Custom QuerySet for CalendarGroupSlotMembership model to handle specific queries.
+    Custom QuerySet for AppointmentTypeSlot model to handle specific queries.
     """
 
-    def inline(self) -> "CalendarGroupSlotMembershipQuerySet":
+
+class AppointmentTypeSlotMembershipQuerySet(OrganizationScopedQuerySet):
+    """
+    Custom QuerySet for AppointmentTypeSlotMembership model to handle specific queries.
+    """
+
+    def inline(self) -> "AppointmentTypeSlotMembershipQuerySet":
         """Only the rows a user put on the slot directly (``source_pool IS NULL``).
 
         The inline half of the projected union (see the Calendar Pools plan's
@@ -1103,18 +1110,18 @@ class CalendarGroupSlotMembershipQuerySet(OrganizationScopedQuerySet):
         """
         return self.filter(source_pool_fk__isnull=True)
 
-    def projected(self) -> "CalendarGroupSlotMembershipQuerySet":
+    def projected(self) -> "AppointmentTypeSlotMembershipQuerySet":
         """Only the rows projected from an attached pool (``source_pool IS NOT NULL``).
 
         The complement of :meth:`inline`. This is the only set
-        ``CalendarGroupService._reconcile_slot_pools`` may delete.
+        ``AppointmentTypeService._reconcile_slot_pools`` may delete.
         """
         return self.filter(source_pool_fk__isnull=False)
 
 
-class CalendarGroupSlotPoolQuerySet(OrganizationScopedQuerySet):
+class AppointmentTypeSlotPoolQuerySet(OrganizationScopedQuerySet):
     """
-    Custom QuerySet for CalendarGroupSlotPool model to handle specific queries.
+    Custom QuerySet for AppointmentTypeSlotPool model to handle specific queries.
     """
 
 
@@ -1126,7 +1133,7 @@ class CalendarPoolQuerySet(OrganizationScopedQuerySet):
     def only_member_of(self, membership_user_id: int) -> "CalendarPoolQuerySet":
         """Pools where `membership_user_id` owns at least one roster calendar.
 
-        The pool analogue of ``CalendarGroupQuerySet.only_member_of``: "part of
+        The pool analogue of ``AppointmentTypeQuerySet.only_member_of``: "part of
         a pool" == owns at least one ``CalendarOwnership`` row for a calendar
         that is a member of the pool's roster. ``distinct()`` because a user
         may own several calendars in the same pool.
@@ -1175,34 +1182,36 @@ class CalendarPoolMembershipQuerySet(OrganizationScopedQuerySet):
         return result
 
 
-class CalendarEventGroupSelectionQuerySet(OrganizationScopedQuerySet):
+class CalendarEventAppointmentTypeSelectionQuerySet(OrganizationScopedQuerySet):
     """
-    Custom QuerySet for CalendarEventGroupSelection model to handle specific queries.
+    Custom QuerySet for CalendarEventAppointmentTypeSelection model to handle specific queries.
     """
 
     def future_selections_for_slot(
         self, slot_id: int, now: datetime.datetime
-    ) -> "CalendarEventGroupSelectionQuerySet":
+    ) -> "CalendarEventAppointmentTypeSelectionQuerySet":
         """Selections on ``slot_id`` whose event starts after ``now`` -- the
-        guard ``CalendarGroupService.update_group`` uses to decide whether a
+        guard ``AppointmentTypeService.update_appointment_type`` uses to decide whether a
         whole slot can be deleted (a future-booked slot cannot)."""
         return self.filter(slot_fk_id=slot_id, event_fk__start_time__gt=now)
 
 
-class CalendarGroupSlotQuotaRuleQuerySet(OrganizationScopedQuerySet):
-    """Custom QuerySet for CalendarGroupSlotQuotaRule model to handle specific queries."""
+class AppointmentTypeSlotQuotaRuleQuerySet(OrganizationScopedQuerySet):
+    """Custom QuerySet for AppointmentTypeSlotQuotaRule model to handle specific queries."""
 
-    def for_group_slot(self, group_slot_id: int) -> "CalendarGroupSlotQuotaRuleQuerySet":
-        """Every quota rule attached to one ``CalendarGroupSlot``."""
-        return self.filter(group_slot_fk_id=group_slot_id)
+    def for_appointment_type_slot(
+        self, appointment_type_slot_id: int
+    ) -> "AppointmentTypeSlotQuotaRuleQuerySet":
+        """Every quota rule attached to one ``AppointmentTypeSlot``."""
+        return self.filter(appointment_type_slot_fk_id=appointment_type_slot_id)
 
-    def for_calendar(self, calendar_id: int) -> "CalendarGroupSlotQuotaRuleQuerySet":
+    def for_calendar(self, calendar_id: int) -> "AppointmentTypeSlotQuotaRuleQuerySet":
         """Every quota rule attached to one ``Calendar``, across every slot it's in."""
         return self.filter(calendar_fk_id=calendar_id)
 
 
 class AvailableTimeQuerySet(
-    OrganizationScopedQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
+    OrganizationScopedQuerySet, RecurringQuerySetMixin, AppointmentTypeSlotScopedQuerySetMixin
 ):
     """
     Custom QuerySet for AvailableTime model to handle specific queries.
@@ -1339,8 +1348,8 @@ class ExternalEventChangeRequestQuerySet(OrganizationScopedQuerySet):
 
         # Replaces the old ``membership.is_admin`` check, which read a ``role``
         # column that no longer exists. Same set: the ``organization_admin``
-        # group every admin membership was backfilled into is the only seeded
-        # group carrying ``manage_members``.
+        # appointment type every admin membership was backfilled into is the only seeded
+        # appointment type carrying ``manage_members``.
         if membership_holds_permission(membership, MANAGE_MEMBERS):
             return self
 
@@ -1366,7 +1375,7 @@ class BookingPolicyQuerySet(OrganizationScopedQuerySet):
     """QuerySet for :class:`~calendar_integration.models.BookingPolicy`.
 
     A ``BookingPolicy`` is attached to exactly one target: a calendar, an owning
-    membership, a calendar group, or the organization default. These chainable
+    membership, an appointment type, or the organization default. These chainable
     helpers expose the per-target lookups the resolver uses, all scoped through
     the inherited organization filter.
     """
@@ -1379,9 +1388,9 @@ class BookingPolicyQuerySet(OrganizationScopedQuerySet):
         """Narrow the queryset to the policy attached to the membership ``membership_user_id``."""
         return self.filter(membership_user_id=membership_user_id)
 
-    def for_calendar_group(self, calendar_group_id: int) -> "BookingPolicyQuerySet":
-        """Narrow the queryset to the policy attached to ``calendar_group_id``."""
-        return self.filter(calendar_group_fk_id=calendar_group_id)
+    def for_appointment_type(self, appointment_type_id: int) -> "BookingPolicyQuerySet":
+        """Narrow the queryset to the policy attached to ``appointment_type_id``."""
+        return self.filter(appointment_type_fk_id=appointment_type_id)
 
     def org_default(self) -> "BookingPolicyQuerySet":
         """Narrow the queryset to the organization-default policy."""

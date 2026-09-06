@@ -105,8 +105,8 @@ class ExternalEventChangeRequestStatus(TextChoices):
     AUTO_UNDONE = "auto_undone", "Auto-undone"
 
 
-class GroupScopedRuleType(TextChoices):
-    """Which group-scoped rule a booking or reschedule violated.
+class AppointmentTypeScopedRuleType(TextChoices):
+    """Which appointment-type-scoped rule a booking or reschedule violated.
 
     Named exactly as required to be surfaced to a caller: outside
     window, inside block, quota consumed -- never the configured values
@@ -119,9 +119,9 @@ class GroupScopedRuleType(TextChoices):
 
 
 class QuotaPeriod(TextChoices):
-    """Fixed calendar period a ``CalendarGroupSlotQuotaRule`` cap applies to.
+    """Fixed calendar period an ``AppointmentTypeSlotQuotaRule`` cap applies to.
 
-    Values match exactly what the ``calculate_calendar_group_quota_period_counts``
+    Values match exactly what the ``calculate_appointment_type_quota_period_counts``
     Postgres function accepts for its ``p_period_type`` argument -- keep them in
     sync if either side changes.
     """

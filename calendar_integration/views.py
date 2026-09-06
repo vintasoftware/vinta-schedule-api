@@ -28,9 +28,9 @@ from calendar_integration.constants import (
     ExternalEventChangeRequestStatus,
 )
 from calendar_integration.exceptions import (
-    CalendarGroupError,
-    CalendarGroupSlotConfigNotFoundError,
-    CalendarGroupValidationError,
+    AppointmentTypeError,
+    AppointmentTypeSlotConfigNotFoundError,
+    AppointmentTypeValidationError,
     CalendarIntegrationError,
     CalendarPoolInUseError,
     ChangeRequestIneligibleError,
@@ -38,40 +38,55 @@ from calendar_integration.exceptions import (
     InvalidTokenError,
 )
 from calendar_integration.filtersets import (
+    AppointmentTypeFilterSet,
     AvailableTimeFilterSet,
     BlockedTimeFilterSet,
     CalendarEventFilterSet,
     CalendarFilterSet,
-    CalendarGroupFilterSet,
     CalendarPoolFilterSet,
     ExternalEventChangeRequestFilterSet,
 )
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlotQuotaRule,
     AvailableTime,
     BlockedTime,
     BookingPolicy,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
-    CalendarGroupSlotQuotaRule,
     CalendarManagementToken,
     CalendarOwnership,
     CalendarPool,
     ExternalEventChangeRequest,
 )
 from calendar_integration.permissions import (
+    AppointmentTypePermission,
+    AppointmentTypeScopedAvailabilityWindowPermission,
+    AppointmentTypeScopedBlockedTimePermission,
+    AppointmentTypeScopedQuotaRulePermission,
     BookingCodePermission,
     BookingPolicyPermission,
     CalendarAvailabilityPermission,
     CalendarEventPermission,
-    CalendarGroupPermission,
     CalendarPoolPermission,
     ExternalEventChangeRequestPermission,
-    GroupScopedAvailabilityWindowPermission,
-    GroupScopedBlockedTimePermission,
-    GroupScopedQuotaRulePermission,
 )
 from calendar_integration.serializers import (
+    AppointmentTypeAvailabilityQuerySerializer,
+    AppointmentTypeEventCreateSerializer,
+    AppointmentTypeRangeAvailabilitySerializer,
+    AppointmentTypeScopedAvailabilityWindowCreateSerializer,
+    AppointmentTypeScopedAvailabilityWindowSerializer,
+    AppointmentTypeScopedAvailabilityWindowUpdateSerializer,
+    AppointmentTypeScopedAvailabilityWriteResultSerializer,
+    AppointmentTypeScopedBlockedTimeCreateSerializer,
+    AppointmentTypeScopedBlockedTimeSerializer,
+    AppointmentTypeScopedBlockedTimeUpdateSerializer,
+    AppointmentTypeScopedBlockWriteResultSerializer,
+    AppointmentTypeScopedQuotaRuleCreateSerializer,
+    AppointmentTypeScopedQuotaRuleSerializer,
+    AppointmentTypeScopedQuotaRuleUpdateSerializer,
+    AppointmentTypeSerializer,
     AvailableTimeBatchSerializer,
     AvailableTimeBulkModificationSerializer,
     AvailableTimeRecurringExceptionSerializer,
@@ -89,10 +104,6 @@ from calendar_integration.serializers import (
     CalendarBundleUpdateSerializer,
     CalendarEventSerializer,
     CalendarEventTransferSerializer,
-    CalendarGroupAvailabilityQuerySerializer,
-    CalendarGroupEventCreateSerializer,
-    CalendarGroupRangeAvailabilitySerializer,
-    CalendarGroupSerializer,
     CalendarPoolSerializer,
     CalendarSerializer,
     CalendarSyncRequestSerializer,
@@ -100,23 +111,15 @@ from calendar_integration.serializers import (
     EventBulkModificationSerializer,
     EventRecurringExceptionSerializer,
     ExternalEventChangeRequestSerializer,
-    GroupScopedAvailabilityWindowCreateSerializer,
-    GroupScopedAvailabilityWindowSerializer,
-    GroupScopedAvailabilityWindowUpdateSerializer,
-    GroupScopedAvailabilityWriteResultSerializer,
-    GroupScopedBlockedTimeCreateSerializer,
-    GroupScopedBlockedTimeSerializer,
-    GroupScopedBlockedTimeUpdateSerializer,
-    GroupScopedBlockWriteResultSerializer,
-    GroupScopedQuotaRuleCreateSerializer,
-    GroupScopedQuotaRuleSerializer,
-    GroupScopedQuotaRuleUpdateSerializer,
     ResourceCalendarCreateSerializer,
     StaleSelectionSerializer,
     UnavailableTimeWindowSerializer,
 )
+from calendar_integration.services.appointment_type_service import (
+    _UNCHANGED,
+    AppointmentTypeService,
+)
 from calendar_integration.services.booking_policy_service import BookingPolicyService
-from calendar_integration.services.calendar_group_service import _UNCHANGED, CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.external_event_change_request_service import (
@@ -1358,8 +1361,8 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
 
     permission_classes = (CalendarAvailabilityPermission,)
     # See ``CalendarViewSet.queryset``. ``base_rows_only()`` preserves what
-    # ``BlockedTime.objects`` already applied: group-scoped rows stay invisible
-    # to this viewset (``GroupScopedBlockedTimeViewSet`` is the one that sees them).
+    # ``BlockedTime.objects`` already applied: appointment-type-scoped rows stay invisible
+    # to this viewset (``AppointmentTypeScopedBlockedTimeViewSet`` is the one that sees them).
     queryset = BlockedTime.objects.unscoped().base_rows_only()
     serializer_class = BlockedTimeSerializer
     filterset_class = BlockedTimeFilterSet
@@ -1836,23 +1839,23 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
 
-@extend_schema(tags=["Calendar Group Scoped Availability Windows"])
-class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
-    """Nested under a group's slot: manage group-scoped availability windows
+@extend_schema(tags=["Appointment Type Scoped Availability Windows"])
+class AppointmentTypeScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
+    """Nested under an appointment type's slot: manage appointment-type-scoped availability windows
     for calendars in that slot's roster.
 
-    Reads go through ``AvailableTime.objects.for_group_slot(...)``. Every
-    write delegates to ``CalendarGroupService`` -- this view holds
+    Reads go through ``AvailableTime.objects.for_appointment_type_slot(...)``. Every
+    write delegates to ``AppointmentTypeService`` -- this view holds
     no business logic of its own, only request/response translation. Route
-    visibility is gated by ``GroupScopedAvailabilityWindowPermission``; the
+    visibility is gated by ``AppointmentTypeScopedAvailabilityWindowPermission``; the
     per-calendar write authorization is re-checked by the service and its
-    ``CalendarGroupSlotConfigNotFoundError`` is translated to a 404 here so a
+    ``AppointmentTypeSlotConfigNotFoundError`` is translated to a 404 here so a
     denied write and a genuinely missing window are indistinguishable.
     """
 
-    permission_classes = (GroupScopedAvailabilityWindowPermission,)
+    permission_classes = (AppointmentTypeScopedAvailabilityWindowPermission,)
     queryset = AvailableTime.objects.unscoped()
-    serializer_class = GroupScopedAvailabilityWindowSerializer
+    serializer_class = AppointmentTypeScopedAvailabilityWindowSerializer
     # PUT is intentionally unsupported: the underlying service is a partial
     # update by design (only provided fields change), so only PATCH applies.
     http_method_names = ("get", "post", "patch", "delete", "head", "options")
@@ -1869,35 +1872,37 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
             super()
             .get_queryset()
             .filter_by_organization(membership.organization_id)
-            .for_group_slot(slot_id)
+            .for_appointment_type_slot(slot_id)
             # `AvailableTimeVirtualModel` doesn't know about `recurrence_rule` under
             # the "rrule_string" name our serializer exposes it as -- select it
-            # explicitly so `GroupScopedAvailabilityWindowSerializer.get_rrule_string`
+            # explicitly so `AppointmentTypeScopedAvailabilityWindowSerializer.get_rrule_string`
             # doesn't N+1 on the way to `recurrence_rule.to_rrule_string()`.
             .select_related("recurrence_rule")
         )
 
     @extend_schema(
-        summary="Create a group-scoped availability window",
+        summary="Create an appointment-type-scoped availability window",
         description=(
-            "Creates a group-scoped availability window for a calendar within a group "
-            "slot's roster. If this is the calendar's FIRST group-scoped window (i.e. "
+            "Creates an appointment-type-scoped availability window for a calendar within an appointment type "
+            "slot's roster. If this is the calendar's FIRST appointment-type-scoped window (i.e. "
             "the write narrows it from base availability), confirmed future bookings "
             "that now fall outside it are returned in `orphaned_bookings`; nothing "
             "about them is modified."
         ),
-        request=GroupScopedAvailabilityWindowCreateSerializer,
-        responses={201: GroupScopedAvailabilityWriteResultSerializer},
+        request=AppointmentTypeScopedAvailabilityWindowCreateSerializer,
+        responses={201: AppointmentTypeScopedAvailabilityWriteResultSerializer},
     )
     @inject
     def create(
         self,
         request,
         *args,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
         **kwargs,
     ):
-        serializer = GroupScopedAvailabilityWindowCreateSerializer(
+        serializer = AppointmentTypeScopedAvailabilityWindowCreateSerializer(
             data=request.data, context=self.get_serializer_context()
         )
         serializer.is_valid(raise_exception=True)
@@ -1905,51 +1910,53 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
 
         membership = request.organization_membership
         if membership is None:
-            # Unreachable in practice -- `GroupScopedAvailabilityWindowPermission`
+            # Unreachable in practice -- `AppointmentTypeScopedAvailabilityWindowPermission`
             # already requires an active membership -- but narrows the type for
             # mypy and fails closed rather than crashing on `None.organization`.
             raise Http404
-        calendar_group_service.initialize(organization=membership.organization)
+        appointment_type_service.initialize(organization=membership.organization)
         try:
-            result = calendar_group_service.create_group_scoped_availability_window(
+            result = appointment_type_service.create_appointment_type_scoped_availability_window(
                 acting_user=request.user,
-                group_slot_id=self.kwargs["slot_id"],
+                appointment_type_slot_id=self.kwargs["slot_id"],
                 calendar_id=data["calendar"].id,
                 start_time=data["start_time"],
                 end_time=data["end_time"],
                 tz=data["timezone"],
                 rrule_string=data.get("rrule_string"),
             )
-        except CalendarGroupSlotConfigNotFoundError as e:
+        except AppointmentTypeSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing window -- no message
             # leaked that would distinguish "forbidden" from "does not exist".
             raise Http404 from e
 
-        response_serializer = GroupScopedAvailabilityWriteResultSerializer(
+        response_serializer = AppointmentTypeScopedAvailabilityWriteResultSerializer(
             result, context=self.get_serializer_context()
         )
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
     @extend_schema(
-        summary="Update a group-scoped availability window",
+        summary="Update an appointment-type-scoped availability window",
         description=(
             "Partial update -- only provided fields change. If the change narrows the "
             "window, confirmed future bookings that now fall outside it are returned "
             "in `orphaned_bookings`; nothing about them is modified."
         ),
-        request=GroupScopedAvailabilityWindowUpdateSerializer,
-        responses={200: GroupScopedAvailabilityWriteResultSerializer},
+        request=AppointmentTypeScopedAvailabilityWindowUpdateSerializer,
+        responses={200: AppointmentTypeScopedAvailabilityWriteResultSerializer},
     )
     @inject
     def partial_update(
         self,
         request,
         *args,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
         **kwargs,
     ):
         instance = self.get_object()
-        serializer = GroupScopedAvailabilityWindowUpdateSerializer(
+        serializer = AppointmentTypeScopedAvailabilityWindowUpdateSerializer(
             data=request.data, partial=True, context=self.get_serializer_context()
         )
         serializer.is_valid(raise_exception=True)
@@ -1958,7 +1965,7 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
         membership = request.organization_membership
         if membership is None:
             raise Http404
-        calendar_group_service.initialize(organization=membership.organization)
+        appointment_type_service.initialize(organization=membership.organization)
         # `rrule_string` is tri-state: absent from `validated_data` (DRF drops
         # optional fields not present in the request via SkipField) means
         # "leave the recurrence alone"; present and `None` means "clear it";
@@ -1971,7 +1978,7 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
             data["rrule_string"] if "rrule_string" in data else _UNCHANGED  # type: ignore[assignment]
         )
         try:
-            result = calendar_group_service.update_group_scoped_availability_window(
+            result = appointment_type_service.update_appointment_type_scoped_availability_window(
                 acting_user=request.user,
                 window_id=instance.id,
                 start_time=data.get("start_time"),
@@ -1979,18 +1986,18 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
                 tz=data.get("timezone"),
                 rrule_string=rrule_string,
             )
-        except CalendarGroupSlotConfigNotFoundError as e:
+        except AppointmentTypeSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing window -- no message
             # leaked that would distinguish "forbidden" from "does not exist".
             raise Http404 from e
 
-        response_serializer = GroupScopedAvailabilityWriteResultSerializer(
+        response_serializer = AppointmentTypeScopedAvailabilityWriteResultSerializer(
             result, context=self.get_serializer_context()
         )
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(
-        summary="Delete a group-scoped availability window",
+        summary="Delete an appointment-type-scoped availability window",
         description="Deletes the window (a recurring window is one row -- deletes the whole series).",
         responses={204: None},
     )
@@ -1999,41 +2006,43 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
         self,
         request,
         *args,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
         **kwargs,
     ):
         instance = self.get_object()
         membership = request.organization_membership
         if membership is None:
             raise Http404
-        calendar_group_service.initialize(organization=membership.organization)
+        appointment_type_service.initialize(organization=membership.organization)
         try:
-            calendar_group_service.delete_group_scoped_availability_window(
+            appointment_type_service.delete_appointment_type_scoped_availability_window(
                 acting_user=request.user, window_id=instance.id
             )
-        except CalendarGroupSlotConfigNotFoundError as e:
+        except AppointmentTypeSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing window -- no message
             # leaked that would distinguish "forbidden" from "does not exist".
             raise Http404 from e
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=["Calendar Group Scoped Blocked Times"])
-class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
-    """Nested under a group's slot: manage group-scoped blocked times for
+@extend_schema(tags=["Appointment Type Scoped Blocked Times"])
+class AppointmentTypeScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
+    """Nested under an appointment type's slot: manage appointment-type-scoped blocked times for
     calendars in that slot's roster.
 
-    Direct mirror of ``GroupScopedAvailabilityWindowViewSet`` -- reads go
-    through ``BlockedTime.objects.for_group_slot(...)``, every write
-    delegates to the ``CalendarGroupService`` block-write methods,
-    and route visibility is gated by ``GroupScopedBlockedTimePermission``.
+    Direct mirror of ``AppointmentTypeScopedAvailabilityWindowViewSet`` -- reads go
+    through ``BlockedTime.objects.for_appointment_type_slot(...)``, every write
+    delegates to the ``AppointmentTypeService`` block-write methods,
+    and route visibility is gated by ``AppointmentTypeScopedBlockedTimePermission``.
     See that viewset's docstring for the full rationale; only the resource
     it manages differs (blocks instead of windows).
     """
 
-    permission_classes = (GroupScopedBlockedTimePermission,)
+    permission_classes = (AppointmentTypeScopedBlockedTimePermission,)
     queryset = BlockedTime.objects.unscoped()
-    serializer_class = GroupScopedBlockedTimeSerializer
+    serializer_class = AppointmentTypeScopedBlockedTimeSerializer
     # PUT is intentionally unsupported: the underlying service is a partial
     # update by design (only provided fields change), so only PATCH applies.
     http_method_names = ("get", "post", "patch", "delete", "head", "options")
@@ -2050,34 +2059,36 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
             super()
             .get_queryset()
             .filter_by_organization(membership.organization_id)
-            .for_group_slot(slot_id)
-            # `GroupScopedBlockedTimeVirtualModel` doesn't know about `recurrence_rule`
+            .for_appointment_type_slot(slot_id)
+            # `AppointmentTypeScopedBlockedTimeVirtualModel` doesn't know about `recurrence_rule`
             # under the "rrule_string" name our serializer exposes it as -- select it
-            # explicitly so `GroupScopedBlockedTimeSerializer.get_rrule_string` doesn't
+            # explicitly so `AppointmentTypeScopedBlockedTimeSerializer.get_rrule_string` doesn't
             # N+1 on the way to `recurrence_rule.to_rrule_string()`.
             .select_related("recurrence_rule")
         )
 
     @extend_schema(
-        summary="Create a group-scoped blocked time",
+        summary="Create an appointment-type-scoped blocked time",
         description=(
-            "Creates a group-scoped blocked time for a calendar within a group slot's "
-            "roster. Confirmed future bookings in that group for that calendar that "
+            "Creates an appointment-type-scoped blocked time for a calendar within an appointment type slot's "
+            "roster. Confirmed future bookings in that appointment type for that calendar that "
             "now fall INSIDE the block are returned in `orphaned_bookings`; nothing "
             "about them is modified."
         ),
-        request=GroupScopedBlockedTimeCreateSerializer,
-        responses={201: GroupScopedBlockWriteResultSerializer},
+        request=AppointmentTypeScopedBlockedTimeCreateSerializer,
+        responses={201: AppointmentTypeScopedBlockWriteResultSerializer},
     )
     @inject
     def create(
         self,
         request,
         *args,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
         **kwargs,
     ):
-        serializer = GroupScopedBlockedTimeCreateSerializer(
+        serializer = AppointmentTypeScopedBlockedTimeCreateSerializer(
             data=request.data, context=self.get_serializer_context()
         )
         serializer.is_valid(raise_exception=True)
@@ -2085,15 +2096,15 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
 
         membership = request.organization_membership
         if membership is None:
-            # Unreachable in practice -- `GroupScopedBlockedTimePermission`
+            # Unreachable in practice -- `AppointmentTypeScopedBlockedTimePermission`
             # already requires an active membership -- but narrows the type for
             # mypy and fails closed rather than crashing on `None.organization`.
             raise Http404
-        calendar_group_service.initialize(organization=membership.organization)
+        appointment_type_service.initialize(organization=membership.organization)
         try:
-            result = calendar_group_service.create_group_scoped_blocked_time(
+            result = appointment_type_service.create_appointment_type_scoped_blocked_time(
                 acting_user=request.user,
-                group_slot_id=self.kwargs["slot_id"],
+                appointment_type_slot_id=self.kwargs["slot_id"],
                 calendar_id=data["calendar"].id,
                 start_time=data["start_time"],
                 end_time=data["end_time"],
@@ -2101,36 +2112,38 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
                 reason=data.get("reason", ""),
                 rrule_string=data.get("rrule_string"),
             )
-        except CalendarGroupSlotConfigNotFoundError as e:
+        except AppointmentTypeSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing block -- no message
             # leaked that would distinguish "forbidden" from "does not exist".
             raise Http404 from e
 
-        response_serializer = GroupScopedBlockWriteResultSerializer(
+        response_serializer = AppointmentTypeScopedBlockWriteResultSerializer(
             result, context=self.get_serializer_context()
         )
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
     @extend_schema(
-        summary="Update a group-scoped blocked time",
+        summary="Update an appointment-type-scoped blocked time",
         description=(
             "Partial update -- only provided fields change. Confirmed future bookings "
             "that now fall inside the block are returned in `orphaned_bookings`; "
             "nothing about them is modified."
         ),
-        request=GroupScopedBlockedTimeUpdateSerializer,
-        responses={200: GroupScopedBlockWriteResultSerializer},
+        request=AppointmentTypeScopedBlockedTimeUpdateSerializer,
+        responses={200: AppointmentTypeScopedBlockWriteResultSerializer},
     )
     @inject
     def partial_update(
         self,
         request,
         *args,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
         **kwargs,
     ):
         instance = self.get_object()
-        serializer = GroupScopedBlockedTimeUpdateSerializer(
+        serializer = AppointmentTypeScopedBlockedTimeUpdateSerializer(
             data=request.data, partial=True, context=self.get_serializer_context()
         )
         serializer.is_valid(raise_exception=True)
@@ -2139,7 +2152,7 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
         membership = request.organization_membership
         if membership is None:
             raise Http404
-        calendar_group_service.initialize(organization=membership.organization)
+        appointment_type_service.initialize(organization=membership.organization)
         # `rrule_string` is tri-state: absent from `validated_data` (DRF drops
         # optional fields not present in the request via SkipField) means
         # "leave the recurrence alone"; present and `None` means "clear it";
@@ -2152,7 +2165,7 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
             data["rrule_string"] if "rrule_string" in data else _UNCHANGED  # type: ignore[assignment]
         )
         try:
-            result = calendar_group_service.update_group_scoped_blocked_time(
+            result = appointment_type_service.update_appointment_type_scoped_blocked_time(
                 acting_user=request.user,
                 block_id=instance.id,
                 start_time=data.get("start_time"),
@@ -2161,18 +2174,18 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
                 reason=data.get("reason"),
                 rrule_string=rrule_string,
             )
-        except CalendarGroupSlotConfigNotFoundError as e:
+        except AppointmentTypeSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing block -- no message
             # leaked that would distinguish "forbidden" from "does not exist".
             raise Http404 from e
 
-        response_serializer = GroupScopedBlockWriteResultSerializer(
+        response_serializer = AppointmentTypeScopedBlockWriteResultSerializer(
             result, context=self.get_serializer_context()
         )
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(
-        summary="Delete a group-scoped blocked time",
+        summary="Delete an appointment-type-scoped blocked time",
         description="Deletes the block (a recurring block is one row -- deletes the whole series).",
         responses={204: None},
     )
@@ -2181,35 +2194,37 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
         self,
         request,
         *args,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
         **kwargs,
     ):
         instance = self.get_object()
         membership = request.organization_membership
         if membership is None:
             raise Http404
-        calendar_group_service.initialize(organization=membership.organization)
+        appointment_type_service.initialize(organization=membership.organization)
         try:
-            calendar_group_service.delete_group_scoped_blocked_time(
+            appointment_type_service.delete_appointment_type_scoped_blocked_time(
                 acting_user=request.user, block_id=instance.id
             )
-        except CalendarGroupSlotConfigNotFoundError as e:
+        except AppointmentTypeSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing block -- no message
             # leaked that would distinguish "forbidden" from "does not exist".
             raise Http404 from e
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=["Calendar Group Scoped Quota Rules"])
-class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
-    """Nested under a group's slot: manage group-scoped quota rules for
+@extend_schema(tags=["Appointment Type Scoped Quota Rules"])
+class AppointmentTypeScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
+    """Nested under an appointment type's slot: manage appointment-type-scoped quota rules for
     calendars in that slot's roster.
 
-    Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
+    Mirrors ``AppointmentTypeScopedAvailabilityWindowViewSet``/``AppointmentTypeScopedBlockedTimeViewSet``
     exactly -- reads go through
-    ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-    delegates to the ``CalendarGroupService`` quota-write methods,
-    and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
+    ``AppointmentTypeSlotQuotaRule.objects.for_appointment_type_slot(...)``, every write
+    delegates to the ``AppointmentTypeService`` quota-write methods,
+    and route visibility is gated by ``AppointmentTypeScopedQuotaRulePermission``. The
     resource is simpler than windows/blocks: quota rules are non-recurring
     (no ``rrule_string``/``timezone``/time range) and unmetered (no
     entitlement ``check_limit`` gates their creation -- only
@@ -2219,14 +2234,14 @@ class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
     saved rule directly rather than a write-result wrapper.
 
     The uniqueness constraint on (calendar, slot, period) is surfaced here as
-    a 400 validation error (``CalendarGroupValidationError`` -> DRF
+    a 400 validation error (``AppointmentTypeValidationError`` -> DRF
     ``ValidationError``), never an unhandled ``IntegrityError``/500.
     """
 
-    permission_classes = (GroupScopedQuotaRulePermission,)
+    permission_classes = (AppointmentTypeScopedQuotaRulePermission,)
     # See ``CalendarViewSet.queryset``.
-    queryset = CalendarGroupSlotQuotaRule.objects.unscoped()
-    serializer_class = GroupScopedQuotaRuleSerializer
+    queryset = AppointmentTypeSlotQuotaRule.objects.unscoped()
+    serializer_class = AppointmentTypeScopedQuotaRuleSerializer
     # PUT is intentionally unsupported: the underlying service is a partial
     # update by design (only provided fields change), so only PATCH applies.
     http_method_names = ("get", "post", "patch", "delete", "head", "options")
@@ -2234,37 +2249,39 @@ class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if not user.is_authenticated:
-            return CalendarGroupSlotQuotaRule.objects.none()
+            return AppointmentTypeSlotQuotaRule.objects.none()
         membership = self.request.organization_membership
         if not membership:
-            return CalendarGroupSlotQuotaRule.objects.none()
+            return AppointmentTypeSlotQuotaRule.objects.none()
         slot_id = self.kwargs.get("slot_id")
         return (
             super()
             .get_queryset()
             .filter_by_organization(membership.organization_id)
-            .for_group_slot(slot_id)
+            .for_appointment_type_slot(slot_id)
         )
 
     @extend_schema(
-        summary="Create a group-scoped quota rule",
+        summary="Create an appointment-type-scoped quota rule",
         description=(
-            "Creates a group-scoped quota rule capping a calendar's live bookings "
-            "made through a group slot within a fixed period. Not metered -- no "
+            "Creates an appointment-type-scoped quota rule capping a calendar's live bookings "
+            "made through an appointment type slot within a fixed period. Not metered -- no "
             "entitlement limit gates this write."
         ),
-        request=GroupScopedQuotaRuleCreateSerializer,
-        responses={201: GroupScopedQuotaRuleSerializer},
+        request=AppointmentTypeScopedQuotaRuleCreateSerializer,
+        responses={201: AppointmentTypeScopedQuotaRuleSerializer},
     )
     @inject
     def create(
         self,
         request,
         *args,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
         **kwargs,
     ):
-        serializer = GroupScopedQuotaRuleCreateSerializer(
+        serializer = AppointmentTypeScopedQuotaRuleCreateSerializer(
             data=request.data, context=self.get_serializer_context()
         )
         serializer.is_valid(raise_exception=True)
@@ -2272,49 +2289,51 @@ class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
 
         membership = request.organization_membership
         if membership is None:
-            # Unreachable in practice -- `GroupScopedQuotaRulePermission`
+            # Unreachable in practice -- `AppointmentTypeScopedQuotaRulePermission`
             # already requires an active membership -- but narrows the type for
             # mypy and fails closed rather than crashing on `None.organization`.
             raise Http404
-        calendar_group_service.initialize(organization=membership.organization)
+        appointment_type_service.initialize(organization=membership.organization)
         try:
-            rule = calendar_group_service.create_group_scoped_quota_rule(
+            rule = appointment_type_service.create_appointment_type_scoped_quota_rule(
                 acting_user=request.user,
-                group_slot_id=self.kwargs["slot_id"],
+                appointment_type_slot_id=self.kwargs["slot_id"],
                 calendar_id=data["calendar"].id,
                 period=data["period"],
                 cap=data["cap"],
             )
-        except CalendarGroupSlotConfigNotFoundError as e:
+        except AppointmentTypeSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing rule -- no message
             # leaked that would distinguish "forbidden" from "does not exist".
             raise Http404 from e
-        except CalendarGroupValidationError as e:
+        except AppointmentTypeValidationError as e:
             # The (calendar, slot, period) unique constraint -- surfaced as a
             # validation error, never an unhandled IntegrityError/500.
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
-        response_serializer = GroupScopedQuotaRuleSerializer(
+        response_serializer = AppointmentTypeScopedQuotaRuleSerializer(
             rule, context=self.get_serializer_context()
         )
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
     @extend_schema(
-        summary="Update a group-scoped quota rule",
+        summary="Update an appointment-type-scoped quota rule",
         description="Partial update -- only provided fields change.",
-        request=GroupScopedQuotaRuleUpdateSerializer,
-        responses={200: GroupScopedQuotaRuleSerializer},
+        request=AppointmentTypeScopedQuotaRuleUpdateSerializer,
+        responses={200: AppointmentTypeScopedQuotaRuleSerializer},
     )
     @inject
     def partial_update(
         self,
         request,
         *args,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
         **kwargs,
     ):
         instance = self.get_object()
-        serializer = GroupScopedQuotaRuleUpdateSerializer(
+        serializer = AppointmentTypeScopedQuotaRuleUpdateSerializer(
             data=request.data, partial=True, context=self.get_serializer_context()
         )
         serializer.is_valid(raise_exception=True)
@@ -2323,30 +2342,30 @@ class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
         membership = request.organization_membership
         if membership is None:
             raise Http404
-        calendar_group_service.initialize(organization=membership.organization)
+        appointment_type_service.initialize(organization=membership.organization)
         try:
-            rule = calendar_group_service.update_group_scoped_quota_rule(
+            rule = appointment_type_service.update_appointment_type_scoped_quota_rule(
                 acting_user=request.user,
                 rule_id=instance.id,
                 period=data.get("period"),
                 cap=data.get("cap"),
             )
-        except CalendarGroupSlotConfigNotFoundError as e:
+        except AppointmentTypeSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing rule -- no message
             # leaked that would distinguish "forbidden" from "does not exist".
             raise Http404 from e
-        except CalendarGroupValidationError as e:
+        except AppointmentTypeValidationError as e:
             # The (calendar, slot, period) unique constraint -- surfaced as a
             # validation error, never an unhandled IntegrityError/500.
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
-        response_serializer = GroupScopedQuotaRuleSerializer(
+        response_serializer = AppointmentTypeScopedQuotaRuleSerializer(
             rule, context=self.get_serializer_context()
         )
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(
-        summary="Delete a group-scoped quota rule",
+        summary="Delete an appointment-type-scoped quota rule",
         responses={204: None},
     )
     @inject
@@ -2354,57 +2373,59 @@ class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
         self,
         request,
         *args,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
         **kwargs,
     ):
         instance = self.get_object()
         membership = request.organization_membership
         if membership is None:
             raise Http404
-        calendar_group_service.initialize(organization=membership.organization)
+        appointment_type_service.initialize(organization=membership.organization)
         try:
-            calendar_group_service.delete_group_scoped_quota_rule(
+            appointment_type_service.delete_appointment_type_scoped_quota_rule(
                 acting_user=request.user, rule_id=instance.id
             )
-        except CalendarGroupSlotConfigNotFoundError as e:
+        except AppointmentTypeSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing rule -- no message
             # leaked that would distinguish "forbidden" from "does not exist".
             raise Http404 from e
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class CalendarGroupViewSet(VintaScheduleModelViewSet):
+class AppointmentTypeViewSet(VintaScheduleModelViewSet):
     """
-    ViewSet for CalendarGroup CRUD and grouped event actions.
+    ViewSet for AppointmentType CRUD and appointment-type event actions.
     """
 
-    permission_classes = (CalendarGroupPermission,)
+    permission_classes = (AppointmentTypePermission,)
     # See ``CalendarViewSet.queryset``.
-    queryset = CalendarGroup.objects.unscoped()
-    serializer_class = CalendarGroupSerializer
-    filterset_class = CalendarGroupFilterSet
+    queryset = AppointmentType.objects.unscoped()
+    serializer_class = AppointmentTypeSerializer
+    filterset_class = AppointmentTypeFilterSet
 
     def get_queryset(self):
-        """Org-scoped, then role-scoped: admins see every group in the org;
-        non-admin members see only groups they participate in (own a
-        calendar in one of the group's slots). This is what makes a
-        non-part-of group retrieve 404 rather than 403 -- it is simply not
+        """Org-scoped, then role-scoped: admins see every appointment type in the org;
+        non-admin members see only appointment types they participate in (own a
+        calendar in one of the appointment type's slots). This is what makes a
+        non-part-of appointment type retrieve 404 rather than 403 -- it is simply not
         in the queryset ``get_object()`` looks up against.
         """
         user = self.request.user
         if not user.is_authenticated:
-            return CalendarGroup.original_manager.none()
+            return AppointmentType.original_manager.none()
         membership = self.request.organization_membership
         if not membership:
-            return CalendarGroup.original_manager.none()
+            return AppointmentType.original_manager.none()
         qs = super().get_queryset().filter_by_organization(membership.organization_id)
         if user.is_organization_admin(membership.organization_id):
             return qs
         return qs.only_member_of(membership.user_id)
 
     @extend_schema(
-        summary="Delete calendar group",
-        description="Delete a CalendarGroup. Fails with 400 if the group has any bookings.",
+        summary="Delete appointment type",
+        description="Delete an AppointmentType. Fails with 400 if the appointment type has any bookings.",
         responses={204: None},
     )
     @inject
@@ -2412,20 +2433,22 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         self,
         request,
         *args,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
         **kwargs,
     ):
         instance = self.get_object()
-        calendar_group_service.initialize(organization=instance.organization)
+        appointment_type_service.initialize(organization=instance.organization)
         try:
-            calendar_group_service.delete_group(group_id=instance.id)
-        except CalendarGroupError as e:
+            appointment_type_service.delete_appointment_type(appointment_type_id=instance.id)
+        except AppointmentTypeError as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(
-        summary="Create grouped event",
-        request=CalendarGroupEventCreateSerializer,
+        summary="Create appointment type event",
+        request=AppointmentTypeEventCreateSerializer,
         responses={201: CalendarEventSerializer},
     )
     @action(
@@ -2435,19 +2458,19 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         url_name="create-event",
     )
     def create_event(self, request, pk):
-        group = self.get_object()
-        serializer = CalendarGroupEventCreateSerializer(
+        appointment_type = self.get_object()
+        serializer = AppointmentTypeEventCreateSerializer(
             data=request.data, context=self.get_serializer_context()
         )
         serializer.is_valid(raise_exception=True)
-        event = serializer.save(group=group)
+        event = serializer.save(appointment_type=appointment_type)
         # Re-fetch through the serializer's optimized queryset so nested
         # attendances/resource relations are prefetched (avoids the query-budget N+1).
         context = self.get_serializer_context()
         optimized_event = (
             CalendarEventSerializer(context=context)
             .get_optimized_queryset(
-                CalendarEvent.objects.filter_by_organization(group.organization_id)
+                CalendarEvent.objects.filter_by_organization(appointment_type.organization_id)
             )
             .get(id=event.id)
         )
@@ -2457,7 +2480,7 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         )
 
     @extend_schema(
-        summary="List events booked under this group",
+        summary="List events booked under this appointment type",
         parameters=[
             OpenApiParameter(
                 name="start_datetime",
@@ -2487,9 +2510,11 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         self,
         request,
         pk,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
     ):
-        group = self.get_object()
+        appointment_type = self.get_object()
         start_raw = request.query_params.get("start_datetime")
         end_raw = request.query_params.get("end_datetime")
         if not start_raw or not end_raw:
@@ -2504,12 +2529,12 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
                 {"non_field_errors": ["Invalid datetime format; use ISO 8601."]}
             ) from e
 
-        calendar_group_service.initialize(organization=group.organization)
-        events = calendar_group_service.get_group_events(
-            group_id=group.id, start=start_dt, end=end_dt
+        appointment_type_service.initialize(organization=appointment_type.organization)
+        events = appointment_type_service.get_appointment_type_events(
+            appointment_type_id=appointment_type.id, start=start_dt, end=end_dt
         )
         # Apply the serializer's optimization so nested relations are prefetched
-        # (get_group_events returns a real queryset, not synthetic occurrences).
+        # (get_appointment_type_events returns a real queryset, not synthetic occurrences).
         context = self.get_serializer_context()
         optimized_events = CalendarEventSerializer(context=context).get_optimized_queryset(events)
         return Response(
@@ -2517,14 +2542,14 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         )
 
     @extend_schema(
-        summary="List stale calendar selections for this group",
+        summary="List stale calendar selections for this appointment type",
         description=(
-            "Every `(event, slot, calendar)` triple booked under this group whose "
+            "Every `(event, slot, calendar)` triple booked under this appointment type whose "
             "calendar has since left its slot's roster (removed inline, or via a "
             "pool detaching or losing that calendar) -- the ops-sweep counterpart "
             "to the per-selection `is_in_current_roster` flag. Optionally bounded "
             "to events overlapping `[window_start, window_end)`; omitting both "
-            "returns every stale selection in the group regardless of when its "
+            "returns every stale selection in the appointment type regardless of when its "
             "event falls. Returns a bare array, page-bounded by `offset`/`limit` "
             "-- this exists specifically to expose a potentially large backlog, "
             "so the result set is never fetched or materialized unbounded."
@@ -2569,7 +2594,7 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         # Returns a bare array, page-bounded by explicit offset/limit query
         # params the service validates -- not a DRF Page. pagination_class=None
         # and filter_backends=[] so drf-spectacular stops advertising the
-        # count/next/previous/results envelope and CalendarGroupFilterSet's
+        # count/next/previous/results envelope and AppointmentTypeFilterSet's
         # `name` param, neither of which this action implements (reviewer
         # finding, Phase 6).
         pagination_class=None,
@@ -2580,9 +2605,11 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         self,
         request,
         pk,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
     ):
-        group = self.get_object()
+        appointment_type = self.get_object()
         start_raw = request.query_params.get("window_start")
         end_raw = request.query_params.get("window_end")
         try:
@@ -2607,16 +2634,16 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
                 {"non_field_errors": ["offset and limit must be integers."]}
             ) from e
 
-        calendar_group_service.initialize(organization=group.organization)
+        appointment_type_service.initialize(organization=appointment_type.organization)
         try:
-            stale = calendar_group_service.find_stale_selections(
-                group_id=group.id,
+            stale = appointment_type_service.find_stale_selections(
+                appointment_type_id=appointment_type.id,
                 window_start=window_start,
                 window_end=window_end,
                 offset=offset,
                 limit=limit,
             )
-        except CalendarGroupValidationError as e:
+        except AppointmentTypeValidationError as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
         payload = [
             {"event_id": s.event_id, "slot_id": s.slot_id, "calendar_id": s.calendar_id}
@@ -2626,8 +2653,8 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
 
     @extend_schema(
         summary="Per-slot availability for requested ranges",
-        request=CalendarGroupAvailabilityQuerySerializer,
-        responses={200: CalendarGroupRangeAvailabilitySerializer(many=True)},
+        request=AppointmentTypeAvailabilityQuerySerializer,
+        responses={200: AppointmentTypeRangeAvailabilitySerializer(many=True)},
     )
     @action(
         methods=["POST"],
@@ -2640,17 +2667,21 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         self,
         request,
         pk,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
     ):
-        group = self.get_object()
-        input_serializer = CalendarGroupAvailabilityQuerySerializer(data=request.data)
+        appointment_type = self.get_object()
+        input_serializer = AppointmentTypeAvailabilityQuerySerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
 
-        calendar_group_service.initialize(organization=group.organization)
+        appointment_type_service.initialize(organization=appointment_type.organization)
         ranges = [
             (r["start_time"], r["end_time"]) for r in input_serializer.validated_data["ranges"]
         ]
-        result = calendar_group_service.check_group_availability(group_id=group.id, ranges=ranges)
+        result = appointment_type_service.check_appointment_type_availability(
+            appointment_type_id=appointment_type.id, ranges=ranges
+        )
         payload = [
             {
                 "start_time": r.start_time,
@@ -2666,10 +2697,10 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
             }
             for r in result
         ]
-        return Response(CalendarGroupRangeAvailabilitySerializer(payload, many=True).data)
+        return Response(AppointmentTypeRangeAvailabilitySerializer(payload, many=True).data)
 
     @extend_schema(
-        summary="Bookable slot proposals for the group within a search window",
+        summary="Bookable slot proposals for the appointment type within a search window",
         parameters=[
             OpenApiParameter(
                 name="search_window_start",
@@ -2713,9 +2744,11 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         self,
         request,
         pk,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
     ):
-        group = self.get_object()
+        appointment_type = self.get_object()
         try:
             start_dt = datetime.datetime.fromisoformat(
                 request.query_params["search_window_start"].replace("Z", "+00:00")
@@ -2735,16 +2768,16 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
                 }
             ) from e
 
-        calendar_group_service.initialize(organization=group.organization)
+        appointment_type_service.initialize(organization=appointment_type.organization)
         try:
-            proposals = calendar_group_service.find_bookable_slots(
-                group_id=group.id,
+            proposals = appointment_type_service.find_bookable_slots(
+                appointment_type_id=appointment_type.id,
                 search_window_start=start_dt,
                 search_window_end=end_dt,
                 duration=datetime.timedelta(seconds=duration_seconds),
                 slot_step=datetime.timedelta(seconds=slot_step_seconds),
             )
-        except CalendarGroupError as e:
+        except AppointmentTypeError as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
         payload = [{"start_time": p.start_time, "end_time": p.end_time} for p in proposals]
@@ -2767,7 +2800,7 @@ class CalendarPoolViewSet(VintaScheduleModelViewSet):
         """Org-scoped, then role-scoped: admins see every pool in the org;
         non-admin members see only pools where they own a roster calendar
         (`CalendarPoolQuerySet.only_member_of`) -- same visibility shape as
-        `CalendarGroupViewSet.get_queryset`, and what makes a pool a member
+        `AppointmentTypeViewSet.get_queryset`, and what makes a pool a member
         doesn't participate in 404 rather than 403 on retrieve.
         """
         user = self.request.user
@@ -2785,11 +2818,11 @@ class CalendarPoolViewSet(VintaScheduleModelViewSet):
         summary="Delete calendar pool",
         description=(
             "Delete a CalendarPool. Fails with 409 if the pool is still attached "
-            "to any calendar group slot, naming the referencing groups."
+            "to any appointment type slot, naming the referencing appointment types."
         ),
         responses={
             204: None,
-            409: OpenApiResponse(description="Pool is still attached to a group slot."),
+            409: OpenApiResponse(description="Pool is still attached to an appointment type slot."),
         },
     )
     @inject
@@ -2797,16 +2830,18 @@ class CalendarPoolViewSet(VintaScheduleModelViewSet):
         self,
         request,
         *args,
-        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        appointment_type_service: Annotated[
+            AppointmentTypeService, Provide["appointment_type_service"]
+        ],
         **kwargs,
     ):
         instance = self.get_object()
-        calendar_group_service.initialize(organization=instance.organization)
+        appointment_type_service.initialize(organization=instance.organization)
         try:
-            calendar_group_service.delete_pool(pool_id=instance.id)
+            appointment_type_service.delete_pool(pool_id=instance.id)
         except CalendarPoolInUseError as e:
             return Response(
-                {"detail": str(e), "groups": e.group_names},
+                {"detail": str(e), "appointment_types": e.appointment_type_names},
                 status=status.HTTP_409_CONFLICT,
             )
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -2822,7 +2857,7 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
     emission live in a single place.
 
     **Exactly-one-target rule:** create requests must supply exactly one of
-    ``calendar``, ``membership_user_id``, ``calendar_group``, or
+    ``calendar``, ``membership_user_id``, ``appointment_type``, or
     ``is_organization_default=true``.  Any other combination returns 400.
 
     **Duplicate target → 400:** creating a second policy for the same target
@@ -2879,7 +2914,7 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
         summary="Create a booking policy",
         description=(
             "Create a new booking policy for the organization. "
-            "Exactly one of 'calendar', 'membership_user_id', 'calendar_group', "
+            "Exactly one of 'calendar', 'membership_user_id', 'appointment_type', "
             "or 'is_organization_default' must be set. "
             "Returns 400 when a policy for the target already exists."
         ),
@@ -2914,7 +2949,7 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
         description=(
             "Update the rule fields (lead_time_seconds, max_horizon_seconds, "
             "buffer_before_seconds, buffer_after_seconds) of an existing booking policy. "
-            "Target fields (calendar, membership_user_id, calendar_group, "
+            "Target fields (calendar, membership_user_id, appointment type, "
             "is_organization_default) are immutable after creation."
         ),
         responses={200: BookingPolicySerializer},
@@ -2989,7 +3024,7 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
             policy = None
 
         # Absent policy → idempotent no-op (204). A present policy the caller may
-        # not manage → 403 (non-admin deleting a group/org/other-member policy).
+        # not manage → 403 (non-admin deleting an appointment type/org/other-member policy).
         if policy is not None:
             self.check_object_permissions(request, policy)
 
@@ -3224,7 +3259,7 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
 
     ``POST /booking-codes/`` collapses GraphQL's six ``create*BookingCode``
     mutations (``calendar_integration.mutations``, ~L774-1115) into one
-    resource: ``purpose`` x {``calendar``, ``calendar_group``} is the same
+    resource: ``purpose`` x {``calendar``, ``appointment_type``} is the same
     cross product those six mutations cover, no more and no less (see
     ``BookingCodeCreateSerializer``). ``DELETE /booking-codes/<id>/`` mirrors
     ``revoke_booking_code``'s idempotent contract.
@@ -3264,7 +3299,7 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
         403 -- so the endpoint cannot be used to learn that a given id exists
         in some other tenant. Delegates the owner-or-admin decision to
         ``CalendarPermissionService.can_view_calendar`` -- the same split
-        ``_authorize_calendar_group_target`` draws for a calendar group, kept
+        ``_authorize_appointment_type_target`` draws for an appointment type, kept
         in one place on the service rather than re-implemented per target type.
         """
         try:
@@ -3277,31 +3312,33 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
                 "You do not have permission to mint a booking code for this calendar."
             )
 
-    def _authorize_calendar_group_target(
+    def _authorize_appointment_type_target(
         self,
         request,
         calendar_permission_service: "CalendarPermissionService",
         organization_id: int,
-        calendar_group_id: int,
+        appointment_type_id: int,
     ) -> None:
-        """Resolve + authorize a ``calendar_group`` mint target.
+        """Resolve + authorize an ``appointment_type`` mint target.
 
         Same 404-not-403 rule as ``_authorize_calendar_target``. Delegates the
         owner-or-admin decision to
-        ``CalendarPermissionService.can_view_calendar_group`` -- the same
-        admin-or-participating-member split ``CalendarGroupPermission`` already
-        draws for the group's own endpoints.
+        ``CalendarPermissionService.can_view_appointment_type`` -- the same
+        admin-or-participating-member split ``AppointmentTypePermission`` already
+        draws for the appointment type's own endpoints.
         """
         try:
-            group = CalendarGroup.objects.filter_by_organization(organization_id).get(
-                id=calendar_group_id
+            appointment_type = AppointmentType.objects.filter_by_organization(organization_id).get(
+                id=appointment_type_id
             )
-        except CalendarGroup.DoesNotExist:
+        except AppointmentType.DoesNotExist:
             raise NotFound() from None
 
-        if not calendar_permission_service.can_view_calendar_group(user=request.user, group=group):
+        if not calendar_permission_service.can_view_appointment_type(
+            user=request.user, appointment_type=appointment_type
+        ):
             raise PermissionDenied(
-                "You do not have permission to mint a booking code for this calendar group."
+                "You do not have permission to mint a booking code for this appointment type."
             )
 
     def _resolve_event_target(
@@ -3310,24 +3347,24 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
         event_id: int,
         *,
         calendar_id: int | None,
-        calendar_group_id: int | None,
+        appointment_type_id: int | None,
     ) -> None:
-        """Verify ``event_id`` belongs to this org AND to the named calendar/group.
+        """Verify ``event_id`` belongs to this org AND to the named calendar/appointment type.
 
         Mirrors the GraphQL reschedule/cancel mint mutations exactly
         (``create_calendar_reschedule_booking_code`` et al.): a calendar-scoped
-        code may only be minted for a non-grouped event on that calendar; a
-        group-scoped code only for an event on that group. Any mismatch --
-        wrong org, wrong calendar, or a grouped event on a calendar-scoped
-        request -- is 404, matching the calendar/group 404-not-403 rule (the
-        event id is as sensitive as the calendar/group id it belongs to).
+        code may only be minted for a non-appointment-type event on that calendar; a
+        appointment-type-scoped code only for an event on that appointment type. Any mismatch --
+        wrong org, wrong calendar, or an appointment-type event on a calendar-scoped
+        request -- is 404, matching the calendar/appointment type 404-not-403 rule (the
+        event id is as sensitive as the calendar/appointment type id it belongs to).
         """
         lookup: dict[str, object] = {"id": event_id}
         if calendar_id is not None:
             lookup["calendar_fk_id"] = calendar_id
-            lookup["calendar_group_fk_id__isnull"] = True
+            lookup["appointment_type_fk_id__isnull"] = True
         else:
-            lookup["calendar_group_fk_id"] = calendar_group_id
+            lookup["appointment_type_fk_id"] = appointment_type_id
 
         try:
             CalendarEvent.objects.filter_by_organization(organization_id).get(**lookup)
@@ -3340,12 +3377,12 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
         summary="Mint a single-use booking code",
         description=(
             "Mint a single-use booking / reschedule / cancel code scoped to a "
-            "calendar or calendar group. Collapses GraphQL's six "
+            "calendar or appointment type. Collapses GraphQL's six "
             "create*BookingCode mutations into one endpoint. The plaintext "
             "code is returned exactly once in this response and is never "
             "retrievable afterwards. Org admins may mint for any calendar or "
-            "group in the organization; other members may mint only for a "
-            "calendar they own or a group they participate in. A target in "
+            "appointment type in the organization; other members may mint only for a "
+            "calendar they own or an appointment type they participate in. A target in "
             "another organization is answered 404, never 403."
         ),
     )
@@ -3371,7 +3408,7 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
 
         organization_id = membership.organization_id
         calendar_id = data.get("calendar")
-        calendar_group_id = data.get("calendar_group")
+        appointment_type_id = data.get("appointment_type")
         event_id = data.get("event")
 
         if calendar_id is not None:
@@ -3379,8 +3416,8 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
                 request, calendar_permission_service, organization_id, calendar_id
             )
         else:
-            self._authorize_calendar_group_target(
-                request, calendar_permission_service, organization_id, calendar_group_id
+            self._authorize_appointment_type_target(
+                request, calendar_permission_service, organization_id, appointment_type_id
             )
 
         if event_id is not None:
@@ -3388,7 +3425,7 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
                 organization_id,
                 event_id,
                 calendar_id=calendar_id,
-                calendar_group_id=calendar_group_id,
+                appointment_type_id=appointment_type_id,
             )
 
         token, plaintext_code = calendar_permission_service.create_booking_token(
@@ -3397,7 +3434,7 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
             expires_at=data.get("expires_at"),
             minted_by_user=request.user,
             calendar_id=calendar_id,
-            calendar_group_id=calendar_group_id,
+            appointment_type_id=appointment_type_id,
             event_id=event_id,
         )
 
@@ -3407,7 +3444,7 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
                 "code": plaintext_code,
                 "purpose": data["purpose"],
                 "calendar": calendar_id,
-                "calendar_group": calendar_group_id,
+                "appointment_type": appointment_type_id,
                 "event": event_id,
                 "expires_at": data.get("expires_at"),
             }
@@ -3420,7 +3457,7 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
         description=(
             "Revoke a booking code by its opaque id. Org admins may revoke any "
             "booking code in the organization; other members may revoke only a "
-            "code scoped to a calendar they own or a group they participate in "
+            "code scoped to a calendar they own or an appointment type they participate in "
             "-- the same owner-or-org-admin rule POST applies at mint time. "
             "Non-oracle: revoking an already-revoked code, an id that does not "
             "exist within the caller's organization (including an id belonging "
@@ -3468,7 +3505,7 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
         try:
             token = (
                 CalendarManagementToken.objects.booking_codes_for_organization(organization_id)
-                .select_related("calendar", "calendar_group")
+                .select_related("calendar", "appointment_type")
                 .get(id=token_id)
             )
         except CalendarManagementToken.DoesNotExist:
@@ -3477,15 +3514,15 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
         # Same owner-or-org-admin split `create` applies at mint time, against
         # whichever scope the token actually carries. A booking code always
         # carries exactly one (create_booking_token requires calendar_id or
-        # calendar_group_id) -- fail closed if somehow neither is set, rather
+        # appointment_type_id) -- fail closed if somehow neither is set, rather
         # than silently allowing the revoke.
         if token.calendar_fk_id is not None:
             authorized = calendar_permission_service.can_view_calendar(
                 user=request.user, calendar=token.calendar
             )
-        elif token.calendar_group_fk_id is not None:
-            authorized = calendar_permission_service.can_view_calendar_group(
-                user=request.user, group=token.calendar_group
+        elif token.appointment_type_fk_id is not None:
+            authorized = calendar_permission_service.can_view_appointment_type(
+                user=request.user, appointment_type=token.appointment_type
             )
         else:
             authorized = False
