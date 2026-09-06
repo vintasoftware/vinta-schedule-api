@@ -15,7 +15,7 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
-            name='AppointmentType',
+            name='CalendarGroup',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('created', model_utils.fields.AutoCreatedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='created')),
@@ -28,16 +28,16 @@ class Migration(migrations.Migration):
         ),
         migrations.AddField(
             model_name='calendarevent',
-            name='appointment_type',
-            field=models.ForeignObject(editable=False, from_fields=['appointment_type_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.PROTECT, related_name='events', to='calendar_integration.appointmenttype', to_fields=['id', 'organization_id']),
+            name='calendar_group',
+            field=models.ForeignObject(editable=False, from_fields=['calendar_group_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.PROTECT, related_name='events', to='calendar_integration.calendargroup', to_fields=['id', 'organization_id']),
         ),
         migrations.AddField(
             model_name='calendarevent',
-            name='appointment_type_fk',
-            field=models.ForeignKey(blank=True, help_text='If this event was booked through an AppointmentType, references it', null=True, on_delete=django.db.models.deletion.PROTECT, related_name='events_fk_rel', to='calendar_integration.appointmenttype'),
+            name='calendar_group_fk',
+            field=models.ForeignKey(blank=True, help_text='If this event was booked through a CalendarGroup, references it', null=True, on_delete=django.db.models.deletion.PROTECT, related_name='events_fk_rel', to='calendar_integration.calendargroup'),
         ),
         migrations.CreateModel(
-            name='AppointmentTypeSlot',
+            name='CalendarGroupSlot',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('created', model_utils.fields.AutoCreatedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='created')),
@@ -47,8 +47,8 @@ class Migration(migrations.Migration):
                 ('description', models.TextField(blank=True)),
                 ('order', models.PositiveSmallIntegerField(default=0)),
                 ('required_count', models.PositiveSmallIntegerField(default=1, help_text='How many calendars from the pool must be selected when booking. Default 1; use larger values when a slot needs multiple calendars (e.g. two nurses).')),
-                ('appointment_type', models.ForeignObject(editable=False, from_fields=['appointment_type_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='slots', to='calendar_integration.appointmenttype', to_fields=['id', 'organization_id'])),
-                ('appointment_type_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='slots_fk_rel', to='calendar_integration.appointmenttype')),
+                ('group', models.ForeignObject(editable=False, from_fields=['group_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='slots', to='calendar_integration.calendargroup', to_fields=['id', 'organization_id'])),
+                ('group_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='slots_fk_rel', to='calendar_integration.calendargroup')),
                 ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
             ],
             options={
@@ -56,54 +56,54 @@ class Migration(migrations.Migration):
             },
         ),
         migrations.CreateModel(
-            name='CalendarEventAppointmentTypeSelection',
+            name='CalendarEventGroupSelection',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('created', model_utils.fields.AutoCreatedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='created')),
                 ('modified', model_utils.fields.AutoLastModifiedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='modified')),
                 ('meta', models.JSONField(blank=True, default=dict, verbose_name='meta')),
-                ('calendar', models.ForeignObject(editable=False, from_fields=['calendar_fk', 'organization_id'], on_delete=django.db.models.deletion.PROTECT, related_name='appointment_type_selections', to='calendar_integration.calendar', to_fields=['id', 'organization_id'])),
-                ('calendar_fk', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='appointment_type_selections_fk_rel', to='calendar_integration.calendar')),
-                ('event', models.ForeignObject(editable=False, from_fields=['event_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='appointment_type_selections', to='calendar_integration.calendarevent', to_fields=['id', 'organization_id'])),
-                ('event_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='appointment_type_selections_fk_rel', to='calendar_integration.calendarevent')),
+                ('calendar', models.ForeignObject(editable=False, from_fields=['calendar_fk', 'organization_id'], on_delete=django.db.models.deletion.PROTECT, related_name='group_selections', to='calendar_integration.calendar', to_fields=['id', 'organization_id'])),
+                ('calendar_fk', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='group_selections_fk_rel', to='calendar_integration.calendar')),
+                ('event', models.ForeignObject(editable=False, from_fields=['event_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='group_selections', to='calendar_integration.calendarevent', to_fields=['id', 'organization_id'])),
+                ('event_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='group_selections_fk_rel', to='calendar_integration.calendarevent')),
                 ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
-                ('slot', models.ForeignObject(editable=False, from_fields=['slot_fk', 'organization_id'], on_delete=django.db.models.deletion.PROTECT, related_name='selections', to='calendar_integration.appointmenttypeslot', to_fields=['id', 'organization_id'])),
-                ('slot_fk', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='selections_fk_rel', to='calendar_integration.appointmenttypeslot')),
+                ('slot', models.ForeignObject(editable=False, from_fields=['slot_fk', 'organization_id'], on_delete=django.db.models.deletion.PROTECT, related_name='selections', to='calendar_integration.calendargroupslot', to_fields=['id', 'organization_id'])),
+                ('slot_fk', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='selections_fk_rel', to='calendar_integration.calendargroupslot')),
             ],
         ),
         migrations.CreateModel(
-            name='AppointmentTypeSlotMembership',
+            name='CalendarGroupSlotMembership',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('created', model_utils.fields.AutoCreatedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='created')),
                 ('modified', model_utils.fields.AutoLastModifiedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='modified')),
                 ('meta', models.JSONField(blank=True, default=dict, verbose_name='meta')),
-                ('calendar', models.ForeignObject(editable=False, from_fields=['calendar_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='appointment_type_slot_memberships', to='calendar_integration.calendar', to_fields=['id', 'organization_id'])),
-                ('calendar_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='appointment_type_slot_memberships_fk_rel', to='calendar_integration.calendar')),
+                ('calendar', models.ForeignObject(editable=False, from_fields=['calendar_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='group_slot_memberships', to='calendar_integration.calendar', to_fields=['id', 'organization_id'])),
+                ('calendar_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='group_slot_memberships_fk_rel', to='calendar_integration.calendar')),
                 ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
-                ('slot', models.ForeignObject(editable=False, from_fields=['slot_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='memberships', to='calendar_integration.appointmenttypeslot', to_fields=['id', 'organization_id'])),
-                ('slot_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='memberships_fk_rel', to='calendar_integration.appointmenttypeslot')),
+                ('slot', models.ForeignObject(editable=False, from_fields=['slot_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='memberships', to='calendar_integration.calendargroupslot', to_fields=['id', 'organization_id'])),
+                ('slot_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='memberships_fk_rel', to='calendar_integration.calendargroupslot')),
             ],
         ),
         migrations.AddField(
-            model_name='appointmenttypeslot',
+            model_name='calendargroupslot',
             name='calendars',
-            field=models.ManyToManyField(related_name='appointment_type_slots', through='calendar_integration.AppointmentTypeSlotMembership', through_fields=('slot', 'calendar'), to='calendar_integration.calendar'),
+            field=models.ManyToManyField(related_name='group_slots', through='calendar_integration.CalendarGroupSlotMembership', through_fields=('slot', 'calendar'), to='calendar_integration.calendar'),
         ),
         migrations.AddConstraint(
-            model_name='appointmenttype',
-            constraint=models.UniqueConstraint(fields=('organization', 'name'), name='appointmenttype_unique_name_per_org'),
+            model_name='calendargroup',
+            constraint=models.UniqueConstraint(fields=('organization', 'name'), name='calendargroup_unique_name_per_org'),
         ),
         migrations.AddConstraint(
-            model_name='calendareventappointmenttypeselection',
-            constraint=models.UniqueConstraint(fields=('event_fk', 'slot_fk', 'calendar_fk'), name='calendareventappointmenttypeselection_unique'),
+            model_name='calendareventgroupselection',
+            constraint=models.UniqueConstraint(fields=('event_fk', 'slot_fk', 'calendar_fk'), name='calendareventgroupselection_unique'),
         ),
         migrations.AddConstraint(
-            model_name='appointmenttypeslotmembership',
-            constraint=models.UniqueConstraint(fields=('slot_fk', 'calendar_fk'), name='appointmenttypeslotmembership_unique_slot_calendar'),
+            model_name='calendargroupslotmembership',
+            constraint=models.UniqueConstraint(fields=('slot_fk', 'calendar_fk'), name='calendargroupslotmembership_unique_slot_calendar'),
         ),
         migrations.AddConstraint(
-            model_name='appointmenttypeslot',
-            constraint=models.UniqueConstraint(fields=('appointment_type_fk', 'name'), name='appointmenttypeslot_unique_name_per_appointment_type'),
+            model_name='calendargroupslot',
+            constraint=models.UniqueConstraint(fields=('group_fk', 'name'), name='calendargroupslot_unique_name_per_group'),
         ),
     ]

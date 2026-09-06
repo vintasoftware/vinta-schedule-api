@@ -59,7 +59,7 @@ from organizations.models import Organization, OrganizationMembership
 
 
 APP_LABEL = "calendar_integration"
-BEFORE_ADD_FIELD = "0054_appointmenttype_public_booking_slug_unique"
+BEFORE_ADD_FIELD = "0054_calendargroup_public_booking_slug_unique"
 AFTER_ADD_FIELD = "0055_calendarmanagementtoken_kind"
 AFTER_BACKFILL = "0056_backfill_calendarmanagementtoken_kind"
 AFTER_NOT_NULL = "0057_calendarmanagementtoken_kind_not_null"
@@ -479,6 +479,17 @@ class TestBackfillHelperClassification:
             executor.loader.build_graph()
 
             assert self._kinds_for([row_id])[row_id] == "booking_code"
+
+            # Back to the leaf before touching the service. ``revoke_token``
+            # goes through the LIVE ``CalendarManagementToken`` model, which
+            # since 0061 names ``appointment_type_fk`` -- a column the 0057
+            # schema still calls ``calendar_group_fk``. The row survives the
+            # rename with its id, so revoking it here proves exactly what it
+            # proved before: the straggler 0057 classified is genuinely
+            # revokable, not merely labelled.
+            executor = MigrationExecutor(connection)
+            executor.migrate(executor.loader.graph.leaf_nodes())
+            executor.loader.build_graph()
 
             result = CalendarPermissionService().revoke_token(
                 organization_id=organization.id, token_id=row_id

@@ -495,17 +495,17 @@ class TestCreateInvitationMutation:
         assert data["data"]["createInvitation"]["token"] is None
         assert data["data"]["createInvitation"]["inviteUrl"] is None
 
-        # Verify invite_user_to_organization was called with the member appointment type --
-        # the narrowing of the ``appointment_types`` default, ``["organization_member"]``.
+        # Verify invite_user_to_organization was called with the member group --
+        # the narrowing of the ``groups`` default, ``["organization_member"]``.
         mock_invite.assert_called_once()
         call_kwargs = mock_invite.call_args.kwargs
         assert call_kwargs["email"] == user_email
         assert call_kwargs["organization"] == child_org
-        assert call_kwargs["appointment_type"] == GROUP_ORGANIZATION_MEMBER
+        assert call_kwargs["group"] == GROUP_ORGANIZATION_MEMBER
         assert call_kwargs["invited_by"] is None
 
-    def test_create_invitation_with_explicit_admin_appointment_type(self):
-        """A reseller creates an invitation naming the ``organization_admin`` appointment type."""
+    def test_create_invitation_with_explicit_admin_group(self):
+        """A reseller creates an invitation naming the ``organization_admin`` group."""
         reseller_org, system_user, token, auth_service = self._setup_reseller()
         child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
 
@@ -532,7 +532,7 @@ class TestCreateInvitationMutation:
                     "input": {
                         "userEmail": user_email,
                         "organizationId": str(child_org.id),
-                        "appointment_types": ["organization_admin"],
+                        "groups": ["organization_admin"],
                     }
                 },
             )
@@ -543,7 +543,7 @@ class TestCreateInvitationMutation:
 
         mock_invite.assert_called_once()
         call_kwargs = mock_invite.call_args.kwargs
-        assert call_kwargs["appointment_type"] == GROUP_ORGANIZATION_ADMIN
+        assert call_kwargs["group"] == GROUP_ORGANIZATION_ADMIN
 
     def test_create_invitation_already_active_member_returns_error(self):
         """createInvitation for an already-active member of the target org → typed error."""

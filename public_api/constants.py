@@ -65,27 +65,27 @@ class PublicAPIResources(TextChoices):
     BOOKABLE_SLOTS = "bookable_slots", "Bookable Slots"
     APPOINTMENT_TYPE_SCOPED_AVAILABILITY_WINDOWS = (
         "appointment_type_scoped_availability_windows",
-        "AppointmentType-Scoped Availability Windows",
+        "Appointment-Type-Scoped Availability Windows",
     )
     BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_AVAILABILITY_WINDOWS = (
         "batch_upsert_appointment_type_scoped_availability_windows",
-        "Batch Upsert AppointmentType-Scoped Availability Windows",
+        "Batch Upsert Appointment-Type-Scoped Availability Windows",
     )
     APPOINTMENT_TYPE_SCOPED_BLOCKED_TIMES = (
         "appointment_type_scoped_blocked_times",
-        "AppointmentType-Scoped Blocked Times",
+        "Appointment-Type-Scoped Blocked Times",
     )
     BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_BLOCKED_TIMES = (
         "batch_upsert_appointment_type_scoped_blocked_times",
-        "Batch Upsert AppointmentType-Scoped Blocked Times",
+        "Batch Upsert Appointment-Type-Scoped Blocked Times",
     )
     APPOINTMENT_TYPE_SCOPED_QUOTA_RULES = (
         "appointment_type_scoped_quota_rules",
-        "AppointmentType-Scoped Quota Rules",
+        "Appointment-Type-Scoped Quota Rules",
     )
     BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_QUOTA_RULES = (
         "batch_upsert_appointment_type_scoped_quota_rules",
-        "Batch Upsert AppointmentType-Scoped Quota Rules",
+        "Batch Upsert Appointment-Type-Scoped Quota Rules",
     )
 
 

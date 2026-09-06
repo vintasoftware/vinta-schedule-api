@@ -30,11 +30,11 @@ from organizations.models import Organization
 
 
 APP_LABEL = "calendar_integration"
-BEFORE_ADD_FIELD = "0051_calendarmanagementtoken_minted_by_membership_and_appointmenttype_duration"
-AFTER_BACKFILL = "0053_backfill_appointmenttype_public_booking_slug"
-AFTER_UNIQUE = "0054_appointmenttype_public_booking_slug_unique"
+BEFORE_ADD_FIELD = "0051_calendarmanagementtoken_minted_by_membership_and_calendargroup_duration"
+AFTER_BACKFILL = "0053_backfill_calendargroup_public_booking_slug"
+AFTER_UNIQUE = "0054_calendargroup_public_booking_slug_unique"
 
-TABLE = "calendar_integration_appointmenttype"
+TABLE = "calendar_integration_calendargroup"
 
 
 class TestGeneratePublicBookingSlug:
@@ -187,10 +187,10 @@ class TestPublicBookingSlugBackfillMigrationChain:
                 cursor.execute(
                     "SELECT conname, contype FROM pg_constraint "
                     f"WHERE conrelid = '{TABLE}'::regclass "
-                    "AND conname = 'appointmenttype_public_booking_slug_uniq'"
+                    "AND conname = 'calendargroup_public_booking_slug_uniq'"
                 )
                 constraint = cursor.fetchone()
-            assert constraint == ("appointmenttype_public_booking_slug_uniq", "u")
+            assert constraint == ("calendargroup_public_booking_slug_uniq", "u")
 
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -214,14 +214,14 @@ class TestPublicBookingSlugBackfillMigrationChain:
                 cursor.execute(
                     "SELECT conname FROM pg_constraint "
                     f"WHERE conrelid = '{TABLE}'::regclass "
-                    "AND conname = 'appointmenttype_public_booking_slug_uniq'"
+                    "AND conname = 'calendargroup_public_booking_slug_uniq'"
                 )
                 assert cursor.fetchone() is None, "reversing 0054 must drop the constraint"
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT indexname FROM pg_indexes "
                     f"WHERE tablename = '{TABLE}' "
-                    "AND indexname = 'appointmenttype_public_booking_slug_uniq'"
+                    "AND indexname = 'calendargroup_public_booking_slug_uniq'"
                 )
                 assert cursor.fetchone() is None, (
                     "reversing 0054 must drop the index too -- no orphan"

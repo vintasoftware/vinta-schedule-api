@@ -1,23 +1,23 @@
-"""Add ``CalendarManagementToken.minted_by_membership`` and ``AppointmentType.duration``.
+"""Add ``CalendarManagementToken.minted_by_membership`` and ``CalendarGroup.duration``.
 
 Two independent additions landing in the same migration because both are
 small, mutually-unrelated schema changes with no shared dependency ordering
 concern (see the "Mint attribution" / "Duration pinning -- storage" Guiding
 Decisions):
 
-- ``AppointmentType.duration`` -- a plain nullable ``DurationField`` on
-  ``calendar_integration_appointmenttype``. No index, no constraint, no
+- ``CalendarGroup.duration`` -- a plain nullable ``DurationField`` on
+  ``calendar_integration_calendargroup``. No index, no constraint, no
   default; nothing filters on it (every read that needs it already has the
-  appointment type row in hand). A nullable column with no default is a metadata-only
+  group row in hand). A nullable column with no default is a metadata-only
   ``ALTER TABLE`` in Postgres -- no table rewrite, no scan.
 
-  This lives on ``AppointmentType``, NOT on ``CalendarManagementToken`` --
+  This lives on ``CalendarGroup``, NOT on ``CalendarManagementToken`` --
   history correction from an earlier draft of this migration, which added it
   to the token instead. That was wrong in one decisive way: a **codeless**
-  public-appointment-type booking (``AppointmentType.accepts_public_scheduling=True``)
+  public-group booking (``CalendarGroup.accepts_public_scheduling=True``)
   presents no code, so it inherits no per-code pin -- the one booking path
   reachable with no credential was also the one path with no length
-  constraint. Duration is a property of the thing being booked (the appointment type),
+  constraint. Duration is a property of the thing being booked (the group),
   not of the invitation to book it (the code). Single-calendar codes carry no
   duration pin at all in this design -- there is no ``Calendar.duration``,
   and pinning per-calendar duration was deliberately dropped rather than
@@ -101,8 +101,8 @@ Lock / downtime audit
 run in separate transactions, and so the composite index can use
 ``CONCURRENTLY``:
 
-1. ``AddField(appointmenttype, "duration")`` is a nullable column with no
-   default on ``calendar_integration_appointmenttype`` -- a metadata-only
+1. ``AddField(calendargroup, "duration")`` is a nullable column with no
+   default on ``calendar_integration_calendargroup`` -- a metadata-only
    ``ALTER TABLE``, no table rewrite, no scan. Independent of every
    operation below (different table).
 2. ``AddField(calendarmanagementtoken, "minted_by_membership_user_id")`` is
@@ -121,12 +121,12 @@ run in separate transactions, and so the composite index can use
 Reverse
 -------
 Drops the constraint, then the index, then all three ``CalendarManagementToken``
-fields, then ``AppointmentType.duration`` -- restoring the schema to the
+fields, then ``CalendarGroup.duration`` -- restoring the schema to the
 pre-migration state. Reverting this migration in an environment where any
-appointment type has since had its ``duration`` set **silently unpins every appointment type that
-had one** (a 30-minute appointment type becomes an any-length appointment type for its
+group has since had its ``duration`` set **silently unpins every group that
+had one** (a 30-minute group becomes an any-length group for its
 codeless/code-gated booking path) -- a security regression that fails open.
-Revoke or otherwise stop relying on appointment type duration pinning before ever
+Revoke or otherwise stop relying on group duration pinning before ever
 reverting this migration in such an environment, and revert any later phase
 that writes to either column first, so nothing is writing to them while they
 disappear.
@@ -162,7 +162,7 @@ ALTER TABLE calendar_integration_calendarmanagementtoken
 
 
 class Migration(migrations.Migration):
-    """Add AppointmentType.duration + CalendarManagementToken.minted_by_membership."""
+    """Add CalendarGroup.duration + CalendarManagementToken.minted_by_membership."""
 
     atomic = False
 
@@ -179,23 +179,23 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.AddField(
-            model_name="appointmenttype",
+            model_name="calendargroup",
             name="duration",
             field=models.DurationField(
                 blank=True,
                 help_text=(
-                    "When set, an event booked or rescheduled through this appointment type must span "
+                    "When set, an event booked or rescheduled through this group must span "
                     "exactly this duration. Enforced by CalendarPermissionService. Duration "
                     "pinning lives here rather than on CalendarManagementToken because a "
-                    "codeless public-appointment-type booking (accepts_public_scheduling=True) presents "
-                    "no code, so it inherits no per-code pin -- the appointment type being booked is the "
-                    "only place a length constraint can live for that path. An appointment type that "
+                    "codeless public-group booking (accepts_public_scheduling=True) presents "
+                    "no code, so it inherits no per-code pin -- the group being booked is the "
+                    "only place a length constraint can live for that path. A group that "
                     "accepts public scheduling MUST have this set (enforced by "
-                    "AppointmentTypeService.create_appointment_type / update_appointment_type, not a DB constraint -- "
-                    "pre-existing public appointment_types with no duration are grandfathered at rest and "
+                    "CalendarGroupService.create_group / update_group, not a DB constraint -- "
+                    "pre-existing public groups with no duration are grandfathered at rest and "
                     "refused at booking time instead, fail-closed, by "
                     "CalendarPermissionService). Null is otherwise unpinned, matching every "
-                    "restricted appointment type and every appointment type created before this field existed."
+                    "restricted group and every group created before this field existed."
                 ),
                 null=True,
             ),

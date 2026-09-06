@@ -13,6 +13,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='organizationmembership',
             name='role',
-            field=models.CharField(choices=[('member', 'Member'), ('admin', 'Admin')], default='member', help_text='Role the user holds in this organization. Admins can manage organization-scoped resources (e.g. AppointmentTypes) regardless of direct ownership.', max_length=20),
+            field=models.CharField(choices=[('member', 'Member'), ('admin', 'Admin')], default='member', help_text='Role the user holds in this organization. Admins can manage organization-scoped resources (e.g. CalendarGroups) regardless of direct ownership.', max_length=20),
         ),
     ]

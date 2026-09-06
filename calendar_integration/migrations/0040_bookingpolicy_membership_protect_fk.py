@@ -43,7 +43,7 @@ same-transaction cascade that removes **both** the membership and the referencin
 policy succeeds, while a membership-only delete (policy still live) still fails at
 commit.
 
-Rows with ``membership_user_id IS NULL`` (calendar / appointment-type /
+Rows with ``membership_user_id IS NULL`` (calendar / calendar-group /
 organization-default policies) are not constrained: a composite FK with a NULL
 column is not enforced by Postgres (MATCH SIMPLE).
 

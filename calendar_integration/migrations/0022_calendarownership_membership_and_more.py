@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('calendar_integration', '0021_appointmenttype_accepts_public_scheduling'),
+        ('calendar_integration', '0021_calendargroup_accepts_public_scheduling'),
         ('organizations', '0011_organizationbranding'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]

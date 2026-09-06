@@ -1,9 +1,9 @@
-"""Backfill AppointmentType.public_booking_slug for pre-existing rows (step 2/3).
+"""Backfill CalendarGroup.public_booking_slug for pre-existing rows (step 2/3).
 
 Second migration of the 0052 -> 0053 -> 0054 chain (see 0052's docstring for
 why this is three separate migrations rather than three operations bundled
 in one). Fills every ``public_booking_slug IS NULL`` row -- every
-``AppointmentType`` that existed before 0052 added the column -- with a
+``CalendarGroup`` that existed before 0052 added the column -- with a
 freshly generated, distinct, collision-checked slug, via
 ``calendar_integration.migrations._0053_backfill_helpers``.
 
@@ -63,12 +63,12 @@ def apply_backfill(apps, schema_editor) -> None:
 
 
 class Migration(migrations.Migration):
-    """Backfill AppointmentType.public_booking_slug (data migration, 2/3)."""
+    """Backfill CalendarGroup.public_booking_slug (data migration, 2/3)."""
 
     atomic = False
 
     dependencies = [
-        ("calendar_integration", "0052_appointmenttype_public_booking_slug"),
+        ("calendar_integration", "0052_calendargroup_public_booking_slug"),
     ]
 
     operations = [

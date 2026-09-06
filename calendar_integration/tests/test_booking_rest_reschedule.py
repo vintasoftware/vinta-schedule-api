@@ -472,7 +472,7 @@ class TestRescheduleCalendarEventWithCodeCrossRouting:
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert response.json()["error_code"] == "NOT_PERMITTED"
-        assert "appointment_type" in response.json()["detail"].lower()
+        assert "appointment type" in response.json()["detail"].lower()
 
         existing_event.refresh_from_db()
         assert existing_event.start_time_tz_unaware.replace(tzinfo=None) == ORIGINAL_START.replace(

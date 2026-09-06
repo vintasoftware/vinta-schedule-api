@@ -6,13 +6,13 @@ via ``CalendarPermissionService.revoke_token`` / ``DELETE
 /booking-codes/<id>/``) using a heuristic:
 ``minted_by_membership_user_id IS NOT NULL OR minted_by_system_user_id IS
 NOT NULL``. That heuristic was recorded as a known fragility at Phase 6
-close-out and Phase 8 breaks it outright: a codeless appointment type booking mints a
+close-out and Phase 8 breaks it outright: a codeless group booking mints a
 ``RESCHEDULE``/``CANCEL`` code with no authenticated user and no system
 user, so under the heuristic it is silently NOT a booking code -- a
 patient-facing link that can never be revoked, even after a leak.
 
 This is the first of a three-migration chain (0055 -> 0056 -> 0057), the
-same shape Phase 3b used for ``AppointmentType.public_booking_slug`` (see that
+same shape Phase 3b used for ``CalendarGroup.public_booking_slug`` (see that
 chain's ``0052``/``0053``/``0054`` for the fuller version of this reasoning):
 
 This migration: ``AddField`` -- ``kind`` added **nullable, with no default
@@ -63,7 +63,7 @@ class Migration(migrations.Migration):
     """Add CalendarManagementToken.kind, nullable, no default (1/3)."""
 
     dependencies = [
-        ("calendar_integration", "0054_appointmenttype_public_booking_slug_unique"),
+        ("calendar_integration", "0054_calendargroup_public_booking_slug_unique"),
     ]
 
     operations = [

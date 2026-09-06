@@ -18595,12 +18595,12 @@ components:
         * `external_event_change_request` - External Event Change Request
         * `booking_policy` - Booking Policy
         * `bookable_slots` - Bookable Slots
-        * `appointment_type_scoped_availability_windows` - AppointmentType-Scoped Availability Windows
-        * `batch_upsert_appointment_type_scoped_availability_windows` - Batch Upsert AppointmentType-Scoped Availability Windows
-        * `appointment_type_scoped_blocked_times` - AppointmentType-Scoped Blocked Times
-        * `batch_upsert_appointment_type_scoped_blocked_times` - Batch Upsert AppointmentType-Scoped Blocked Times
-        * `appointment_type_scoped_quota_rules` - AppointmentType-Scoped Quota Rules
-        * `batch_upsert_appointment_type_scoped_quota_rules` - Batch Upsert AppointmentType-Scoped Quota Rules
+        * `appointment_type_scoped_availability_windows` - Appointment-Type-Scoped Availability Windows
+        * `batch_upsert_appointment_type_scoped_availability_windows` - Batch Upsert Appointment-Type-Scoped Availability Windows
+        * `appointment_type_scoped_blocked_times` - Appointment-Type-Scoped Blocked Times
+        * `batch_upsert_appointment_type_scoped_blocked_times` - Batch Upsert Appointment-Type-Scoped Blocked Times
+        * `appointment_type_scoped_quota_rules` - Appointment-Type-Scoped Quota Rules
+        * `batch_upsert_appointment_type_scoped_quota_rules` - Batch Upsert Appointment-Type-Scoped Quota Rules
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.

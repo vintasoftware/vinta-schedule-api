@@ -11,12 +11,12 @@
 
 Three changes, one of them delicate:
 
-1. ``AppointmentTypeSlotPool`` -- the slot <-> pool through table. ``pool_fk`` is
+1. ``CalendarGroupSlotPool`` -- the slot <-> pool through table. ``pool_fk`` is
    PROTECT, which is what refuses deleting a pool any slot still references.
-2. ``AppointmentTypeSlotMembership.source_pool`` -- nullable, NULL meaning the row
+2. ``CalendarGroupSlotMembership.source_pool`` -- nullable, NULL meaning the row
    is inline. Every existing row takes NULL and is valid under both the old and
    the new constraint, so no backfill is needed.
-3. **The constraint swap.** ``appointmenttypeslotmembership_unique_slot_calendar``
+3. **The constraint swap.** ``calendargroupslotmembership_unique_slot_calendar``
    on ``(slot_fk, calendar_fk)`` has to go, because the projected union
    deliberately allows one calendar to reach a slot from several sources. Its
    replacement is *two partial unique indexes*, not one three-column
@@ -42,9 +42,9 @@ creates the moment a pool is attached anywhere. The no-op ``RunSQL`` below
 carries the fix as its ``reverse_sql``: it deletes every projected row
 (``source_pool_fk IS NOT NULL``) immediately before that constraint would be
 re-added. That is safe on its own terms -- those rows are wholly derived from
-``CalendarPoolMembership`` via ``AppointmentTypeSlotPool``, never a primary
+``CalendarPoolMembership`` via ``CalendarGroupSlotPool``, never a primary
 record of anything -- and it changes nothing about what the rest of the
-reverse already does: ``AppointmentTypeSlotPool`` (the attachments those rows
+reverse already does: ``CalendarGroupSlotPool`` (the attachments those rows
 were projected from) is dropped a few operations later in this same reverse,
 so the attachments themselves do not survive downgrading past this migration
 either way. A subsequent re-forward starts with no attachments, same as the
@@ -67,7 +67,7 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
-            name="AppointmentTypeSlotPool",
+            name="CalendarGroupSlotPool",
             fields=[
                 (
                     "id",
@@ -107,7 +107,7 @@ class Migration(migrations.Migration):
             ],
         ),
         migrations.AddField(
-            model_name="appointmenttypeslotmembership",
+            model_name="calendargroupslotmembership",
             name="source_pool",
             field=models.ForeignObject(
                 editable=False,
@@ -120,11 +120,11 @@ class Migration(migrations.Migration):
             ),
         ),
         migrations.AddField(
-            model_name="appointmenttypeslotmembership",
+            model_name="calendargroupslotmembership",
             name="source_pool_fk",
             field=models.ForeignKey(
                 blank=True,
-                help_text="The pool this roster row was projected from, or NULL when the calendar was added to the slot directly. Only AppointmentTypeService._reconcile_slot_pools writes non-NULL rows, and only it deletes them; the inline path never reads or writes them. CASCADE is safe here because AppointmentTypeSlotPool.pool PROTECTs the pool for as long as any slot references it, so a pool with projected rows cannot reach this cascade.",
+                help_text="The pool this roster row was projected from, or NULL when the calendar was added to the slot directly. Only CalendarGroupService._reconcile_slot_pools writes non-NULL rows, and only it deletes them; the inline path never reads or writes them. CASCADE is safe here because CalendarGroupSlotPool.pool PROTECTs the pool for as long as any slot references it, so a pool with projected rows cannot reach this cascade.",
                 null=True,
                 on_delete=django.db.models.deletion.CASCADE,
                 related_name="projected_slot_memberships_fk_rel",
@@ -132,33 +132,33 @@ class Migration(migrations.Migration):
             ),
         ),
         migrations.AddIndex(
-            model_name="appointmenttypeslotmembership",
+            model_name="calendargroupslotmembership",
             index=models.Index(
                 fields=["organization", "source_pool_fk"],
                 name="cgsmembership_org_srcpool_idx",
             ),
         ),
         migrations.AddConstraint(
-            model_name="appointmenttypeslotmembership",
+            model_name="calendargroupslotmembership",
             constraint=models.UniqueConstraint(
                 condition=models.Q(("source_pool_fk__isnull", True)),
                 fields=("slot_fk", "calendar_fk"),
-                name="appointmenttypeslotmembership_uniq_inline",
+                name="calendargroupslotmembership_uniq_inline",
             ),
         ),
         migrations.AddConstraint(
-            model_name="appointmenttypeslotmembership",
+            model_name="calendargroupslotmembership",
             constraint=models.UniqueConstraint(
                 condition=models.Q(("source_pool_fk__isnull", False)),
                 fields=("slot_fk", "calendar_fk", "source_pool_fk"),
-                name="appointmenttypeslotmembership_uniq_projected",
+                name="calendargroupslotmembership_uniq_projected",
             ),
         ),
         # Dropped LAST, after both replacements are in place, so the table is
         # never briefly without a uniqueness guarantee on (slot, calendar).
         migrations.RemoveConstraint(
-            model_name="appointmenttypeslotmembership",
-            name="appointmenttypeslotmembership_unique_slot_calendar",
+            model_name="calendargroupslotmembership",
+            name="calendargroupslotmembership_unique_slot_calendar",
         ),
         # No-op forward. On REVERSE, this runs right before the old two-column
         # constraint gets re-added (see the module docstring's "Reversible in
@@ -168,12 +168,12 @@ class Migration(migrations.Migration):
         migrations.RunSQL(
             sql=migrations.RunSQL.noop,
             reverse_sql=(
-                "DELETE FROM calendar_integration_appointmenttypeslotmembership "
+                "DELETE FROM calendar_integration_calendargroupslotmembership "
                 "WHERE source_pool_fk_id IS NOT NULL;"
             ),
         ),
         migrations.AddField(
-            model_name="appointmenttypeslotpool",
+            model_name="calendargroupslotpool",
             name="organization",
             field=models.ForeignKey(
                 db_index=False,
@@ -182,7 +182,7 @@ class Migration(migrations.Migration):
             ),
         ),
         migrations.AddField(
-            model_name="appointmenttypeslotpool",
+            model_name="calendargroupslotpool",
             name="pool",
             field=models.ForeignObject(
                 editable=False,
@@ -194,7 +194,7 @@ class Migration(migrations.Migration):
             ),
         ),
         migrations.AddField(
-            model_name="appointmenttypeslotpool",
+            model_name="calendargroupslotpool",
             name="pool_fk",
             field=models.ForeignKey(
                 on_delete=django.db.models.deletion.PROTECT,
@@ -203,47 +203,47 @@ class Migration(migrations.Migration):
             ),
         ),
         migrations.AddField(
-            model_name="appointmenttypeslotpool",
+            model_name="calendargroupslotpool",
             name="slot",
             field=models.ForeignObject(
                 editable=False,
                 from_fields=["slot_fk", "organization"],
                 on_delete=django.db.models.deletion.CASCADE,
                 related_name="pool_attachments",
-                to="calendar_integration.appointmenttypeslot",
+                to="calendar_integration.calendargroupslot",
                 to_fields=[None, "organization"],
             ),
         ),
         migrations.AddField(
-            model_name="appointmenttypeslotpool",
+            model_name="calendargroupslotpool",
             name="slot_fk",
             field=models.ForeignKey(
                 on_delete=django.db.models.deletion.CASCADE,
                 related_name="pool_attachments_fk_rel",
-                to="calendar_integration.appointmenttypeslot",
+                to="calendar_integration.calendargroupslot",
             ),
         ),
         migrations.AddField(
-            model_name="appointmenttypeslot",
+            model_name="calendargroupslot",
             name="pools",
             field=models.ManyToManyField(
-                related_name="appointment_type_slots",
-                through="calendar_integration.AppointmentTypeSlotPool",
+                related_name="group_slots",
+                through="calendar_integration.CalendarGroupSlotPool",
                 through_fields=("slot", "pool"),
                 to="calendar_integration.calendarpool",
             ),
         ),
         migrations.AddIndex(
-            model_name="appointmenttypeslotpool",
+            model_name="calendargroupslotpool",
             index=models.Index(
-                fields=["organization", "id"], name="calendar_in_organiz_6a6563_idx"
+                fields=["organization", "id"], name="calendar_in_organiz_338f57_idx"
             ),
         ),
         migrations.AddConstraint(
-            model_name="appointmenttypeslotpool",
+            model_name="calendargroupslotpool",
             constraint=models.UniqueConstraint(
                 fields=("slot_fk", "pool_fk"),
-                name="appointmenttypeslotpool_unique_slot_pool",
+                name="calendargroupslotpool_unique_slot_pool",
             ),
         ),
     ]

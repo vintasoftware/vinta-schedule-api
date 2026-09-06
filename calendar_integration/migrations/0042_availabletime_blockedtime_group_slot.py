@@ -1,4 +1,4 @@
-"""Add appointment-type-slot scoping to AvailableTime and BlockedTime.
+"""Add group-slot scoping to AvailableTime and BlockedTime.
 
 Both ``AvailableTime`` and ``BlockedTime`` are hot tables (recurring-event
 expansion runs against them on every availability read), so this migration
@@ -25,7 +25,7 @@ follows the lock-aware column-addition pattern end to end:
 4. **Partial indexes ``CONCURRENTLY``.** ``CREATE INDEX CONCURRENTLY`` avoids
    the ``SHARE`` lock a plain ``CREATE INDEX`` would hold for the build's
    duration, which would block writes on a hot table. The index is a partial
-   index (``WHERE appointment_type_slot_fk_id IS NOT NULL``) because the column is a base
+   index (``WHERE group_slot_fk_id IS NOT NULL``) because the column is a base
    row (NULL) for the overwhelming majority of existing and future rows.
 
 No FK cascade is configured at the database level (``ON DELETE`` is omitted,
@@ -37,8 +37,8 @@ Python-side deletion collector instead, via the model field's
 ``Model._base_manager`` (see ``django/db/models/deletion.py``), which for both
 models — since neither ``AvailableTime``/``BlockedTime`` nor any ancestor sets
 ``Meta.base_manager_name`` — is Django's own auto-created, always-unfiltered
-``Manager()``, never the ``appointment_type_slot``-filtered ``objects`` manager added by
-this migration. So deleting an ``AppointmentTypeSlot`` still finds and cascades
+``Manager()``, never the ``group_slot``-filtered ``objects`` manager added by
+this migration. So deleting a ``CalendarGroupSlot`` still finds and cascades
 to every referencing row, scoped or not.
 
 **The FK constraints are ``DEFERRABLE INITIALLY DEFERRED`` — load-bearing, not
@@ -51,9 +51,9 @@ order in which objects have to be deleted" — ``django/db/models/deletion.py``)
 on the assumption that the FK check itself is deferred to ``COMMIT`` and will
 therefore still pass even if the referenced row's ``DELETE`` executes before
 the referencing rows' ``DELETE`` within the same transaction. Both
-``appointment_type_slot_fk`` fields are nullable CASCADE relations, so this migration
+``group_slot_fk`` fields are nullable CASCADE relations, so this migration
 must reproduce that same deferrable constraint by hand — a plain (non
--deferrable) ``NOT VALID`` constraint here would make ``AppointmentTypeSlot``
+-deferrable) ``NOT VALID`` constraint here would make ``CalendarGroupSlot``
 deletion intermittently raise a foreign-key violation instead of cascading,
 because Postgres would enforce the check immediately, before the collector's
 (unsequenced, in this case) ``DELETE`` of the referencing rows runs.
@@ -77,10 +77,10 @@ from django.db import migrations, models
 
 AVAILABLETIME_TABLE = "calendar_integration_availabletime"
 BLOCKEDTIME_TABLE = "calendar_integration_blockedtime"
-APPOINTMENT_TYPE_SLOT_TABLE = "calendar_integration_appointmenttypeslot"
+GROUPSLOT_TABLE = "calendar_integration_calendargroupslot"
 
-AVAILABLETIME_FK_CONSTRAINT = "availabletime_appointment_type_slot_fk"
-BLOCKEDTIME_FK_CONSTRAINT = "blockedtime_appointment_type_slot_fk"
+AVAILABLETIME_FK_CONSTRAINT = "availabletime_group_slot_fk"
+BLOCKEDTIME_FK_CONSTRAINT = "blockedtime_group_slot_fk"
 
 
 class Migration(migrations.Migration):
@@ -99,73 +99,73 @@ class Migration(migrations.Migration):
             state_operations=[
                 migrations.AddField(
                     model_name="availabletime",
-                    name="appointment_type_slot_fk",
+                    name="group_slot_fk",
                     field=models.ForeignKey(
                         blank=True,
                         help_text=(
                             "If set, this available time applies only when the calendar is "
-                            "evaluated inside this appointment type slot, narrowing (never widening) base "
+                            "evaluated inside this group slot, narrowing (never widening) base "
                             "availability there. Null (the default) means a base row that "
                             "applies everywhere the calendar is evaluated."
                         ),
                         null=True,
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="appointment_type_scoped_available_times_fk_rel",
-                        to="calendar_integration.appointmenttypeslot",
+                        related_name="group_scoped_available_times_fk_rel",
+                        to="calendar_integration.calendargroupslot",
                     ),
                 ),
                 migrations.AddField(
                     model_name="availabletime",
-                    name="appointment_type_slot",
+                    name="group_slot",
                     field=models.ForeignObject(
                         editable=False,
-                        from_fields=["appointment_type_slot_fk", "organization_id"],
+                        from_fields=["group_slot_fk", "organization_id"],
                         null=True,
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="appointment_type_scoped_available_times",
-                        to="calendar_integration.appointmenttypeslot",
+                        related_name="group_scoped_available_times",
+                        to="calendar_integration.calendargroupslot",
                         to_fields=["id", "organization_id"],
                     ),
                 ),
                 migrations.AddField(
                     model_name="blockedtime",
-                    name="appointment_type_slot_fk",
+                    name="group_slot_fk",
                     field=models.ForeignKey(
                         blank=True,
                         help_text=(
                             "If set, this blocked time applies only when the calendar is "
-                            "evaluated inside this appointment type slot, and nowhere else. Null (the "
+                            "evaluated inside this group slot, and nowhere else. Null (the "
                             "default) means a base row that blocks time everywhere the "
                             "calendar is evaluated."
                         ),
                         null=True,
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="appointment_type_scoped_blocked_times_fk_rel",
-                        to="calendar_integration.appointmenttypeslot",
+                        related_name="group_scoped_blocked_times_fk_rel",
+                        to="calendar_integration.calendargroupslot",
                     ),
                 ),
                 migrations.AddField(
                     model_name="blockedtime",
-                    name="appointment_type_slot",
+                    name="group_slot",
                     field=models.ForeignObject(
                         editable=False,
-                        from_fields=["appointment_type_slot_fk", "organization_id"],
+                        from_fields=["group_slot_fk", "organization_id"],
                         null=True,
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="appointment_type_scoped_blocked_times",
-                        to="calendar_integration.appointmenttypeslot",
+                        related_name="group_scoped_blocked_times",
+                        to="calendar_integration.calendargroupslot",
                         to_fields=["id", "organization_id"],
                     ),
                 ),
             ],
             database_operations=[
                 migrations.RunSQL(
-                    sql=f"ALTER TABLE {AVAILABLETIME_TABLE} ADD COLUMN appointment_type_slot_fk_id bigint NULL;",
-                    reverse_sql=f"ALTER TABLE {AVAILABLETIME_TABLE} DROP COLUMN appointment_type_slot_fk_id;",
+                    sql=f"ALTER TABLE {AVAILABLETIME_TABLE} ADD COLUMN group_slot_fk_id bigint NULL;",
+                    reverse_sql=f"ALTER TABLE {AVAILABLETIME_TABLE} DROP COLUMN group_slot_fk_id;",
                 ),
                 migrations.RunSQL(
-                    sql=f"ALTER TABLE {BLOCKEDTIME_TABLE} ADD COLUMN appointment_type_slot_fk_id bigint NULL;",
-                    reverse_sql=f"ALTER TABLE {BLOCKEDTIME_TABLE} DROP COLUMN appointment_type_slot_fk_id;",
+                    sql=f"ALTER TABLE {BLOCKEDTIME_TABLE} ADD COLUMN group_slot_fk_id bigint NULL;",
+                    reverse_sql=f"ALTER TABLE {BLOCKEDTIME_TABLE} DROP COLUMN group_slot_fk_id;",
                 ),
             ],
         ),
@@ -177,7 +177,7 @@ class Migration(migrations.Migration):
             sql=(
                 f"ALTER TABLE {AVAILABLETIME_TABLE} "
                 f"ADD CONSTRAINT {AVAILABLETIME_FK_CONSTRAINT} "
-                f"FOREIGN KEY (appointment_type_slot_fk_id) REFERENCES {APPOINTMENT_TYPE_SLOT_TABLE} (id) "
+                f"FOREIGN KEY (group_slot_fk_id) REFERENCES {GROUPSLOT_TABLE} (id) "
                 f"DEFERRABLE INITIALLY DEFERRED "
                 f"NOT VALID;"
             ),
@@ -190,7 +190,7 @@ class Migration(migrations.Migration):
             sql=(
                 f"ALTER TABLE {BLOCKEDTIME_TABLE} "
                 f"ADD CONSTRAINT {BLOCKEDTIME_FK_CONSTRAINT} "
-                f"FOREIGN KEY (appointment_type_slot_fk_id) REFERENCES {APPOINTMENT_TYPE_SLOT_TABLE} (id) "
+                f"FOREIGN KEY (group_slot_fk_id) REFERENCES {GROUPSLOT_TABLE} (id) "
                 f"DEFERRABLE INITIALLY DEFERRED "
                 f"NOT VALID;"
             ),
@@ -220,17 +220,17 @@ class Migration(migrations.Migration):
         AddIndexConcurrently(
             model_name="availabletime",
             index=models.Index(
-                fields=["organization", "appointment_type_slot_fk"],
-                condition=models.Q(("appointment_type_slot_fk__isnull", False)),
-                name="availabletime_appt_slot_idx",
+                fields=["organization", "group_slot_fk"],
+                condition=models.Q(("group_slot_fk__isnull", False)),
+                name="availabletime_group_slot_idx",
             ),
         ),
         AddIndexConcurrently(
             model_name="blockedtime",
             index=models.Index(
-                fields=["organization", "appointment_type_slot_fk"],
-                condition=models.Q(("appointment_type_slot_fk__isnull", False)),
-                name="blockedtime_appt_slot_idx",
+                fields=["organization", "group_slot_fk"],
+                condition=models.Q(("group_slot_fk__isnull", False)),
+                name="blockedtime_group_slot_idx",
             ),
         ),
     ]

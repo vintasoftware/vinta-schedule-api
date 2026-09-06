@@ -50,7 +50,7 @@ LIMIT_KIND_POSTPAID = "postpaid"
 #: docstring above. Order matches `payments/seams/resources.py`'s registration order.
 RESOURCE_ORGANIZATION_MEMBERS = "organization_members"
 RESOURCE_RESOURCE_CALENDARS = "resource_calendars"
-RESOURCE_APPOINTMENT_TYPES = "appointment_types"
+RESOURCE_CALENDAR_GROUPS = "calendar_groups"
 RESOURCE_BUNDLE_CALENDARS = "bundle_calendars"
 RESOURCE_AVAILABILITY_WINDOWS = "availability_windows"
 RESOURCE_WEBHOOK_SUBSCRIPTIONS = "webhook_subscriptions"
@@ -60,7 +60,7 @@ RESOURCE_EVENT_OCCURRENCES = "event_occurrences"
 RESOURCE_KEYS = (
     RESOURCE_ORGANIZATION_MEMBERS,
     RESOURCE_RESOURCE_CALENDARS,
-    RESOURCE_APPOINTMENT_TYPES,
+    RESOURCE_CALENDAR_GROUPS,
     RESOURCE_BUNDLE_CALENDARS,
     RESOURCE_AVAILABILITY_WINDOWS,
     RESOURCE_WEBHOOK_SUBSCRIPTIONS,
@@ -95,7 +95,7 @@ POSTPAID_RESOURCES = {RESOURCE_EVENT_OCCURRENCES}
 FREE_PLAN_LIMITS: dict[str, dict] = {
     RESOURCE_ORGANIZATION_MEMBERS: {"limit_value": 5, "overage_unit_price": None},
     RESOURCE_RESOURCE_CALENDARS: {"limit_value": 3, "overage_unit_price": None},
-    RESOURCE_APPOINTMENT_TYPES: {"limit_value": 2, "overage_unit_price": None},
+    RESOURCE_CALENDAR_GROUPS: {"limit_value": 2, "overage_unit_price": None},
     RESOURCE_BUNDLE_CALENDARS: {"limit_value": 1, "overage_unit_price": None},
     RESOURCE_AVAILABILITY_WINDOWS: {"limit_value": 5, "overage_unit_price": None},
     RESOURCE_WEBHOOK_SUBSCRIPTIONS: {"limit_value": 1, "overage_unit_price": None},

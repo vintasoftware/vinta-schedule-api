@@ -399,7 +399,7 @@ class TestCreateAppointmentType:
         assert "errors" not in body or not body["errors"]
         result = body["data"]["createAppointmentType"]
         assert result["success"] is True
-        assert result["appointment_type"] is not None
+        assert result["appointmentType"] is not None
         assert (
             AppointmentType.objects.filter_by_organization(org_a.id)
             .filter(name="Legit AppointmentType")

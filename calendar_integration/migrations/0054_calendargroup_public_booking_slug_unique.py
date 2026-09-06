@@ -1,8 +1,8 @@
-"""Make AppointmentType.public_booking_slug non-null + globally unique (step 3/3).
+"""Make CalendarGroup.public_booking_slug non-null + globally unique (step 3/3).
 
 Third migration of the 0052 -> 0053 -> 0054 chain (see 0052's docstring for
 why this is three migrations rather than three operations in one file). By
-this point every ``AppointmentType`` row -- pre-existing (backfilled by 0053)
+this point every ``CalendarGroup`` row -- pre-existing (backfilled by 0053)
 and newly created since 0052 (via the model's Python-level default, declared
 here for the first time -- see below) -- has a distinct, non-NULL
 ``public_booking_slug``.
@@ -31,11 +31,11 @@ explicitly asks to avoid:
    rebuild, no scan) since the index it attaches to already exists and is
    already valid.
 3. ``ALTER TABLE ... ALTER COLUMN ... SET NOT NULL`` -- takes a full-table
-   scan under Postgres's classic implementation, but ``AppointmentType`` is not
+   scan under Postgres's classic implementation, but ``CalendarGroup`` is not
    a hot table by this repo's own definition (hot = "receiving non-trivial
    write traffic" -- calendar events, bundle relationships, bookings,
    organization members; an organization creates at most a handful of
-   appointment types, not a per-request volume), so the direct statement is
+   calendar groups, not a per-request volume), so the direct statement is
    the right call per the ``add-migration`` skill's own guidance ("small
    table (< 100k rows) -> either pattern is fine") rather than the
    ``CHECK ... NOT VALID`` / ``VALIDATE CONSTRAINT`` two-phase dance reserved
@@ -79,7 +79,7 @@ declaring it that early would have made Django emit a single shared default
 value for every pre-existing row at ``ADD COLUMN`` time. Declaring it only in
 this state-only ``AlterField`` means it never reaches the database as a SQL
 default at all; it only governs what value the ORM assigns a *new*
-``AppointmentType`` instance at ``Model.save()`` time from this migration
+``CalendarGroup`` instance at ``Model.save()`` time from this migration
 onward.
 
 Reverse
@@ -110,7 +110,7 @@ as applied. A failure between step 1's ``CREATE UNIQUE INDEX CONCURRENTLY``
 succeeding and step 3's ``SET NOT NULL`` finishing -- or a cancelled
 ``CREATE INDEX CONCURRENTLY`` that leaves an ``indisvalid = false`` index
 behind -- would otherwise wedge a re-run: ``migrate`` would try step 1 again
-and die on ``relation "appointmenttype_public_booking_slug_uniq" already
+and die on ``relation "calendargroup_public_booking_slug_uniq" already
 exists``, needing a manual ``DROP INDEX`` before the migration could ever
 be re-attempted. Operation 0 below is a defensive
 ``DROP INDEX CONCURRENTLY IF EXISTS`` (reverse: ``noop`` -- there is nothing
@@ -125,8 +125,8 @@ import calendar_integration.models
 from django.db import migrations, models
 
 
-TABLE = "calendar_integration_appointmenttype"
-CONSTRAINT_NAME = "appointmenttype_public_booking_slug_uniq"
+TABLE = "calendar_integration_calendargroup"
+CONSTRAINT_NAME = "calendargroup_public_booking_slug_uniq"
 
 DROP_STALE_INDEX_IF_ANY = f"DROP INDEX CONCURRENTLY IF EXISTS {CONSTRAINT_NAME};"
 
@@ -153,30 +153,30 @@ SET_DB_DEFAULT = (
 DROP_DB_DEFAULT = f"ALTER TABLE {TABLE} ALTER COLUMN public_booking_slug DROP DEFAULT;"
 
 HELP_TEXT = (
-    "Opaque, unguessable identifier used to address this appointment type on the "
+    "Opaque, unguessable identifier used to address this group on the "
     "unauthenticated codeless booking route, instead of the integer primary "
     "key. Uniqueness is GLOBAL (not scoped to organization) because that "
     "route carries no organization in its path -- the slug alone must "
-    "identify exactly one appointment type system-wide. Authorizes nothing by itself: "
-    "accepts_public_scheduling still gates codeless booking, and an appointment type "
+    "identify exactly one group system-wide. Authorizes nothing by itself: "
+    "accepts_public_scheduling still gates codeless booking, and a group "
     "later flipped to public already has its identifier."
 )
 
 
 class Migration(migrations.Migration):
-    """Make AppointmentType.public_booking_slug NOT NULL + globally UNIQUE (3/3)."""
+    """Make CalendarGroup.public_booking_slug NOT NULL + globally UNIQUE (3/3)."""
 
     atomic = False
 
     dependencies = [
-        ("calendar_integration", "0053_backfill_appointmenttype_public_booking_slug"),
+        ("calendar_integration", "0053_backfill_calendargroup_public_booking_slug"),
     ]
 
     operations = [
         migrations.SeparateDatabaseAndState(
             state_operations=[
                 migrations.AlterField(
-                    model_name="appointmenttype",
+                    model_name="calendargroup",
                     name="public_booking_slug",
                     field=models.CharField(
                         max_length=32,

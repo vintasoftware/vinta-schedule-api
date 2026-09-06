@@ -91,7 +91,7 @@ below:
    CONSTRAINT``) route to avoid a full-table-scanning ``SET NOT NULL`` on a
    large/hot table -- not, as an earlier draft of this docstring said, that
    the optimization is "unnecessary" there. This migration takes that route
-   unconditionally because, unlike Phase 3b's ``AppointmentType`` (a handful of
+   unconditionally because, unlike Phase 3b's ``CalendarGroup`` (a handful of
    rows per organization, explicitly reasoned as "not hot"), this table is
    written on every booking-code mint today and is about to take
    substantially more write volume once Phase 8 mints two codes per booking

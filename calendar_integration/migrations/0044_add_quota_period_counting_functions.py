@@ -2,25 +2,25 @@
 
 from django.db import migrations
 
-from calendar_integration.migrations.sql.functions.calculate_appointment_type_quota_period_counts import (
-    CalculateAppointmentTypeQuotaPeriodCountsMigrationManager,
+from calendar_integration.migrations.sql.functions.calculate_calendar_group_quota_period_counts import (
+    CalculateCalendarGroupQuotaPeriodCountsMigrationManager,
 )
-from calendar_integration.migrations.sql.functions.get_appointment_type_quota_period_counts_json import (
-    GetAppointmentTypeQuotaPeriodCountsJSONMigrationManager,
+from calendar_integration.migrations.sql.functions.get_calendar_group_quota_period_counts_json import (
+    GetCalendarGroupQuotaPeriodCountsJSONMigrationManager,
 )
 
 
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('calendar_integration', '0043_appointmenttypeslotquotarule'),
+        ('calendar_integration', '0043_calendargroupslotquotarule'),
     ]
 
     operations = [
-        CalculateAppointmentTypeQuotaPeriodCountsMigrationManager(
+        CalculateCalendarGroupQuotaPeriodCountsMigrationManager(
             "calendar_integration", "0001"
         ).migration(),
-        GetAppointmentTypeQuotaPeriodCountsJSONMigrationManager(
+        GetCalendarGroupQuotaPeriodCountsJSONMigrationManager(
             "calendar_integration", "0001"
         ).migration(),
     ]
