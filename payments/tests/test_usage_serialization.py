@@ -33,7 +33,7 @@ from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from payments.seams.resource_keys import (
-    CALENDAR_GROUPS,
+    APPOINTMENT_TYPES,
     EVENT_OCCURRENCES,
     ORGANIZATION_MEMBERS,
     RESOURCE_CALENDARS,
@@ -319,7 +319,7 @@ class TestPlanAddOnDecompositionInvariant:
             groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
-        plan = make_complete_plan({CALENDAR_GROUPS: 5})
+        plan = make_complete_plan({APPOINTMENT_TYPES: 5})
         subscription = SubscriptionService().create_subscription_for_organization(
             organization, plan=plan
         )
@@ -327,7 +327,7 @@ class TestPlanAddOnDecompositionInvariant:
         baker.make(
             SubscriptionAddOn,
             subscription=subscription,
-            resource_key=CALENDAR_GROUPS,
+            resource_key=APPOINTMENT_TYPES,
             quantity=3,
             is_recurring=True,
             is_active=True,
@@ -341,7 +341,7 @@ class TestPlanAddOnDecompositionInvariant:
             if row["limit_value"] is not None:
                 assert row["included_in_plan"] + row["add_on_quantity"] == row["limit_value"]
 
-        add_on_row = rows[CALENDAR_GROUPS]
+        add_on_row = rows[APPOINTMENT_TYPES]
         assert add_on_row["included_in_plan"] == 5
         assert add_on_row["add_on_quantity"] == 3
         assert add_on_row["limit_value"] == 8
@@ -363,7 +363,7 @@ class TestAddOnPurchasedOnUnlimitedPlan:
             groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
-        plan = make_complete_plan({CALENDAR_GROUPS: None})
+        plan = make_complete_plan({APPOINTMENT_TYPES: None})
         subscription = SubscriptionService().create_subscription_for_organization(
             organization, plan=plan
         )
@@ -371,7 +371,7 @@ class TestAddOnPurchasedOnUnlimitedPlan:
         baker.make(
             SubscriptionAddOn,
             subscription=subscription,
-            resource_key=CALENDAR_GROUPS,
+            resource_key=APPOINTMENT_TYPES,
             quantity=3,
             is_recurring=True,
             is_active=True,
@@ -381,7 +381,7 @@ class TestAddOnPurchasedOnUnlimitedPlan:
 
         assert response.status_code == status.HTTP_200_OK
         rows = {row["resource_key"]: row for row in response.data["limits"]}
-        row = rows[CALENDAR_GROUPS]
+        row = rows[APPOINTMENT_TYPES]
         assert row["limit_value"] is None
         assert row["included_in_plan"] is None
         assert row["add_on_quantity"] == 3

@@ -25,7 +25,7 @@ Both reduce to the same primitive — an *acting membership user id* plus an
 - **Privileged** actors (org admins / org-wide tokens) may manage **any** target.
 - Everyone else may manage only their **own** personal policies: a ``calendar``
   they own (an active ``CalendarOwnership`` links their membership to it) or their
-  **own** membership. ``calendar_group`` and ``is_organization_default`` targets
+  **own** membership. ``appointment_type`` and ``is_organization_default`` targets
   are privileged-only.
 """
 
@@ -58,7 +58,7 @@ class BookingPolicyPermissionService:
         is_privileged: bool,
         calendar_id=None,
         membership_user_id=None,
-        calendar_group_id=None,
+        appointment_type_id=None,
         is_organization_default: bool = False,
     ) -> bool:
         """Evaluate the rule for a resolved ``(actor, target)`` pair.
@@ -67,7 +67,7 @@ class BookingPolicyPermissionService:
         as (``user.id`` for a member, ``scoped_to_membership_user_id`` for a scoped
         token). ``is_privileged`` short-circuits to allow-all (org admin / org-wide
         token). Non-privileged actors reach a grant only for a calendar they own or
-        their own membership; group / org-default targets fall through to ``False``.
+        their own membership; appointment type / org-default targets fall through to ``False``.
         """
         if is_privileged:
             return True
@@ -84,7 +84,7 @@ class BookingPolicyPermissionService:
         if membership_user_id is not None:
             return int(membership_user_id) == acting_membership_user_id
 
-        # calendar_group / is_organization_default (or no target) → privileged-only.
+        # appointment_type / is_organization_default (or no target) → privileged-only.
         return False
 
     @staticmethod
@@ -111,7 +111,7 @@ class BookingPolicyPermissionService:
         is_privileged: bool,
         calendar_id=None,
         membership_user_id=None,
-        calendar_group_id=None,
+        appointment_type_id=None,
         is_organization_default: bool = False,
     ) -> bool:
         """Whether an internal member may manage a policy for the given target.
@@ -128,7 +128,7 @@ class BookingPolicyPermissionService:
             is_privileged=is_privileged,
             calendar_id=calendar_id,
             membership_user_id=membership_user_id,
-            calendar_group_id=calendar_group_id,
+            appointment_type_id=appointment_type_id,
             is_organization_default=is_organization_default,
         )
 
@@ -150,7 +150,7 @@ class BookingPolicyPermissionService:
             is_privileged=is_privileged,
             calendar_id=policy.calendar_fk_id,
             membership_user_id=self._policy_membership_user_id(policy),
-            calendar_group_id=policy.calendar_group_fk_id,
+            appointment_type_id=policy.appointment_type_fk_id,
             is_organization_default=policy.is_organization_default,
         )
 
@@ -165,7 +165,7 @@ class BookingPolicyPermissionService:
         organization_id: int,
         calendar_id=None,
         membership_user_id=None,
-        calendar_group_id=None,
+        appointment_type_id=None,
         is_organization_default: bool = False,
     ) -> bool:
         """Whether a token may manage a policy for the given target.
@@ -184,7 +184,7 @@ class BookingPolicyPermissionService:
             is_privileged=scoped_uid is None,
             calendar_id=calendar_id,
             membership_user_id=membership_user_id,
-            calendar_group_id=calendar_group_id,
+            appointment_type_id=appointment_type_id,
             is_organization_default=is_organization_default,
         )
 
@@ -200,7 +200,7 @@ class BookingPolicyPermissionService:
             organization_id=policy.organization_id,
             calendar_id=policy.calendar_fk_id,
             membership_user_id=self._policy_membership_user_id(policy),
-            calendar_group_id=policy.calendar_group_fk_id,
+            appointment_type_id=policy.appointment_type_fk_id,
             is_organization_default=policy.is_organization_default,
         )
 
@@ -219,7 +219,7 @@ class BookingPolicyPermissionService:
 
         Org-wide tokens see everything (queryset returned unchanged). A
         membership-scoped token sees only the policies it may manage — those for
-        calendars it owns and its own membership; group and org-default policies
+        calendars it owns and its own membership; appointment type and org-default policies
         are excluded. A missing token sees nothing.
         """
         if system_user is None:

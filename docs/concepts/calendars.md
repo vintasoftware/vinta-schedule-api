@@ -67,7 +67,7 @@ calendar (as full events on internal/same-provider calendars, or as
 `BlockedTime` rows on cross-provider ones).
 
 See [calendar-bundles.md](calendar-bundles.md) for the full mechanism, and
-[calendar-groups.md](calendar-groups.md) for the newer, more flexible
+[appointment-types.md](appointment-types.md) for the newer, more flexible
 approach.
 
 ## Providers
@@ -126,15 +126,15 @@ Examples:
 - A resource calendar (MRI Suite A) usually has *zero* owners — its
   scheduling rules come from the org's policies, not a person.
 
-## Bundles vs. Groups (quick orientation)
+## Bundles vs. Appointment types (quick orientation)
 
 There are **two** mechanisms for "one booking, many calendars": **bundles**
-([calendar-bundles.md](calendar-bundles.md)) and **groups**
-([calendar-groups.md](calendar-groups.md)). Bundles came first and use a
-dedicated `BUNDLE` calendar with a fixed list of child calendars. Groups
+([calendar-bundles.md](calendar-bundles.md)) and **appointment types**
+([appointment-types.md](appointment-types.md)). Bundles came first and use a
+dedicated `BUNDLE` calendar with a fixed list of child calendars. Appointment types
 are the newer model: they don't need a façade calendar and they support
 **pools** of candidate calendars per role ("any physician + any room"),
 which is what most clinic-style booking flows actually need. New work
-should generally prefer groups; bundles remain for cases that already use
+should generally prefer appointment types; bundles remain for cases that already use
 them or where the external-provider-sync semantics of a single primary
 calendar are desirable.

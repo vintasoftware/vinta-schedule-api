@@ -5,6 +5,10 @@ import strawberry
 import strawberry_django
 
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
+    AppointmentTypeSlotQuotaRule,
     AvailableTime,
     AvailableTimeRecurrenceException,
     BlockedTime,
@@ -12,11 +16,7 @@ from calendar_integration.models import (
     BookingPolicy,
     Calendar,
     CalendarEvent,
-    CalendarEventGroupSelection,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
-    CalendarGroupSlotQuotaRule,
+    CalendarEventAppointmentTypeSelection,
     CalendarOwnership,
     CalendarPool,
     CalendarWebhookEvent,
@@ -43,7 +43,7 @@ from users.graphql import UserGraphQLType
 # decorated field. A provider-scoped public-API token that fetches one of its
 # OWN objects can therefore traverse NESTED GraphQL fields to reach data on
 # calendars it does NOT own (an event on a non-owned calendar reached via a
-# back-pointer, the cross-provider candidate pool of a group slot, etc.).
+# back-pointer, the cross-provider candidate pool of an appointment type slot, etc.).
 #
 # The resolvers below close those nested leaks. They are a strict NO-OP for
 # org-wide tokens and for internal (non-public-API) GraphQL requests: when
@@ -145,16 +145,16 @@ def _has_calendar_pool_resource(info: strawberry.Info) -> bool:
     (the request carries no ``public_api_system_user``) and for a token that
     genuinely holds a ``CALENDAR_POOL`` ``ResourceAccess`` row. Returns
     ``False`` only for a public-API token explicitly missing that row --
-    e.g. a token provisioned with ``CALENDAR_GROUP`` but deliberately
+    e.g. a token provisioned with ``APPOINTMENT_TYPE`` but deliberately
     withheld ``CALENDAR_POOL``. See ``_scoped_pool_list``, which uses this to
     close the resource-gate bypass a nested ``pools`` traversal would
     otherwise allow (``OrganizationResourceAccess`` only runs on root
     fields).
 
     Result is cached on the request object, keyed by system-user id: this is
-    called once per ``CalendarGroupSlot`` in the response (every ``pools``
+    called once per ``AppointmentTypeSlot`` in the response (every ``pools``
     field resolution), and a query per slot would turn a single-digit-slot
-    group into an N+1 all its own.
+    appointment type into an N+1 all its own.
     """
     request = getattr(info.context, "request", None)
     if request is None:
@@ -179,7 +179,7 @@ def _scoped_pool_list(
     """Filter a list of pools to those where the owner owns at least one roster calendar.
 
     Closes the THIRD-hop leak (plan's Open Question 4, "no -- fail closed"):
-    without this, ``calendarGroup -> slots -> pools`` would reveal the *names*
+    without this, ``appointmentType -> slots -> pools`` would reveal the *names*
     of pools a scoped-member token does not participate in, even when reached
     through a slot the token CAN see for an unrelated reason (an inline
     calendar, or a different attached pool). Applies the same rule as
@@ -189,8 +189,8 @@ def _scoped_pool_list(
     query, mirroring ``_scoped_calendar_list`` / ``_deduplicated_calendars``.
 
     Also closes a second, resource-boundary gap: ``OrganizationResourceAccess``
-    only runs on the root field (``calendarGroups`` / ``calendarGroup``), not
-    on this nested ``pools`` field, so a token holding ``CALENDAR_GROUP`` but
+    only runs on the root field (``appointmentTypes`` / ``appointmentType``), not
+    on this nested ``pools`` field, so a token holding ``APPOINTMENT_TYPE`` but
     deliberately withheld ``CALENDAR_POOL`` could otherwise read every pool
     name and roster in the org through this one nested path. Returns ``[]``
     outright when ``_has_calendar_pool_resource`` says the token lacks that
@@ -210,12 +210,12 @@ def _scoped_pool_list(
 def _deduplicated_calendars(calendars: "list[Calendar]") -> "list[Calendar]":
     """Collapse repeated calendars, keeping first-seen order.
 
-    ``CalendarGroupSlot.calendars`` resolves a projected UNION: a calendar that
+    ``AppointmentTypeSlot.calendars`` resolves a projected UNION: a calendar that
     is both inline on the slot and in an attached ``CalendarPool`` holds one
-    ``CalendarGroupSlotMembership`` row per source, so the M2M yields it once per
+    ``AppointmentTypeSlotMembership`` row per source, so the M2M yields it once per
     row. Deduplicating in Python rather than with ``.distinct()`` is deliberate --
     ``.distinct()`` on the related manager would bypass the
-    ``slots__calendars__ownerships__...`` prefetch the group resolvers install and
+    ``slots__calendars__ownerships__...`` prefetch the appointment type resolvers install and
     reintroduce an N+1 over slots.
     """
     seen: set[int] = set()
@@ -229,22 +229,22 @@ def _deduplicated_calendars(calendars: "list[Calendar]") -> "list[Calendar]":
 
 
 def _attach_current_roster_flags(
-    selections: "list[CalendarEventGroupSelection]",
+    selections: "list[CalendarEventAppointmentTypeSelection]",
 ) -> None:
     """Batch-compute ``is_in_current_roster`` for every selection in ``selections``.
 
     Staleness definition (see the plan's Guiding Decisions): a selection is
-    stale when no ``CalendarGroupSlotMembership`` row exists for its ``(slot,
+    stale when no ``AppointmentTypeSlotMembership`` row exists for its ``(slot,
     calendar)`` pair. One membership query covers every selection here,
     keyed on the distinct slot ids already resolved by the caller
-    (``group_selections``), so the field stays constant-query with respect
+    (``appointment_type_selections``), so the field stays constant-query with respect
     to the number of selections instead of issuing one lookup per row.
     """
     slot_ids = {s.slot_fk_id for s in selections}  # type: ignore[attr-defined]
     if not slot_ids:
         return
     current_pairs = set(
-        CalendarGroupSlotMembership.objects.filter(slot_fk_id__in=slot_ids).values_list(
+        AppointmentTypeSlotMembership.objects.filter(slot_fk_id__in=slot_ids).values_list(
             "slot_fk_id", "calendar_fk_id"
         )
     )
@@ -571,24 +571,24 @@ class CalendarEventGraphQLType:
         return _scoped_calendar_list(list(self.resources.all()), _owner_scoped_calendar_ids(info))  # type: ignore
 
     @strawberry.field
-    def calendar_group(self, info: strawberry.Info) -> "CalendarGroupGraphQLType | None":
-        """The booking CalendarGroup. Suppressed entirely for scoped tokens: a group
+    def appointment_type(self, info: strawberry.Info) -> "AppointmentTypeGraphQLType | None":
+        """The booking AppointmentType. Suppressed entirely for scoped tokens: an appointment type
         aggregates calendars across providers, so exposing it (and its slots' candidate
         pool) would leak other owners' calendars."""
         if _owner_scoped_calendar_ids(info) is not None:
             return None
-        return self.calendar_group  # type: ignore[attr-defined,return-value]
+        return self.appointment_type  # type: ignore[attr-defined,return-value]
 
     @strawberry.field
-    def group_selections(
+    def appointment_type_selections(
         self, info: strawberry.Info
-    ) -> list["CalendarEventGroupSelectionGraphQLType"]:
-        """Per-slot calendar picks for a group booking, restricted to the owner's calendars.
+    ) -> list["CalendarEventAppointmentTypeSelectionGraphQLType"]:
+        """Per-slot calendar picks for an appointment type booking, restricted to the owner's calendars.
 
         Each selection also routes its ``slot`` and ``calendar`` through scoped
-        resolvers so the second-hop ``group_selections.slot.calendars`` pool cannot
+        resolvers so the second-hop ``appointment_type_selections.slot.calendars`` pool cannot
         leak other owners' calendars."""
-        selections = list(self.group_selections.all())  # type: ignore[attr-defined]
+        selections = list(self.appointment_type_selections.all())  # type: ignore[attr-defined]
         allowed_ids = _owner_scoped_calendar_ids(info)
         if allowed_ids is not None:
             selections = [
@@ -750,17 +750,17 @@ class UnavailableTimeWindowGraphQLType:
 
 
 @strawberry.type
-class GroupScopedAvailabilityWindowGraphQLType:
-    """Public API representation of one group-scoped availability window.
+class AppointmentTypeScopedAvailabilityWindowGraphQLType:
+    """Public API representation of one appointment-type-scoped availability window.
 
     A raw window row -- one entry per recurring master or one-off window, not
     an expanded occurrence -- mirroring the internal REST surface's
-    ``GroupScopedAvailabilityWindowSerializer`` field shape.
+    ``AppointmentTypeScopedAvailabilityWindowSerializer`` field shape.
     """
 
     id: int  # noqa: A003
     calendar_id: int
-    group_slot_id: int
+    appointment_type_slot_id: int
     start_time: datetime.datetime
     end_time: datetime.datetime
     timezone: str
@@ -770,19 +770,19 @@ class GroupScopedAvailabilityWindowGraphQLType:
     modified: datetime.datetime
 
 
-def group_scoped_availability_window_from_model(
+def appointment_type_scoped_availability_window_from_model(
     window: AvailableTime,
-) -> GroupScopedAvailabilityWindowGraphQLType:
-    """Build a :class:`GroupScopedAvailabilityWindowGraphQLType` from an
+) -> AppointmentTypeScopedAvailabilityWindowGraphQLType:
+    """Build a :class:`AppointmentTypeScopedAvailabilityWindowGraphQLType` from an
     ``AvailableTime`` row.
 
     Callers should ``select_related("recurrence_rule")`` on the source
     queryset to avoid N+1 when building a list.
     """
-    return GroupScopedAvailabilityWindowGraphQLType(
+    return AppointmentTypeScopedAvailabilityWindowGraphQLType(
         id=window.id,  # type: ignore[arg-type]
         calendar_id=window.calendar_fk_id,  # type: ignore[arg-type]
-        group_slot_id=window.group_slot_fk_id,  # type: ignore[arg-type]
+        appointment_type_slot_id=window.appointment_type_slot_fk_id,  # type: ignore[arg-type]
         start_time=window.start_time,
         end_time=window.end_time,
         timezone=window.timezone,
@@ -794,17 +794,17 @@ def group_scoped_availability_window_from_model(
 
 
 @strawberry.type
-class GroupScopedBlockedTimeGraphQLType:
-    """Public API representation of one group-scoped blocked time.
+class AppointmentTypeScopedBlockedTimeGraphQLType:
+    """Public API representation of one appointment-type-scoped blocked time.
 
     A raw block row -- one entry per recurring master or one-off block, not
     an expanded occurrence -- mirroring the internal REST surface's
-    ``GroupScopedBlockedTimeSerializer`` field shape.
+    ``AppointmentTypeScopedBlockedTimeSerializer`` field shape.
     """
 
     id: int  # noqa: A003
     calendar_id: int
-    group_slot_id: int
+    appointment_type_slot_id: int
     start_time: datetime.datetime
     end_time: datetime.datetime
     timezone: str
@@ -815,19 +815,19 @@ class GroupScopedBlockedTimeGraphQLType:
     modified: datetime.datetime
 
 
-def group_scoped_blocked_time_from_model(
+def appointment_type_scoped_blocked_time_from_model(
     block: BlockedTime,
-) -> GroupScopedBlockedTimeGraphQLType:
-    """Build a :class:`GroupScopedBlockedTimeGraphQLType` from a
+) -> AppointmentTypeScopedBlockedTimeGraphQLType:
+    """Build a :class:`AppointmentTypeScopedBlockedTimeGraphQLType` from a
     ``BlockedTime`` row.
 
     Callers should ``select_related("recurrence_rule")`` on the source
     queryset to avoid N+1 when building a list.
     """
-    return GroupScopedBlockedTimeGraphQLType(
+    return AppointmentTypeScopedBlockedTimeGraphQLType(
         id=block.id,  # type: ignore[arg-type]
         calendar_id=block.calendar_fk_id,  # type: ignore[arg-type]
-        group_slot_id=block.group_slot_fk_id,  # type: ignore[arg-type]
+        appointment_type_slot_id=block.appointment_type_slot_fk_id,  # type: ignore[arg-type]
         start_time=block.start_time,
         end_time=block.end_time,
         timezone=block.timezone,
@@ -840,34 +840,34 @@ def group_scoped_blocked_time_from_model(
 
 
 @strawberry.type
-class GroupScopedQuotaRuleGraphQLType:
-    """Public API representation of one group-scoped quota rule.
+class AppointmentTypeScopedQuotaRuleGraphQLType:
+    """Public API representation of one appointment-type-scoped quota rule.
 
-    Simpler than ``GroupScopedAvailabilityWindowGraphQLType``/
-    ``GroupScopedBlockedTimeGraphQLType``: quota rules are non-recurring (no
+    Simpler than ``AppointmentTypeScopedAvailabilityWindowGraphQLType``/
+    ``AppointmentTypeScopedBlockedTimeGraphQLType``: quota rules are non-recurring (no
     ``rruleString``, no ``timezone``, no time range) -- just the period and
     the cap, mirroring the internal REST surface's
-    ``GroupScopedQuotaRuleSerializer`` field shape.
+    ``AppointmentTypeScopedQuotaRuleSerializer`` field shape.
     """
 
     id: int  # noqa: A003
     calendar_id: int
-    group_slot_id: int
+    appointment_type_slot_id: int
     period: str
     cap: int
     created: datetime.datetime
     modified: datetime.datetime
 
 
-def group_scoped_quota_rule_from_model(
-    rule: CalendarGroupSlotQuotaRule,
-) -> GroupScopedQuotaRuleGraphQLType:
-    """Build a :class:`GroupScopedQuotaRuleGraphQLType` from a
-    ``CalendarGroupSlotQuotaRule`` row."""
-    return GroupScopedQuotaRuleGraphQLType(
+def appointment_type_scoped_quota_rule_from_model(
+    rule: AppointmentTypeSlotQuotaRule,
+) -> AppointmentTypeScopedQuotaRuleGraphQLType:
+    """Build a :class:`AppointmentTypeScopedQuotaRuleGraphQLType` from a
+    ``AppointmentTypeSlotQuotaRule`` row."""
+    return AppointmentTypeScopedQuotaRuleGraphQLType(
         id=rule.id,  # type: ignore[arg-type]
         calendar_id=rule.calendar_fk_id,  # type: ignore[arg-type]
-        group_slot_id=rule.group_slot_fk_id,  # type: ignore[arg-type]
+        appointment_type_slot_id=rule.appointment_type_slot_fk_id,  # type: ignore[arg-type]
         period=rule.period,
         cap=rule.cap,
         created=rule.created,
@@ -936,9 +936,9 @@ class CalendarPoolGraphQLType:
     """GraphQL type for a CalendarPool -- a named, reusable roster of calendars.
 
     ``calendars`` applies the same owner-scoping the slot's own candidate pool
-    uses (see ``CalendarGroupSlotGraphQLType.calendars``), so a scoped token
+    uses (see ``AppointmentTypeSlotGraphQLType.calendars``), so a scoped token
     reaching a pool through any path -- the top-level ``calendarPool(s)``
-    queries, or nested through ``calendarGroup.slots.pools`` -- never sees a
+    queries, or nested through ``appointmentType.slots.pools`` -- never sees a
     roster calendar it does not own.
     """
 
@@ -953,7 +953,7 @@ class CalendarPoolGraphQLType:
         """The pool's roster, filtered to the owner's set for scoped tokens.
 
         A pool's own roster has no projected-union duplication (that is a
-        ``CalendarGroupSlotMembership`` concern, not a ``CalendarPool`` one),
+        ``AppointmentTypeSlotMembership`` concern, not a ``CalendarPool`` one),
         so no ``_deduplicated_calendars`` pass is needed here -- only the
         owner-scope filter.
         """
@@ -964,10 +964,10 @@ class CalendarPoolGraphQLType:
 
 
 # ---------------------------------------------------------------------------
-# CalendarGroup types
+# AppointmentType types
 # ---------------------------------------------------------------------------
-@strawberry_django.type(CalendarGroupSlot)
-class CalendarGroupSlotGraphQLType:
+@strawberry_django.type(AppointmentTypeSlot)
+class AppointmentTypeSlotGraphQLType:
     id: strawberry.auto  # noqa: A003
     name: strawberry.auto
     description: strawberry.auto
@@ -981,8 +981,8 @@ class CalendarGroupSlotGraphQLType:
         """The slot's candidate-calendar pool, filtered to the owner's set for scoped tokens.
 
         This is the SECOND-HOP leak: a scoped token cannot reach a slot via the
-        suppressed ``calendar_group``, but it can still reach one through the sibling
-        path ``calendarEvent.groupSelections.slot.calendars``. Filtering the pool here
+        suppressed ``appointment_type``, but it can still reach one through the sibling
+        path ``calendarEvent.appointmentTypeSelections.slot.calendars``. Filtering the pool here
         closes that path; the entire cross-provider candidate pool is otherwise exposed.
 
         Deduplicated because the roster is a projected UNION -- see
@@ -1015,19 +1015,19 @@ class CalendarGroupSlotGraphQLType:
         )
 
 
-@strawberry_django.type(CalendarGroup)
-class CalendarGroupGraphQLType:
+@strawberry_django.type(AppointmentType)
+class AppointmentTypeGraphQLType:
     id: strawberry.auto  # noqa: A003
     name: strawberry.auto
     description: strawberry.auto
     created: datetime.datetime
     modified: datetime.datetime
 
-    slots: list[CalendarGroupSlotGraphQLType] = strawberry_django.field()
+    slots: list[AppointmentTypeSlotGraphQLType] = strawberry_django.field()
 
     @strawberry_django.field
     @staticmethod
-    def is_private(root: CalendarGroup) -> bool:
+    def is_private(root: AppointmentType) -> bool:
         return not root.accepts_public_scheduling
 
 
@@ -1065,19 +1065,19 @@ class CalendarBundleGraphQLType:
         return list(root.ownerships.all())  # type: ignore[arg-type]
 
 
-@strawberry_django.type(CalendarEventGroupSelection)
-class CalendarEventGroupSelectionGraphQLType:
+@strawberry_django.type(CalendarEventAppointmentTypeSelection)
+class CalendarEventAppointmentTypeSelectionGraphQLType:
     id: strawberry.auto  # noqa: A003
     created: datetime.datetime
     modified: datetime.datetime
 
     @strawberry.field
-    def slot(self, info: strawberry.Info) -> "CalendarGroupSlotGraphQLType | None":
+    def slot(self, info: strawberry.Info) -> "AppointmentTypeSlotGraphQLType | None":
         """The slot this selection belongs to. Suppressed for scoped tokens: a slot's
         candidate pool aggregates calendars across providers, and reaching it via
-        ``groupSelections.slot`` is the second-hop bypass of the ``calendar_group``
+        ``appointmentTypeSelections.slot`` is the second-hop bypass of the ``appointment_type``
         suppression. The pool itself is also filtered in
-        ``CalendarGroupSlotGraphQLType.calendars`` as defence in depth."""
+        ``AppointmentTypeSlotGraphQLType.calendars`` as defence in depth."""
         if _owner_scoped_calendar_ids(info) is not None:
             return None
         return self.slot  # type: ignore[attr-defined,return-value]
@@ -1092,8 +1092,8 @@ class CalendarEventGroupSelectionGraphQLType:
         """Whether this selection's calendar is still a member of its slot's roster.
 
         Staleness definition (see the plan's Guiding Decisions): stale when no
-        ``CalendarGroupSlotMembership`` row exists for this selection's
-        ``(slot, calendar)`` pair. ``group_selections`` populates this via one
+        ``AppointmentTypeSlotMembership`` row exists for this selection's
+        ``(slot, calendar)`` pair. ``appointment_type_selections`` populates this via one
         batched membership lookup per call rather than one per selection; a
         selection reached any other way (e.g. built directly in a test) falls
         back to a single-row query here.
@@ -1101,14 +1101,14 @@ class CalendarEventGroupSelectionGraphQLType:
         cached = getattr(self, "_is_in_current_roster", None)
         if cached is not None:
             return cached
-        return CalendarGroupSlotMembership.objects.filter(
+        return AppointmentTypeSlotMembership.objects.filter(
             slot_fk_id=self.slot_fk_id,  # type: ignore[attr-defined]
             calendar_fk_id=self.calendar_fk_id,  # type: ignore[attr-defined]
         ).exists()
 
 
 @strawberry.type
-class CalendarGroupSlotAvailabilityGraphQLType:
+class AppointmentTypeSlotAvailabilityGraphQLType:
     """How many of a slot's pool calendars are available for a given range."""
 
     slot_id: int
@@ -1122,17 +1122,17 @@ class CalendarGroupSlotAvailabilityGraphQLType:
 
 
 @strawberry.type
-class CalendarGroupRangeAvailabilityGraphQLType:
+class AppointmentTypeRangeAvailabilityGraphQLType:
     """Per-slot availability for a single range."""
 
     start_time: datetime.datetime
     end_time: datetime.datetime
-    slots: list[CalendarGroupSlotAvailabilityGraphQLType]
+    slots: list[AppointmentTypeSlotAvailabilityGraphQLType]
 
 
 @strawberry.type
 class BookableSlotProposalGraphQLType:
-    """A concrete time window where every slot in a group is satisfied."""
+    """A concrete time window where every slot in an appointment type is satisfied."""
 
     start_time: datetime.datetime
     end_time: datetime.datetime
@@ -1142,14 +1142,14 @@ class BookableSlotProposalGraphQLType:
 class StaleSelectionGraphQLType:
     """A `(event, slot, calendar)` triple whose calendar has left its slot's
     roster -- the ops-sweep counterpart to the per-selection
-    ``isInCurrentRoster`` flag on ``CalendarEventGroupSelectionGraphQLType``.
+    ``isInCurrentRoster`` flag on ``CalendarEventAppointmentTypeSelectionGraphQLType``.
 
     Scalar ids only, deliberately: exposing nested ``event`` / ``slot`` /
     ``calendar`` objects here would need their own resource scoping --
     ``OrganizationResourceAccess`` only runs on root fields, and a nested
     object is exactly how ``slots { pools }`` leaked a sibling team's roster
     in Phase 5 before that gap was closed. A caller that wants the full
-    objects already has ``calendarGroupEvents`` / ``calendarPool(s)``, each
+    objects already has ``appointmentTypeEvents`` / ``calendarPool(s)``, each
     gated by its own resource check.
     """
 
@@ -1235,8 +1235,8 @@ class BookingPolicyGraphQLType:
     """GraphQL type for a BookingPolicy row.
 
     Exposes the id, target fields (calendar_id, membership_user_id,
-    calendar_group_id, is_organization_default) and the four rule
-    second-counts. ``calendar_id`` / ``calendar_group_id`` are the FK
+    appointment_type_id, is_organization_default) and the four rule
+    second-counts. ``calendar_id`` / ``appointment_type_id`` are the FK
     column values; ``membership_user_id`` is the denormalized column.
     Zero on any rule field means "no constraint".
     """
@@ -1256,9 +1256,9 @@ class BookingPolicyGraphQLType:
         return self.calendar_fk_id  # type: ignore[attr-defined]
 
     @strawberry.field
-    def calendar_group_id(self) -> int | None:
-        """Return the FK id of the bound calendar group, or None."""
-        return self.calendar_group_fk_id  # type: ignore[attr-defined]
+    def appointment_type_id(self) -> int | None:
+        """Return the FK id of the bound appointment type, or None."""
+        return self.appointment_type_fk_id  # type: ignore[attr-defined]
 
     @strawberry.field
     def membership_user_id(self) -> int | None:
@@ -1270,14 +1270,14 @@ class BookingPolicyGraphQLType:
 class CreateBookingPolicyInput:
     """Input for creating a new BookingPolicy.
 
-    Exactly one of ``calendar_id``, ``membership_user_id``, ``calendar_group_id``,
+    Exactly one of ``calendar_id``, ``membership_user_id``, ``appointment_type_id``,
     or ``is_organization_default=True`` must be set. All rule fields default to 0
     (no constraint). ``PositiveIntegerField`` rejects negative values.
     """
 
     calendar_id: int | None = None
     membership_user_id: int | None = None
-    calendar_group_id: int | None = None
+    appointment_type_id: int | None = None
     is_organization_default: bool = False
     lead_time_seconds: int = 0
     max_horizon_seconds: int = 0
@@ -1289,7 +1289,7 @@ class CreateBookingPolicyInput:
 class UpdateBookingPolicyInput:
     """Input for updating rule fields of an existing BookingPolicy.
 
-    Target fields (calendar, membership, calendar_group, is_organization_default)
+    Target fields (calendar, membership, appointment type, is_organization_default)
     are immutable. Only rule-second-count fields are updatable.
     Any field left as None is not updated.
     """
@@ -1369,7 +1369,7 @@ class CalendarPoolResult:
 
     Domain failures (validation, not-found, permission) are reported as data
     (``success=False`` + ``error_message``), never raised as a GraphQL
-    ``errors[]`` entry -- matching how ``CalendarGroupMutations`` reports
+    ``errors[]`` entry -- matching how ``AppointmentTypeMutations`` reports
     failures on this API.
     """
 
@@ -1382,14 +1382,14 @@ class CalendarPoolResult:
 class DeleteCalendarPoolResult:
     """Result type for the deleteCalendarPool mutation.
 
-    ``referencing_groups`` is populated only when the delete is refused
+    ``referencing_appointment_types`` is populated only when the delete is refused
     because the pool is still attached to a slot -- mirrors the REST 409
-    payload's ``groups`` key (see ``CalendarPoolViewSet.destroy``).
+    payload's ``appointment_types`` key (see ``CalendarPoolViewSet.destroy``).
     """
 
     success: bool
     error_message: str | None = None
-    referencing_groups: list[str] = strawberry.field(default_factory=list)
+    referencing_appointment_types: list[str] = strawberry.field(default_factory=list)
 
 
 @strawberry.type

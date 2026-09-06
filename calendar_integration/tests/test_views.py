@@ -6345,13 +6345,13 @@ class TestCalendarEventDownloadICS:
         # would scale with attendee count) trips this assertion. N reflects the
         # prefetched query set, not the number of attendees.
         #
-        # 28, not 26: Calendar Pools Phase 2 added ``group_selections`` to
+        # 28, not 26: Calendar Pools Phase 2 added ``appointment_type_selections`` to
         # ``CalendarEventSerializer``/``CalendarEventVirtualModel``, so the
         # virtual-model-optimized queryset ``download_ics`` builds (via
         # ``get_object()`` and then its own explicit re-fetch) now also prefetches
-        # this event's group selections -- one extra query per fetch, for each of
+        # this event's appointment type selections -- one extra query per fetch, for each of
         # the two fetches: 1 relation x 2 fetches = 2 extra queries. (This event has
-        # no group selections, so the prefetch returns zero rows and no further
+        # no appointment type selections, so the prefetch returns zero rows and no further
         # nested queries fire for it.)
         #
         # 26, not 22: the External Client Identifiers REST phase added

@@ -1,6 +1,6 @@
 """Shared, pure slot-engine primitives for bookable-slot discovery.
 
-This module holds the reusable building blocks the calendar-group walker and the
+This module holds the reusable building blocks the appointment-type walker and the
 single-calendar / bundle walker both depend on:
 
 - :func:`intervals_overlap` — half-open overlap test.
@@ -14,27 +14,27 @@ single-calendar / bundle walker both depend on:
   apply at each candidate window.
 - :func:`apply_policy_filter` — drop candidate proposals that violate a resolved
   :class:`EffectivePolicy` (lead-time, max-horizon, buffer envelope).
-- :func:`fetch_group_scoped_available_spans` / :func:`expand_group_scoped_available_times`
-  — batched group-scoped ``AvailableTime`` windows.
-- :func:`fetch_group_scoped_blocking_spans` / :func:`expand_group_scoped_blocked_times`
+- :func:`fetch_appointment_type_scoped_available_spans` / :func:`expand_appointment_type_scoped_available_times`
+  — batched appointment-type-scoped ``AvailableTime`` windows.
+- :func:`fetch_appointment_type_scoped_blocking_spans` / :func:`expand_appointment_type_scoped_blocked_times`
   — the block analog: applied
   in :func:`calendar_free_for_window` AFTER base availability and BEFORE the
-  window intersection, since a group-scoped block wins regardless of what any
+  window intersection, since an appointment-type-scoped block wins regardless of what any
   window says.
-- :func:`fetch_group_scoped_quota_rules` / :func:`fetch_group_scoped_quota_period_counts`
+- :func:`fetch_appointment_type_scoped_quota_rules` / :func:`fetch_appointment_type_scoped_quota_period_counts`
   / :func:`quota_period_start_utc` — the quota analog: applied in
   :func:`calendar_free_for_window` LAST, after base availability, block, and
-  window all pass. The counting call (``GetCalendarGroupQuotaPeriodCountsJSON``)
-  is issued ONCE per ``(group_slot, period)`` combination actually
+  window all pass. The counting call (``GetAppointmentTypeQuotaPeriodCountsJSON``)
+  is issued ONCE per ``(appointment_type_slot, period)`` combination actually
   configured, covering the WHOLE search window in one shot; each candidate
   then only does an in-memory dict lookup keyed by the period its start time
   falls into (:func:`quota_period_start_utc`, which mirrors the SQL function's
   UTC bucketing exactly) -- no query inside the per-candidate loop.
 
 Everything here is **stateless and org-scoped through the passed organization
-id**.  The functions are factored out of ``CalendarGroupService`` verbatim so the
-existing group walker keeps byte-for-byte behaviour; the only addition is the
-policy filter, which the group walker does not call.
+id**.  The functions are factored out of ``AppointmentTypeService`` verbatim so the
+existing appointment type walker keeps byte-for-byte behaviour; the only addition is the
+policy filter, which the appointment type walker does not call.
 
 Boundary semantics (decided once, applied consistently):
 
@@ -65,13 +65,13 @@ from typing import NamedTuple
 from django.db.models import Q
 
 from calendar_integration.constants import QuotaPeriod
-from calendar_integration.database_functions import GetCalendarGroupQuotaPeriodCountsJSON
+from calendar_integration.database_functions import GetAppointmentTypeQuotaPeriodCountsJSON
 from calendar_integration.models import (
+    AppointmentTypeSlotQuotaRule,
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
-    CalendarGroupSlotQuotaRule,
 )
 from calendar_integration.services.dataclasses import (
     BookableSlotProposal,
@@ -82,14 +82,14 @@ from organizations.models import WeekStart
 
 Span = tuple[datetime.datetime, datetime.datetime]
 SpansByCalendarId = dict[int, list[Span]]
-# Group-scoped AvailableTime / BlockedTime spans, keyed
-# first by CalendarGroupSlot id, then by calendar id -- a window or block
+# Appointment-type-scoped AvailableTime / BlockedTime spans, keyed
+# first by AppointmentTypeSlot id, then by calendar id -- a window or block
 # applies only within the one slot it was configured for.
-GroupScopedSpansBySlot = dict[int, SpansByCalendarId]
+AppointmentTypeScopedSpansBySlot = dict[int, SpansByCalendarId]
 
 
-class GroupScopedQuotaRule(NamedTuple):
-    """One ``CalendarGroupSlotQuotaRule`` row, flattened for the discovery /
+class AppointmentTypeScopedQuotaRule(NamedTuple):
+    """One ``AppointmentTypeSlotQuotaRule`` row, flattened for the discovery /
     booking-validation lookup.
     A calendar may have several of these for the same ``(slot_id, calendar_id)``
     -- one per period -- and ALL of them must have headroom (spec: "at most 1 a
@@ -104,17 +104,17 @@ class GroupScopedQuotaRule(NamedTuple):
 
 # Quota rules for a (slot, calendar) pair -- there can be more than one (e.g.
 # a daily rule AND a weekly rule), all of which must pass.
-QuotaRulesByCalendar = dict[int, list[GroupScopedQuotaRule]]
-# Quota rules, keyed first by CalendarGroupSlot id, then by calendar id --
-# mirrors GroupScopedSpansBySlot's shape.
-GroupScopedQuotaRulesBySlot = dict[int, QuotaRulesByCalendar]
+QuotaRulesByCalendar = dict[int, list[AppointmentTypeScopedQuotaRule]]
+# Quota rules, keyed first by AppointmentTypeSlot id, then by calendar id --
+# mirrors AppointmentTypeScopedSpansBySlot's shape.
+AppointmentTypeScopedQuotaRulesBySlot = dict[int, QuotaRulesByCalendar]
 # Live-booking counts per period bucket for one (calendar, period) pair within
 # a slot: {period_start (UTC) -> booking_count}. Only periods with >= 1 live
 # booking appear (the SQL function only returns non-empty buckets); a period
 # absent from this dict has a count of 0.
 QuotaPeriodBucketCounts = dict[datetime.datetime, int]
-# Counts keyed first by CalendarGroupSlot id, then by (calendar_id, period).
-GroupScopedQuotaCountsBySlot = dict[int, dict[tuple[int, str], QuotaPeriodBucketCounts]]
+# Counts keyed first by AppointmentTypeSlot id, then by (calendar_id, period).
+AppointmentTypeScopedQuotaCountsBySlot = dict[int, dict[tuple[int, str], QuotaPeriodBucketCounts]]
 
 
 def intervals_overlap(a: Span, b: Span) -> bool:
@@ -241,7 +241,7 @@ def window_fully_covered_by_spans(
 ) -> bool:
     """Return True if ``[window_start, window_end)`` is fully inside AT LEAST
     ONE of ``spans`` -- not their union. This is the "one span must cover it
-    whole" rule both base ``AvailableTime`` coverage and group-scoped
+    whole" rule both base ``AvailableTime`` coverage and appointment-type-scoped
     availability windows use (resolution order: "T fully inside one of
     them?").
     """
@@ -255,13 +255,14 @@ def calendar_free_for_window(
     managed_ids: set[int],
     available_spans: SpansByCalendarId,
     blocking_spans: SpansByCalendarId,
-    group_scoped_calendar_ids: set[int] | None = None,
-    group_scoped_spans: SpansByCalendarId | None = None,
-    group_scoped_block_calendar_ids: set[int] | None = None,
-    group_scoped_block_spans: SpansByCalendarId | None = None,
-    group_scoped_quota_calendar_ids: set[int] | None = None,
-    group_scoped_quota_rules: QuotaRulesByCalendar | None = None,
-    group_scoped_quota_counts: dict[tuple[int, str], QuotaPeriodBucketCounts] | None = None,
+    appointment_type_scoped_calendar_ids: set[int] | None = None,
+    appointment_type_scoped_spans: SpansByCalendarId | None = None,
+    appointment_type_scoped_block_calendar_ids: set[int] | None = None,
+    appointment_type_scoped_block_spans: SpansByCalendarId | None = None,
+    appointment_type_scoped_quota_calendar_ids: set[int] | None = None,
+    appointment_type_scoped_quota_rules: QuotaRulesByCalendar | None = None,
+    appointment_type_scoped_quota_counts: dict[tuple[int, str], QuotaPeriodBucketCounts]
+    | None = None,
     week_start: str = WeekStart.MONDAY,
 ) -> bool:
     """Return True if ``calendar_id`` is free for ``[window_start, window_end)``.
@@ -270,49 +271,49 @@ def calendar_free_for_window(
       window.
     - Unmanaged calendars must not overlap any blocking span.
 
-    ``group_scoped_calendar_ids`` / ``group_scoped_spans`` add the
-    window intersection, ``group_scoped_block_calendar_ids`` /
-    ``group_scoped_block_spans`` add the block exclusion, and
-    ``group_scoped_quota_calendar_ids`` / ``group_scoped_quota_rules`` /
-    ``group_scoped_quota_counts`` add the quota cap: all default to
-    ``None``, which reproduces the exact group-unaware behavior
+    ``appointment_type_scoped_calendar_ids`` / ``appointment_type_scoped_spans`` add the
+    window intersection, ``appointment_type_scoped_block_calendar_ids`` /
+    ``appointment_type_scoped_block_spans`` add the block exclusion, and
+    ``appointment_type_scoped_quota_calendar_ids`` / ``appointment_type_scoped_quota_rules`` /
+    ``appointment_type_scoped_quota_counts`` add the quota cap: all default to
+    ``None``, which reproduces the exact appointment-type-unaware behavior
     byte-for-byte -- this is the
     single-calendar / bundle walker's call shape
     (``BookableSlotsService._walk_candidates``), which passes none of them and
     must stay untouched -- single-calendar booking is explicitly out of scope
-    for the group-scoping work.
+    for the appointment-type-scoping work.
 
     Resolution order (spec "State transitions & edge cases" flowchart): base
     availability, then block, then window, then quota -- QUOTA IS CHECKED
     LAST, after everything else passes. A calendar with a configured
-    group-scoped block that OVERLAPS ``[window_start, window_end)`` is
+    appointment-type-scoped block that OVERLAPS ``[window_start, window_end)`` is
     excluded immediately -- "blocks beat everything" -- regardless of what any
-    group-scoped window or quota rule says; the window and quota checks below
+    appointment-type-scoped window or quota rule says; the window and quota checks below
     never even run for it.
 
-    When ``calendar_id`` is NOT in ``group_scoped_calendar_ids`` (or that set
-    is falsy), this calendar has no group-scoped window configured for the
+    When ``calendar_id`` is NOT in ``appointment_type_scoped_calendar_ids`` (or that set
+    is falsy), this calendar has no appointment-type-scoped window configured for the
     slot being evaluated and the window step is a no-op (fall-through
     default). When it IS in that set, the window must additionally be fully
-    covered by at least one of ``group_scoped_spans``' entries for this
+    covered by at least one of ``appointment_type_scoped_spans``' entries for this
     calendar -- narrowing only, never widening base availability (spec:
     "Intersect, never widen"; a calendar configured with a window that does
     not overlap ``[window_start, window_end)`` at all contributes an empty
     span list here, which correctly yields ``False``).
 
     Quota: when ``calendar_id`` is NOT in
-    ``group_scoped_quota_calendar_ids`` (or that set is falsy), the quota step
+    ``appointment_type_scoped_quota_calendar_ids`` (or that set is falsy), the quota step
     is a no-op -- same self-gating fall-through as windows and blocks. When it
-    IS in that set, EVERY rule in ``group_scoped_quota_rules[calendar_id]``
+    IS in that set, EVERY rule in ``appointment_type_scoped_quota_rules[calendar_id]``
     must have headroom (spec: "at most 1 a day AND 3 a week" is two rules,
     both enforced) -- one rule at/over its cap for the period
     ``window_start`` falls into rejects the candidate. The period a candidate
     falls into is computed by :func:`quota_period_start_utc`, which mirrors
     the counting SQL function's UTC bucketing exactly so the candidate side
     and the counted side always agree on which bucket a time belongs to. No
-    query happens here -- ``group_scoped_quota_counts`` was already fetched
+    query happens here -- ``appointment_type_scoped_quota_counts`` was already fetched
     once for the whole search window by the caller
-    (:func:`fetch_group_scoped_quota_period_counts`); this is a pure
+    (:func:`fetch_appointment_type_scoped_quota_period_counts`); this is a pure
     in-memory dict lookup.
     """
     if calendar_id in managed_ids:
@@ -327,25 +328,31 @@ def calendar_free_for_window(
     if not base_free:
         return False
 
-    if group_scoped_block_calendar_ids and calendar_id in group_scoped_block_calendar_ids:
+    if (
+        appointment_type_scoped_block_calendar_ids
+        and calendar_id in appointment_type_scoped_block_calendar_ids
+    ):
         blocked = any(
             intervals_overlap((bs, be), (window_start, window_end))
-            for bs, be in (group_scoped_block_spans or {}).get(calendar_id, ())
+            for bs, be in (appointment_type_scoped_block_spans or {}).get(calendar_id, ())
         )
         if blocked:
             return False
 
-    if group_scoped_calendar_ids and calendar_id in group_scoped_calendar_ids:
+    if appointment_type_scoped_calendar_ids and calendar_id in appointment_type_scoped_calendar_ids:
         if not window_fully_covered_by_spans(
-            (group_scoped_spans or {}).get(calendar_id, ()), window_start, window_end
+            (appointment_type_scoped_spans or {}).get(calendar_id, ()), window_start, window_end
         ):
             return False
 
-    if group_scoped_quota_calendar_ids and calendar_id in group_scoped_quota_calendar_ids:
-        for rule in (group_scoped_quota_rules or {}).get(calendar_id, ()):
+    if (
+        appointment_type_scoped_quota_calendar_ids
+        and calendar_id in appointment_type_scoped_quota_calendar_ids
+    ):
+        for rule in (appointment_type_scoped_quota_rules or {}).get(calendar_id, ()):
             period_start = quota_period_start_utc(window_start, rule.period, week_start)
             count = (
-                (group_scoped_quota_counts or {})
+                (appointment_type_scoped_quota_counts or {})
                 .get((calendar_id, rule.period), {})
                 .get(period_start, 0)
             )
@@ -416,37 +423,37 @@ def apply_policy_filter(
 
 
 # ---------------------------------------------------------------------------
-# Group-scoped availability windows (discovery + booking-validation
+# Appointment-type-scoped availability windows (discovery + booking-validation
 # intersection).
 # ---------------------------------------------------------------------------
 
 
-def _iter_group_scoped_available_time_occurrences(
+def _iter_appointment_type_scoped_available_time_occurrences(
     organization_id: int,
     slot_ids: Iterable[int],
     calendar_ids: Iterable[int],
     start_date: datetime.datetime,
     end_date: datetime.datetime,
 ) -> Iterator[tuple[int, int, AvailableTime]]:
-    """Yield ``(group_slot_id, calendar_id, occurrence)`` for every group-scoped
+    """Yield ``(appointment_type_slot_id, calendar_id, occurrence)`` for every appointment-type-scoped
     ``AvailableTime`` occurrence overlapping ``[start_date, end_date)`` across
     the given (slot, calendar) universe -- one query for non-recurring rows and
     one for recurring masters, fixed regardless of how many pairs are
     configured.
 
-    Reads through ``AvailableTime.objects.unscoped()`` -- group-scoped rows are
-    invisible to the default manager. Occurrence expansion for group-scoped
-    masters is safe because (a) no write path creates a group-scoped recurrence
+    Reads through ``AvailableTime.objects.unscoped()`` -- appointment-type-scoped rows are
+    invisible to the default manager. Occurrence expansion for appointment-type-scoped
+    masters is safe because (a) no write path creates an appointment-type-scoped recurrence
     exception yet, and (b) ``RecurringMixin._get_occurrences_in_range`` now
     routes the exception-instance lookup through ``_base_manager`` when the
-    master is group-scoped, ensuring group-scoped exception rows are found if
+    master is appointment-type-scoped, ensuring appointment-type-scoped exception rows are found if
     one ever becomes reachable.
 
     ``occurrence`` may be a persisted master/exception row or a synthetic
     in-memory instance (``AvailableTime.create_instance_from_occurrence``,
     used for recurring occurrences) -- the latter does not carry its own
-    ``group_slot`` or ``organization``. Callers must attribute spans using the
-    yielded ``group_slot_id`` / ``calendar_id``, not the occurrence's own
+    ``appointment_type_slot`` or ``organization``. Callers must attribute spans using the
+    yielded ``appointment_type_slot_id`` / ``calendar_id``, not the occurrence's own
     fields.
     """
     slot_ids = list(slot_ids)
@@ -458,7 +465,7 @@ def _iter_group_scoped_available_time_occurrences(
         AvailableTime.objects.unscoped()
         .filter_by_organization(organization_id)
         .filter(
-            group_slot_fk_id__in=slot_ids,
+            appointment_type_slot_fk_id__in=slot_ids,
             calendar_fk_id__in=calendar_ids,
             parent_recurring_object__isnull=True,
         )
@@ -473,7 +480,7 @@ def _iter_group_scoped_available_time_occurrences(
         is_recurring_exception=False,
     )
     for at in non_recurring_times:
-        yield at.group_slot_fk_id, at.calendar_fk_id, at  # type: ignore[misc]
+        yield at.appointment_type_slot_fk_id, at.calendar_fk_id, at  # type: ignore[misc]
 
     recurring_times = base_qs.filter(recurrence_rule__isnull=False).filter(
         Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
@@ -484,21 +491,21 @@ def _iter_group_scoped_available_time_occurrences(
             start_date, end_date, include_self=False, include_exceptions=True, overlap=True
         )
         for instance in instances:
-            yield master_time.group_slot_fk_id, master_time.calendar_fk_id, instance  # type: ignore[misc]
+            yield master_time.appointment_type_slot_fk_id, master_time.calendar_fk_id, instance  # type: ignore[misc]
 
 
-def expand_group_scoped_available_times(
+def expand_appointment_type_scoped_available_times(
     organization_id: int,
     slot_ids: Iterable[int],
     calendar_ids: Iterable[int],
     start_date: datetime.datetime,
     end_date: datetime.datetime,
 ) -> list[AvailableTime]:
-    """Expand every group-scoped ``AvailableTime`` for the given (slot,
+    """Expand every appointment-type-scoped ``AvailableTime`` for the given (slot,
     calendar) universe that overlaps ``[start_date, end_date)``, recurrence
     included, sorted by start time.
 
-    Shared by ``CalendarGroupService._group_scoped_available_times_expanded``
+    Shared by ``AppointmentTypeService._appointment_type_scoped_available_times_expanded``
     (single-pair write-path use: orphaned-booking detection) and the
     batched discovery-side fetch below -- one implementation, so the two paths
     cannot drift apart on the annotate-first exception-trap avoidance the
@@ -506,7 +513,7 @@ def expand_group_scoped_available_times(
     """
     times = [
         occurrence
-        for _, _, occurrence in _iter_group_scoped_available_time_occurrences(
+        for _, _, occurrence in _iter_appointment_type_scoped_available_time_occurrences(
             organization_id, slot_ids, calendar_ids, start_date, end_date
         )
     ]
@@ -514,28 +521,32 @@ def expand_group_scoped_available_times(
     return times
 
 
-def fetch_group_scoped_available_spans(
+def fetch_appointment_type_scoped_available_spans(
     organization_id: int,
     slot_ids: Iterable[int],
     calendar_ids: Iterable[int],
     search_window_start: datetime.datetime,
     search_window_end: datetime.datetime,
-) -> GroupScopedSpansBySlot:
-    """Batched group-scoped ``AvailableTime`` spans for the given (slot,
+) -> AppointmentTypeScopedSpansBySlot:
+    """Batched appointment-type-scoped ``AvailableTime`` spans for the given (slot,
     calendar) universe -- one query for non-recurring rows and one for
     recurring masters, fixed regardless of how many pairs are configured or
     how many candidate windows the caller will check the result against
     (mirrors :func:`fetch_available_spans`'s one-query-per-type batching).
 
-    Returns spans keyed first by ``CalendarGroupSlot`` id, then by calendar id
+    Returns spans keyed first by ``AppointmentTypeSlot`` id, then by calendar id
     -- a window applies only within the one slot it was configured for.
     Callers should only invoke this once at least one (slot, calendar) pair is
-    known to have a group-scoped window configured; see
-    ``CalendarGroupService._slot_pools_with_group_scoped_flags`` for the
+    known to have an appointment-type-scoped window configured; see
+    ``AppointmentTypeService._slot_pools_with_appointment_type_scoped_flags`` for the
     zero-extra-query existence check that gates this fetch.
     """
-    spans_by_slot: GroupScopedSpansBySlot = {}
-    for slot_id, calendar_id, occurrence in _iter_group_scoped_available_time_occurrences(
+    spans_by_slot: AppointmentTypeScopedSpansBySlot = {}
+    for (
+        slot_id,
+        calendar_id,
+        occurrence,
+    ) in _iter_appointment_type_scoped_available_time_occurrences(
         organization_id, slot_ids, calendar_ids, search_window_start, search_window_end
     ):
         spans_by_slot.setdefault(slot_id, {}).setdefault(calendar_id, []).append(
@@ -545,39 +556,39 @@ def fetch_group_scoped_available_spans(
 
 
 # ---------------------------------------------------------------------------
-# Group-scoped blocked time (writes, discovery, and booking-validation
+# Appointment-type-scoped blocked time (writes, discovery, and booking-validation
 # enforcement).
 # ---------------------------------------------------------------------------
 
 
-def _iter_group_scoped_blocked_time_occurrences(
+def _iter_appointment_type_scoped_blocked_time_occurrences(
     organization_id: int,
     slot_ids: Iterable[int],
     calendar_ids: Iterable[int],
     start_date: datetime.datetime,
     end_date: datetime.datetime,
 ) -> Iterator[tuple[int, int, BlockedTime]]:
-    """Yield ``(group_slot_id, calendar_id, occurrence)`` for every group-scoped
+    """Yield ``(appointment_type_slot_id, calendar_id, occurrence)`` for every appointment-type-scoped
     ``BlockedTime`` occurrence overlapping ``[start_date, end_date)`` across
     the given (slot, calendar) universe -- the block analog of
-    :func:`_iter_group_scoped_available_time_occurrences`: one query for
+    :func:`_iter_appointment_type_scoped_available_time_occurrences`: one query for
     non-recurring rows and one for recurring masters, fixed regardless of how
     many pairs are configured.
 
-    Reads through ``BlockedTime.objects.unscoped()`` -- group-scoped rows are
-    invisible to the default manager. Occurrence expansion for group-scoped
+    Reads through ``BlockedTime.objects.unscoped()`` -- appointment-type-scoped rows are
+    invisible to the default manager. Occurrence expansion for appointment-type-scoped
     masters is safe for the same reason it is for windows: no write path
-    creates a group-scoped ``BlockedTimeRecurrenceException`` yet, and
+    creates an appointment-type-scoped ``BlockedTimeRecurrenceException`` yet, and
     ``RecurringMixin._get_occurrences_in_range`` routes the exception-instance
-    lookup through ``_base_manager`` for any group-scoped master --
+    lookup through ``_base_manager`` for any appointment-type-scoped master --
     ``AvailableTime`` and ``BlockedTime`` share that mixin, so the fix applies
     to both without further changes.
 
     ``occurrence`` may be a persisted master/exception row or a synthetic
     in-memory instance (``BlockedTime.create_instance_from_occurrence``, used
     for recurring occurrences) -- the latter does not carry its own
-    ``group_slot`` or ``organization``. Callers must attribute spans using the
-    yielded ``group_slot_id`` / ``calendar_id``, not the occurrence's own
+    ``appointment_type_slot`` or ``organization``. Callers must attribute spans using the
+    yielded ``appointment_type_slot_id`` / ``calendar_id``, not the occurrence's own
     fields.
     """
     slot_ids = list(slot_ids)
@@ -589,7 +600,7 @@ def _iter_group_scoped_blocked_time_occurrences(
         BlockedTime.objects.unscoped()
         .filter_by_organization(organization_id)
         .filter(
-            group_slot_fk_id__in=slot_ids,
+            appointment_type_slot_fk_id__in=slot_ids,
             calendar_fk_id__in=calendar_ids,
             parent_recurring_object__isnull=True,
         )
@@ -604,7 +615,7 @@ def _iter_group_scoped_blocked_time_occurrences(
         is_recurring_exception=False,
     )
     for bt in non_recurring_times:
-        yield bt.group_slot_fk_id, bt.calendar_fk_id, bt  # type: ignore[misc]
+        yield bt.appointment_type_slot_fk_id, bt.calendar_fk_id, bt  # type: ignore[misc]
 
     recurring_times = base_qs.filter(recurrence_rule__isnull=False).filter(
         Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
@@ -615,30 +626,30 @@ def _iter_group_scoped_blocked_time_occurrences(
             start_date, end_date, include_self=False, include_exceptions=True, overlap=True
         )
         for instance in instances:
-            yield master_time.group_slot_fk_id, master_time.calendar_fk_id, instance  # type: ignore[misc]
+            yield master_time.appointment_type_slot_fk_id, master_time.calendar_fk_id, instance  # type: ignore[misc]
 
 
-def expand_group_scoped_blocked_times(
+def expand_appointment_type_scoped_blocked_times(
     organization_id: int,
     slot_ids: Iterable[int],
     calendar_ids: Iterable[int],
     start_date: datetime.datetime,
     end_date: datetime.datetime,
 ) -> list[BlockedTime]:
-    """Expand every group-scoped ``BlockedTime`` for the given (slot,
+    """Expand every appointment-type-scoped ``BlockedTime`` for the given (slot,
     calendar) universe that overlaps ``[start_date, end_date)``, recurrence
     included, sorted by start time.
 
-    Shared by ``CalendarGroupService._group_scoped_blocked_times_expanded``
+    Shared by ``AppointmentTypeService._appointment_type_scoped_blocked_times_expanded``
     (single-pair write-path use: orphaned-booking detection) and the
     batched discovery-side fetch below -- one implementation, so the two paths
     cannot drift apart on the annotate-first exception-trap avoidance the
     write path already relies on. Mirrors
-    :func:`expand_group_scoped_available_times`.
+    :func:`expand_appointment_type_scoped_available_times`.
     """
     times = [
         occurrence
-        for _, _, occurrence in _iter_group_scoped_blocked_time_occurrences(
+        for _, _, occurrence in _iter_appointment_type_scoped_blocked_time_occurrences(
             organization_id, slot_ids, calendar_ids, start_date, end_date
         )
     ]
@@ -646,29 +657,29 @@ def expand_group_scoped_blocked_times(
     return times
 
 
-def fetch_group_scoped_blocking_spans(
+def fetch_appointment_type_scoped_blocking_spans(
     organization_id: int,
     slot_ids: Iterable[int],
     calendar_ids: Iterable[int],
     search_window_start: datetime.datetime,
     search_window_end: datetime.datetime,
-) -> GroupScopedSpansBySlot:
-    """Batched group-scoped ``BlockedTime`` spans for the given (slot,
+) -> AppointmentTypeScopedSpansBySlot:
+    """Batched appointment-type-scoped ``BlockedTime`` spans for the given (slot,
     calendar) universe -- one query for non-recurring rows and one for
     recurring masters, fixed regardless of how many pairs are configured or
     how many candidate windows the caller will check the result against
-    (mirrors :func:`fetch_group_scoped_available_spans`'s one-query-per-type
+    (mirrors :func:`fetch_appointment_type_scoped_available_spans`'s one-query-per-type
     batching).
 
-    Returns spans keyed first by ``CalendarGroupSlot`` id, then by calendar id
+    Returns spans keyed first by ``AppointmentTypeSlot`` id, then by calendar id
     -- a block applies only within the one slot it was configured for.
     Callers should only invoke this once at least one (slot, calendar) pair is
-    known to have a group-scoped block configured; see
-    ``CalendarGroupService._slot_pools_with_group_scoped_flags`` for the
+    known to have an appointment-type-scoped block configured; see
+    ``AppointmentTypeService._slot_pools_with_appointment_type_scoped_flags`` for the
     zero-extra-query existence check that gates this fetch.
     """
-    spans_by_slot: GroupScopedSpansBySlot = {}
-    for slot_id, calendar_id, occurrence in _iter_group_scoped_blocked_time_occurrences(
+    spans_by_slot: AppointmentTypeScopedSpansBySlot = {}
+    for slot_id, calendar_id, occurrence in _iter_appointment_type_scoped_blocked_time_occurrences(
         organization_id, slot_ids, calendar_ids, search_window_start, search_window_end
     ):
         spans_by_slot.setdefault(slot_id, {}).setdefault(calendar_id, []).append(
@@ -678,22 +689,22 @@ def fetch_group_scoped_blocking_spans(
 
 
 # ---------------------------------------------------------------------------
-# Group-scoped quota rules (discovery + booking-validation enforcement). The
+# Appointment-type-scoped quota rules (discovery + booking-validation enforcement). The
 # rule model and the per-period counting SQL function/wrapper already
 # existed; nothing read them until now.
 # ---------------------------------------------------------------------------
 
 
-def fetch_group_scoped_quota_rules(
+def fetch_appointment_type_scoped_quota_rules(
     organization_id: int,
     slot_ids: Iterable[int],
     calendar_ids: Iterable[int],
-) -> list[GroupScopedQuotaRule]:
-    """Every ``CalendarGroupSlotQuotaRule`` row for the given (slot, calendar)
+) -> list[AppointmentTypeScopedQuotaRule]:
+    """Every ``AppointmentTypeSlotQuotaRule`` row for the given (slot, calendar)
     universe -- ONE query, fixed regardless of how many candidate windows the
     caller will check the result against. Callers should only invoke this
     once at least one (slot, calendar) pair is known to have a quota rule
-    configured; see ``CalendarGroupService._slot_pools_with_group_scoped_flags``
+    configured; see ``AppointmentTypeService._slot_pools_with_appointment_type_scoped_flags``
     for the zero-extra-query existence check that gates this fetch.
     """
     slot_ids = list(slot_ids)
@@ -701,29 +712,29 @@ def fetch_group_scoped_quota_rules(
     if not slot_ids or not calendar_ids:
         return []
     return [
-        GroupScopedQuotaRule(
-            slot_id=row["group_slot_fk_id"],
+        AppointmentTypeScopedQuotaRule(
+            slot_id=row["appointment_type_slot_fk_id"],
             calendar_id=row["calendar_fk_id"],
             period=row["period"],
             cap=row["cap"],
         )
         for row in (
-            CalendarGroupSlotQuotaRule.objects.filter_by_organization(organization_id)
-            .filter(group_slot_fk_id__in=slot_ids, calendar_fk_id__in=calendar_ids)
-            .values("group_slot_fk_id", "calendar_fk_id", "period", "cap")
+            AppointmentTypeSlotQuotaRule.objects.filter_by_organization(organization_id)
+            .filter(appointment_type_slot_fk_id__in=slot_ids, calendar_fk_id__in=calendar_ids)
+            .values("appointment_type_slot_fk_id", "calendar_fk_id", "period", "cap")
         )
     ]
 
 
-def group_quota_rules_by_slot(
-    rules: Iterable[GroupScopedQuotaRule],
-) -> GroupScopedQuotaRulesBySlot:
-    """Reshape a flat list of :class:`GroupScopedQuotaRule` into
+def appointment_type_quota_rules_by_slot(
+    rules: Iterable[AppointmentTypeScopedQuotaRule],
+) -> AppointmentTypeScopedQuotaRulesBySlot:
+    """Reshape a flat list of :class:`AppointmentTypeScopedQuotaRule` into
     ``{slot_id: {calendar_id: [rules]}}`` -- the shape
     :func:`calendar_free_for_window` consumes per slot, mirroring
-    ``GroupScopedSpansBySlot``.
+    ``AppointmentTypeScopedSpansBySlot``.
     """
-    by_slot: GroupScopedQuotaRulesBySlot = {}
+    by_slot: AppointmentTypeScopedQuotaRulesBySlot = {}
     for rule in rules:
         by_slot.setdefault(rule.slot_id, {}).setdefault(rule.calendar_id, []).append(rule)
     return by_slot
@@ -734,7 +745,7 @@ def quota_period_start_utc(
 ) -> datetime.datetime:
     """Return the UTC start of the fixed calendar period (day / week / month)
     that ``instant`` falls into -- the Python-side mirror of
-    ``calculate_calendar_group_quota_period_counts``'s SQL bucketing, so a
+    ``calculate_appointment_type_quota_period_counts``'s SQL bucketing, so a
     candidate time and a counted booking with the same real instant
     always land in the SAME bucket.
 
@@ -800,7 +811,7 @@ def quota_covering_range(
 
     This matters for any caller whose "search window" is narrower than a
     quota period (e.g. booking/reschedule validation checks a single
-    candidate ``[start, end)``, and ``check_group_availability`` checks
+    candidate ``[start, end)``, and ``check_appointment_type_availability`` checks
     discrete, possibly far-apart ranges): if the counting query's range were
     just ``[instant, instant)``-ish, an EARLIER live booking in the SAME
     period (e.g. one made at 9am when the candidate being validated is at
@@ -825,13 +836,13 @@ def quota_covering_range(
     return min(starts), max(ends)
 
 
-def fetch_group_scoped_quota_period_counts(
+def fetch_appointment_type_scoped_quota_period_counts(
     organization_id: int,
-    rules: Iterable[GroupScopedQuotaRule],
+    rules: Iterable[AppointmentTypeScopedQuotaRule],
     week_start: str,
     search_window_start: datetime.datetime,
     search_window_end: datetime.datetime,
-) -> GroupScopedQuotaCountsBySlot:
+) -> AppointmentTypeScopedQuotaCountsBySlot:
     """Live-booking counts, bucketed by period, for every ``(slot, calendar,
     period)`` combination present in ``rules``, covering the WHOLE
     ``[search_window_start, search_window_end)`` range in one shot per
@@ -846,14 +857,14 @@ def fetch_group_scoped_quota_period_counts(
     (``find_bookable_slots``) naturally satisfies this because its search
     window spans many candidates already; callers validating a single instant
     or a handful of scattered ranges (booking/reschedule validation,
-    ``check_group_availability``) MUST widen first via
+    ``check_appointment_type_availability``) MUST widen first via
     :func:`quota_covering_range`.
 
     **Query-count discipline (the headline risk of quota counting):** issues
     exactly ONE query per distinct ``(slot_id, period)`` pair present in
     ``rules`` -- NOT one per calendar and NOT one per candidate time. Calendar
     ids sharing a ``(slot_id, period)`` are folded into a single annotated
-    ``Calendar`` queryset (``GetCalendarGroupQuotaPeriodCountsJSON`` evaluates
+    ``Calendar`` queryset (``GetAppointmentTypeQuotaPeriodCountsJSON`` evaluates
     once per matched row, inside ONE SQL round trip -- the underlying SQL
     function only accepts one calendar id as a positional argument, but that argument
     becomes a per-row column reference when annotating a multi-row queryset,
@@ -870,13 +881,13 @@ def fetch_group_scoped_quota_period_counts(
             rule.calendar_id
         )
 
-    counts_by_slot: GroupScopedQuotaCountsBySlot = {}
+    counts_by_slot: AppointmentTypeScopedQuotaCountsBySlot = {}
     for (slot_id, period), calendar_ids in calendar_ids_by_slot_period.items():
         rows = (
             Calendar.objects.filter_by_organization(organization_id)
             .filter(id__in=calendar_ids)
             .annotate(
-                quota_period_counts=GetCalendarGroupQuotaPeriodCountsJSON(
+                quota_period_counts=GetAppointmentTypeQuotaPeriodCountsJSON(
                     "id",
                     slot_id,
                     organization_id,

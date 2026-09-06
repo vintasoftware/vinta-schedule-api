@@ -67,7 +67,7 @@ They'll be able to configure their default calendar, which calendars are listed 
 
 ### 3.1. Create an admin Public API token — ✅ Ready (REST, not GraphQL)
 
-Tokens are created via **REST** `POST /public-api-tokens/` (`integration_name` \+ `available_resources: [...]`), gated by `IsOrganizationAdmin`. The plaintext token is returned **once** as `{system_user.id}:{token}`. Resource grants come from `PublicAPIResources`. This token can be granted resource access (calendars, calendar groups, system users, etc.).
+Tokens are created via **REST** `POST /public-api-tokens/` (`integration_name` \+ `available_resources: [...]`), gated by `IsOrganizationAdmin`. The plaintext token is returned **once** as `{system_user.id}:{token}`. Resource grants come from `PublicAPIResources`. This token can be granted resource access (calendars, appointment types, system users, etc.).
 
 ### 3.2. Create webhooks for generating user tokens — ❌ Missing
 
@@ -82,17 +82,17 @@ vinta-schedule **does not** have user-specific Public API tokens restricted to w
 
 ### 3.3. Create Patient token — ❌ Missing (depends on 3.4 \+ visibility work)
 
-Create a patient token that's only able to check availability and create an appointment (passing the scheduling code or not depending if the calendars/calendar-groups/calendar-bundles are restricted).
+Create a patient token that's only able to check availability and create an appointment (passing the scheduling code or not depending if the calendars/appointment-types/calendar-bundles are restricted).
 
 #### Observation
 
-vinta-schedule **does not** differentiate restricted/public calendars/calendar-groups/ calendar-bundles in a single uniform way:
+vinta-schedule **does not** differentiate restricted/public calendars/appointment-types/ calendar-bundles in a single uniform way:
 
 - `Calendar` has `visibility` \+ `accepts_public_scheduling` (closest existing knob).  
-- `CalendarGroup` has **no** privacy/visibility field.  
+- `AppointmentType` has **no** privacy/visibility field.  
 - Bundles (modeled as `Calendar` with `calendar_type=BUNDLE`) only have `visibility`.
 
-We need a consistent `is_private` (restricted) concept across calendars / groups / bundles, plus the single-use code mutations:
+We need a consistent `is_private` (restricted) concept across calendars / appointment types / bundles, plus the single-use code mutations:
 
 - a mutation to generate a single-use **scheduling** code,  
 - a mutation to generate a single-use **rescheduling** code (one specific event),  
@@ -104,7 +104,7 @@ Note: the data model already has `CalendarManagementToken` \+ `CalendarManagemen
 
 ### 3.4. Implement single-use scheduling codes for Patients — ❌ Missing (GraphQL surface)
 
-Generate appointment-type unique, single-use scheduling code so patients can schedule an appointment on restricted calendars/calendar-groups/calendar-bundles. Backed by `CalendarManagementToken`; needs the GraphQL mutations from §3.3.
+Generate appointment-type unique, single-use scheduling code so patients can schedule an appointment on restricted calendars/appointment-types/calendar-bundles. Backed by `CalendarManagementToken`; needs the GraphQL mutations from §3.3.
 
 ## 4\. How do the events get synchronized between VintaSchedule and the Building Blocks?
 
@@ -176,13 +176,13 @@ mutation DisableResourceCalendar($input: DisableResourceCalendarInput!) {
 
 - *(optional)* **importResourceCalendars** — 🔶 Service ready / GraphQL missing (Wraps `CalendarSyncService.request_organization_calendar_resources_import(start_time, end_time)`.)
 
-### Appointment Types & Calendar Groups & Bundles (Admin)
+### Appointment Types & Bundles (Admin)
 
-- **List calendar groups** — ✅ Ready (but see gaps: no `isPrivate`, no `owners`) Real shape (lists, not `nodes`):
+- **List appointment types** — ✅ Ready (but see gaps: no `isPrivate`, no `owners`) Real shape (lists, not `nodes`):
 
 ```
-query CalendarGroups($offset: Int! = 0, $limit: Int! = 100) {
-  calendarGroups(offset: $offset, limit: $limit) {
+query AppointmentTypes($offset: Int! = 0, $limit: Int! = 100) {
+  appointmentTypes(offset: $offset, limit: $limit) {
     id name description
     slots {
       id name requiredCount order
@@ -191,12 +191,12 @@ query CalendarGroups($offset: Int! = 0, $limit: Int! = 100) {
         # owners { ... }   # ❌ Missing: CalendarGraphQLType has no `owners` field yet
       }
     }
-    # isPrivate            # ❌ Missing: no privacy field on CalendarGroup
+    # isPrivate            # ❌ Missing: no privacy field on AppointmentType
   }
 }
 ```
 
-  **Gaps:** add `isPrivate` to `CalendarGroup` (model \+ type), and add an `owners` field to `CalendarGraphQLType` (data exists via `CalendarOwnership` / `ownerships` related name, resolving to `{ id, user { id, email, profile { firstName lastName profilePicture } } }`).
+  **Gaps:** add `isPrivate` to `AppointmentType` (model \+ type), and add an `owners` field to `CalendarGraphQLType` (data exists via `CalendarOwnership` / `ownerships` related name, resolving to `{ id, user { id, email, profile { firstName lastName profilePicture } } }`).
 
 
 - **List calendar bundles** — ❌ Missing (GraphQL surface) Bundles exist as `Calendar` with `calendar_type=BUNDLE` \+ `ChildrenCalendarRelationship`, and `CalendarBundleService` has full CRUD, but there is **no** GraphQL query/type for them. Proposed:
@@ -210,30 +210,30 @@ query CalendarBundles($offset: Int! = 0, $limit: Int! = 100) {
 }
 ```
 
-- **createCalendarGroup(name, is\_private, slots)** — ✅ Ready (⚠️ `isPrivate` not yet supported)
+- **createAppointmentType(name, is\_private, slots)** — ✅ Ready (⚠️ `isPrivate` not yet supported)
 
 ```
-mutation CreateCalendarGroup($input: CalendarGroupInput!) {
+mutation CreateAppointmentType($input: AppointmentTypeInput!) {
   # input: { organizationId, name, description, slots: [{ name, calendarIds, requiredCount, description, order }] }
-  # ❌ add `isPrivate` to CalendarGroupInput
-  createCalendarGroup(input: $input) { success errorMessage group { id name } }
+  # ❌ add `isPrivate` to AppointmentTypeInput
+  createAppointmentType(input: $input) { success errorMessage appointmentType { id name } }
 }
 ```
 
-- **updateCalendarGroup(name, is\_private, slots)** — ✅ Ready (⚠️ `isPrivate` not yet supported)
+- **updateAppointmentType(name, is\_private, slots)** — ✅ Ready (⚠️ `isPrivate` not yet supported)
 
 ```
-mutation UpdateCalendarGroup($input: UpdateCalendarGroupInput!) {
-  # input: { organizationId, groupId, name, description, slots: [...] }  (+ isPrivate ❌)
-  updateCalendarGroup(input: $input) { success errorMessage group { id name } }
+mutation UpdateAppointmentType($input: UpdateAppointmentTypeInput!) {
+  # input: { organizationId, appointmentTypeId, name, description, slots: [...] }  (+ isPrivate ❌)
+  updateAppointmentType(input: $input) { success errorMessage appointmentType { id name } }
 }
 ```
 
-- **disableCalendarGroup(id)** — ✅ Ready (as `deleteCalendarGroup`)
+- **disableAppointmentType(id)** — ✅ Ready (as `deleteAppointmentType`)
 
 ```
-mutation DeleteCalendarGroup($input: DeleteCalendarGroupInput!) {  # { organizationId, groupId }
-  deleteCalendarGroup(input: $input) { success errorMessage }
+mutation DeleteAppointmentType($input: DeleteAppointmentTypeInput!) {  # { organizationId, appointmentTypeId }
+  deleteAppointmentType(input: $input) { success errorMessage }
 }
 ```
 
@@ -393,11 +393,11 @@ query CalendarEvents($calendarId: Int!, $start: DateTime!, $end: DateTime!) {
 - **List resources** — ✅ Ready (`calendars(calendarType: "resource")`).  
 - **List calendar available times** — ✅ Ready (`availabilityWindows`).  
 - **List user available times** — ✅ Ready (resolve user calendar → `availabilityWindows`).  
-- **List calendar group available times** — ✅ Ready
+- **List appointment type available times** — ✅ Ready
 
 ```
-query GroupBookableSlots($groupId: Int!, $start: DateTime!, $end: DateTime!, $durationSeconds: Int!) {
-  calendarGroupBookableSlots(groupId: $groupId, searchWindowStart: $start,
+query AppointmentTypeBookableSlots($appointmentTypeId: Int!, $start: DateTime!, $end: DateTime!, $durationSeconds: Int!) {
+  appointmentTypeBookableSlots(appointmentTypeId: $appointmentTypeId, searchWindowStart: $start,
     searchWindowEnd: $end, durationSeconds: $durationSeconds) { startTime endTime }
 }
 ```
@@ -415,14 +415,14 @@ mutation CreateCalendarEvent($input: CreateCalendarEventInput!) {
 }
 ```
 
-- **createCalendarGroupEvent** — ✅ Ready
+- **createAppointmentTypeEvent** — ✅ Ready
 
 ```
-mutation CreateCalendarGroupEvent($input: CalendarGroupEventInput!) {
-  # input: { organizationId, groupId, title, description, startTime, endTime, timezone,
+mutation CreateAppointmentTypeEvent($input: AppointmentTypeEventInput!) {
+  # input: { organizationId, appointmentTypeId, title, description, startTime, endTime, timezone,
   #          slotSelections: [{ slotId, calendarIds }], attendances: [{ userId }],
   #          externalAttendances: [{ externalAttendee: { email, name } }] }
-  createCalendarGroupEvent(input: $input) { success errorMessage event { id title startTime endTime } }
+  createAppointmentTypeEvent(input: $input) { success errorMessage event { id title startTime endTime } }
 }
 ```
 
@@ -440,12 +440,12 @@ mutation CreateCalendarBookingCode($input: CreateBookingCodeInput!) {
 }
 ```
 
-- **createCalendarGroupBookingCode(calendar\_group\_id)** — ❌ Missing
+- **createAppointmentTypeBookingCode(calendar\_appointment_type\_id)** — ❌ Missing
 
 ```
-mutation CreateCalendarGroupBookingCode($input: CreateGroupBookingCodeInput!) {
-  # input: { organizationId, calendarGroupId, appointmentTypeId, expiresAt }
-  createCalendarGroupBookingCode(input: $input) { success errorMessage code }
+mutation CreateAppointmentTypeBookingCode($input: CreateAppointmentTypeBookingCodeInput!) {
+  # input: { organizationId, appointmentTypeId, appointmentTypeId, expiresAt }
+  createAppointmentTypeBookingCode(input: $input) { success errorMessage code }
 }
 ```
 
@@ -458,12 +458,12 @@ mutation CreateCalendarRescheduleBookingCode($input: CreateRescheduleCodeInput!)
 }
 ```
 
-- **createCalendarGroupRescheduleBookingCode(calendar\_group\_id)** — ❌ Missing
+- **createAppointmentTypeRescheduleBookingCode(calendar\_appointment_type\_id)** — ❌ Missing
 
 ```
-mutation CreateCalendarGroupRescheduleBookingCode($input: CreateGroupRescheduleCodeInput!) {
-  # input: { organizationId, calendarGroupId, eventId, expiresAt }
-  createCalendarGroupRescheduleBookingCode(input: $input) { success errorMessage code }
+mutation CreateAppointmentTypeRescheduleBookingCode($input: CreateAppointmentTypeRescheduleCodeInput!) {
+  # input: { organizationId, appointmentTypeId, eventId, expiresAt }
+  createAppointmentTypeRescheduleBookingCode(input: $input) { success errorMessage code }
 }
 ```
 
@@ -476,12 +476,12 @@ mutation CreateCalendarCancellationBookingCode($input: CreateCancellationCodeInp
 }
 ```
 
-- **createCalendarGroupCancellationBookingCode(calendar\_group\_id)** — ❌ Missing
+- **createAppointmentTypeCancellationBookingCode(calendar\_appointment_type\_id)** — ❌ Missing
 
 ```
-mutation CreateCalendarGroupCancellationBookingCode($input: CreateGroupCancellationCodeInput!) {
-  # input: { organizationId, calendarGroupId, eventId, expiresAt }
-  createCalendarGroupCancellationBookingCode(input: $input) { success errorMessage code }
+mutation CreateAppointmentTypeCancellationBookingCode($input: CreateAppointmentTypeCancellationCodeInput!) {
+  # input: { organizationId, appointmentTypeId, eventId, expiresAt }
+  createAppointmentTypeCancellationBookingCode(input: $input) { success errorMessage code }
 }
 ```
 
@@ -497,14 +497,14 @@ query GetEvent($eventId: Int!) {
     attendees { id email profile { firstName lastName } }
     externalAttendees { id email name }
     resources { id name }
-    calendarGroup { id name }
+    appointmentType { id name }
   }
 }
 ```
 
 ### Reschedule / Cancel Modal
 
-- **List resources / calendar / user / group available times** — ✅ Ready (same as Create Appointment Modal).  
+- **List resources / calendar / user / appointment type available times** — ✅ Ready (same as Create Appointment Modal).  
 - **rescheduleCalendarEvent()** — 🔶 Service ready / GraphQL missing (`CalendarEventService.update_event(calendar_id, event_id, event_data)` with new times.)
 
 ```
@@ -514,12 +514,12 @@ mutation RescheduleCalendarEvent($input: RescheduleCalendarEventInput!) {
 }
 ```
 
-- **rescheduleCalendarGroupEvent()** — 🔶 Service ready / GraphQL missing (Group event reschedule via group service \+ `update_event` on the grouped event.)
+- **rescheduleAppointmentTypeEvent()** — 🔶 Service ready / GraphQL missing (Appointment type event reschedule via appointment type service \+ `update_event` on the appointment-type event.)
 
 ```
-mutation RescheduleCalendarGroupEvent($input: RescheduleGroupEventInput!) {
-  # input: { organizationId, groupId, eventId, startTime, endTime, timezone, slotSelections: [{ slotId, calendarIds }] }
-  rescheduleCalendarGroupEvent(input: $input) { success errorMessage event { id startTime endTime } }
+mutation RescheduleAppointmentTypeEvent($input: RescheduleAppointmentTypeEventInput!) {
+  # input: { organizationId, appointmentTypeId, eventId, startTime, endTime, timezone, slotSelections: [{ slotId, calendarIds }] }
+  rescheduleAppointmentTypeEvent(input: $input) { success errorMessage event { id startTime endTime } }
 }
 ```
 
@@ -543,7 +543,7 @@ mutation CancelEvent($input: CancelEventInput!) {
 - **List resources** — ✅ Ready (`calendars(calendarType: "resource")`).  
 - **List calendar available times** — ✅ Ready (`availabilityWindows`).  
 - **List user available times** — ✅ Ready (resolve user calendar → `availabilityWindows`).  
-- **List calendar group available times** — ✅ Ready (`calendarGroupBookableSlots`).
+- **List appointment type available times** — ✅ Ready (`appointmentTypeBookableSlots`).
 
 ⚠️ For the **patient** (restricted) path, these reads should be permitted via a scheduling code / patient-scoped token rather than a full org token. That gating is part of the §3.3/§3.4 work (restricted visibility \+ single-use codes) and does not exist yet.
 
@@ -559,23 +559,23 @@ mutation CreateCalendarEventWithCode($input: CreateEventWithCodeInput!) {
 }
 ```
 
-- **createCalendarGroupEvent** — ❌ Missing for patients (needs the *with-code* variant)
+- **createAppointmentTypeEvent** — ❌ Missing for patients (needs the *with-code* variant)
 
 ```
-mutation CreateCalendarGroupEventWithCode($input: CreateGroupEventWithCodeInput!) {
+mutation CreateAppointmentTypeEventWithCode($input: CreateAppointmentTypeEventWithCodeInput!) {
   # input: { code, title, description, startTime, endTime, timezone,
   #          slotSelections: [{ slotId, calendarIds }], externalAttendee: { email, name } }
-  createCalendarGroupEventWithCode(input: $input) { success errorMessage event { id startTime endTime } }
+  createAppointmentTypeEventWithCode(input: $input) { success errorMessage event { id startTime endTime } }
 }
 ```
 
-  The authenticated (provider) variants are the existing `createCalendarEvent` (🔶) / `createCalendarGroupEvent` (✅); the patient portal needs the code-bearing variants above.
+  The authenticated (provider) variants are the existing `createCalendarEvent` (🔶) / `createAppointmentTypeEvent` (✅); the patient portal needs the code-bearing variants above.
 
 ### Intake Flag — no integration.
 
 ### Manage Appointment
 
-- **List resources / calendar / user / group available times** — ✅ Ready (read side).  
+- **List resources / calendar / user / appointment type available times** — ✅ Ready (read side).  
 - **rescheduleCalendarEventWithCode()** — ❌ Missing
 
 ```
@@ -585,12 +585,12 @@ mutation RescheduleCalendarEventWithCode($input: RescheduleWithCodeInput!) {
 }
 ```
 
-- **rescheduleCalendarGroupEventWithCode()** — ❌ Missing
+- **rescheduleAppointmentTypeEventWithCode()** — ❌ Missing
 
 ```
-mutation RescheduleCalendarGroupEventWithCode($input: RescheduleGroupWithCodeInput!) {
+mutation RescheduleAppointmentTypeEventWithCode($input: RescheduleAppointmentTypeWithCodeInput!) {
   # input: { code, startTime, endTime, timezone, slotSelections: [{ slotId, calendarIds }] }
-  rescheduleCalendarGroupEventWithCode(input: $input) { success errorMessage event { id startTime endTime } }
+  rescheduleAppointmentTypeEventWithCode(input: $input) { success errorMessage event { id startTime endTime } }
 }
 ```
 
@@ -610,7 +610,7 @@ mutation CancelEventWithCode($input: CancelWithCodeInput!) {  # { code }
 
 # What needs to be done (gap summary)
 
-Grouped by effort, smallest first.
+Appointment-type by effort, smallest first.
 
 ### A. Thin GraphQL wrappers over existing services (🔶 — low effort)
 
@@ -620,24 +620,24 @@ Service logic exists; add mutation \+ `FIELD_TO_RESOURCE_MAPPING` entry (+ new `
 2. **Resource calendars**: `createResourceCalendar`, `disableResourceCalendar`, *(optional)* `importResourceCalendars` (`CalendarService.create_resource_calendar`, `Calendar.visibility`, `CalendarSyncService` import).  
 3. **Availability / blocked times**: `createAvailabilityWindow`, `updateAvailabilityWindow`, `batchUpdateAvailabilityWindows`, `deleteAvailabilityWindow`, `createBlockedTime`, `updateBlockedTime`, `deleteBlockedTime` (`AvailabilityService.*`).  
 4. **Bundles GraphQL surface**: `CalendarBundleGraphQLType`, `calendarBundles` query, `createCalendarBundle`, `updateCalendarBundle`, `disableCalendarBundle` (`CalendarBundleService.*`).  
-5. **Group event reschedule**: `rescheduleCalendarGroupEvent`.
+5. **Appointment type event reschedule**: `rescheduleAppointmentTypeEvent`.
 
 ### B. Schema additions (❌ small/medium)
 
 6. **`owners` field** on `CalendarGraphQLType` (data via `CalendarOwnership` / `ownerships`).  
-7. **`isPrivate` (restricted) concept** uniformly across `Calendar`, `CalendarGroup`, and bundle calendars — new model field(s) \+ expose on types \+ accept in create/update inputs. `Calendar.accepts_public_scheduling` / `visibility` partially cover Calendar already.  
+7. **`isPrivate` (restricted) concept** uniformly across `Calendar`, `AppointmentType`, and bundle calendars — new model field(s) \+ expose on types \+ accept in create/update inputs. `Calendar.accepts_public_scheduling` / `visibility` partially cover Calendar already.  
 8. **`userId` argument** on `calendarEvents` query for direct per-user filtering.
 
 ### C. Net-new building blocks (❌ medium/large)
 
-9. **Single-use booking codes (GraphQL)**: the six `create*BookingCode` / `*RescheduleBookingCode` / `*CancellationBookingCode` mutations, plus the patient *with-code* action mutations (`createCalendarEventWithCode`, `createCalendarGroupEventWithCode`, `reschedule*WithCode`, `cancelEventWithCode`). Model layer (`CalendarManagementToken` \+ permissions \+ `CalendarPermissionService`) mostly exists; build the GraphQL surface \+ the "act with a code" auth path (no org token required).  
+9. **Single-use booking codes (GraphQL)**: the six `create*BookingCode` / `*RescheduleBookingCode` / `*CancellationBookingCode` mutations, plus the patient *with-code* action mutations (`createCalendarEventWithCode`, `createAppointmentTypeEventWithCode`, `reschedule*WithCode`, `cancelEventWithCode`). Model layer (`CalendarManagementToken` \+ permissions \+ `CalendarPermissionService`) mostly exists; build the GraphQL surface \+ the "act with a code" auth path (no org token required).  
 10. **Per-user / patient-scoped Public API tokens** (§3.2/§3.3): add owner scoping to `SystemUser`/`ResourceAccess`, enforce it in `OrganizationResourceAccess`, and provide a way for a bot to mint such tokens (extend REST `/public-api-tokens/` or add a GraphQL `createScopedSystemUser` mutation).  
 11. **`user_created` outgoing webhook** (§2.1): add the event type to `webhooks/constants.py` and emit it on user creation; optionally expose webhook config management over GraphQL (currently REST-only at `/webhooks/`).
 
 ### Already done (✅ — no work)
 
 - Calendar / event / availability / blocked-time / user **read** queries.  
-- Calendar group CRUD \+ grouped-event creation \+ group availability/bookable-slots/events.  
+- Appointment type CRUD \+ appointment-type-event creation \+ appointment type availability/bookable-slots/events.  
 - Org-wide admin Public API token creation (REST) \+ token check / delete mutations.  
 - Outgoing webhooks for `calendar_event_*` and attendee changes (REST), usable for event sync.  
 - Incoming Google-provider webhook subscription management (GraphQL).
@@ -657,7 +657,7 @@ any follow-up questions the skill asks.
 > Write a spec for adding **single-use scheduling codes** to the Vinta-Schedule Public
 > GraphQL API so external integrators (Medplum / Building Blocks patient portal) can let
 > unauthenticated patients book, reschedule, and cancel appointments on restricted
-> calendars, calendar-groups, and calendar-bundles.
+> calendars, appointment-types, and calendar-bundles.
 >
 > Context: the data model mostly exists — `CalendarManagementToken` +
 > `CalendarManagementTokenPermission` (permissions: create, update_attendees,
@@ -667,12 +667,12 @@ any follow-up questions the skill asks.
 > standalone codes**, and (b) GraphQL mutations to **act with a code** without an org token.
 >
 > Scope the following mutations (see `docs/building-blocks-integration-v2.md` for proposed
-> signatures): `createCalendarBookingCode`, `createCalendarGroupBookingCode`,
-> `createCalendarRescheduleBookingCode`, `createCalendarGroupRescheduleBookingCode`,
-> `createCalendarCancellationBookingCode`, `createCalendarGroupCancellationBookingCode`
+> signatures): `createCalendarBookingCode`, `createAppointmentTypeBookingCode`,
+> `createCalendarRescheduleBookingCode`, `createAppointmentTypeRescheduleBookingCode`,
+> `createCalendarCancellationBookingCode`, `createAppointmentTypeCancellationBookingCode`
 > (admin/provider-minted, org-token-gated); and the code-bearing patient actions
-> `createCalendarEventWithCode`, `createCalendarGroupEventWithCode`,
-> `rescheduleCalendarEventWithCode`, `rescheduleCalendarGroupEventWithCode`,
+> `createCalendarEventWithCode`, `createAppointmentTypeEventWithCode`,
+> `rescheduleCalendarEventWithCode`, `rescheduleAppointmentTypeEventWithCode`,
 > `cancelEventWithCode`.
 >
 > Decide and document: code lifecycle (single-use, expiry, revocation, what "used" means);
@@ -680,7 +680,7 @@ any follow-up questions the skill asks.
 > patient calls (a code must authorize an action without `IsAuthenticated` /
 > `OrganizationResourceAccess`); how codes interact with restricted-visibility booking — note
 > that a separate effort introduces a uniform `is_private` (restricted) flag across
-> `Calendar`, `CalendarGroup`, and bundle calendars, and codes are the mechanism that lets
+> `Calendar`, `AppointmentType`, and bundle calendars, and codes are the mechanism that lets
 > patients book on restricted ones, so design the code flow assuming that flag will exist;
 > abuse/rate-limiting; and the success/error result shape. Negative scope: do not build the
 > patient portal UI; do not build the `is_private` field/flag itself (that is a separate,
@@ -757,13 +757,13 @@ any follow-up questions the skill asks.
 >    `createCalendarBundle`, `updateCalendarBundle`, `disableCalendarBundle` —
 >    `CalendarBundleService.*` (bundles are `Calendar` with `calendar_type=BUNDLE` +
 >    `ChildrenCalendarRelationship`).
-> 5. **Group event reschedule**: `rescheduleCalendarGroupEvent`.
+> 5. **Appointment type event reschedule**: `rescheduleAppointmentTypeEvent`.
 >
 > Phase the plan sensibly (e.g. by resource area), with tests per phase. Flag any service
 > method that turns out NOT to exist or whose signature differs from the doc (e.g. there is no
 > dedicated `update_resource_calendar` — that one is a true gap and may need a small service
 > method). Negative scope (all separate, independently-planned changes — do NOT include them):
-> the `is_private`/restricted flag on calendars/groups/bundles, the `owners` field on
+> the `is_private`/restricted flag on calendars/appointment types/bundles, the `owners` field on
 > `CalendarGraphQLType`, the `userId` argument on the `calendarEvents` query, single-use
 > scheduling/booking codes, and per-user/patient-scoped Public API tokens.
 
@@ -775,29 +775,29 @@ any follow-up questions the skill asks.
 > data already exists via `CalendarOwnership` (related name `ownerships` on `Calendar`). The
 > field should resolve to a list of owners shaped
 > `{ id, user { id, email, profile { firstName lastName profilePicture } } }`, so the
-> Provider/Admin app can show calendar/group/bundle owners (see the calendar-groups and
+> Provider/Admin app can show calendar/appointment type/bundle owners (see the appointment-types and
 > bundles queries in `docs/building-blocks-integration-v2.md`). Address N+1 / prefetching for
 > nested `user.profile`, and confirm the existing `OrganizationResourceAccess` mapping for
 > `calendars` already covers it (no new resource). Include tests asserting owner data is
 > org-scoped and not leaked across organizations.
 
-### Prompt B-7 — Uniform `is_private` (restricted) concept across calendars, groups, bundles
+### Prompt B-7 — Uniform `is_private` (restricted) concept across calendars, appointment types, bundles
 
 > Plan introducing a **uniform `is_private` (restricted) concept** across `Calendar`,
-> `CalendarGroup`, and bundle calendars in Vinta-Schedule, plus exposing it through the Public
+> `AppointmentType`, and bundle calendars in Vinta-Schedule, plus exposing it through the Public
 > GraphQL API. Today this is inconsistent: `Calendar` has `visibility`
-> (`ACTIVE`/`UNLISTED`/`INACTIVE`) + `accepts_public_scheduling`; `CalendarGroup` has **no**
+> (`ACTIVE`/`UNLISTED`/`INACTIVE`) + `accepts_public_scheduling`; `AppointmentType` has **no**
 > privacy field; bundles (a `Calendar` with `calendar_type=BUNDLE`) only have `visibility`.
 >
 > Decide and document: whether `is_private` is a new field or a derived semantic over the
 > existing `visibility` / `accepts_public_scheduling` knobs; the model + migration changes
 > (use the `add-migration` / `migration-author` flow, multi-tenant `OrganizationModel`); how
-> `is_private` is surfaced on `CalendarGraphQLType`, `CalendarGroupGraphQLType`, and the
+> `is_private` is surfaced on `CalendarGraphQLType`, `AppointmentTypeGraphQLType`, and the
 > new bundle type, and accepted on the create/update inputs
-> (`CalendarGroupInput`/`UpdateCalendarGroupInput`, and bundle inputs); and how `is_private`
+> (`AppointmentTypeInput`/`UpdateAppointmentTypeInput`, and bundle inputs); and how `is_private`
 > gates public vs scheduling-code-required booking. Note this flag is a prerequisite for a
 > separately-planned single-use scheduling-codes feature (codes let patients book on private
-> calendars/groups/bundles) — call out that downstream dependency so the field's semantics
+> calendars/appointment types/bundles) — call out that downstream dependency so the field's semantics
 > support it. Phase with tests covering private/public booking behavior. Negative scope: do not
 > build the scheduling-code mutations themselves (separate change).
 

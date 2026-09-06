@@ -32,12 +32,12 @@ from vinta_billing.services.subscription_service import current_billing_period_s
 # safe.
 import payments.seams.resources  # noqa: F401,E402
 from calendar_integration.constants import CalendarType
-from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
+from calendar_integration.models import AppointmentType, AvailableTime, BlockedTime, Calendar
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from payments.seams.resource_keys import (
+    APPOINTMENT_TYPES,
     AVAILABILITY_WINDOWS,
     BUNDLE_CALENDARS,
-    CALENDAR_GROUPS,
     ENTITLEMENT_KEYS,
     EVENT_OCCURRENCES,
     ORGANIZATION_MEMBERS,
@@ -74,7 +74,7 @@ pytestmark = pytest.mark.no_auto_subscription
 EXPECTED_RESOURCE_LABELS: dict[str, str] = {
     "organization_members": "Organization members",
     "resource_calendars": "Resource calendars",
-    "calendar_groups": "Calendar groups",
+    "appointment_types": "Appointment types",
     "bundle_calendars": "Bundle calendars",
     "availability_windows": "Availability windows",
     "webhook_subscriptions": "Webhook subscriptions",
@@ -230,11 +230,11 @@ class TestCounterBreakdowns:
         assert resource_breakdown == {organization_one.pk: 1}
         assert bundle_breakdown == {organization_two.pk: 1}
 
-    def test_calendar_groups(self, organization_one, organization_two):
-        baker.make(CalendarGroup, organization=organization_one, _quantity=2)
-        baker.make(CalendarGroup, organization=organization_two)
+    def test_appointment_types(self, organization_one, organization_two):
+        baker.make(AppointmentType, organization=organization_one, _quantity=2)
+        baker.make(AppointmentType, organization=organization_two)
 
-        breakdown = self._breakdown(CALENDAR_GROUPS, [organization_one.pk, organization_two.pk])
+        breakdown = self._breakdown(APPOINTMENT_TYPES, [organization_one.pk, organization_two.pk])
         assert breakdown == {organization_one.pk: 2, organization_two.pk: 1}
 
     def test_availability_windows_merges_available_and_blocked_time(

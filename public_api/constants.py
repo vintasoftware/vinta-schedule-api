@@ -28,7 +28,7 @@ class PublicAPIResources(TextChoices):
     AVAILABILITY_WINDOWS = "availability_windows", "Availability Windows"
     UNAVAILABLE_WINDOWS = "unavailable_windows", "Unavailable Windows"
     ORGANIZATION = "organization", "Organization"
-    CALENDAR_GROUP = "calendar_group", "Calendar Group"
+    APPOINTMENT_TYPE = "appointment_type", "Appointment Type"
     CALENDAR_POOL = "calendar_pool", "Calendar Pool"
     SYSTEM_USER = "system_user", "System User"
     MEMBERSHIP = "membership", "Membership"
@@ -63,29 +63,29 @@ class PublicAPIResources(TextChoices):
     )
     BOOKING_POLICY = "booking_policy", "Booking Policy"
     BOOKABLE_SLOTS = "bookable_slots", "Bookable Slots"
-    GROUP_SCOPED_AVAILABILITY_WINDOWS = (
-        "group_scoped_availability_windows",
-        "Group-Scoped Availability Windows",
+    APPOINTMENT_TYPE_SCOPED_AVAILABILITY_WINDOWS = (
+        "appointment_type_scoped_availability_windows",
+        "AppointmentType-Scoped Availability Windows",
     )
-    BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS = (
-        "batch_upsert_group_scoped_availability_windows",
-        "Batch Upsert Group-Scoped Availability Windows",
+    BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_AVAILABILITY_WINDOWS = (
+        "batch_upsert_appointment_type_scoped_availability_windows",
+        "Batch Upsert AppointmentType-Scoped Availability Windows",
     )
-    GROUP_SCOPED_BLOCKED_TIMES = (
-        "group_scoped_blocked_times",
-        "Group-Scoped Blocked Times",
+    APPOINTMENT_TYPE_SCOPED_BLOCKED_TIMES = (
+        "appointment_type_scoped_blocked_times",
+        "AppointmentType-Scoped Blocked Times",
     )
-    BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES = (
-        "batch_upsert_group_scoped_blocked_times",
-        "Batch Upsert Group-Scoped Blocked Times",
+    BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_BLOCKED_TIMES = (
+        "batch_upsert_appointment_type_scoped_blocked_times",
+        "Batch Upsert AppointmentType-Scoped Blocked Times",
     )
-    GROUP_SCOPED_QUOTA_RULES = (
-        "group_scoped_quota_rules",
-        "Group-Scoped Quota Rules",
+    APPOINTMENT_TYPE_SCOPED_QUOTA_RULES = (
+        "appointment_type_scoped_quota_rules",
+        "AppointmentType-Scoped Quota Rules",
     )
-    BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES = (
-        "batch_upsert_group_scoped_quota_rules",
-        "Batch Upsert Group-Scoped Quota Rules",
+    BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_QUOTA_RULES = (
+        "batch_upsert_appointment_type_scoped_quota_rules",
+        "Batch Upsert AppointmentType-Scoped Quota Rules",
     )
 
 
@@ -104,11 +104,11 @@ PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
         PublicAPIResources.UPDATE_AVAILABILITY_WINDOW,
         PublicAPIResources.DELETE_AVAILABILITY_WINDOW,
         PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS,
-        PublicAPIResources.GROUP_SCOPED_AVAILABILITY_WINDOWS,
-        PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS,
-        PublicAPIResources.GROUP_SCOPED_BLOCKED_TIMES,
-        PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES,
-        PublicAPIResources.GROUP_SCOPED_QUOTA_RULES,
-        PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES,
+        PublicAPIResources.APPOINTMENT_TYPE_SCOPED_AVAILABILITY_WINDOWS,
+        PublicAPIResources.BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_AVAILABILITY_WINDOWS,
+        PublicAPIResources.APPOINTMENT_TYPE_SCOPED_BLOCKED_TIMES,
+        PublicAPIResources.BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_BLOCKED_TIMES,
+        PublicAPIResources.APPOINTMENT_TYPE_SCOPED_QUOTA_RULES,
+        PublicAPIResources.BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_QUOTA_RULES,
     ]
 )

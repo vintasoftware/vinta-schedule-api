@@ -9,18 +9,18 @@ them by hand. Covers:
 - Single-calendar create -> the returned ``reschedule_code`` reschedules, and
   the RE-ISSUED code from that response reschedules again (the chain
   continues); the returned ``cancel_code`` cancels.
-- Group create (coded and codeless) -> the issued codes carry
+- Appointment type create (coded and codeless) -> the issued codes carry
   ``kind=BOOKING_CODE`` and are revokable.
 - A failed booking (slot unavailable) mints nothing: no ``management`` key
   on the error body, and no new ``CalendarManagementToken`` rows.
-- A re-issued group reschedule code still refuses a different span -- the
-  duration pin lives on ``CalendarGroup.duration``, not on the code, so it
+- A re-issued appointment type reschedule code still refuses a different span -- the
+  duration pin lives on ``AppointmentType.duration``, not on the code, so it
   survives re-issue.
 - The issued codes are bound to exactly the one event they were minted for --
   a second event on the same calendar is untouched.
 
-See ``test_booking_rest_create_event.py`` / ``test_booking_rest_create_group_event.py``
-/ ``test_booking_rest_codeless_group.py`` / ``test_booking_rest_reschedule.py`` /
+See ``test_booking_rest_create_event.py`` / ``test_booking_rest_create_appointment_type_event.py``
+/ ``test_booking_rest_codeless_appointment_type.py`` / ``test_booking_rest_reschedule.py`` /
 ``test_booking_rest_cancel.py`` for this surface's pre-existing coverage --
 this file adds only the Phase 8 ``management`` object behavior on top.
 """
@@ -42,12 +42,12 @@ from calendar_integration.constants import (
     EventManagementPermissions,
 )
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     AvailableTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
     CalendarManagementToken,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
@@ -56,7 +56,9 @@ from organizations.models import Organization
 
 BOOKING_URL_NAME = "calendar_booking_api:booking-calendar-events-list"
 RESCHEDULE_URL_NAME = "calendar_booking_api:booking-events-reschedule-list"
-GROUP_RESCHEDULE_URL_NAME = "calendar_booking_api:booking-group-events-reschedule-list"
+APPOINTMENT_TYPE_RESCHEDULE_URL_NAME = (
+    "calendar_booking_api:booking-appointment-type-events-reschedule-list"
+)
 CANCEL_URL_NAME = "calendar_booking_api:booking-events-cancel-list"
 
 BOOKING_START = datetime.datetime(2030, 6, 1, 10, 0, tzinfo=datetime.UTC)
@@ -69,8 +71,8 @@ OOW_START = datetime.datetime(2030, 6, 1, 22, 0, tzinfo=datetime.UTC)
 OOW_END = datetime.datetime(2030, 6, 1, 23, 0, tzinfo=datetime.UTC)
 
 
-def _group_booking_url(public_slug: str) -> str:
-    return f"/public/booking/calendar-groups/{public_slug}/events/"
+def _appointment_type_booking_url(public_slug: str) -> str:
+    return f"/public/booking/appointment-types/{public_slug}/events/"
 
 
 # ---------------------------------------------------------------------------
@@ -99,9 +101,11 @@ def _post(client: APIClient, url_name: str, code: str | None, payload: dict):
     return client.post(reverse(url_name), payload, format="json", headers=headers)
 
 
-def _post_group(client: APIClient, public_slug: str, code: str | None, payload: dict):
+def _post_appointment_type(client: APIClient, public_slug: str, code: str | None, payload: dict):
     headers = {BOOKING_CODE_HEADER: code} if code is not None else None
-    return client.post(_group_booking_url(public_slug), payload, format="json", headers=headers)
+    return client.post(
+        _appointment_type_booking_url(public_slug), payload, format="json", headers=headers
+    )
 
 
 def _booking_payload(**overrides) -> dict:
@@ -206,7 +210,7 @@ class TestManagementCodesSingleCalendarRescheduleChain:
         reschedule_token = permission_service.resolve_code(management["reschedule_code"])
         assert reschedule_token.event_fk_id == event_id
         assert reschedule_token.calendar_fk_id == calendar.id
-        assert reschedule_token.calendar_group_fk_id is None
+        assert reschedule_token.appointment_type_fk_id is None
         assert {p.permission for p in reschedule_token.permissions.all()} == {
             EventManagementPermissions.RESCHEDULE
         }
@@ -374,7 +378,7 @@ class TestManagementCodesScopedToOwnEventOnly:
 
 
 # ---------------------------------------------------------------------------
-# Group booking (coded and codeless) -- issued codes are revokable
+# Appointment type booking (coded and codeless) -- issued codes are revokable
 # ---------------------------------------------------------------------------
 
 
@@ -406,59 +410,63 @@ def secondary_calendar(organization):
     )
 
 
-def _make_group_with_two_slots(
+def _make_appointment_type_with_two_slots(
     organization: Organization,
     *,
     primary_calendar: Calendar,
     secondary_calendar: Calendar,
     accepts_public_scheduling: bool = False,
-    name: str = "Test Group",
+    name: str = "Test AppointmentType",
     duration: datetime.timedelta | None = None,
-) -> CalendarGroup:
+) -> AppointmentType:
     grp = baker.make(
-        CalendarGroup,
+        AppointmentType,
         organization=organization,
         name=name,
         accepts_public_scheduling=accepts_public_scheduling,
         duration=duration,
     )
-    slot_a = CalendarGroupSlot.objects.create(
-        organization=organization, group=grp, name="Physicians", order=0, required_count=1
+    slot_a = AppointmentTypeSlot.objects.create(
+        organization=organization,
+        appointment_type=grp,
+        name="Physicians",
+        order=0,
+        required_count=1,
     )
-    slot_b = CalendarGroupSlot.objects.create(
-        organization=organization, group=grp, name="Rooms", order=1, required_count=1
+    slot_b = AppointmentTypeSlot.objects.create(
+        organization=organization, appointment_type=grp, name="Rooms", order=1, required_count=1
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot_a, calendar=primary_calendar
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot_b, calendar=secondary_calendar
     )
     return grp
 
 
 @pytest.fixture
-def group(organization, primary_calendar, secondary_calendar):
-    return _make_group_with_two_slots(
+def appointment_type(organization, primary_calendar, secondary_calendar):
+    return _make_appointment_type_with_two_slots(
         organization, primary_calendar=primary_calendar, secondary_calendar=secondary_calendar
     )
 
 
 @pytest.fixture
-def public_group(organization, primary_calendar, secondary_calendar):
-    """A CalendarGroup that accepts public (codeless) scheduling, pinned to 1 hour."""
-    return _make_group_with_two_slots(
+def public_appointment_type(organization, primary_calendar, secondary_calendar):
+    """An AppointmentType that accepts public (codeless) scheduling, pinned to 1 hour."""
+    return _make_appointment_type_with_two_slots(
         organization,
         primary_calendar=primary_calendar,
         secondary_calendar=secondary_calendar,
         accepts_public_scheduling=True,
-        name="Public Group",
+        name="Public AppointmentType",
         duration=datetime.timedelta(hours=1),
     )
 
 
 @pytest.fixture
-def group_availability_windows(organization, primary_calendar, secondary_calendar):
+def appointment_type_availability_windows(organization, primary_calendar, secondary_calendar):
     windows = []
     for cal in (primary_calendar, secondary_calendar):
         windows.append(
@@ -474,20 +482,20 @@ def group_availability_windows(organization, primary_calendar, secondary_calenda
 
 
 def _slot_selections(
-    group: CalendarGroup, primary_calendar: Calendar, secondary_calendar: Calendar
+    appointment_type: AppointmentType, primary_calendar: Calendar, secondary_calendar: Calendar
 ):
-    slot_a = group.slots.get(name="Physicians")
-    slot_b = group.slots.get(name="Rooms")
+    slot_a = appointment_type.slots.get(name="Physicians")
+    slot_b = appointment_type.slots.get(name="Rooms")
     return [
         {"slot_id": slot_a.id, "calendar_ids": [primary_calendar.id]},
         {"slot_id": slot_b.id, "calendar_ids": [secondary_calendar.id]},
     ]
 
 
-def _group_booking_payload(slot_selections: list[dict], **overrides) -> dict:
+def _appointment_type_booking_payload(slot_selections: list[dict], **overrides) -> dict:
     base = {
-        "title": "Group Appointment",
-        "description": "A group booking",
+        "title": "AppointmentType Appointment",
+        "description": "An appointment type booking",
         "start_time": BOOKING_START.isoformat(),
         "end_time": BOOKING_END.isoformat(),
         "timezone": "UTC",
@@ -502,34 +510,37 @@ def _group_booking_payload(slot_selections: list[dict], **overrides) -> dict:
 
 
 @pytest.fixture
-def group_booking_code(permission_service, organization, group):
-    """A valid single-use CREATE code scoped to `group`."""
+def appointment_type_booking_code(permission_service, organization, appointment_type):
+    """A valid single-use CREATE code scoped to `appointment_type`."""
     token, code = permission_service.create_booking_token(
         organization_id=organization.id,
         permissions=[EventManagementPermissions.CREATE],
-        calendar_group_id=group.id,
+        appointment_type_id=appointment_type.id,
     )
     return token, code
 
 
 @pytest.mark.django_db
-class TestManagementCodesGroupBookingRevokable:
-    def test_coded_group_booking_issued_codes_are_revokable(
+class TestManagementCodesAppointmentTypeBookingRevokable:
+    def test_coded_appointment_type_booking_issued_codes_are_revokable(
         self,
         anon_client,
         permission_service,
         organization,
-        group,
+        appointment_type,
         primary_calendar,
         secondary_calendar,
-        group_booking_code,
-        group_availability_windows,  # noqa: ARG002
+        appointment_type_booking_code,
+        appointment_type_availability_windows,  # noqa: ARG002
     ):
-        _token, code = group_booking_code
-        selections = _slot_selections(group, primary_calendar, secondary_calendar)
+        _token, code = appointment_type_booking_code
+        selections = _slot_selections(appointment_type, primary_calendar, secondary_calendar)
 
-        response = _post_group(
-            anon_client, group.public_booking_slug, code, _group_booking_payload(selections)
+        response = _post_appointment_type(
+            anon_client,
+            appointment_type.public_booking_slug,
+            code,
+            _appointment_type_booking_payload(selections),
         )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
@@ -537,7 +548,7 @@ class TestManagementCodesGroupBookingRevokable:
 
         reschedule_token = permission_service.resolve_code(management["reschedule_code"])
         assert reschedule_token.kind == CalendarManagementTokenKind.BOOKING_CODE
-        assert reschedule_token.calendar_group_fk_id == group.id
+        assert reschedule_token.appointment_type_fk_id == appointment_type.id
         assert (
             permission_service.revoke_token(
                 organization_id=organization.id, token_id=reschedule_token.id
@@ -554,24 +565,27 @@ class TestManagementCodesGroupBookingRevokable:
             is True
         )
 
-    def test_codeless_group_booking_issued_codes_are_revokable(
+    def test_codeless_appointment_type_booking_issued_codes_are_revokable(
         self,
         anon_client,
         permission_service,
         organization,
-        public_group,
+        public_appointment_type,
         primary_calendar,
         secondary_calendar,
-        group_availability_windows,  # noqa: ARG002
+        appointment_type_availability_windows,  # noqa: ARG002
     ):
         """The codeless branch presents no credential at all, so this is the
         ONLY way the patient can ever manage the appointment they just booked
         -- Phase 7's explicit `kind` discriminator exists specifically so a
         codeless mint (no user, no system user) is still revokable."""
-        selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
+        selections = _slot_selections(public_appointment_type, primary_calendar, secondary_calendar)
 
-        response = _post_group(
-            anon_client, public_group.public_booking_slug, None, _group_booking_payload(selections)
+        response = _post_appointment_type(
+            anon_client,
+            public_appointment_type.public_booking_slug,
+            None,
+            _appointment_type_booking_payload(selections),
         )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
@@ -579,7 +593,7 @@ class TestManagementCodesGroupBookingRevokable:
 
         reschedule_token = permission_service.resolve_code(management["reschedule_code"])
         assert reschedule_token.kind == CalendarManagementTokenKind.BOOKING_CODE
-        assert reschedule_token.calendar_group_fk_id == public_group.id
+        assert reschedule_token.appointment_type_fk_id == public_appointment_type.id
         assert reschedule_token.minted_by_system_user_id is None
         assert reschedule_token.minted_by_membership_user_id is None
         assert (
@@ -591,39 +605,39 @@ class TestManagementCodesGroupBookingRevokable:
 
 
 # ---------------------------------------------------------------------------
-# Group reschedule: re-issued code still honors the group's duration pin
+# Appointment type reschedule: re-issued code still honors the appointment type's duration pin
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestManagementCodesGroupReissuedReschedulePinSurvives:
+class TestManagementCodesAppointmentTypeReissuedReschedulePinSurvives:
     def test_reissued_reschedule_code_refuses_a_different_span(
         self,
         anon_client,
         permission_service,
         organization,
-        group,
+        appointment_type,
         primary_calendar,
         secondary_calendar,
-        group_availability_windows,  # noqa: ARG002
+        appointment_type_availability_windows,  # noqa: ARG002
     ):
-        """A 30-minute group appointment cannot be rescheduled into a 60-minute
+        """A 30-minute appointment type appointment cannot be rescheduled into a 60-minute
         one, even though the RE-ISSUED code itself pins nothing -- the
-        constraint lives on `CalendarGroup.duration` and is enforced fresh
+        constraint lives on `AppointmentType.duration` and is enforced fresh
         every time the code is presented."""
-        group.duration = datetime.timedelta(minutes=30)
-        group.save()
+        appointment_type.duration = datetime.timedelta(minutes=30)
+        appointment_type.save()
         _token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CREATE],
-            calendar_group_id=group.id,
+            appointment_type_id=appointment_type.id,
         )
-        selections = _slot_selections(group, primary_calendar, secondary_calendar)
-        booking_response = _post_group(
+        selections = _slot_selections(appointment_type, primary_calendar, secondary_calendar)
+        booking_response = _post_appointment_type(
             anon_client,
-            group.public_booking_slug,
+            appointment_type.public_booking_slug,
             code,
-            _group_booking_payload(
+            _appointment_type_booking_payload(
                 selections,
                 end_time=(BOOKING_START + datetime.timedelta(minutes=30)).isoformat(),
             ),
@@ -634,7 +648,7 @@ class TestManagementCodesGroupReissuedReschedulePinSurvives:
         # First reschedule (30 -> 30 minutes) succeeds and re-issues a fresh pair.
         first_reschedule = _post(
             anon_client,
-            GROUP_RESCHEDULE_URL_NAME,
+            APPOINTMENT_TYPE_RESCHEDULE_URL_NAME,
             reschedule_code,
             _reschedule_payload(end_time=(NEW_START + datetime.timedelta(minutes=30)).isoformat()),
         )
@@ -646,7 +660,7 @@ class TestManagementCodesGroupReissuedReschedulePinSurvives:
         # survived re-issue without living on the code itself.
         second_reschedule = _post(
             anon_client,
-            GROUP_RESCHEDULE_URL_NAME,
+            APPOINTMENT_TYPE_RESCHEDULE_URL_NAME,
             reissued_reschedule_code,
             _reschedule_payload(
                 start_time=NEWER_START.isoformat(),

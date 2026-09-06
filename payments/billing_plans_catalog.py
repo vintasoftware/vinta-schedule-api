@@ -27,9 +27,9 @@ from vinta_billing.models import BillingPlan, PlanEntitlement, PlanLimit
 
 from payments.seams.resource_keys import (
     ADVANCED_SCHEDULING,
+    APPOINTMENT_TYPES,
     AVAILABILITY_WINDOWS,
     BUNDLE_CALENDARS,
-    CALENDAR_GROUPS,
     ENTITLEMENT_KEYS,
     EVENT_OCCURRENCES,
     EXTERNAL_CALENDAR_GOOGLE,
@@ -65,7 +65,7 @@ class PlanSetting(TypedDict):
 FREE_PLAN_LIMITS: dict[str, PlanSetting] = {
     ORGANIZATION_MEMBERS: {"limit_value": 5, "overage_unit_price": None},
     RESOURCE_CALENDARS: {"limit_value": 3, "overage_unit_price": None},
-    CALENDAR_GROUPS: {"limit_value": 2, "overage_unit_price": None},
+    APPOINTMENT_TYPES: {"limit_value": 2, "overage_unit_price": None},
     BUNDLE_CALENDARS: {"limit_value": 1, "overage_unit_price": None},
     AVAILABILITY_WINDOWS: {"limit_value": 5, "overage_unit_price": None},
     WEBHOOK_SUBSCRIPTIONS: {"limit_value": 1, "overage_unit_price": None},

@@ -22,7 +22,7 @@ the index diff rather than accepting it blind. What is in here, and why:
 * ``AddIndex`` of ``(organization, id)`` on all 31 concrete models, contributed by
   the package's ``class_prepared`` receiver. Every hand-authored organization-leading
   index in this app pairs ``organization`` with a *different* second column
-  (``membership_user_id``, ``group_slot_fk``, ``calendar_fk``, ``provider``,
+  (``membership_user_id``, ``appointment_type_slot_fk``, ``calendar_fk``, ``provider``,
   ``resolved_by_user_id``), so none of them is redundant with this one and none is
   dropped: a composite on ``(organization, id)`` cannot answer a lookup on
   ``(organization, membership_user_id)``, and none of them gives the
@@ -163,35 +163,35 @@ class Migration(migrations.Migration):
             ],
         ),
         migrations.AlterModelManagers(
-            name='calendareventgroupselection',
+            name='calendareventappointmenttypeselection',
             managers=[
                 ('objects', django.db.models.manager.Manager()),
                 ('original_manager', django.db.models.manager.Manager()),
             ],
         ),
         migrations.AlterModelManagers(
-            name='calendargroup',
+            name='appointmenttype',
             managers=[
                 ('objects', django.db.models.manager.Manager()),
                 ('original_manager', django.db.models.manager.Manager()),
             ],
         ),
         migrations.AlterModelManagers(
-            name='calendargroupslot',
+            name='appointmenttypeslot',
             managers=[
                 ('objects', django.db.models.manager.Manager()),
                 ('original_manager', django.db.models.manager.Manager()),
             ],
         ),
         migrations.AlterModelManagers(
-            name='calendargroupslotmembership',
+            name='appointmenttypeslotmembership',
             managers=[
                 ('objects', django.db.models.manager.Manager()),
                 ('original_manager', django.db.models.manager.Manager()),
             ],
         ),
         migrations.AlterModelManagers(
-            name='calendargroupslotquotarule',
+            name='appointmenttypeslotquotarule',
             managers=[
                 ('objects', django.db.models.manager.Manager()),
                 ('original_manager', django.db.models.manager.Manager()),
@@ -328,8 +328,8 @@ class Migration(migrations.Migration):
         ),
         migrations.AlterField(
             model_name='availabletime',
-            name='group_slot',
-            field=models.ForeignObject(editable=False, from_fields=('group_slot_fk', 'organization'), null=True, on_delete=django.db.models.deletion.CASCADE, related_name='group_scoped_available_times', to='calendar_integration.calendargroupslot', to_fields=(None, 'organization')),
+            name='appointment_type_slot',
+            field=models.ForeignObject(editable=False, from_fields=('appointment_type_slot_fk', 'organization'), null=True, on_delete=django.db.models.deletion.CASCADE, related_name='appointment_type_scoped_available_times', to='calendar_integration.appointmenttypeslot', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
             model_name='availabletime',
@@ -403,8 +403,8 @@ class Migration(migrations.Migration):
         ),
         migrations.AlterField(
             model_name='blockedtime',
-            name='group_slot',
-            field=models.ForeignObject(editable=False, from_fields=('group_slot_fk', 'organization'), null=True, on_delete=django.db.models.deletion.CASCADE, related_name='group_scoped_blocked_times', to='calendar_integration.calendargroupslot', to_fields=(None, 'organization')),
+            name='appointment_type_slot',
+            field=models.ForeignObject(editable=False, from_fields=('appointment_type_slot_fk', 'organization'), null=True, on_delete=django.db.models.deletion.CASCADE, related_name='appointment_type_scoped_blocked_times', to='calendar_integration.appointmenttypeslot', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
             model_name='blockedtime',
@@ -463,8 +463,8 @@ class Migration(migrations.Migration):
         ),
         migrations.AlterField(
             model_name='bookingpolicy',
-            name='calendar_group',
-            field=models.ForeignObject(editable=False, from_fields=('calendar_group_fk', 'organization'), null=True, on_delete=django.db.models.deletion.CASCADE, related_name='booking_policies', to='calendar_integration.calendargroup', to_fields=(None, 'organization')),
+            name='appointment_type',
+            field=models.ForeignObject(editable=False, from_fields=('appointment_type_fk', 'organization'), null=True, on_delete=django.db.models.deletion.CASCADE, related_name='booking_policies', to='calendar_integration.appointmenttype', to_fields=(None, 'organization')),
         ),
         # Hand-added pair around the ``AlterField`` below, which is otherwise a
         # silent data-integrity regression. ``bookingpolicy_uniq_org_default`` is a
@@ -520,8 +520,8 @@ class Migration(migrations.Migration):
         ),
         migrations.AlterField(
             model_name='calendarevent',
-            name='calendar_group',
-            field=models.ForeignObject(editable=False, from_fields=('calendar_group_fk', 'organization'), null=True, on_delete=django.db.models.deletion.PROTECT, related_name='events', to='calendar_integration.calendargroup', to_fields=(None, 'organization')),
+            name='appointment_type',
+            field=models.ForeignObject(editable=False, from_fields=('appointment_type_fk', 'organization'), null=True, on_delete=django.db.models.deletion.PROTECT, related_name='events', to='calendar_integration.appointmenttype', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
             model_name='calendarevent',
@@ -539,67 +539,67 @@ class Migration(migrations.Migration):
             field=vinta_orgs.fields.OrganizationSafeOneToOneObject(editable=False, from_fields=('recurrence_rule_fk', 'organization'), null=True, on_delete=django.db.models.deletion.CASCADE, related_name='%(class)s_instance', to='calendar_integration.recurrencerule', to_fields=(None, 'organization'), unique=True),
         ),
         migrations.AlterField(
-            model_name='calendareventgroupselection',
+            model_name='calendareventappointmenttypeselection',
             name='calendar',
-            field=models.ForeignObject(editable=False, from_fields=('calendar_fk', 'organization'), on_delete=django.db.models.deletion.PROTECT, related_name='group_selections', to='calendar_integration.calendar', to_fields=(None, 'organization')),
+            field=models.ForeignObject(editable=False, from_fields=('calendar_fk', 'organization'), on_delete=django.db.models.deletion.PROTECT, related_name='appointment_type_selections', to='calendar_integration.calendar', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
-            model_name='calendareventgroupselection',
+            model_name='calendareventappointmenttypeselection',
             name='event',
-            field=models.ForeignObject(editable=False, from_fields=('event_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='group_selections', to='calendar_integration.calendarevent', to_fields=(None, 'organization')),
+            field=models.ForeignObject(editable=False, from_fields=('event_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='appointment_type_selections', to='calendar_integration.calendarevent', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
-            model_name='calendareventgroupselection',
+            model_name='calendareventappointmenttypeselection',
             name='organization',
             field=models.ForeignKey(db_index=False, on_delete=django.db.models.deletion.CASCADE, to=settings.ORGANIZATION_MODEL),
         ),
         migrations.AlterField(
-            model_name='calendareventgroupselection',
+            model_name='calendareventappointmenttypeselection',
             name='slot',
-            field=models.ForeignObject(editable=False, from_fields=('slot_fk', 'organization'), on_delete=django.db.models.deletion.PROTECT, related_name='selections', to='calendar_integration.calendargroupslot', to_fields=(None, 'organization')),
+            field=models.ForeignObject(editable=False, from_fields=('slot_fk', 'organization'), on_delete=django.db.models.deletion.PROTECT, related_name='selections', to='calendar_integration.appointmenttypeslot', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
-            model_name='calendargroup',
+            model_name='appointmenttype',
             name='organization',
             field=models.ForeignKey(db_index=False, on_delete=django.db.models.deletion.CASCADE, to=settings.ORGANIZATION_MODEL),
         ),
         migrations.AlterField(
-            model_name='calendargroupslot',
-            name='group',
-            field=models.ForeignObject(editable=False, from_fields=('group_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='slots', to='calendar_integration.calendargroup', to_fields=(None, 'organization')),
+            model_name='appointmenttypeslot',
+            name='appointment_type',
+            field=models.ForeignObject(editable=False, from_fields=('appointment_type_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='slots', to='calendar_integration.appointmenttype', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
-            model_name='calendargroupslot',
+            model_name='appointmenttypeslot',
             name='organization',
             field=models.ForeignKey(db_index=False, on_delete=django.db.models.deletion.CASCADE, to=settings.ORGANIZATION_MODEL),
         ),
         migrations.AlterField(
-            model_name='calendargroupslotmembership',
+            model_name='appointmenttypeslotmembership',
             name='calendar',
-            field=models.ForeignObject(editable=False, from_fields=('calendar_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='group_slot_memberships', to='calendar_integration.calendar', to_fields=(None, 'organization')),
+            field=models.ForeignObject(editable=False, from_fields=('calendar_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='appointment_type_slot_memberships', to='calendar_integration.calendar', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
-            model_name='calendargroupslotmembership',
+            model_name='appointmenttypeslotmembership',
             name='organization',
             field=models.ForeignKey(db_index=False, on_delete=django.db.models.deletion.CASCADE, to=settings.ORGANIZATION_MODEL),
         ),
         migrations.AlterField(
-            model_name='calendargroupslotmembership',
+            model_name='appointmenttypeslotmembership',
             name='slot',
-            field=models.ForeignObject(editable=False, from_fields=('slot_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='memberships', to='calendar_integration.calendargroupslot', to_fields=(None, 'organization')),
+            field=models.ForeignObject(editable=False, from_fields=('slot_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='memberships', to='calendar_integration.appointmenttypeslot', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
-            model_name='calendargroupslotquotarule',
+            model_name='appointmenttypeslotquotarule',
             name='calendar',
-            field=models.ForeignObject(editable=False, from_fields=('calendar_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='group_slot_quota_rules', to='calendar_integration.calendar', to_fields=(None, 'organization')),
+            field=models.ForeignObject(editable=False, from_fields=('calendar_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='appointment_type_slot_quota_rules', to='calendar_integration.calendar', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
-            model_name='calendargroupslotquotarule',
-            name='group_slot',
-            field=models.ForeignObject(editable=False, from_fields=('group_slot_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='quota_rules', to='calendar_integration.calendargroupslot', to_fields=(None, 'organization')),
+            model_name='appointmenttypeslotquotarule',
+            name='appointment_type_slot',
+            field=models.ForeignObject(editable=False, from_fields=('appointment_type_slot_fk', 'organization'), on_delete=django.db.models.deletion.CASCADE, related_name='quota_rules', to='calendar_integration.appointmenttypeslot', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
-            model_name='calendargroupslotquotarule',
+            model_name='appointmenttypeslotquotarule',
             name='organization',
             field=models.ForeignKey(db_index=False, on_delete=django.db.models.deletion.CASCADE, to=settings.ORGANIZATION_MODEL),
         ),
@@ -610,8 +610,8 @@ class Migration(migrations.Migration):
         ),
         migrations.AlterField(
             model_name='calendarmanagementtoken',
-            name='calendar_group',
-            field=models.ForeignObject(editable=False, from_fields=('calendar_group_fk', 'organization'), null=True, on_delete=django.db.models.deletion.CASCADE, related_name='management_tokens', to='calendar_integration.calendargroup', to_fields=(None, 'organization')),
+            name='appointment_type',
+            field=models.ForeignObject(editable=False, from_fields=('appointment_type_fk', 'organization'), null=True, on_delete=django.db.models.deletion.CASCADE, related_name='management_tokens', to='calendar_integration.appointmenttype', to_fields=(None, 'organization')),
         ),
         migrations.AlterField(
             model_name='calendarmanagementtoken',
@@ -840,24 +840,24 @@ class Migration(migrations.Migration):
             index=models.Index(fields=['organization', 'id'], name='calendar_in_organiz_6c113f_idx'),
         ),
         migrations.AddIndex(
-            model_name='calendareventgroupselection',
-            index=models.Index(fields=['organization', 'id'], name='calendar_in_organiz_7750fa_idx'),
+            model_name='calendareventappointmenttypeselection',
+            index=models.Index(fields=['organization', 'id'], name='calendar_in_organiz_ea5670_idx'),
         ),
         migrations.AddIndex(
-            model_name='calendargroup',
-            index=models.Index(fields=['organization', 'id'], name='calendar_in_organiz_6bc339_idx'),
+            model_name='appointmenttype',
+            index=models.Index(fields=['organization', 'id'], name='calendar_in_organiz_6cf30a_idx'),
         ),
         migrations.AddIndex(
-            model_name='calendargroupslot',
-            index=models.Index(fields=['organization', 'id'], name='calendar_in_organiz_189571_idx'),
+            model_name='appointmenttypeslot',
+            index=models.Index(fields=['organization', 'id'], name='calendar_in_organiz_89ac5e_idx'),
         ),
         migrations.AddIndex(
-            model_name='calendargroupslotmembership',
-            index=models.Index(fields=['organization', 'id'], name='calendar_in_organiz_a2192d_idx'),
+            model_name='appointmenttypeslotmembership',
+            index=models.Index(fields=['organization', 'id'], name='calendar_in_organiz_60ad53_idx'),
         ),
         migrations.AddIndex(
-            model_name='calendargroupslotquotarule',
-            index=models.Index(fields=['organization', 'id'], name='calendar_in_organiz_5b3dc3_idx'),
+            model_name='appointmenttypeslotquotarule',
+            index=models.Index(fields=['organization', 'id'], name='calendar_in_organiz_058aed_idx'),
         ),
         migrations.AddIndex(
             model_name='calendarmanagementtoken',

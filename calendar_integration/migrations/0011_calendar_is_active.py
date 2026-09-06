@@ -8,7 +8,7 @@ class Migration(migrations.Migration):
     dependencies = [
         (
             "calendar_integration",
-            "0010_calendargroup_calendarevent_calendar_group_and_more",
+            "0010_appointmenttype_calendarevent_appointment_type_and_more",
         ),
     ]
 

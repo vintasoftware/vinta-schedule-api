@@ -14,27 +14,27 @@ class Migration(migrations.Migration):
     operations = [
         migrations.AddField(
             model_name="calendarmanagementtoken",
-            name="calendar_group",
+            name="appointment_type",
             field=models.ForeignObject(
                 editable=False,
-                from_fields=["calendar_group_fk", "organization_id"],
+                from_fields=["appointment_type_fk", "organization_id"],
                 null=True,
                 on_delete=django.db.models.deletion.CASCADE,
                 related_name="management_tokens",
-                to="calendar_integration.calendargroup",
+                to="calendar_integration.appointmenttype",
                 to_fields=["id", "organization_id"],
             ),
         ),
         migrations.AddField(
             model_name="calendarmanagementtoken",
-            name="calendar_group_fk",
+            name="appointment_type_fk",
             field=models.ForeignKey(
                 blank=True,
-                help_text="If set, this token is scoped to a calendar group (for group booking codes). Mutually exclusive with the ``calendar`` scope for booking codes.",
+                help_text="If set, this token is scoped to an appointment type (for appointment type booking codes). Mutually exclusive with the ``calendar`` scope for booking codes.",
                 null=True,
                 on_delete=django.db.models.deletion.CASCADE,
                 related_name="management_tokens_fk_rel",
-                to="calendar_integration.calendargroup",
+                to="calendar_integration.appointmenttype",
             ),
         ),
         migrations.AddField(

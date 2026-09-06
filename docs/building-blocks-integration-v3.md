@@ -23,7 +23,7 @@ Each API call below is tagged with one of:
   - **Org-wide** — `scoped_to_membership` is null; sees/acts on all org resources of the granted types. Minted via REST `POST /public-api-tokens/` or GraphQL `createSystemUserToken`.
   - **Provider-scoped (per-owner)** — `scoped_to_membership` points at one member; reads are filtered and writes are guarded to **only that provider's calendars** (`public_api/scoping.py`). Minted via GraphQL `createScopedSystemUser`. Its grantable resources are limited to the `PROVIDER_SCOPED_RESOURCES` allow-list.
 - **Membership-based identity (new since v2).** People are now exposed as **memberships**, not bare users. Calendar owners resolve to `owners { id isDefault membership { userId organizationId role } }` and event attendees to `attendeeMemberships { userId organizationId role }` + `externalAttendees { id email name }`. The v2 `owners { user { profile { ... } } }` / `attendees { id email }` shapes do **not** exist.
-- **Privacy is `isPrivate` (new since v2).** `Calendar`, `CalendarGroup`, and bundle calendars all expose a read-only **`isPrivate`** boolean, derived as `not accepts_public_scheduling`. It is accepted on the create/update inputs as `isPrivate`. **Default is private** (`isPrivate = true`); codeless public scheduling is opt-in.
+- **Privacy is `isPrivate` (new since v2).** `Calendar`, `AppointmentType`, and bundle calendars all expose a read-only **`isPrivate`** boolean, derived as `not accepts_public_scheduling`. It is accepted on the create/update inputs as `isPrivate`. **Default is private** (`isPrivate = true`); codeless public scheduling is opt-in.
 - **Patients don't get tokens.** The patient path is unauthenticated and authorized entirely by a **single-use booking code** (`*WithCode` queries/mutations). No `IsAuthenticated`/`OrganizationResourceAccess` runs on those fields.
 
 ---
@@ -38,11 +38,11 @@ Implementation plans that **landed** (verified in code on `main`):
 | Resource-calendar mutations | ✅ Ready | `createResourceCalendar`, `disableResourceCalendar`, `importResourceCalendars`, plus generic `createCalendar` / `updateCalendar` | `PUBLIC_GRAPHQL_SERVICE_WRAPPERS` + `UNIFORM_ACCEPTS_PUBLIC_SCHEDULING` |
 | Bundles GraphQL surface | ✅ Ready | `calendarBundles` query + `createCalendarBundle` / `updateCalendarBundle` / `disableCalendarBundle` | `PUBLIC_GRAPHQL_SERVICE_WRAPPERS` |
 | `owners` on calendars/bundles | ✅ Ready (membership shape) | `owners { id isDefault membership { userId organizationId role } }` | `CALENDAR_OWNERS_GRAPHQL_FIELD` + `MEMBERSHIP_SCOPED_CALENDAR_REFERENCES` |
-| `isPrivate` across calendar/group/bundle | ✅ Ready | derived `isPrivate` field + `isPrivate` inputs; group public booking gated on it | `UNIFORM_ACCEPTS_PUBLIC_SCHEDULING` |
+| `isPrivate` across calendar/appointment type/bundle | ✅ Ready | derived `isPrivate` field + `isPrivate` inputs; appointment type public booking gated on it | `UNIFORM_ACCEPTS_PUBLIC_SCHEDULING` |
 | `userId` argument on `calendarEvents` | ✅ Ready | `calendarEvents(userId: Int, ...)` | `CALENDAR_EVENTS_USER_FILTER` |
 | Single-use scheduling/booking codes (GraphQL) | ✅ Ready | 6 mint mutations + `revokeBookingCode`, 5 `*WithCode` reads, 5 `*WithCode` actions | `SINGLE_USE_SCHEDULING_CODES` |
 | Per-user / patient-scoped tokens (§3.2) | ✅ Ready | `createScopedSystemUser` + `scoped_to_membership` scoping enforced on reads **and** writes; `scheduleEvent` for owner-scoped event creation | `PER_OWNER_SCOPED_PUBLIC_API_TOKENS` + `..._WRITES` |
-| Authenticated provider reschedule/cancel | ✅ Ready | `rescheduleCalendarEvent`, `rescheduleCalendarGroupEvent`, `cancelEvent` (owner-scope guarded; recurrence/series aware) | service-wrapper follow-up |
+| Authenticated provider reschedule/cancel | ✅ Ready | `rescheduleCalendarEvent`, `rescheduleAppointmentTypeEvent`, `cancelEvent` (owner-scope guarded; recurrence/series aware) | service-wrapper follow-up |
 | Resource-calendar capacity edit | ✅ Ready | `updateResourceCalendar` (name/description/**capacity**/manageAvailableWindows/isPrivate/visibility; INTERNAL resource calendars only) | service-wrapper follow-up |
 | `user_created` webhook (§2.1) | ✅ Ready (**renamed**) | event type is **`organization_member_created`**, not `user_created`; webhook config now manageable over GraphQL too | `ORGANIZATION_MEMBER_CREATED_WEBHOOK` |
 
@@ -116,11 +116,11 @@ mutation CreateScopedSystemUser($input: CreateScopedSystemUserInput!) {
 
 ### 3.3. Patient booking — ✅ Ready via single-use codes (was ❌)
 
-The design chose **codes, not patient tokens**: a patient never holds an org token. An admin/provider mints a single-use code (§3.4) and the patient acts with it through the unauthenticated `*WithCode` fields. Restricted vs. public is governed by `isPrivate` (private calendars/groups/bundles require a code; public ones accept codeless booking).
+The design chose **codes, not patient tokens**: a patient never holds an org token. An admin/provider mints a single-use code (§3.4) and the patient acts with it through the unauthenticated `*WithCode` fields. Restricted vs. public is governed by `isPrivate` (private calendars/appointment types/bundles require a code; public ones accept codeless booking).
 
 ### 3.4. Single-use scheduling codes — ✅ Ready (was ❌)
 
-Backed by `CalendarManagementToken` + `CalendarManagementTokenPermission`. Mint mutations (org-token-gated, resource `CALENDAR_BOOKING_CODE`): `createCalendarBookingCode`, `createCalendarGroupBookingCode`, `createCalendarRescheduleBookingCode`, `createCalendarGroupRescheduleBookingCode`, `createCalendarCancellationBookingCode`, `createCalendarGroupCancellationBookingCode`, plus `revokeBookingCode`. The plaintext `code` is returned once. Reschedule/cancel codes are bound to one specific `eventId`. See the Booking Link Creation and Patient Portal sections.
+Backed by `CalendarManagementToken` + `CalendarManagementTokenPermission`. Mint mutations (org-token-gated, resource `CALENDAR_BOOKING_CODE`): `createCalendarBookingCode`, `createAppointmentTypeBookingCode`, `createCalendarRescheduleBookingCode`, `createAppointmentTypeRescheduleBookingCode`, `createCalendarCancellationBookingCode`, `createAppointmentTypeCancellationBookingCode`, plus `revokeBookingCode`. The plaintext `code` is returned once. Reschedule/cancel codes are bound to one specific `eventId`. See the Booking Link Creation and Patient Portal sections.
 
 ## 4\. How do the events get synchronized between VintaSchedule and the Building Blocks?
 
@@ -209,13 +209,13 @@ mutation ImportResourceCalendars($input: ImportResourceCalendarsInput!) {  # { o
 }
 ```
 
-### Appointment Types & Calendar Groups & Bundles (Admin)
+### Appointment Types & Bundles (Admin)
 
-- **List calendar groups** — ✅ Ready (now with `isPrivate`; owners via slot calendars)
+- **List appointment types** — ✅ Ready (now with `isPrivate`; owners via slot calendars)
 
 ```graphql
-query CalendarGroups($offset: Int! = 0, $limit: Int! = 100) {
-  calendarGroups(offset: $offset, limit: $limit) {
+query AppointmentTypes($offset: Int! = 0, $limit: Int! = 100) {
+  appointmentTypes(offset: $offset, limit: $limit) {
     id name description isPrivate
     slots {
       id name requiredCount order
@@ -239,29 +239,29 @@ query CalendarBundles($offset: Int! = 0, $limit: Int! = 100) {
 }
 ```
 
-- **createCalendarGroup** — ✅ Ready (`isPrivate` now supported)
+- **createAppointmentType** — ✅ Ready (`isPrivate` now supported)
 
 ```graphql
-mutation CreateCalendarGroup($input: CalendarGroupInput!) {
+mutation CreateAppointmentType($input: AppointmentTypeInput!) {
   # input: { organizationId, name, description, isPrivate, slots: [{ slotId, name, calendarIds, requiredCount, description, order }] }
-  createCalendarGroup(input: $input) { success errorMessage group { id name isPrivate } }
+  createAppointmentType(input: $input) { success errorMessage appointment_type { id name isPrivate } }
 }
 ```
 
-- **updateCalendarGroup** — ✅ Ready (`isPrivate` now supported)
+- **updateAppointmentType** — ✅ Ready (`isPrivate` now supported)
 
 ```graphql
-mutation UpdateCalendarGroup($input: UpdateCalendarGroupInput!) {
-  # input: { organizationId, groupId, name, description, isPrivate, slots: [...] }
-  updateCalendarGroup(input: $input) { success errorMessage group { id name isPrivate } }
+mutation UpdateAppointmentType($input: UpdateAppointmentTypeInput!) {
+  # input: { organizationId, appointmentTypeId, name, description, isPrivate, slots: [...] }
+  updateAppointmentType(input: $input) { success errorMessage appointment_type { id name isPrivate } }
 }
 ```
 
-- **disableCalendarGroup** — ✅ Ready (as `deleteCalendarGroup`)
+- **disableAppointmentType** — ✅ Ready (as `deleteAppointmentType`)
 
 ```graphql
-mutation DeleteCalendarGroup($input: DeleteCalendarGroupInput!) {  # { organizationId, groupId }
-  deleteCalendarGroup(input: $input) { success errorMessage }
+mutation DeleteAppointmentType($input: DeleteAppointmentTypeInput!) {  # { organizationId, appointmentTypeId }
+  deleteAppointmentType(input: $input) { success errorMessage }
 }
 ```
 
@@ -422,11 +422,11 @@ query CalendarEvents($calendarId: Int, $userId: Int, $start: DateTime!, $end: Da
 - **List resources** — ✅ Ready (`calendars(calendarType: "resource")`).
 - **List calendar available times** — ✅ Ready (`availabilityWindows`).
 - **List user available times** — ✅ Ready (resolve user calendar → `availabilityWindows`).
-- **List calendar group available times** — ✅ Ready
+- **List appointment type available times** — ✅ Ready
 
 ```graphql
-query GroupBookableSlots($groupId: Int!, $start: DateTime!, $end: DateTime!, $durationSeconds: Int!) {
-  calendarGroupBookableSlots(groupId: $groupId, searchWindowStart: $start,
+query AppointmentTypeBookableSlots($appointmentTypeId: Int!, $start: DateTime!, $end: DateTime!, $durationSeconds: Int!) {
+  appointmentTypeBookableSlots(appointmentTypeId: $appointmentTypeId, searchWindowStart: $start,
     searchWindowEnd: $end, durationSeconds: $durationSeconds) { startTime endTime }
 }
 ```
@@ -443,14 +443,14 @@ mutation ScheduleEvent($input: ScheduleEventInput!) {
 }
 ```
 
-- **createCalendarGroupEvent** — ✅ Ready
+- **createAppointmentTypeEvent** — ✅ Ready
 
 ```graphql
-mutation CreateCalendarGroupEvent($input: CalendarGroupEventInput!) {
-  # input: { organizationId, groupId, title, description, startTime, endTime, timezone,
+mutation CreateAppointmentTypeEvent($input: AppointmentTypeEventInput!) {
+  # input: { organizationId, appointmentTypeId, title, description, startTime, endTime, timezone,
   #          slotSelections: [{ slotId, calendarIds }], attendances: [{ userId }],
   #          externalAttendances: [{ externalAttendee: { email, name } }] }
-  createCalendarGroupEvent(input: $input) { success errorMessage event { id title startTime endTime } }
+  createAppointmentTypeEvent(input: $input) { success errorMessage event { id title startTime endTime } }
 }
 ```
 
@@ -467,12 +467,12 @@ mutation CreateCalendarBookingCode($input: CreateBookingCodeInput!) {
 }
 ```
 
-- **createCalendarGroupBookingCode** — ✅ Ready
+- **createAppointmentTypeBookingCode** — ✅ Ready
 
 ```graphql
-mutation CreateCalendarGroupBookingCode($input: CreateGroupBookingCodeInput!) {
-  # input: { organizationId, calendarGroupId, expiresAt }
-  createCalendarGroupBookingCode(input: $input) { success code id errorCode errorMessage }
+mutation CreateAppointmentTypeBookingCode($input: CreateAppointmentTypeBookingCodeInput!) {
+  # input: { organizationId, appointmentTypeId, expiresAt }
+  createAppointmentTypeBookingCode(input: $input) { success code id errorCode errorMessage }
 }
 ```
 
@@ -485,12 +485,12 @@ mutation CreateCalendarRescheduleBookingCode($input: CreateEventCodeInput!) {
 }
 ```
 
-- **createCalendarGroupRescheduleBookingCode** — ✅ Ready
+- **createAppointmentTypeRescheduleBookingCode** — ✅ Ready
 
 ```graphql
-mutation CreateCalendarGroupRescheduleBookingCode($input: CreateGroupEventCodeInput!) {
-  # input: { organizationId, calendarGroupId, eventId, expiresAt }
-  createCalendarGroupRescheduleBookingCode(input: $input) { success code id errorCode errorMessage }
+mutation CreateAppointmentTypeRescheduleBookingCode($input: CreateAppointmentTypeEventCodeInput!) {
+  # input: { organizationId, appointmentTypeId, eventId, expiresAt }
+  createAppointmentTypeRescheduleBookingCode(input: $input) { success code id errorCode errorMessage }
 }
 ```
 
@@ -503,12 +503,12 @@ mutation CreateCalendarCancellationBookingCode($input: CreateEventCodeInput!) {
 }
 ```
 
-- **createCalendarGroupCancellationBookingCode** — ✅ Ready
+- **createAppointmentTypeCancellationBookingCode** — ✅ Ready
 
 ```graphql
-mutation CreateCalendarGroupCancellationBookingCode($input: CreateGroupEventCodeInput!) {
-  # input: { organizationId, calendarGroupId, eventId, expiresAt }
-  createCalendarGroupCancellationBookingCode(input: $input) { success code id errorCode errorMessage }
+mutation CreateAppointmentTypeCancellationBookingCode($input: CreateAppointmentTypeEventCodeInput!) {
+  # input: { organizationId, appointmentTypeId, eventId, expiresAt }
+  createAppointmentTypeCancellationBookingCode(input: $input) { success code id errorCode errorMessage }
 }
 ```
 
@@ -532,7 +532,7 @@ query GetEvent($eventId: Int!) {
     attendeeMemberships { userId organizationId role }
     externalAttendees { id email name }
     resources { id name }
-    calendarGroup { id name }   # null for provider-scoped tokens (cross-owner leak guard)
+    appointmentType { id name }   # null for provider-scoped tokens (cross-owner leak guard)
   }
 }
 ```
@@ -545,7 +545,7 @@ query EventIcs($eventId: Int!) { eventIcs(eventId: $eventId) }   # returns RFC-5
 
 ### Reschedule / Cancel Modal (provider side)
 
-- **List resources / calendar / user / group available times** — ✅ Ready (same as Create Appointment Modal).
+- **List resources / calendar / user / appointment type available times** — ✅ Ready (same as Create Appointment Modal).
 - **rescheduleCalendarEvent()** — ✅ Ready (was ❌)
 
   Owner-scope guarded (resource `CALENDAR_EVENT`): an owner-scoped token may only reschedule events on its owner's calendars; an org-wide token acts org-wide. Supports whole-event, series-with-new-rule, and single-occurrence modes. Omit `rruleString` to preserve the existing series rule; set `recurrenceId` (the occurrence's original start) to move just one occurrence. Returns the event directly.
@@ -557,20 +557,20 @@ mutation RescheduleCalendarEvent($input: RescheduleCalendarEventInput!) {
 }
 ```
 
-- **rescheduleCalendarGroupEvent()** — ✅ Ready (was ❌; whole-event only, no recurrence in v1)
+- **rescheduleAppointmentTypeEvent()** — ✅ Ready (was ❌; whole-event only, no recurrence in v1)
 
   Moves the primary event and all linked non-primary `BlockedTime` rows together. Owner-scoped tokens may only act when the **primary** calendar is theirs.
 
 ```graphql
-mutation RescheduleCalendarGroupEvent($input: RescheduleCalendarGroupEventInput!) {
+mutation RescheduleAppointmentTypeEvent($input: RescheduleAppointmentTypeEventInput!) {
   # input: { organizationId, eventId, startTime, endTime, timezone }
-  rescheduleCalendarGroupEvent(input: $input) { id title startTime endTime }
+  rescheduleAppointmentTypeEvent(input: $input) { id title startTime endTime }
 }
 ```
 
 - **cancelEvent()** — ✅ Ready (was ❌)
 
-  Owner-scope guarded. Three modes via input flags: single-occurrence (`recurrenceId` set), whole event / master delete (`deleteSeries: false`), or whole-series delete (`deleteSeries: true`). Handles grouped events automatically when the event belongs to a group.
+  Owner-scope guarded. Three modes via input flags: single-occurrence (`recurrenceId` set), whole event / master delete (`deleteSeries: false`), or whole-series delete (`deleteSeries: true`). Handles appointment-type events automatically when the event belongs to an appointment type.
 
 ```graphql
 mutation CancelEvent($input: CancelEventInput!) {
@@ -594,8 +594,8 @@ Patient reads are authorized by a single-use code, not a token. All five `*WithC
 - **availableTimesWithCode** — ✅ Ready
 - **availabilityWindowsWithCode** — ✅ Ready
 - **unavailableWindowsWithCode** — ✅ Ready
-- **calendarGroupBookableSlotsWithCode** — ✅ Ready
-- **calendarGroupAvailabilityWithCode** — ✅ Ready
+- **appointmentTypeBookableSlotsWithCode** — ✅ Ready
+- **appointmentTypeAvailabilityWithCode** — ✅ Ready
 
 ```graphql
 query AvailabilityWindowsWithCode($code: String!, $start: DateTime!, $end: DateTime!) {
@@ -605,7 +605,7 @@ query AvailabilityWindowsWithCode($code: String!, $start: DateTime!, $end: DateT
 }
 ```
 
-> `isPrivate` gating is live: private calendars/groups/bundles require a code; public ones (`isPrivate = false`) accept codeless reads/booking.
+> `isPrivate` gating is live: private calendars/appointment types/bundles require a code; public ones (`isPrivate = false`) accept codeless reads/booking.
 
 ### Booking Confirmation
 
@@ -618,13 +618,13 @@ mutation CreateCalendarEventWithCode($input: CreateEventWithCodeInput!) {
 }
 ```
 
-- **createCalendarGroupEventWithCode** — ✅ Ready (was ❌)
+- **createAppointmentTypeEventWithCode** — ✅ Ready (was ❌)
 
 ```graphql
-mutation CreateCalendarGroupEventWithCode($input: CreateGroupEventWithCodeInput!) {
+mutation CreateAppointmentTypeEventWithCode($input: CreateAppointmentTypeEventWithCodeInput!) {
   # input: { code, title, startTime, endTime, timezone,
   #          slotSelections: [{ slotId, calendarIds }], externalAttendee: { email, name }, description }
-  createCalendarGroupEventWithCode(input: $input) { success event { id startTime endTime } errorCode errorMessage }
+  createAppointmentTypeEventWithCode(input: $input) { success event { id startTime endTime } errorCode errorMessage }
 }
 ```
 
@@ -634,7 +634,7 @@ mutation CreateCalendarGroupEventWithCode($input: CreateGroupEventWithCodeInput!
 
 ### Manage Appointment
 
-- **List resources / calendar / user / group available times** — ✅ Ready (read side, via `*WithCode`).
+- **List resources / calendar / user / appointment type available times** — ✅ Ready (read side, via `*WithCode`).
 - **rescheduleCalendarEventWithCode()** — ✅ Ready (was ❌)
 
 ```graphql
@@ -644,12 +644,12 @@ mutation RescheduleCalendarEventWithCode($input: RescheduleWithCodeInput!) {
 }
 ```
 
-- **rescheduleCalendarGroupEventWithCode()** — ✅ Ready (was ❌; **v1 changes times only**, no slot re-selection)
+- **rescheduleAppointmentTypeEventWithCode()** — ✅ Ready (was ❌; **v1 changes times only**, no slot re-selection)
 
 ```graphql
-mutation RescheduleCalendarGroupEventWithCode($input: RescheduleGroupWithCodeInput!) {
+mutation RescheduleAppointmentTypeEventWithCode($input: RescheduleAppointmentTypeWithCodeInput!) {
   # input: { code, startTime, endTime, timezone }   # slot selections retained from original booking
-  rescheduleCalendarGroupEventWithCode(input: $input) { success event { id startTime endTime } errorCode errorMessage }
+  rescheduleAppointmentTypeEventWithCode(input: $input) { success event { id startTime endTime } errorCode errorMessage }
 }
 ```
 
@@ -675,9 +675,9 @@ What's left is integration-side decisions, not Vinta-Schedule work:
 
 1. **Webhook payload envelope** — outgoing payloads are now `{ id, type, timestamp, data }`. Confirm the Medplum bot subscribers parse the envelope (breaking change vs. pre-envelope `calendar_event_*`).
 2. **External-event change-request UX** — decide whether Building Blocks surfaces the `change_request` queue to providers or sets the org policy to `allow`/`forbidden` and skips it.
-3. **Group reschedule scope** — `rescheduleCalendarGroupEventWithCode` (patient) and `rescheduleCalendarGroupEvent` (provider) both change **times only** in v1; slot re-selection is deferred. Confirm that matches the Building Blocks reschedule UX, or schedule the slot-re-selection follow-up.
+3. **Appointment type reschedule scope** — `rescheduleAppointmentTypeEventWithCode` (patient) and `rescheduleAppointmentTypeEvent` (provider) both change **times only** in v1; slot re-selection is deferred. Confirm that matches the Building Blocks reschedule UX, or schedule the slot-re-selection follow-up.
 
-Separately, one **additive enhancement** is specced but not yet built — single-calendar/bundle bookable slots and booking policies. It is not a gap in the surface documented above (the booking screens already work via group slots); it's new capability. See **[Next-step prompts](#next-step-prompts)**.
+Separately, one **additive enhancement** is specced but not yet built — single-calendar/bundle bookable slots and booking policies. It is not a gap in the surface documented above (the booking screens already work via appointment type slots); it's new capability. See **[Next-step prompts](#next-step-prompts)**.
 
 ### Already done since v2 (✅ — no work)
 
@@ -685,7 +685,7 @@ Separately, one **additive enhancement** is specced but not yet built — single
 - Resource-calendar create/disable/import + generic `createCalendar` / `updateCalendar`.
 - Availability + blocked-time create/update/delete/batch mutations.
 - Calendar bundles: query + create/update/disable.
-- Calendar group CRUD + grouped-event creation + group availability/bookable-slots/events.
+- Appointment type CRUD + appointment-type-event creation + appointment type availability/bookable-slots/events.
 - Single-use booking codes: 6 mint mutations + `revokeBookingCode` + 5 `*WithCode` reads + 5 `*WithCode` actions.
 - Per-provider scoped tokens (`createScopedSystemUser`) with read **and** write owner-scope enforcement; `scheduleEvent` for owner-scoped event creation.
 - `organization_member_created` outgoing webhook + GraphQL webhook-config management.
@@ -698,7 +698,7 @@ Separately, one **additive enhancement** is specced but not yet built — single
 
 # Next-step prompts
 
-All v2 implementation prompts have shipped. The integration surface described in the screens above is fully covered, and the open items in **[What needs to be done](#what-needs-to-be-done-gap-summary)** are integration-side decisions (webhook envelope parsing, change-request UX, group-reschedule scope), not new API work.
+All v2 implementation prompts have shipped. The integration surface described in the screens above is fully covered, and the open items in **[What needs to be done](#what-needs-to-be-done-gap-summary)** are integration-side decisions (webhook envelope parsing, change-request UX, appointment-type-reschedule scope), not new API work.
 
 The one piece of **net-new, additive** API work on the roadmap is the bookable-slots / booking-policy feature below.
 
@@ -706,13 +706,13 @@ The one piece of **net-new, additive** API work on the roadmap is the bookable-s
 
 > **Spec:** [`ai-plans/2026-06-26-BOOKABLE_SLOTS_SINGLE_CALENDAR_AND_BOOKING_POLICY_SPEC.md`](../ai-plans/2026-06-26-BOOKABLE_SLOTS_SINGLE_CALENDAR_AND_BOOKING_POLICY_SPEC.md) — status: **spec written, not yet planned/implemented.**
 
-Today, discretized bookable slots are only available for a **calendar group** (`calendarGroupBookableSlots` / `calendarGroupBookableSlotsWithCode`). This feature closes two gaps that affect the **Create Appointment Modal** (provider) and the **Patient Portal → Booking Calendar** screens:
+Today, discretized bookable slots are only available for a **appointment type** (`appointmentTypeBookableSlots` / `appointmentTypeBookableSlotsWithCode`). This feature closes two gaps that affect the **Create Appointment Modal** (provider) and the **Patient Portal → Booking Calendar** screens:
 
-1. **Unified single-calendar + bundle bookable-slots query** (and its `_with_code` variant) — ❌ Missing. A consumer can request discretized slots for one calendar id, or for a bundle calendar id (auto-expanded; a slot is offered only when every participating child is free). Removes the workaround of wrapping a single calendar in a throwaway group.
-2. **BookingPolicy model + full CRUD** on public GraphQL **and** private REST — ❌ Missing. Three guardrails — **lead time**, **max horizon**, **buffer-before/after** — resolved per target with deterministic precedence (Calendar → owning membership → org default; bundles/groups use an explicit override, else the most-restrictive combination of participants). Policies are honored on **all** slot surfaces (single, bundle, **and** the existing group query) **and** enforced on the booking write path, so discovery and booking agree.
+1. **Unified single-calendar + bundle bookable-slots query** (and its `_with_code` variant) — ❌ Missing. A consumer can request discretized slots for one calendar id, or for a bundle calendar id (auto-expanded; a slot is offered only when every participating child is free). Removes the workaround of wrapping a single calendar in a throwaway appointment type.
+2. **BookingPolicy model + full CRUD** on public GraphQL **and** private REST — ❌ Missing. Three guardrails — **lead time**, **max horizon**, **buffer-before/after** — resolved per target with deterministic precedence (Calendar → owning membership → org default; bundles/appointment types use an explicit override, else the most-restrictive combination of participants). Policies are honored on **all** slot surfaces (single, bundle, **and** the existing appointment type query) **and** enforced on the booking write path, so discovery and booking agree.
 
-> Backward-compatibility guarantee from the spec: with **no** policy set anywhere, the existing `calendarGroupBookableSlots` output is byte-for-byte identical to today — so this is additive, not breaking, until an org opts in by creating a policy.
+> Backward-compatibility guarantee from the spec: with **no** policy set anywhere, the existing `appointmentTypeBookableSlots` output is byte-for-byte identical to today — so this is additive, not breaking, until an org opts in by creating a policy.
 
 Suggested driver prompt for `plan-feature`:
 
-> Plan the feature in `ai-plans/2026-06-26-BOOKABLE_SLOTS_SINGLE_CALENDAR_AND_BOOKING_POLICY_SPEC.md`: a unified single-calendar/bundle bookable-slots query (authenticated + `_with_code`), a `BookingPolicy` model (lead time / max horizon / buffer-before / buffer-after) with a deterministic resolution chain and most-restrictive bundle/group combination, public-GraphQL + private-REST policy CRUD with organization-scope enforcement, and booking-time enforcement on the existing write path. Resolve the spec's Open Questions (owning-membership resolution, bundle-child bookability predicate, single org-default policy, delete-absent semantics, code-gated response shape) before drafting phases. Honor the negative scope: no new booking mechanics, no absolute horizon cutoff, no recurring/per-appointment-type policies, no REST slot-read surface, no changes to continuous availability/unavailability queries.
+> Plan the feature in `ai-plans/2026-06-26-BOOKABLE_SLOTS_SINGLE_CALENDAR_AND_BOOKING_POLICY_SPEC.md`: a unified single-calendar/bundle bookable-slots query (authenticated + `_with_code`), a `BookingPolicy` model (lead time / max horizon / buffer-before / buffer-after) with a deterministic resolution chain and most-restrictive bundle/appointment type combination, public-GraphQL + private-REST policy CRUD with organization-scope enforcement, and booking-time enforcement on the existing write path. Resolve the spec's Open Questions (owning-membership resolution, bundle-child bookability predicate, single org-default policy, delete-absent semantics, code-gated response shape) before drafting phases. Honor the negative scope: no new booking mechanics, no absolute horizon cutoff, no recurring/per-appointment-type policies, no REST slot-read surface, no changes to continuous availability/unavailability queries.

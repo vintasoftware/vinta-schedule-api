@@ -3,15 +3,15 @@ from typing import Any
 from django.db.models import Model, QuerySet
 
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
+    AppointmentTypeSlotQuotaRule,
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
-    CalendarEventGroupSelection,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
-    CalendarGroupSlotQuotaRule,
+    CalendarEventAppointmentTypeSelection,
     CalendarOwnership,
     CalendarPool,
     CalendarPoolMembership,
@@ -86,17 +86,17 @@ class NestedCalendarEventVirtualModel(OrganizationScopedVirtualModel):
         model = CalendarEvent
 
 
-class CalendarGroupSlotMembershipVirtualModel(OrganizationScopedVirtualModel):
+class AppointmentTypeSlotMembershipVirtualModel(OrganizationScopedVirtualModel):
     calendar = CalendarVirtualModel()
 
     class Meta:
-        model = CalendarGroupSlotMembership
+        model = AppointmentTypeSlotMembership
 
 
 class DistinctCalendarVirtualModel(CalendarVirtualModel):
     """``CalendarVirtualModel`` whose prefetch cannot return the same row twice.
 
-    ``CalendarGroupSlot.calendars`` goes through ``CalendarGroupSlotMembership``,
+    ``AppointmentTypeSlot.calendars`` goes through ``AppointmentTypeSlotMembership``,
     which since Calendar Pools holds one row per (slot, calendar, source): a
     calendar that is both inline on the slot and in an attached ``CalendarPool``
     has two, and the M2M prefetch would hand the serializer the same calendar
@@ -123,34 +123,34 @@ class CalendarPoolVirtualModel(OrganizationScopedVirtualModel):
         model = CalendarPool
 
 
-class CalendarGroupSlotVirtualModel(OrganizationScopedVirtualModel):
-    memberships = CalendarGroupSlotMembershipVirtualModel(many=True)
+class AppointmentTypeSlotVirtualModel(OrganizationScopedVirtualModel):
+    memberships = AppointmentTypeSlotMembershipVirtualModel(many=True)
     calendars = DistinctCalendarVirtualModel(many=True)
-    # Added alongside `CalendarGroupSlotSerializer.pools` (Phase 4) -- Phase 3
+    # Added alongside `AppointmentTypeSlotSerializer.pools` (Phase 4) -- Phase 3
     # deliberately left this hint off, since an unconditional prefetch with no
-    # serializer field would cost a query on every group fetch for nothing.
-    # `CalendarGroupSlotPool` (the through table) is a plain M2M attachment --
+    # serializer field would cost a query on every appointment type fetch for nothing.
+    # `AppointmentTypeSlotPool` (the through table) is a plain M2M attachment --
     # unique on (slot, pool) -- so no dedup is needed here the way
     # `DistinctCalendarVirtualModel` is for `calendars`.
     pools = CalendarPoolVirtualModel(many=True)
 
     class Meta:
-        model = CalendarGroupSlot
+        model = AppointmentTypeSlot
 
 
-class CalendarGroupVirtualModel(OrganizationScopedVirtualModel):
-    slots = CalendarGroupSlotVirtualModel(many=True)
+class AppointmentTypeVirtualModel(OrganizationScopedVirtualModel):
+    slots = AppointmentTypeSlotVirtualModel(many=True)
 
     class Meta:
-        model = CalendarGroup
+        model = AppointmentType
 
 
-class CalendarEventGroupSelectionVirtualModel(OrganizationScopedVirtualModel):
-    slot = CalendarGroupSlotVirtualModel()
+class CalendarEventAppointmentTypeSelectionVirtualModel(OrganizationScopedVirtualModel):
+    slot = AppointmentTypeSlotVirtualModel()
     calendar = CalendarVirtualModel()
 
     class Meta:
-        model = CalendarEventGroupSelection
+        model = CalendarEventAppointmentTypeSelection
 
 
 class CalendarEventVirtualModel(OrganizationScopedVirtualModel):
@@ -160,8 +160,8 @@ class CalendarEventVirtualModel(OrganizationScopedVirtualModel):
     resource_allocations = ResourceAllocationVirtualModel(many=True)
     recurrence_rule = RecurrenceRuleVirtualModel()
     parent_recurring_object = NestedCalendarEventVirtualModel()
-    group_selections = CalendarEventGroupSelectionVirtualModel(many=True)
-    calendar_group = CalendarGroupVirtualModel()
+    appointment_type_selections = CalendarEventAppointmentTypeSelectionVirtualModel(many=True)
+    appointment_type = AppointmentTypeVirtualModel()
     external_client_identifiers = ExternalClientIdentifierVirtualModel(many=True)
 
     class Meta:
@@ -204,18 +204,18 @@ class AvailableTimeVirtualModel(OrganizationScopedVirtualModel):
         model = AvailableTime
 
 
-class GroupScopedAvailabilityWindowVirtualModel(OrganizationScopedVirtualModel):
-    """Virtual model for ``GroupScopedAvailabilityWindowSerializer``.
+class AppointmentTypeScopedAvailabilityWindowVirtualModel(OrganizationScopedVirtualModel):
+    """Virtual model for ``AppointmentTypeScopedAvailabilityWindowSerializer``.
 
     Deliberately narrower than ``AvailableTimeVirtualModel``: that serializer
-    sources ``calendar_id``/``group_slot_id`` from the raw FK columns and
+    sources ``calendar_id``/``appointment_type_slot_id`` from the raw FK columns and
     never nests a ``calendar`` field, so no sub-field is declared here for it
     -- avoids pulling in ``CalendarVirtualModel``'s eager
     memberships/calendar_ownerships graph, which this serializer never reads.
     ``rrule_string``/``is_recurring`` are ``no_deferred_fields()``-hinted
     ``SerializerMethodField``s that read ``recurrence_rule`` directly; the
     view selects that relation explicitly (``.select_related("recurrence_rule")``
-    in ``GroupScopedAvailabilityWindowViewSet.get_queryset``) since it isn't
+    in ``AppointmentTypeScopedAvailabilityWindowViewSet.get_queryset``) since it isn't
     exposed under a matching field name here for the optimizer to infer.
     """
 
@@ -223,11 +223,11 @@ class GroupScopedAvailabilityWindowVirtualModel(OrganizationScopedVirtualModel):
         model = AvailableTime
 
 
-class GroupScopedBlockedTimeVirtualModel(OrganizationScopedVirtualModel):
-    """Virtual model for ``GroupScopedBlockedTimeSerializer``.
+class AppointmentTypeScopedBlockedTimeVirtualModel(OrganizationScopedVirtualModel):
+    """Virtual model for ``AppointmentTypeScopedBlockedTimeSerializer``.
 
-    Mirrors ``GroupScopedAvailabilityWindowVirtualModel`` exactly, for the
-    same reason: the serializer sources ``calendar_id``/``group_slot_id``
+    Mirrors ``AppointmentTypeScopedAvailabilityWindowVirtualModel`` exactly, for the
+    same reason: the serializer sources ``calendar_id``/``appointment_type_slot_id``
     from the raw FK columns and never nests a ``calendar`` field, so no
     sub-field is declared here for it -- avoids pulling in
     ``CalendarVirtualModel``'s eager memberships/calendar_ownerships graph,
@@ -235,7 +235,7 @@ class GroupScopedBlockedTimeVirtualModel(OrganizationScopedVirtualModel):
     ``no_deferred_fields()``-hinted ``SerializerMethodField``s that read
     ``recurrence_rule`` directly; the view selects that relation explicitly
     (``.select_related("recurrence_rule")`` in
-    ``GroupScopedBlockedTimeViewSet.get_queryset``) since it isn't exposed
+    ``AppointmentTypeScopedBlockedTimeViewSet.get_queryset``) since it isn't exposed
     under a matching field name here for the optimizer to infer.
     """
 
@@ -243,20 +243,20 @@ class GroupScopedBlockedTimeVirtualModel(OrganizationScopedVirtualModel):
         model = BlockedTime
 
 
-class GroupScopedQuotaRuleVirtualModel(OrganizationScopedVirtualModel):
-    """Virtual model for ``GroupScopedQuotaRuleSerializer``.
+class AppointmentTypeScopedQuotaRuleVirtualModel(OrganizationScopedVirtualModel):
+    """Virtual model for ``AppointmentTypeScopedQuotaRuleSerializer``.
 
-    Simpler than ``GroupScopedAvailabilityWindowVirtualModel``/
-    ``GroupScopedBlockedTimeVirtualModel``: a quota rule has no recurrence and
+    Simpler than ``AppointmentTypeScopedAvailabilityWindowVirtualModel``/
+    ``AppointmentTypeScopedBlockedTimeVirtualModel``: a quota rule has no recurrence and
     no time range, so there is no ``recurrence_rule``/``parent_recurring_object``
-    to fetch. The serializer sources ``calendar_id``/``group_slot_id`` from the
+    to fetch. The serializer sources ``calendar_id``/``appointment_type_slot_id`` from the
     raw FK columns and never nests a ``calendar`` field, so no sub-field is
     declared here either -- avoids pulling in ``CalendarVirtualModel``'s eager
     memberships/calendar_ownerships graph, which this serializer never reads.
     """
 
     class Meta:
-        model = CalendarGroupSlotQuotaRule
+        model = AppointmentTypeSlotQuotaRule
 
 
 class ExternalEventChangeRequestVirtualModel(OrganizationScopedVirtualModel):

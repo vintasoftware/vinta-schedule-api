@@ -3,7 +3,7 @@
 ``CalendarService`` is the injected entry point for all calendar operations. It is
 registered in ``di_core/containers.py`` as a ``providers.Factory`` and is the only
 calendar service visible to views, GraphQL resolvers, Celery tasks, and sibling
-services such as ``CalendarGroupService``.
+services such as ``AppointmentTypeService``.
 
 **Responsibility of this module (facade only):**
 
@@ -1456,7 +1456,7 @@ class CalendarService(BaseCalendarService):
     def bound_organization(self) -> Organization:
         """The organization bound by ``authenticate()`` / ``initialize_without_provider()``.
 
-        Matches ``CalendarGroupService.bound_organization`` and
+        Matches ``AppointmentTypeService.bound_organization`` and
         ``CalendarServiceContext.bound_organization``: ``organization`` is declared
         optional because ``__init__`` runs before either binder, and callers that need
         the value rather than a branch read it through here.

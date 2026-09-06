@@ -26,9 +26,9 @@ from strawberry.django.views import GraphQLView
 from vinta_billing.constants import LimitRemedy
 from vinta_billing.exceptions import OverLimitError
 
-from calendar_integration.models import CalendarGroup
+from calendar_integration.models import AppointmentType
 from organizations.models import Organization
-from payments.seams.resource_keys import CALENDAR_GROUPS
+from payments.seams.resource_keys import APPOINTMENT_TYPES
 from public_api.extensions import raise_over_limit_graphql_error
 
 
@@ -53,13 +53,13 @@ class Mutation:
     def write_then_exceed_limit(self) -> bool:
         """Stands in for a guarded GraphQL resolver: writes a row and *then*
         raises, mirroring the real ordering risk this helper exists for."""
-        CalendarGroup.objects.create(
+        AppointmentType.objects.create(
             organization_id=current_organization_id.get(),
             name="written-before-the-graphql-guard",
         )
         raise_over_limit_graphql_error(
             OverLimitError(
-                resource_key=CALENDAR_GROUPS,
+                resource_key=APPOINTMENT_TYPES,
                 current_usage=1,
                 limit=1,
                 remedy=LimitRemedy.PURCHASE_ADD_ON,
@@ -71,7 +71,7 @@ class Mutation:
         """Control: same write, no exception. Proves the write itself does
         persist, so a passing rollback assertion cannot be an artifact of the
         write never landing in the first place."""
-        CalendarGroup.objects.create(
+        AppointmentType.objects.create(
             organization_id=current_organization_id.get(),
             name="written-and-kept",
         )
@@ -123,7 +123,7 @@ class TestOverLimitGraphQLErrorRollsBackTheRequestTransaction:
         assert response.status_code == 200
         assert "errors" not in response.json()
         assert (
-            CalendarGroup.objects.filter_by_organization(organization.pk)
+            AppointmentType.objects.filter_by_organization(organization.pk)
             .filter(
                 name="written-and-kept",
             )
@@ -147,7 +147,7 @@ class TestOverLimitGraphQLErrorRollsBackTheRequestTransaction:
         data = response.json()
         assert len(data["errors"]) == 1
         assert (
-            CalendarGroup.objects.filter_by_organization(organization.pk)
+            AppointmentType.objects.filter_by_organization(organization.pk)
             .filter(
                 name="written-before-the-graphql-guard",
             )
@@ -172,9 +172,9 @@ class TestOverLimitGraphQLErrorRollsBackTheRequestTransaction:
 
         data = response.json()
         assert data["errors"][0]["extensions"] == {
-            "detail": "Organization is at its limit for calendar groups.",
+            "detail": "Organization is at its limit for appointment types.",
             "code": "limit_exceeded",
-            "resource": "calendar_groups",
+            "resource": "appointment_types",
             "current_usage": 1,
             "limit": 1,
             "remedy": "purchase_add_on",

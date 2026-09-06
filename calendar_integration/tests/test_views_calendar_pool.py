@@ -14,11 +14,11 @@ from rest_framework import status
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.factories import create_calendar_ownership, create_calendar_pool
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
+    AppointmentTypeSlotPool,
     Calendar,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
-    CalendarGroupSlotPool,
     CalendarPool,
 )
 from organizations.models import Organization, OrganizationMembership
@@ -137,12 +137,12 @@ class TestCalendarPoolCrud:
         self, auth_client, organization, owned_pool, user
     ):
         """A missing or inactive membership resolves to no access -- fail
-        closed, matching `CalendarGroupPermission`. With 0 active
+        closed, matching `AppointmentTypePermission`. With 0 active
         memberships and no `X-Organization-Id` header,
         `request.organization_membership` resolves to `None` (gated), which
         `CalendarPoolPermission.has_permission` refuses outright (403) before
         `get_queryset()` -- whose own `membership is None` branch is the same
-        defense-in-depth fallback `CalendarGroupViewSet.get_queryset` keeps,
+        defense-in-depth fallback `AppointmentTypeViewSet.get_queryset` keeps,
         exercised by a path this permission class already forecloses."""
         membership = OrganizationMembership.objects.get(user=user, organization=organization)
         membership.is_active = False
@@ -296,40 +296,46 @@ class TestCalendarPoolCrud:
     def test_destroy_refused_when_pool_attached_to_slot(
         self, auth_client, owned_pool, organization, admin_user
     ):
-        group = CalendarGroup.objects.create(organization=organization, name="Clinic")
-        slot = CalendarGroupSlot.objects.create(
-            organization=organization, group=group, name="Nurses"
+        appointment_type = AppointmentType.objects.create(organization=organization, name="Clinic")
+        slot = AppointmentTypeSlot.objects.create(
+            organization=organization, appointment_type=appointment_type, name="Nurses"
         )
-        CalendarGroupSlotPool.objects.create(organization=organization, slot=slot, pool=owned_pool)
+        AppointmentTypeSlotPool.objects.create(
+            organization=organization, slot=slot, pool=owned_pool
+        )
 
         url = reverse("api:CalendarPools-detail", kwargs={"pk": owned_pool.id})
         response = auth_client.delete(url)
         _assert_status(response, status.HTTP_409_CONFLICT)
-        assert "Clinic" in response.data["groups"]
+        assert "Clinic" in response.data["appointment_types"]
         assert CalendarPool.original_manager.filter(id=owned_pool.id).exists()
 
-    def test_destroy_refused_names_every_referencing_group(
+    def test_destroy_refused_names_every_referencing_appointment_type(
         self, auth_client, owned_pool, organization, admin_user
     ):
-        group_a = CalendarGroup.objects.create(organization=organization, name="Clinic A")
-        slot_a = CalendarGroupSlot.objects.create(
-            organization=organization, group=group_a, name="Nurses"
+        appointment_type_a = AppointmentType.objects.create(
+            organization=organization, name="Clinic A"
         )
-        CalendarGroupSlotPool.objects.create(
+        slot_a = AppointmentTypeSlot.objects.create(
+            organization=organization, appointment_type=appointment_type_a, name="Nurses"
+        )
+        AppointmentTypeSlotPool.objects.create(
             organization=organization, slot=slot_a, pool=owned_pool
         )
-        group_b = CalendarGroup.objects.create(organization=organization, name="Clinic B")
-        slot_b = CalendarGroupSlot.objects.create(
-            organization=organization, group=group_b, name="Nurses"
+        appointment_type_b = AppointmentType.objects.create(
+            organization=organization, name="Clinic B"
         )
-        CalendarGroupSlotPool.objects.create(
+        slot_b = AppointmentTypeSlot.objects.create(
+            organization=organization, appointment_type=appointment_type_b, name="Nurses"
+        )
+        AppointmentTypeSlotPool.objects.create(
             organization=organization, slot=slot_b, pool=owned_pool
         )
 
         url = reverse("api:CalendarPools-detail", kwargs={"pk": owned_pool.id})
         response = auth_client.delete(url)
         _assert_status(response, status.HTTP_409_CONFLICT)
-        assert set(response.data["groups"]) == {"Clinic A", "Clinic B"}
+        assert set(response.data["appointment_types"]) == {"Clinic A", "Clinic B"}
 
 
 @pytest.mark.django_db
@@ -354,13 +360,15 @@ class TestCalendarPoolPatch:
     def test_patch_omitting_calendar_ids_does_not_wipe_roster(
         self, auth_client, owned_pool, internal_calendars, admin_user, organization
     ):
-        group = CalendarGroup.objects.create(organization=organization, name="Clinic")
-        slot = CalendarGroupSlot.objects.create(
-            organization=organization, group=group, name="Nurses"
+        appointment_type = AppointmentType.objects.create(organization=organization, name="Clinic")
+        slot = AppointmentTypeSlot.objects.create(
+            organization=organization, appointment_type=appointment_type, name="Nurses"
         )
-        CalendarGroupSlotPool.objects.create(organization=organization, slot=slot, pool=owned_pool)
+        AppointmentTypeSlotPool.objects.create(
+            organization=organization, slot=slot, pool=owned_pool
+        )
         for calendar in (internal_calendars["nurse_a"], internal_calendars["nurse_b"]):
-            CalendarGroupSlotMembership.objects.create(
+            AppointmentTypeSlotMembership.objects.create(
                 organization=organization,
                 slot=slot,
                 calendar=calendar,
@@ -381,7 +389,7 @@ class TestCalendarPoolPatch:
         # The dangerous part: the cascade into the projected slot membership
         # rows must not have happened either.
         projected_calendar_ids = set(
-            CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+            AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
             .projected()
             .filter(slot_fk=slot, source_pool_fk=owned_pool)
             .values_list("calendar_fk_id", flat=True)
@@ -437,15 +445,17 @@ class TestCalendarPoolUpdateProjectionConvergence:
     def test_update_pool_roster_reprojects_attached_slots_with_no_drift(
         self, auth_client, owned_pool, organization, internal_calendars, admin_user
     ):
-        group = CalendarGroup.objects.create(organization=organization, name="Clinic")
-        slot = CalendarGroupSlot.objects.create(
-            organization=organization, group=group, name="Nurses"
+        appointment_type = AppointmentType.objects.create(organization=organization, name="Clinic")
+        slot = AppointmentTypeSlot.objects.create(
+            organization=organization, appointment_type=appointment_type, name="Nurses"
         )
-        CalendarGroupSlotPool.objects.create(organization=organization, slot=slot, pool=owned_pool)
+        AppointmentTypeSlotPool.objects.create(
+            organization=organization, slot=slot, pool=owned_pool
+        )
         # Project the pool's current roster into the slot the way
-        # CalendarGroupService._reconcile_slot_pools would on attach.
+        # AppointmentTypeService._reconcile_slot_pools would on attach.
         for calendar in (internal_calendars["nurse_a"], internal_calendars["nurse_b"]):
-            CalendarGroupSlotMembership.objects.create(
+            AppointmentTypeSlotMembership.objects.create(
                 organization=organization,
                 slot=slot,
                 calendar=calendar,
@@ -464,7 +474,7 @@ class TestCalendarPoolUpdateProjectionConvergence:
         _assert_status(response, status.HTTP_200_OK)
 
         projected_calendar_ids = set(
-            CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+            AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
             .projected()
             .filter(slot_fk=slot, source_pool_fk=owned_pool)
             .values_list("calendar_fk_id", flat=True)
@@ -490,18 +500,20 @@ class TestCalendarPoolUpdateProjectionConvergence:
     ):
         """Roster edit that only adds (no removal) still converges -- exercises
         the `bulk_create` + explicit `reconcile_pools` branch alone."""
-        group = CalendarGroup.objects.create(organization=organization, name="Clinic")
-        slot = CalendarGroupSlot.objects.create(
-            organization=organization, group=group, name="Nurses"
+        appointment_type = AppointmentType.objects.create(organization=organization, name="Clinic")
+        slot = AppointmentTypeSlot.objects.create(
+            organization=organization, appointment_type=appointment_type, name="Nurses"
         )
-        CalendarGroupSlotPool.objects.create(organization=organization, slot=slot, pool=owned_pool)
-        CalendarGroupSlotMembership.objects.create(
+        AppointmentTypeSlotPool.objects.create(
+            organization=organization, slot=slot, pool=owned_pool
+        )
+        AppointmentTypeSlotMembership.objects.create(
             organization=organization,
             slot=slot,
             calendar=internal_calendars["nurse_a"],
             source_pool=owned_pool,
         )
-        CalendarGroupSlotMembership.objects.create(
+        AppointmentTypeSlotMembership.objects.create(
             organization=organization,
             slot=slot,
             calendar=internal_calendars["nurse_b"],
@@ -522,7 +534,7 @@ class TestCalendarPoolUpdateProjectionConvergence:
         _assert_status(response, status.HTTP_200_OK)
 
         assert (
-            CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+            AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
             .projected()
             .filter(
                 slot_fk=slot,

@@ -1,9 +1,9 @@
-"""Pre-paid limit guards on calendar/group/bundle/availability creation.
+"""Pre-paid limit guards on calendar/appointment type/bundle/availability creation.
 
 Covers an organization hitting a pre-paid limit and being blocked, across the
 four resource-creation paths checked here:
 ``resource_calendars`` (``CalendarService.create_resource_calendar``),
-``calendar_groups`` (``CalendarGroupService.create_group``), ``bundle_calendars``
+``appointment_types`` (``AppointmentTypeService.create_appointment_type``), ``bundle_calendars``
 (``CalendarService.create_bundle_calendar``), and ``availability_windows``
 (``CalendarService.create_available_time`` / ``bulk_create_availability_windows`` /
 ``batch_modify_available_times``).
@@ -24,20 +24,20 @@ from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimi
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
     AvailableTime,
     BlockedTime,
     Calendar,
-    CalendarGroup,
-    CalendarGroupSlot,
 )
-from calendar_integration.services.calendar_group_service import CalendarGroupService
+from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.calendar_service import CalendarService
-from calendar_integration.services.dataclasses import CalendarGroupInputData
+from calendar_integration.services.dataclasses import AppointmentTypeInputData
 from organizations.models import Organization
 from payments.seams.resource_keys import (
+    APPOINTMENT_TYPES,
     AVAILABILITY_WINDOWS,
     BUNDLE_CALENDARS,
-    CALENDAR_GROUPS,
     RESOURCE_CALENDARS,
 )
 
@@ -140,48 +140,52 @@ class TestCreateResourceCalendarLimit:
 
 
 @pytest.mark.django_db
-class TestCreateGroupLimit:
+class TestCreateAppointmentTypeLimit:
     def test_raises_and_creates_nothing_at_the_limit(self):
-        organization = _organization_with_limit(CALENDAR_GROUPS, 1)
-        baker.make(CalendarGroup, organization=organization)
+        organization = _organization_with_limit(APPOINTMENT_TYPES, 1)
+        baker.make(AppointmentType, organization=organization)
 
-        service = CalendarGroupService()
+        service = AppointmentTypeService()
         service.initialize(organization=organization)
 
         with pytest.raises(OverLimitError) as exc_info:
-            service.create_group(CalendarGroupInputData(name="Blocked Group"))
+            service.create_appointment_type(
+                AppointmentTypeInputData(name="Blocked AppointmentType")
+            )
 
-        assert exc_info.value.resource_key == CALENDAR_GROUPS
+        assert exc_info.value.resource_key == APPOINTMENT_TYPES
         assert (
-            not CalendarGroup.objects.filter_by_organization(organization)
+            not AppointmentType.objects.filter_by_organization(organization)
             .filter(
-                name="Blocked Group",
+                name="Blocked AppointmentType",
             )
             .exists()
         )
 
     @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
     def test_succeeds_with_headroom(self, limit_value):
-        organization = _organization_with_limit(CALENDAR_GROUPS, limit_value)
-        baker.make(CalendarGroup, organization=organization)
+        organization = _organization_with_limit(APPOINTMENT_TYPES, limit_value)
+        baker.make(AppointmentType, organization=organization)
 
-        service = CalendarGroupService()
+        service = AppointmentTypeService()
         service.initialize(organization=organization)
-        group = service.create_group(CalendarGroupInputData(name="Fits Group"))
-
-        assert group.pk is not None
-
-    def test_bypass_limits_creates_anyway(self):
-        organization = _organization_with_limit(CALENDAR_GROUPS, 1)
-        baker.make(CalendarGroup, organization=organization)
-
-        service = CalendarGroupService()
-        service.initialize(organization=organization)
-        group = service.create_group(
-            CalendarGroupInputData(name="Bypassed Group"), bypass_limits=True
+        appointment_type = service.create_appointment_type(
+            AppointmentTypeInputData(name="Fits AppointmentType")
         )
 
-        assert group.pk is not None
+        assert appointment_type.pk is not None
+
+    def test_bypass_limits_creates_anyway(self):
+        organization = _organization_with_limit(APPOINTMENT_TYPES, 1)
+        baker.make(AppointmentType, organization=organization)
+
+        service = AppointmentTypeService()
+        service.initialize(organization=organization)
+        appointment_type = service.create_appointment_type(
+            AppointmentTypeInputData(name="Bypassed AppointmentType"), bypass_limits=True
+        )
+
+        assert appointment_type.pk is not None
 
 
 @pytest.mark.django_db
@@ -357,20 +361,22 @@ class TestBlockedTimeCountsTowardTheAvailabilityWindowLimit:
             .exists()
         )
 
-    def test_existing_group_scoped_blocked_time_blocks_further_window_creation(self):
-        """Group-scoped blocks are invisible to ``BlockedTime.objects`` (the default
+    def test_existing_appointment_type_scoped_blocked_time_blocks_further_window_creation(self):
+        """Appointment-type-scoped blocks are invisible to ``BlockedTime.objects`` (the default
         manager) but must still be counted -- the metering rule is "every time
         window an organization authors", regardless of scope."""
         organization = _organization_with_limit(AVAILABILITY_WINDOWS, 1)
         calendar = _calendar_managing_windows(organization)
-        group = baker.make(CalendarGroup, organization=organization)
-        slot = baker.make(CalendarGroupSlot, organization=organization, group=group)
+        appointment_type = baker.make(AppointmentType, organization=organization)
+        slot = baker.make(
+            AppointmentTypeSlot, organization=organization, appointment_type=appointment_type
+        )
         baker.make(
             BlockedTime,
             organization=organization,
             calendar=calendar,
             timezone="UTC",
-            group_slot=slot,
+            appointment_type_slot=slot,
         )
 
         service = CalendarService()

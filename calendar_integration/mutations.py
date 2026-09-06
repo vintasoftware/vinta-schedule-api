@@ -15,9 +15,9 @@ from vinta_billing.exceptions import OverLimitError
 
 from calendar_integration.constants import ExternalEventChangeRequestStatus
 from calendar_integration.exceptions import (
+    AppointmentTypeError,
+    AppointmentTypeValidationError,
     BookingPolicyViolationError,
-    CalendarGroupError,
-    CalendarGroupValidationError,
     ChangeRequestIneligibleError,
     ChangeRequestNotPendingError,
     EventManagementError,
@@ -29,29 +29,29 @@ from calendar_integration.exceptions import (
     TokenRevokedError,
 )
 from calendar_integration.graphql import (
+    AppointmentTypeGraphQLType,
     ApproveExternalEventChangeRequestResult,
     BookingCodeErrorCode,
     BookingCodeResult,
     CalendarEventGraphQLType,
-    CalendarGroupGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
     CodeEventResult,
     RejectExternalEventChangeRequestResult,
 )
 from calendar_integration.models import (
+    AppointmentType,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
     CalendarOwnership,
     EventManagementPermissions,
     ExternalEventChangeRequest,
 )
 from calendar_integration.services.dataclasses import (
+    AppointmentTypeEventInputData,
+    AppointmentTypeInputData,
+    AppointmentTypeSlotInputData,
+    AppointmentTypeSlotSelectionInputData,
     CalendarEventInputData,
-    CalendarGroupEventInputData,
-    CalendarGroupInputData,
-    CalendarGroupSlotInputData,
-    CalendarGroupSlotSelectionInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
@@ -67,7 +67,7 @@ from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 
 
 if TYPE_CHECKING:
-    from calendar_integration.services.calendar_group_service import CalendarGroupService
+    from calendar_integration.services.appointment_type_service import AppointmentTypeService
     from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.calendar_service import CalendarService
 
@@ -279,38 +279,38 @@ class CalendarWebhookMutations:
 
 
 # ---------------------------------------------------------------------------
-# CalendarGroup mutations
+# AppointmentType mutations
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class CalendarGroupMutationDependencies:
-    """Dependencies for CalendarGroup mutations."""
+class AppointmentTypeMutationDependencies:
+    """Dependencies for AppointmentType mutations."""
 
-    calendar_group_service: "CalendarGroupService"
+    appointment_type_service: "AppointmentTypeService"
     calendar_service: "CalendarService"
 
 
 @inject
-def get_calendar_group_mutation_dependencies(
-    calendar_group_service: Annotated[
-        "CalendarGroupService | None", Provide["calendar_group_service"]
+def get_appointment_type_mutation_dependencies(
+    appointment_type_service: Annotated[
+        "AppointmentTypeService | None", Provide["appointment_type_service"]
     ] = None,
     calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
-) -> CalendarGroupMutationDependencies:
-    required = [calendar_group_service, calendar_service]
+) -> AppointmentTypeMutationDependencies:
+    required = [appointment_type_service, calendar_service]
     if any(dep is None for dep in required):
         raise GraphQLError(
             f"Missing required dependency {', '.join([str(d) for d in required if d is None])}"
         )
-    return CalendarGroupMutationDependencies(
-        calendar_group_service=cast("CalendarGroupService", calendar_group_service),
+    return AppointmentTypeMutationDependencies(
+        appointment_type_service=cast("AppointmentTypeService", appointment_type_service),
         calendar_service=cast("CalendarService", calendar_service),
     )
 
 
 @strawberry.input
-class CalendarGroupSlotInput:
+class AppointmentTypeSlotInput:
     name: str
     calendar_ids: list[int]
     required_count: int = 1
@@ -319,41 +319,41 @@ class CalendarGroupSlotInput:
 
 
 @strawberry.input
-class CalendarGroupInput:
+class AppointmentTypeInput:
     organization_id: int
     name: str
     description: str = ""
-    slots: list[CalendarGroupSlotInput] = strawberry.field(default_factory=list)
+    slots: list[AppointmentTypeSlotInput] = strawberry.field(default_factory=list)
     is_private: bool = True
-    #: Exact length every booking through the group must span. Required to
-    #: create the group with ``is_private=False``: a codeless public booking
-    #: presents no code, so the group is the only place its length can come
-    #: from. Omitted leaves the group unpinned, which only private groups may be.
+    #: Exact length every booking through the appointment type must span. Required to
+    #: create the appointment type with ``is_private=False``: a codeless public booking
+    #: presents no code, so the appointment type is the only place its length can come
+    #: from. Omitted leaves the appointment type unpinned, which only private appointment types may be.
     duration_seconds: int | None = None
 
 
 @strawberry.input
-class UpdateCalendarGroupInput:
+class UpdateAppointmentTypeInput:
     organization_id: int
-    group_id: int
+    appointment_type_id: int
     name: str
     description: str = ""
-    slots: list[CalendarGroupSlotInput] = strawberry.field(default_factory=list)
+    slots: list[AppointmentTypeSlotInput] = strawberry.field(default_factory=list)
     is_private: bool | None = None
-    #: See ``CalendarGroupInput.duration_seconds``. Omitted leaves whatever the
-    #: group already has, so flipping ``is_private`` to False in the same call
-    #: succeeds only if the group already carries a duration or is given one here.
+    #: See ``AppointmentTypeInput.duration_seconds``. Omitted leaves whatever the
+    #: appointment type already has, so flipping ``is_private`` to False in the same call
+    #: succeeds only if the appointment type already carries a duration or is given one here.
     duration_seconds: int | None = None
 
 
 @strawberry.input
-class DeleteCalendarGroupInput:
+class DeleteAppointmentTypeInput:
     organization_id: int
-    group_id: int
+    appointment_type_id: int
 
 
 @strawberry.input
-class CalendarGroupSlotSelectionInput:
+class AppointmentTypeSlotSelectionInput:
     slot_id: int
     calendar_ids: list[int]
 
@@ -376,15 +376,15 @@ class EventAttendanceInput:
 
 
 @strawberry.input
-class CalendarGroupEventInput:
+class AppointmentTypeEventInput:
     organization_id: int
-    group_id: int
+    appointment_type_id: int
     title: str
     description: str
     start_time: datetime.datetime
     end_time: datetime.datetime
     timezone: str
-    slot_selections: list[CalendarGroupSlotSelectionInput]
+    slot_selections: list[AppointmentTypeSlotSelectionInput]
     attendances: list[EventAttendanceInput] = strawberry.field(default_factory=list)
     external_attendances: list[EventExternalAttendanceInput] = strawberry.field(
         default_factory=list
@@ -392,28 +392,30 @@ class CalendarGroupEventInput:
 
 
 @strawberry.type
-class CalendarGroupResult:
+class AppointmentTypeResult:
     success: bool
-    group: CalendarGroupGraphQLType | None = None
+    appointment_type: AppointmentTypeGraphQLType | None = None
     error_message: str | None = None
 
 
 @strawberry.type
-class DeleteCalendarGroupResult:
+class DeleteAppointmentTypeResult:
     success: bool
     error_message: str | None = None
 
 
 @strawberry.type
-class CalendarGroupEventResult:
+class AppointmentTypeEventResult:
     success: bool
     event: CalendarEventGraphQLType | None = None
     error_message: str | None = None
 
 
-def _to_slot_input_data(slots: list[CalendarGroupSlotInput]) -> list[CalendarGroupSlotInputData]:
+def _to_slot_input_data(
+    slots: list[AppointmentTypeSlotInput],
+) -> list[AppointmentTypeSlotInputData]:
     return [
-        CalendarGroupSlotInputData(
+        AppointmentTypeSlotInputData(
             name=s.name,
             calendar_ids=list(s.calendar_ids),
             required_count=s.required_count,
@@ -424,22 +426,24 @@ def _to_slot_input_data(slots: list[CalendarGroupSlotInput]) -> list[CalendarGro
     ]
 
 
-def _group_duration_from_seconds(duration_seconds: int | None) -> datetime.timedelta | None:
-    """Convert a group mutation's ``duration_seconds`` to the service's timedelta.
+def _appointment_type_duration_from_seconds(
+    duration_seconds: int | None,
+) -> datetime.timedelta | None:
+    """Convert an appointment type mutation's ``duration_seconds`` to the service's timedelta.
 
     Seconds is the unit every other duration-carrying field in this schema takes
-    at the boundary, so the group inputs match rather than introducing a Duration
+    at the boundary, so the appointment type inputs match rather than introducing a Duration
     scalar for two fields.
 
     ``None`` passes straight through: it is the "omitted, leave unchanged"
-    sentinel ``CalendarGroupInputData.duration`` uses, which also means there is
+    sentinel ``AppointmentTypeInputData.duration`` uses, which also means there is
     no way to clear a duration here -- deliberately, since clearing one on a
-    publicly schedulable group would fail open.
+    publicly schedulable appointment type would fail open.
     """
     if duration_seconds is None:
         return None
     if duration_seconds <= 0:
-        raise CalendarGroupValidationError("duration_seconds must be greater than zero.")
+        raise AppointmentTypeValidationError("duration_seconds must be greater than zero.")
     return datetime.timedelta(seconds=duration_seconds)
 
 
@@ -486,41 +490,41 @@ def get_booking_code_mutation_dependencies(
 
 
 @dataclass
-class GroupBookingCodeMutationDependencies:
-    """Dependencies for the unauthenticated group-booking-code mutations."""
+class AppointmentTypeBookingCodeMutationDependencies:
+    """Dependencies for the unauthenticated appointment-type-booking-code mutations."""
 
     calendar_permission_service: "CalendarPermissionService"
     calendar_service: "CalendarService"
-    calendar_group_service: "CalendarGroupService"
+    appointment_type_service: "AppointmentTypeService"
 
 
 @inject
-def get_group_booking_code_mutation_dependencies(
+def get_appointment_type_booking_code_mutation_dependencies(
     calendar_permission_service: Annotated[
         "CalendarPermissionService | None", Provide["calendar_permission_service"]
     ] = None,
     calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
-    calendar_group_service: Annotated[
-        "CalendarGroupService | None", Provide["calendar_group_service"]
+    appointment_type_service: Annotated[
+        "AppointmentTypeService | None", Provide["appointment_type_service"]
     ] = None,
-) -> GroupBookingCodeMutationDependencies:
-    """Get group-booking-code mutation dependencies from DI container.
+) -> AppointmentTypeBookingCodeMutationDependencies:
+    """Get appointment-type-booking-code mutation dependencies from DI container.
 
-    The DI container wires ``calendar_group_service.calendar_service`` to the
+    The DI container wires ``appointment_type_service.calendar_service`` to the
     same ``CalendarService`` factory instance that is returned as
     ``calendar_service`` here, so initialising ``calendar_service`` with a
-    booking code automatically propagates to ``calendar_group_service``.
+    booking code automatically propagates to ``appointment_type_service``.
     """
     if (
         calendar_permission_service is None
         or calendar_service is None
-        or calendar_group_service is None
+        or appointment_type_service is None
     ):
         raise GraphQLError("Internal server error.")
-    return GroupBookingCodeMutationDependencies(
+    return AppointmentTypeBookingCodeMutationDependencies(
         calendar_permission_service=cast("CalendarPermissionService", calendar_permission_service),
         calendar_service=cast("CalendarService", calendar_service),
-        calendar_group_service=cast("CalendarGroupService", calendar_group_service),
+        appointment_type_service=cast("AppointmentTypeService", appointment_type_service),
     )
 
 
@@ -534,11 +538,11 @@ class CreateBookingCodeInput:
 
 
 @strawberry.input
-class CreateGroupBookingCodeInput:
-    """Input for minting a single-use calendar-group booking code."""
+class CreateAppointmentTypeBookingCodeInput:
+    """Input for minting a single-use appointment-type booking code."""
 
     organization_id: int
-    calendar_group_id: int
+    appointment_type_id: int
     expires_at: datetime.datetime | None = None
 
 
@@ -553,11 +557,11 @@ class CreateEventCodeInput:
 
 
 @strawberry.input
-class CreateGroupEventCodeInput:
-    """Input for minting a single-use reschedule or cancel code scoped to a calendar group + event."""
+class CreateAppointmentTypeEventCodeInput:
+    """Input for minting a single-use reschedule or cancel code scoped to an appointment type + event."""
 
     organization_id: int
-    calendar_group_id: int
+    appointment_type_id: int
     event_id: int
     expires_at: datetime.datetime | None = None
 
@@ -585,7 +589,7 @@ class ExternalAttendeeCodeInput:
 
 @strawberry.input
 class CodeSlotSelectionInput:
-    """Per-slot calendar selection for the unauthenticated group-booking mutation."""
+    """Per-slot calendar selection for the unauthenticated appointment-type-booking mutation."""
 
     slot_id: int
     calendar_ids: list[int]
@@ -605,8 +609,8 @@ class CreateEventWithCodeInput:
 
 
 @strawberry.input
-class CreateGroupEventWithCodeInput:
-    """Input for the unauthenticated createCalendarGroupEventWithCode mutation."""
+class CreateAppointmentTypeEventWithCodeInput:
+    """Input for the unauthenticated createAppointmentTypeEventWithCode mutation."""
 
     code: str
     title: str
@@ -629,10 +633,10 @@ class RescheduleWithCodeInput:
 
 
 @strawberry.input
-class RescheduleGroupWithCodeInput:
-    """Input for the unauthenticated rescheduleCalendarGroupEventWithCode mutation.
+class RescheduleAppointmentTypeWithCodeInput:
+    """Input for the unauthenticated rescheduleAppointmentTypeEventWithCode mutation.
 
-    Slot selections are NOT included: v1 keeps existing group/calendar selections
+    Slot selections are NOT included: v1 keeps existing appointment type/calendar selections
     and changes ONLY the event times.  Full slot re-selection is deferred to a
     future version; how it should interact with the existing selections is
     still an open question.
@@ -652,119 +656,127 @@ class CancelWithCodeInput:
 
 
 @strawberry.type
-class CalendarGroupMutations:
-    """GraphQL mutations for CalendarGroup CRUD and grouped event booking."""
+class AppointmentTypeMutations:
+    """GraphQL mutations for AppointmentType CRUD and appointment-type event booking."""
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def create_calendar_group(
+    def create_appointment_type(
         self,
         info: strawberry.Info,
-        input: CalendarGroupInput,  # noqa: A002
-    ) -> CalendarGroupResult:
+        input: AppointmentTypeInput,  # noqa: A002
+    ) -> AppointmentTypeResult:
         organization = info.context.request.public_api_organization
         if organization is None:
-            return CalendarGroupResult(success=False, error_message="Organization not found")
+            return AppointmentTypeResult(success=False, error_message="Organization not found")
         if input.organization_id != organization.id:
-            return CalendarGroupResult(success=False, error_message="Organization not found")
-        deps = get_calendar_group_mutation_dependencies()
-        deps.calendar_group_service.initialize(organization=organization)
-        # create_group raises OverLimitError when the organization is at its
-        # calendar_groups limit. raise_over_limit_graphql_error renders the same
+            return AppointmentTypeResult(success=False, error_message="Organization not found")
+        deps = get_appointment_type_mutation_dependencies()
+        deps.appointment_type_service.initialize(organization=organization)
+        # create_appointment_type raises OverLimitError when the organization is at its
+        # appointment_types limit. raise_over_limit_graphql_error renders the same
         # body as the REST 402 response and rolls back the request transaction
         # (graphql-core swallows resolver exceptions and always returns 200).
         try:
-            group = deps.calendar_group_service.create_group(
-                CalendarGroupInputData(
+            appointment_type = deps.appointment_type_service.create_appointment_type(
+                AppointmentTypeInputData(
                     name=input.name,
                     description=input.description,
                     slots=_to_slot_input_data(input.slots),
                     accepts_public_scheduling=not input.is_private,
-                    # Raises CalendarGroupValidationError on a non-positive
-                    # value, caught below like any other group error.
-                    duration=_group_duration_from_seconds(input.duration_seconds),
+                    # Raises AppointmentTypeValidationError on a non-positive
+                    # value, caught below like any other appointment type error.
+                    duration=_appointment_type_duration_from_seconds(input.duration_seconds),
                 )
             )
         except OverLimitError as exc:
             raise_over_limit_graphql_error(exc)
-        except CalendarGroupError as e:
-            return CalendarGroupResult(success=False, error_message=str(e))
-        return CalendarGroupResult(success=True, group=group)  # type: ignore[arg-type]
+        except AppointmentTypeError as e:
+            return AppointmentTypeResult(success=False, error_message=str(e))
+        return AppointmentTypeResult(success=True, appointment_type=appointment_type)  # type: ignore[arg-type]
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def update_calendar_group(
+    def update_appointment_type(
         self,
         info: strawberry.Info,
-        input: UpdateCalendarGroupInput,  # noqa: A002
-    ) -> CalendarGroupResult:
+        input: UpdateAppointmentTypeInput,  # noqa: A002
+    ) -> AppointmentTypeResult:
         organization = info.context.request.public_api_organization
         if organization is None:
-            return CalendarGroupResult(success=False, error_message="Organization not found")
+            return AppointmentTypeResult(success=False, error_message="Organization not found")
         if input.organization_id != organization.id:
-            return CalendarGroupResult(success=False, error_message="Organization not found")
-        deps = get_calendar_group_mutation_dependencies()
-        deps.calendar_group_service.initialize(organization=organization)
+            return AppointmentTypeResult(success=False, error_message="Organization not found")
+        deps = get_appointment_type_mutation_dependencies()
+        deps.appointment_type_service.initialize(organization=organization)
         try:
             accepts_public_scheduling = None if input.is_private is None else not input.is_private
-            group = deps.calendar_group_service.update_group(
-                group_id=input.group_id,
-                data=CalendarGroupInputData(
+            appointment_type = deps.appointment_type_service.update_appointment_type(
+                appointment_type_id=input.appointment_type_id,
+                data=AppointmentTypeInputData(
                     name=input.name,
                     description=input.description,
                     slots=_to_slot_input_data(input.slots),
                     accepts_public_scheduling=accepts_public_scheduling,
-                    duration=_group_duration_from_seconds(input.duration_seconds),
+                    duration=_appointment_type_duration_from_seconds(input.duration_seconds),
                 ),
             )
-        except CalendarGroup.DoesNotExist:
-            return CalendarGroupResult(success=False, error_message="Group not found")
-        except CalendarGroupError as e:
-            return CalendarGroupResult(success=False, error_message=str(e))
-        return CalendarGroupResult(success=True, group=group)  # type: ignore[arg-type]
+        except AppointmentType.DoesNotExist:
+            return AppointmentTypeResult(success=False, error_message="AppointmentType not found")
+        except AppointmentTypeError as e:
+            return AppointmentTypeResult(success=False, error_message=str(e))
+        return AppointmentTypeResult(success=True, appointment_type=appointment_type)  # type: ignore[arg-type]
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def delete_calendar_group(
+    def delete_appointment_type(
         self,
         info: strawberry.Info,
-        input: DeleteCalendarGroupInput,  # noqa: A002
-    ) -> DeleteCalendarGroupResult:
+        input: DeleteAppointmentTypeInput,  # noqa: A002
+    ) -> DeleteAppointmentTypeResult:
         organization = info.context.request.public_api_organization
         if organization is None:
-            return DeleteCalendarGroupResult(success=False, error_message="Organization not found")
+            return DeleteAppointmentTypeResult(
+                success=False, error_message="Organization not found"
+            )
         if input.organization_id != organization.id:
-            return DeleteCalendarGroupResult(success=False, error_message="Organization not found")
-        deps = get_calendar_group_mutation_dependencies()
-        deps.calendar_group_service.initialize(organization=organization)
+            return DeleteAppointmentTypeResult(
+                success=False, error_message="Organization not found"
+            )
+        deps = get_appointment_type_mutation_dependencies()
+        deps.appointment_type_service.initialize(organization=organization)
         try:
-            deps.calendar_group_service.delete_group(group_id=input.group_id)
-        except CalendarGroup.DoesNotExist:
-            return DeleteCalendarGroupResult(success=False, error_message="Group not found")
-        except CalendarGroupError as e:
-            return DeleteCalendarGroupResult(success=False, error_message=str(e))
-        return DeleteCalendarGroupResult(success=True)
+            deps.appointment_type_service.delete_appointment_type(
+                appointment_type_id=input.appointment_type_id
+            )
+        except AppointmentType.DoesNotExist:
+            return DeleteAppointmentTypeResult(
+                success=False, error_message="AppointmentType not found"
+            )
+        except AppointmentTypeError as e:
+            return DeleteAppointmentTypeResult(success=False, error_message=str(e))
+        return DeleteAppointmentTypeResult(success=True)
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def create_calendar_group_event(
+    def create_appointment_type_event(
         self,
         info: strawberry.Info,
-        input: CalendarGroupEventInput,  # noqa: A002
-    ) -> CalendarGroupEventResult:
+        input: AppointmentTypeEventInput,  # noqa: A002
+    ) -> AppointmentTypeEventResult:
         organization = info.context.request.public_api_organization
         if organization is None:
-            return CalendarGroupEventResult(success=False, error_message="Organization not found")
+            return AppointmentTypeEventResult(success=False, error_message="Organization not found")
         if input.organization_id != organization.id:
-            return CalendarGroupEventResult(success=False, error_message="Organization not found")
-        deps = get_calendar_group_mutation_dependencies()
+            return AppointmentTypeEventResult(success=False, error_message="Organization not found")
+        deps = get_appointment_type_mutation_dependencies()
         deps.calendar_service.initialize_without_provider(organization=organization)
-        deps.calendar_group_service.initialize(organization=organization)
-        data = CalendarGroupEventInputData(
+        deps.appointment_type_service.initialize(organization=organization)
+        data = AppointmentTypeEventInputData(
             title=input.title,
             description=input.description,
             start_time=input.start_time,
             end_time=input.end_time,
             timezone=input.timezone,
-            group_id=input.group_id,
+            appointment_type_id=input.appointment_type_id,
             slot_selections=[
-                CalendarGroupSlotSelectionInputData(
+                AppointmentTypeSlotSelectionInputData(
                     slot_id=s.slot_id, calendar_ids=list(s.calendar_ids)
                 )
                 for s in input.slot_selections
@@ -782,30 +794,32 @@ class CalendarGroupMutations:
             ],
         )
         try:
-            event = deps.calendar_group_service.create_grouped_event(data)
-        except CalendarGroup.DoesNotExist:
-            return CalendarGroupEventResult(success=False, error_message="Group not found")
+            event = deps.appointment_type_service.create_appointment_type_event(data)
+        except AppointmentType.DoesNotExist:
+            return AppointmentTypeEventResult(
+                success=False, error_message="AppointmentType not found"
+            )
         except PermissionDenied as e:
-            return CalendarGroupEventResult(success=False, error_message=str(e))
+            return AppointmentTypeEventResult(success=False, error_message=str(e))
         except PermissionServiceInitializationError:
-            return CalendarGroupEventResult(
+            return AppointmentTypeEventResult(
                 success=False,
                 error_message=(
-                    "This group does not accept public scheduling. "
+                    "This appointment type does not accept public scheduling. "
                     "A token or scheduling code is required."
                 ),
             )
         except BookingPolicyViolationError as e:
-            return CalendarGroupEventResult(
+            return AppointmentTypeEventResult(
                 success=False,
                 error_message=(
                     str(e)
                     or "The requested time slot is not available under the current booking policy."
                 ),
             )
-        except CalendarGroupError as e:
-            return CalendarGroupEventResult(success=False, error_message=str(e))
-        return CalendarGroupEventResult(success=True, event=event)  # type: ignore[arg-type]
+        except AppointmentTypeError as e:
+            return AppointmentTypeEventResult(success=False, error_message=str(e))
+        return AppointmentTypeEventResult(success=True, event=event)  # type: ignore[arg-type]
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def create_calendar_booking_code(
@@ -856,15 +870,15 @@ class CalendarGroupMutations:
         return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def create_calendar_group_booking_code(
+    def create_appointment_type_booking_code(
         self,
         info: strawberry.Info,
-        input: CreateGroupBookingCodeInput,  # noqa: A002
+        input: CreateAppointmentTypeBookingCodeInput,  # noqa: A002
     ) -> BookingCodeResult:
-        """Mint a single-use booking code scoped to a calendar group.
+        """Mint a single-use booking code scoped to an appointment type.
 
         The token grants CREATE permission, allowing the code-bearer to book
-        an event against the bound calendar group.  The code is returned once
+        an event against the bound appointment type.  The code is returned once
         in plaintext — only its hash is persisted.
         """
         org = info.context.request.public_api_organization
@@ -882,14 +896,14 @@ class CalendarGroupMutations:
                 error_message="Organization not found.",
             )
 
-        # Verify the calendar group belongs to the authenticated org.
+        # Verify the appointment type belongs to the authenticated org.
         try:
-            CalendarGroup.objects.filter_by_organization(org.id).get(id=input.calendar_group_id)
-        except CalendarGroup.DoesNotExist:
+            AppointmentType.objects.filter_by_organization(org.id).get(id=input.appointment_type_id)
+        except AppointmentType.DoesNotExist:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Calendar group not found.",
+                error_message="Appointment type not found.",
             )
 
         minted_by = getattr(info.context.request, "public_api_system_user", None)
@@ -899,7 +913,7 @@ class CalendarGroupMutations:
             permissions=[EventManagementPermissions.CREATE],
             expires_at=input.expires_at,
             minted_by=minted_by,
-            calendar_group_id=input.calendar_group_id,
+            appointment_type_id=input.appointment_type_id,
         )
         return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
 
@@ -939,12 +953,12 @@ class CalendarGroupMutations:
                 error_message="Not found.",
             )
 
-        # Verify the event belongs to this org AND to the named calendar, and is not a grouped event.
+        # Verify the event belongs to this org AND to the named calendar, and is not an appointment-type event.
         try:
             CalendarEvent.objects.filter_by_organization(org.id).get(
                 id=input.event_id,
                 calendar_fk_id=input.calendar_id,
-                calendar_group_fk_id__isnull=True,
+                appointment_type_fk_id__isnull=True,
             )
         except CalendarEvent.DoesNotExist:
             return BookingCodeResult(
@@ -966,12 +980,12 @@ class CalendarGroupMutations:
         return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def create_calendar_group_reschedule_booking_code(
+    def create_appointment_type_reschedule_booking_code(
         self,
         info: strawberry.Info,
-        input: CreateGroupEventCodeInput,  # noqa: A002
+        input: CreateAppointmentTypeEventCodeInput,  # noqa: A002
     ) -> BookingCodeResult:
-        """Mint a single-use reschedule code bound to a specific event on a calendar group.
+        """Mint a single-use reschedule code bound to a specific event on an appointment type.
 
         The token grants RESCHEDULE permission for the bound event only.  The
         code is returned once in plaintext — only its hash is persisted.
@@ -991,21 +1005,21 @@ class CalendarGroupMutations:
                 error_message="Not found.",
             )
 
-        # Verify the calendar group belongs to the authenticated org.
+        # Verify the appointment type belongs to the authenticated org.
         try:
-            CalendarGroup.objects.filter_by_organization(org.id).get(id=input.calendar_group_id)
-        except CalendarGroup.DoesNotExist:
+            AppointmentType.objects.filter_by_organization(org.id).get(id=input.appointment_type_id)
+        except AppointmentType.DoesNotExist:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
                 error_message="Not found.",
             )
 
-        # Verify the event belongs to this org AND to the named calendar group.
+        # Verify the event belongs to this org AND to the named appointment type.
         try:
             CalendarEvent.objects.filter_by_organization(org.id).get(
                 id=input.event_id,
-                calendar_group_fk_id=input.calendar_group_id,
+                appointment_type_fk_id=input.appointment_type_id,
             )
         except CalendarEvent.DoesNotExist:
             return BookingCodeResult(
@@ -1021,7 +1035,7 @@ class CalendarGroupMutations:
             permissions=[EventManagementPermissions.RESCHEDULE],
             expires_at=input.expires_at,
             minted_by=minted_by,
-            calendar_group_id=input.calendar_group_id,
+            appointment_type_id=input.appointment_type_id,
             event_id=input.event_id,
         )
         return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
@@ -1062,12 +1076,12 @@ class CalendarGroupMutations:
                 error_message="Not found.",
             )
 
-        # Verify the event belongs to this org AND to the named calendar, and is not a grouped event.
+        # Verify the event belongs to this org AND to the named calendar, and is not an appointment-type event.
         try:
             CalendarEvent.objects.filter_by_organization(org.id).get(
                 id=input.event_id,
                 calendar_fk_id=input.calendar_id,
-                calendar_group_fk_id__isnull=True,
+                appointment_type_fk_id__isnull=True,
             )
         except CalendarEvent.DoesNotExist:
             return BookingCodeResult(
@@ -1089,12 +1103,12 @@ class CalendarGroupMutations:
         return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def create_calendar_group_cancellation_booking_code(
+    def create_appointment_type_cancellation_booking_code(
         self,
         info: strawberry.Info,
-        input: CreateGroupEventCodeInput,  # noqa: A002
+        input: CreateAppointmentTypeEventCodeInput,  # noqa: A002
     ) -> BookingCodeResult:
-        """Mint a single-use cancellation code bound to a specific event on a calendar group.
+        """Mint a single-use cancellation code bound to a specific event on an appointment type.
 
         The token grants CANCEL permission for the bound event only.  The code
         is returned once in plaintext — only its hash is persisted.
@@ -1114,21 +1128,21 @@ class CalendarGroupMutations:
                 error_message="Not found.",
             )
 
-        # Verify the calendar group belongs to the authenticated org.
+        # Verify the appointment type belongs to the authenticated org.
         try:
-            CalendarGroup.objects.filter_by_organization(org.id).get(id=input.calendar_group_id)
-        except CalendarGroup.DoesNotExist:
+            AppointmentType.objects.filter_by_organization(org.id).get(id=input.appointment_type_id)
+        except AppointmentType.DoesNotExist:
             return BookingCodeResult(
                 success=False,
                 error_code=BookingCodeErrorCode.INVALID_CODE,
                 error_message="Not found.",
             )
 
-        # Verify the event belongs to this org AND to the named calendar group.
+        # Verify the event belongs to this org AND to the named appointment type.
         try:
             CalendarEvent.objects.filter_by_organization(org.id).get(
                 id=input.event_id,
-                calendar_group_fk_id=input.calendar_group_id,
+                appointment_type_fk_id=input.appointment_type_id,
             )
         except CalendarEvent.DoesNotExist:
             return BookingCodeResult(
@@ -1144,7 +1158,7 @@ class CalendarGroupMutations:
             permissions=[EventManagementPermissions.CANCEL],
             expires_at=input.expires_at,
             minted_by=minted_by,
-            calendar_group_id=input.calendar_group_id,
+            appointment_type_id=input.appointment_type_id,
             event_id=input.event_id,
         )
         return BookingCodeResult(success=True, code=plaintext_code, id=token.pk)
@@ -1246,7 +1260,7 @@ class CalendarGroupMutations:
                 error_message="This code does not permit booking.",
             )
 
-        # --- Step 3: scope check — must be single-calendar (not group) ---
+        # --- Step 3: scope check — must be single-calendar (not appointment type) ---
         if token.calendar is None:
             return CodeEventResult(
                 success=False,
@@ -1344,23 +1358,23 @@ class CalendarGroupMutations:
         return CodeEventResult(success=True, event=event)  # type: ignore[arg-type]
 
     @strawberry.mutation
-    def create_calendar_group_event_with_code(
+    def create_appointment_type_event_with_code(
         self,
         info: strawberry.Info,
-        input: CreateGroupEventWithCodeInput,  # noqa: A002
+        input: CreateAppointmentTypeEventWithCodeInput,  # noqa: A002
     ) -> CodeEventResult:
-        """Book a grouped calendar event using a single-use group booking code.
+        """Book an appointment-type calendar event using a single-use appointment type booking code.
 
         This is an unauthenticated mutation: no org token is required.  The org
-        context, permissions, and group scope are all derived from the booking
+        context, permissions, and appointment type scope are all derived from the booking
         code.  On success the code is atomically consumed so it cannot be
         replayed.  On a failed create (slot unavailable, invalid selection, etc.)
         the code is NOT consumed and the patient may retry.
 
-        The group_id is taken STRICTLY from the token — the client cannot
+        The appointment_type_id is taken STRICTLY from the token — the client cannot
         override it via the input.
         """
-        deps = get_group_booking_code_mutation_dependencies()
+        deps = get_appointment_type_booking_code_mutation_dependencies()
 
         # --- Step 1: resolve and validate the code ---
         try:
@@ -1399,13 +1413,13 @@ class CalendarGroupMutations:
                 error_message="This code does not permit booking.",
             )
 
-        # --- Step 3: scope check — must be group-scoped (not single-calendar) ---
-        if token.calendar_group is None:
+        # --- Step 3: scope check — must be appointment-type-scoped (not single-calendar) ---
+        if token.appointment_type is None:
             return CodeEventResult(
                 success=False,
                 error_code=BookingCodeErrorCode.NOT_PERMITTED,
                 error_message=(
-                    "This code is not scoped to a calendar group. "
+                    "This code is not scoped to an appointment type. "
                     "Use createCalendarEventWithCode for single-calendar codes."
                 ),
             )
@@ -1423,17 +1437,17 @@ class CalendarGroupMutations:
         # --- Step 5: extract client IP for audit ---
         source_ip = _client_ip_from_request(info.context.request)
 
-        # --- Step 6: build group event data ---
-        # group_id comes from the token — not from client input — to enforce scope.
-        group_event_data = CalendarGroupEventInputData(
-            group_id=token.calendar_group.id,
+        # --- Step 6: build appointment type event data ---
+        # appointment_type_id comes from the token — not from client input — to enforce scope.
+        appointment_type_event_data = AppointmentTypeEventInputData(
+            appointment_type_id=token.appointment_type.id,
             title=input.title,
             description=input.description or "",
             start_time=input.start_time,
             end_time=input.end_time,
             timezone=input.timezone,
             slot_selections=[
-                CalendarGroupSlotSelectionInputData(
+                AppointmentTypeSlotSelectionInputData(
                     slot_id=s.slot_id,
                     calendar_ids=list(s.calendar_ids),
                 )
@@ -1451,10 +1465,10 @@ class CalendarGroupMutations:
 
         # --- Step 7: atomic create + consume ---
         # ``deps.calendar_service`` is the authoritative, code-initialized instance.
-        # Explicitly wire it into ``deps.calendar_group_service`` so that the event
+        # Explicitly wire it into ``deps.appointment_type_service`` so that the event
         # is created on the same CalendarService instance that carries the booking
         # code's token — this is necessary because the DI container's Factory
-        # provider gives CalendarGroupService its OWN CalendarService instance via its
+        # provider gives AppointmentTypeService its OWN CalendarService instance via its
         # @inject __init__.  Without this explicit wiring the primary-calendar create
         # would use an uninitialized instance and the permission / availability checks
         # would fail.
@@ -1463,17 +1477,19 @@ class CalendarGroupMutations:
                 deps.calendar_service.initialize_without_provider(
                     user_or_token=input.code, organization=org
                 )
-                deps.calendar_group_service.calendar_service = deps.calendar_service
-                # Share the token-initialized permission service so the group-level
-                # ``can_perform_group_scheduling`` gate can read the group-scoped token.
-                # Without this the group service would hold a separate, uninitialized
-                # CalendarPermissionService instance and deny private-group bookings
-                # even when a valid group-scoped code was provided.
-                deps.calendar_group_service.calendar_permission_service = (
+                deps.appointment_type_service.calendar_service = deps.calendar_service
+                # Share the token-initialized permission service so the appointment-type-level
+                # ``can_perform_appointment_type_scheduling`` gate can read the appointment-type-scoped token.
+                # Without this the appointment type service would hold a separate, uninitialized
+                # CalendarPermissionService instance and deny private-appointment-type bookings
+                # even when a valid appointment-type-scoped code was provided.
+                deps.appointment_type_service.calendar_permission_service = (
                     deps.calendar_service.calendar_permission_service
                 )
-                deps.calendar_group_service.initialize(organization=org)
-                event = deps.calendar_group_service.create_grouped_event(group_event_data)
+                deps.appointment_type_service.initialize(organization=org)
+                event = deps.appointment_type_service.create_appointment_type_event(
+                    appointment_type_event_data
+                )
                 deps.calendar_permission_service.consume_code(token, source_ip)
         except (TokenAlreadyUsedError, TokenExpiredError, TokenRevokedError) as e:
             # Concurrent consumer won the race, or state changed between resolve and consume.
@@ -1505,7 +1521,7 @@ class CalendarGroupMutations:
                     "The requested time slot is not available under the current booking policy."
                 ),
             )
-        except (EventManagementError, CalendarGroupError):
+        except (EventManagementError, AppointmentTypeError):
             # Slot taken / invalid selection / invalid times — code NOT consumed (txn rolled
             # back), patient may retry with a different slot.
             # Note: NoAvailableTimeWindowsError is a subclass of EventManagementError and
@@ -1515,7 +1531,7 @@ class CalendarGroupMutations:
                 error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
                 error_message="The requested time slot is not available.",
             )
-        # create_grouped_event raises OverLimitError at the organization's postpaid
+        # create_appointment_type_event raises OverLimitError at the organization's postpaid
         # event_occurrences allowance (no payment method on file). Rendered via
         # raise_over_limit_graphql_error (which also rolls back the request
         # transaction -- see its docstring), like the single-calendar booking-code
@@ -1583,7 +1599,7 @@ class CalendarGroupMutations:
                 error_message="This code does not permit rescheduling.",
             )
 
-        # --- Step 3: scope check — must be event-scoped and single-calendar (not group) ---
+        # --- Step 3: scope check — must be event-scoped and single-calendar (not appointment type) ---
         if token.event is None:
             return CodeEventResult(
                 success=False,
@@ -1591,14 +1607,14 @@ class CalendarGroupMutations:
                 error_message="This code is not bound to a specific event.",
             )
 
-        # A group-reschedule code has calendar_group set; route to the group path instead.
-        if token.calendar_group is not None:
+        # An appointment-type-reschedule code has appointment type set; route to the appointment type path instead.
+        if token.appointment_type is not None:
             return CodeEventResult(
                 success=False,
                 error_code=BookingCodeErrorCode.NOT_PERMITTED,
                 error_message=(
-                    "This code is scoped to a calendar group. "
-                    "Use rescheduleCalendarGroupEventWithCode for group-scoped codes."
+                    "This code is scoped to an appointment type. "
+                    "Use rescheduleAppointmentTypeEventWithCode for appointment-type-scoped codes."
                 ),
             )
 
@@ -1736,7 +1752,7 @@ class CalendarGroupMutations:
                 error_code=BookingCodeErrorCode.NOT_PERMITTED,
                 error_message="This code does not permit rescheduling this event.",
             )
-        except (EventManagementError, CalendarGroupError):
+        except (EventManagementError, AppointmentTypeError):
             # Slot outside availability / invalid times — code NOT consumed (txn rolled
             # back), patient may retry with a different slot.
             # Note: NoAvailableTimeWindowsError is a subclass of EventManagementError and
@@ -1750,28 +1766,28 @@ class CalendarGroupMutations:
         return CodeEventResult(success=True, event=event)  # type: ignore[arg-type]
 
     @strawberry.mutation
-    def reschedule_calendar_group_event_with_code(
+    def reschedule_appointment_type_event_with_code(
         self,
         info: strawberry.Info,
-        input: RescheduleGroupWithCodeInput,  # noqa: A002
+        input: RescheduleAppointmentTypeWithCodeInput,  # noqa: A002
     ) -> CodeEventResult:
-        """Reschedule a grouped event bound to a single-use GROUP RESCHEDULE code.
+        """Reschedule an appointment-type event bound to a single-use APPOINTMENT_TYPE RESCHEDULE code.
 
         This is an unauthenticated mutation: no org token is required.  The org
-        context, calendar-group scope, and the specific grouped event to reschedule
+        context, appointment-type scope, and the specific appointment-type event to reschedule
         are all derived from the booking code.  On success the code is atomically
         consumed so it cannot be replayed.  On a failed reschedule (slot outside
         availability, etc.) the code is NOT consumed and the patient may retry.
 
         Only the start/end/timezone fields change — title, description, attendees,
-        resource allocations, and the group's calendar selections are preserved
+        resource allocations, and the appointment type's calendar selections are preserved
         exactly from the existing event (time-only v1; full slot re-selection is
         deferred to a future version, and how it should interact with the existing
         selections is still an open question).  The event id is preserved so that
         external integrations (e.g. Building Blocks) continue to reference the
         same event.
         """
-        deps = get_group_booking_code_mutation_dependencies()
+        deps = get_appointment_type_booking_code_mutation_dependencies()
 
         # --- Step 1: resolve and validate the code ---
         try:
@@ -1810,7 +1826,7 @@ class CalendarGroupMutations:
                 error_message="This code does not permit rescheduling.",
             )
 
-        # --- Step 3: scope check — must be event-scoped AND group-scoped ---
+        # --- Step 3: scope check — must be event-scoped AND appointment-type-scoped ---
         if token.event is None:
             return CodeEventResult(
                 success=False,
@@ -1818,13 +1834,13 @@ class CalendarGroupMutations:
                 error_message="This code is not bound to a specific event.",
             )
 
-        # A single-calendar reschedule code has no calendar_group; route to the single-calendar path.
-        if token.calendar_group is None:
+        # A single-calendar reschedule code has no appointment type; route to the single-calendar path.
+        if token.appointment_type is None:
             return CodeEventResult(
                 success=False,
                 error_code=BookingCodeErrorCode.NOT_PERMITTED,
                 error_message=(
-                    "This code is not scoped to a calendar group. "
+                    "This code is not scoped to an appointment type. "
                     "Use rescheduleCalendarEventWithCode for single-calendar codes."
                 ),
             )
@@ -1844,11 +1860,11 @@ class CalendarGroupMutations:
 
         # --- Step 6: event_id from token (not client input) ---
         # calendar_id and event_id come strictly from the token so the code can
-        # only ever affect the exact grouped event it was minted for.
+        # only ever affect the exact appointment-type event it was minted for.
         event_id: int = token.event_fk_id  # type: ignore[assignment]
 
         # --- Step 7: availability pre-check (code-path only) ---
-        # For the primary calendar of the bound grouped event: if it manages
+        # For the primary calendar of the bound appointment-type event: if it manages
         # availability windows, verify the new times fall within a declared window
         # BEFORE entering the atomic block.  This keeps the code alive on failure.
         try:
@@ -1883,16 +1899,16 @@ class CalendarGroupMutations:
         # Update FIRST, then consume — so on a race the loser's consume_code raises under
         # the row lock and the whole transaction (including the just-updated event) rolls
         # back, leaving exactly one update and the code consumed once.
-        # ``deps.calendar_service`` is connected to ``deps.calendar_group_service``
+        # ``deps.calendar_service`` is connected to ``deps.appointment_type_service``
         # so that the update runs on the same code-initialized CalendarService instance.
         try:
             with transaction.atomic():
                 deps.calendar_service.initialize_without_provider(
                     user_or_token=input.code, organization=org
                 )
-                deps.calendar_group_service.calendar_service = deps.calendar_service
-                deps.calendar_group_service.initialize(organization=org)
-                event = deps.calendar_group_service.reschedule_grouped_event(
+                deps.appointment_type_service.calendar_service = deps.calendar_service
+                deps.appointment_type_service.initialize(organization=org)
+                event = deps.appointment_type_service.reschedule_appointment_type_event(
                     event_id=event_id,
                     start_time=input.start_time,
                     end_time=input.end_time,
@@ -1920,7 +1936,7 @@ class CalendarGroupMutations:
                 error_code=BookingCodeErrorCode.NOT_PERMITTED,
                 error_message="This code does not permit rescheduling this event.",
             )
-        except (EventManagementError, CalendarGroupError):
+        except (EventManagementError, AppointmentTypeError):
             # Slot outside availability / invalid times — code NOT consumed (txn rolled
             # back), patient may retry with a different slot.
             # Note: NoAvailableTimeWindowsError is a subclass of EventManagementError and
@@ -1942,19 +1958,19 @@ class CalendarGroupMutations:
         """Cancel an event bound to a single-use CANCEL booking code.
 
         This is an unauthenticated mutation: no org token is required.  The org
-        context, scope (single-calendar or group), and the specific event to cancel
+        context, scope (single-calendar or appointment type), and the specific event to cancel
         are all derived from the booking code.  On success the code is atomically
         consumed so it cannot be replayed.
 
-        Handles both a calendar-bound (non-grouped) cancel code and a group-bound
-        (grouped event) cancel code via the SAME mutation.  The routing is determined
-        by whether ``token.calendar_group`` is set.
+        Handles both a calendar-bound (non-appointment-type) cancel code and an appointment-type-bound
+        (appointment-type event) cancel code via the SAME mutation.  The routing is determined
+        by whether ``token.appointment_type`` is set.
 
-        For grouped events the non-primary ``BlockedTime`` rows (linked only by the
+        For appointment-type events the non-primary ``BlockedTime`` rows (linked only by the
         string ``external_id`` convention) are explicitly deleted before the primary
         event is removed, so no orphaned busy-markers remain.
         """
-        deps = get_group_booking_code_mutation_dependencies()
+        deps = get_appointment_type_booking_code_mutation_dependencies()
 
         # --- Step 1: resolve and validate the code ---
         try:
@@ -2018,9 +2034,9 @@ class CalendarGroupMutations:
         # The event will be deleted inside the transaction; capture its id and calendar
         # now so we can refer to them without querying a deleted row.
         event_id: int = token.event_fk_id  # type: ignore[assignment]
-        # For single-calendar path only; group path uses cancel_grouped_event.
+        # For single-calendar path only; appointment type path uses cancel_appointment_type_event.
         single_calendar_id: int | None = (
-            None if token.calendar_group is not None else token.event.calendar_fk_id
+            None if token.appointment_type is not None else token.event.calendar_fk_id
         )
 
         # --- Step 7: atomic consume + delete ---
@@ -2037,12 +2053,12 @@ class CalendarGroupMutations:
                 deps.calendar_service.initialize_without_provider(
                     user_or_token=input.code, organization=org
                 )
-                if token.calendar_group is not None:
-                    # Group-cancel path: wire the same CalendarService instance so
+                if token.appointment_type is not None:
+                    # Appointment-type-cancel path: wire the same CalendarService instance so
                     # that permission checks run against the code's token.
-                    deps.calendar_group_service.calendar_service = deps.calendar_service
-                    deps.calendar_group_service.initialize(organization=org)
-                    deps.calendar_group_service.cancel_grouped_event(
+                    deps.appointment_type_service.calendar_service = deps.calendar_service
+                    deps.appointment_type_service.initialize(organization=org)
+                    deps.appointment_type_service.cancel_appointment_type_event(
                         event_id=event_id,
                         delete_series=False,
                     )
@@ -2084,9 +2100,9 @@ class CalendarGroupMutations:
                 error_code=BookingCodeErrorCode.INVALID_CODE,
                 error_message="Invalid or unknown booking code.",
             )
-        except CalendarGroupValidationError:
-            # Group-path: the bound event is not actually a grouped event (scope mismatch),
-            # or the cancel_grouped_event preconditions failed for a structural reason.
+        except AppointmentTypeValidationError:
+            # Appointment-type-path: the bound event is not actually an appointment-type event (scope mismatch),
+            # or the cancel_appointment_type_event preconditions failed for a structural reason.
             # This is a permission/scope issue, not a slot-availability issue.
             return CodeEventResult(
                 success=False,
@@ -2099,7 +2115,7 @@ class CalendarGroupMutations:
                 error_code=BookingCodeErrorCode.NOT_PERMITTED,
                 error_message="This code does not permit cancellation of this event.",
             )
-        except (EventManagementError, CalendarGroupError):
+        except (EventManagementError, AppointmentTypeError):
             return CodeEventResult(
                 success=False,
                 error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,

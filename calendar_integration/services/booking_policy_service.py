@@ -1,7 +1,7 @@
 """BookingPolicyService — resolver and CRUD for BookingPolicy.
 
 Resolves the effective booking policy for a single calendar, a bundle calendar,
-or a calendar group via a deterministic precedence chain:
+or an appointment type via a deterministic precedence chain:
 
 - **Single calendar**: calendar policy → owning-membership policy → org-default
   policy → unconstrained.  Owning membership is resolved through
@@ -13,9 +13,9 @@ or a calendar group via a deterministic precedence chain:
   ``bundle_children`` via ``most_restrictive(EffectivePolicy.from_model(p) ...)``
   → unconstrained.
 
-- **Calendar group**: explicit group policy (looked up by calendar_group FK) →
+- **Appointment type**: explicit appointment type policy (looked up by appointment type FK) →
   most-restrictive combination across all calendars that belong to any slot in
-  the group → unconstrained.
+  the appointment type → unconstrained.
 
 All write paths (create / update / delete) emit ``OrganizationAuditService`` records and
 enforce the uniqueness contract (one policy per target per org).
@@ -33,9 +33,9 @@ from calendar_integration.exceptions import (
     DuplicateBookingPolicyError,
 )
 from calendar_integration.models import (
+    AppointmentType,
     BookingPolicy,
     Calendar,
-    CalendarGroup,
     CalendarOwnership,
     ChildrenCalendarRelationship,
 )
@@ -112,7 +112,7 @@ class BookingPolicyService:
         No-op when ``audit_service`` or ``organization`` is not bound — so
         instrumentation never breaks a write path (mirrors the pattern used by
         ``CalendarService._audit_calendar_write`` and
-        ``CalendarGroupService._audit_group_write``).
+        ``AppointmentTypeService._audit_appointment_type_write``).
         """
         if self.audit_service is None or self.organization is None:
             return
@@ -145,11 +145,11 @@ class BookingPolicyService:
             membership_user_id=membership_user_id,
         )
 
-    def _policy_for_group(self, calendar_group_id: int) -> BookingPolicy | None:
-        """Return the group-level policy for ``calendar_group_id``, or ``None``."""
+    def _policy_for_appointment_type(self, appointment_type_id: int) -> BookingPolicy | None:
+        """Return the appointment-type-level policy for ``appointment_type_id``, or ``None``."""
         return BookingPolicy.objects.for_target(
             self.organization.id,  # type: ignore[union-attr]
-            calendar_group_id=calendar_group_id,
+            appointment_type_id=appointment_type_id,
         )
 
     def _org_default_policy(self) -> BookingPolicy | None:
@@ -268,14 +268,14 @@ class BookingPolicyService:
         # 3. Unconstrained.
         return EffectivePolicy.unconstrained()
 
-    def resolve_for_group(self, group: CalendarGroup) -> EffectivePolicy:
-        """Resolve the effective booking policy for a calendar group.
+    def resolve_for_appointment_type(self, appointment_type: AppointmentType) -> EffectivePolicy:
+        """Resolve the effective booking policy for an appointment type.
 
         Precedence (resolved entirely in the DB via
-        ``CalendarGroupQuerySet.annotate_effective_policy``):
-        1. Explicit policy attached to the group (calendar_group FK).
+        ``AppointmentTypeQuerySet.annotate_effective_policy``):
+        1. Explicit policy attached to the appointment type (appointment type FK).
         2. ``most_restrictive`` combination across all calendars that belong to
-           any slot in the group, each resolved via the single-calendar chain.
+           any slot in the appointment type, each resolved via the single-calendar chain.
         3. ``EffectivePolicy.unconstrained()``.
 
         One query regardless of participant count: the participant traversal and
@@ -284,9 +284,9 @@ class BookingPolicyService:
         self._assert_initialized()
 
         row = (
-            CalendarGroup.objects.filter_by_organization(self.organization.id)  # type: ignore[union-attr]
+            AppointmentType.objects.filter_by_organization(self.organization.id)  # type: ignore[union-attr]
             .annotate_effective_policy()
-            .get(pk=group.id)
+            .get(pk=appointment_type.id)
         )
         return EffectivePolicy.from_annotation(row)
 
@@ -299,7 +299,7 @@ class BookingPolicyService:
         *,
         calendar: Calendar | None = None,
         membership_user_id: int | None = None,
-        calendar_group: CalendarGroup | None = None,
+        appointment_type: AppointmentType | None = None,
         is_organization_default: bool = False,
         lead_time_seconds: int = 0,
         max_horizon_seconds: int = 0,
@@ -318,13 +318,13 @@ class BookingPolicyService:
         targets_set = [
             calendar is not None,
             membership_user_id is not None,
-            calendar_group is not None,
+            appointment_type is not None,
             is_organization_default,
         ]
         if sum(targets_set) != 1:
             raise ValueError(
                 "create_booking_policy requires exactly one target: calendar, "
-                "membership_user_id, calendar_group, or is_organization_default."
+                "membership_user_id, appointment type, or is_organization_default."
             )
 
         org_id = self.organization.id  # type: ignore[union-attr]
@@ -351,9 +351,12 @@ class BookingPolicyService:
                 f"A BookingPolicy already exists for membership {membership_user_id} "
                 f"in organization {org_id}."
             )
-        if calendar_group is not None and self._policy_for_group(calendar_group.id) is not None:
+        if (
+            appointment_type is not None
+            and self._policy_for_appointment_type(appointment_type.id) is not None
+        ):
             raise DuplicateBookingPolicyError(
-                f"A BookingPolicy already exists for calendar group {calendar_group.id} "
+                f"A BookingPolicy already exists for appointment type {appointment_type.id} "
                 f"in organization {org_id}."
             )
         if is_organization_default and self._org_default_policy() is not None:
@@ -365,7 +368,7 @@ class BookingPolicyService:
             organization=org,
             calendar=calendar,
             membership_user_id=membership_user_id,
-            calendar_group=calendar_group,
+            appointment_type=appointment_type,
             is_organization_default=is_organization_default,
             lead_time_seconds=lead_time_seconds,
             max_horizon_seconds=max_horizon_seconds,
@@ -386,7 +389,7 @@ class BookingPolicyService:
     ) -> BookingPolicy:
         """Update the rule-fields of an existing BookingPolicy.
 
-        Target fields (calendar, membership, calendar_group, is_organization_default)
+        Target fields (calendar, membership, appointment type, is_organization_default)
         are intentionally not updatable — to change a target, delete and re-create.
         Emits an ``OrganizationAuditService`` UPDATE record with field diffs on success.
         """
@@ -457,10 +460,10 @@ class BookingPolicyService:
         policy = self._policy_for_membership(membership_user_id)
         self.delete_booking_policy(policy)
 
-    def delete_policy_for_group(self, calendar_group: CalendarGroup) -> None:
-        """Delete the policy attached to ``calendar_group``, or no-op if absent."""
+    def delete_policy_for_appointment_type(self, appointment_type: AppointmentType) -> None:
+        """Delete the policy attached to ``appointment_type``, or no-op if absent."""
         self._assert_initialized()
-        policy = self._policy_for_group(calendar_group.id)
+        policy = self._policy_for_appointment_type(appointment_type.id)
         self.delete_booking_policy(policy)
 
     def delete_org_default_policy(self) -> None:

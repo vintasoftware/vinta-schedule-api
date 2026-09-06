@@ -138,7 +138,7 @@ def _event_input_data(
 ) -> CalendarEventInputData:
     """Build a ``CalendarEventInputData`` for the standard test booking window.
 
-    ``group_authorized=True`` bypasses the permission-service check inside
+    ``appointment_type_authorized=True`` bypasses the permission-service check inside
     ``CalendarEventService.create_event`` so the tests don't need real token
     plumbing; the booking-policy enforcement (our concern) runs first.
     """
@@ -151,7 +151,7 @@ def _event_input_data(
         attendances=[],
         external_attendances=[],
         resource_allocations=[],
-        group_authorized=True,
+        appointment_type_authorized=True,
     )
 
 

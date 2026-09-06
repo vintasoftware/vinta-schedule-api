@@ -18,13 +18,13 @@ from vinta_billing.constants import BillingState
 from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
 
 from calendar_integration.constants import CalendarType, CalendarVisibility
-from calendar_integration.exceptions import CalendarGroupValidationError
+from calendar_integration.exceptions import AppointmentTypeValidationError
 from calendar_integration.models import (
+    AppointmentType,
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
     CalendarOwnership,
     ChildrenCalendarRelationship,
     EventAttendance,
@@ -495,17 +495,17 @@ class TestCreateInvitationMutation:
         assert data["data"]["createInvitation"]["token"] is None
         assert data["data"]["createInvitation"]["inviteUrl"] is None
 
-        # Verify invite_user_to_organization was called with the member group --
-        # the narrowing of the ``groups`` default, ``["organization_member"]``.
+        # Verify invite_user_to_organization was called with the member appointment type --
+        # the narrowing of the ``appointment_types`` default, ``["organization_member"]``.
         mock_invite.assert_called_once()
         call_kwargs = mock_invite.call_args.kwargs
         assert call_kwargs["email"] == user_email
         assert call_kwargs["organization"] == child_org
-        assert call_kwargs["group"] == GROUP_ORGANIZATION_MEMBER
+        assert call_kwargs["appointment_type"] == GROUP_ORGANIZATION_MEMBER
         assert call_kwargs["invited_by"] is None
 
-    def test_create_invitation_with_explicit_admin_group(self):
-        """A reseller creates an invitation naming the ``organization_admin`` group."""
+    def test_create_invitation_with_explicit_admin_appointment_type(self):
+        """A reseller creates an invitation naming the ``organization_admin`` appointment type."""
         reseller_org, system_user, token, auth_service = self._setup_reseller()
         child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
 
@@ -532,7 +532,7 @@ class TestCreateInvitationMutation:
                     "input": {
                         "userEmail": user_email,
                         "organizationId": str(child_org.id),
-                        "groups": ["organization_admin"],
+                        "appointment_types": ["organization_admin"],
                     }
                 },
             )
@@ -543,7 +543,7 @@ class TestCreateInvitationMutation:
 
         mock_invite.assert_called_once()
         call_kwargs = mock_invite.call_args.kwargs
-        assert call_kwargs["group"] == GROUP_ORGANIZATION_ADMIN
+        assert call_kwargs["appointment_type"] == GROUP_ORGANIZATION_ADMIN
 
     def test_create_invitation_already_active_member_returns_error(self):
         """createInvitation for an already-active member of the target org → typed error."""
@@ -2899,7 +2899,7 @@ class TestGetCalendarMutationDependencies:
         deps = get_calendar_mutation_dependencies()
         assert deps is not None
         assert deps.calendar_service is not None
-        assert deps.calendar_group_service is not None
+        assert deps.appointment_type_service is not None
 
     def test_get_calendar_mutation_dependencies_missing_calendar_service(self):
         """Missing calendar_service raises GraphQLError."""
@@ -2912,12 +2912,12 @@ class TestGetCalendarMutationDependencies:
             # The error should mention the missing dependencies
             assert "Missing required dependencies" in str(exc_info.value)
 
-    def test_get_calendar_mutation_dependencies_missing_calendar_group_service(self):
-        """Missing calendar_group_service raises GraphQLError."""
+    def test_get_calendar_mutation_dependencies_missing_appointment_type_service(self):
+        """Missing appointment_type_service raises GraphQLError."""
         from di_core.containers import container
 
         # Override with None to simulate missing dependency
-        with container.calendar_group_service.override(None):
+        with container.appointment_type_service.override(None):
             with pytest.raises(GraphQLError) as exc_info:
                 get_calendar_mutation_dependencies()
             # The error should mention the missing dependencies
@@ -10983,12 +10983,12 @@ class TestScopedTokenRescheduleCalendarEvent:
 
 
 # ---------------------------------------------------------------------------
-# GraphQL mutation string for rescheduleCalendarGroupEvent
+# GraphQL mutation string for rescheduleAppointmentTypeEvent
 # ---------------------------------------------------------------------------
 
-_RESCHEDULE_CALENDAR_GROUP_EVENT = """
-mutation RescheduleCalendarGroupEvent($input: RescheduleCalendarGroupEventInput!) {
-    rescheduleCalendarGroupEvent(input: $input) {
+_RESCHEDULE_APPOINTMENT_TYPE_EVENT = """
+mutation RescheduleAppointmentTypeEvent($input: RescheduleAppointmentTypeEventInput!) {
+    rescheduleAppointmentTypeEvent(input: $input) {
         id
         title
         startTime
@@ -10998,13 +10998,13 @@ mutation RescheduleCalendarGroupEvent($input: RescheduleCalendarGroupEventInput!
 """
 
 
-def _make_grouped_event(org, group, primary_calendar, secondary_calendar):
+def _make_appointment_type_event(org, appointment_type, primary_calendar, secondary_calendar):
     """Create a primary CalendarEvent with a linked non-primary BlockedTime.
 
-    The primary event has ``calendar_group_fk`` set to the given group.  The
+    The primary event has ``appointment_type_fk`` set to the given appointment type.  The
     secondary calendar receives a ``BlockedTime`` following the canonical
-    ``group-event-{event_id}-cal-{cid}`` external_id convention used by
-    ``_create_non_primary_blocked_times`` and ``reschedule_grouped_event``.
+    ``appointment-type-event-{event_id}-cal-{cid}`` external_id convention used by
+    ``_create_non_primary_blocked_times`` and ``reschedule_appointment_type_event``.
 
     Returns (primary_event, blocked_time).
     """
@@ -11012,9 +11012,9 @@ def _make_grouped_event(org, group, primary_calendar, secondary_calendar):
         _CalendarEvent,
         organization=org,
         calendar=primary_calendar,
-        calendar_group=group,
-        title="Group Meeting",
-        description="Group description.",
+        appointment_type=appointment_type,
+        title="AppointmentType Meeting",
+        description="AppointmentType description.",
         timezone="UTC",
         start_time_tz_unaware=datetime.datetime(2026, 11, 5, 10, 0),
         end_time_tz_unaware=datetime.datetime(2026, 11, 5, 11, 0),
@@ -11027,24 +11027,24 @@ def _make_grouped_event(org, group, primary_calendar, secondary_calendar):
         start_time_tz_unaware=datetime.datetime(2026, 11, 5, 10, 0),
         end_time_tz_unaware=datetime.datetime(2026, 11, 5, 11, 0),
         timezone="UTC",
-        reason=f"Group booking: {event.title}",
-        external_id=f"group-event-{event.id}-cal-{secondary_calendar.id}",
+        reason=f"AppointmentType booking: {event.title}",
+        external_id=f"appointment-type-event-{event.id}-cal-{secondary_calendar.id}",
     )
     return event, blocked_time
 
 
 @pytest.mark.django_db
-class TestScopedTokenRescheduleCalendarGroupEvent:
-    """Integration tests for the owner-scoped ``rescheduleCalendarGroupEvent`` mutation.
+class TestScopedTokenRescheduleAppointmentTypeEvent:
+    """Integration tests for the owner-scoped ``rescheduleAppointmentTypeEvent`` mutation.
 
     Coverage:
-    - Scoped token reschedules its own grouped event → primary event times change AND
-      the linked ``group-event-*`` ``BlockedTime``s are updated to the new times.
-    - Cross-owner denial: scoped token A targeting a grouped event whose primary
+    - Scoped token reschedules its own appointment-type event → primary event times change AND
+      the linked ``appointment-type-event-*`` ``BlockedTime``s are updated to the new times.
+    - Cross-owner denial: scoped token A targeting an appointment-type event whose primary
       calendar is owned by owner B → uniform not-found (``"Calendar not found."``),
       no mutation (no existence leak).
-    - Org-wide token acts org-wide → can reschedule any grouped event in the org.
-    - Non-grouped event_id → ``"Event not found."`` (no leak), no mutation.
+    - Org-wide token acts org-wide → can reschedule any appointment-type event in the org.
+    - Non-appointment-type event_id → ``"Event not found."`` (no leak), no mutation.
     """
 
     def setup_method(self):
@@ -11082,7 +11082,7 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
                 headers={"authorization": f"Bearer {system_user.id}:{token}"},
             )
 
-    def _reschedule_group_input(self, org, event, **overrides):
+    def _reschedule_appointment_type_input(self, org, event, **overrides):
         base = {
             "organizationId": org.id,
             "eventId": event.id,
@@ -11093,10 +11093,10 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         base.update(overrides)
         return base
 
-    def _make_group_setup(self, org):
-        """Create a CalendarGroup with primary + secondary calendars and a CalendarOwnership.
+    def _make_appointment_type_setup(self, org):
+        """Create an AppointmentType with primary + secondary calendars and a CalendarOwnership.
 
-        Returns (owner_user, membership, primary_calendar, secondary_calendar, group).
+        Returns (owner_user, membership, primary_calendar, secondary_calendar, appointment type).
         """
         unique = uuid.uuid4().hex[:8]
         user_model = get_user_model()
@@ -11124,20 +11124,26 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
             external_id=f"secondary-cal-{unique}",
             manage_available_windows=False,
         )
-        group = baker.make(CalendarGroup, organization=org, name=f"Test Group {unique}")
-        return owner, membership, primary_calendar, secondary_calendar, group
+        appointment_type = baker.make(
+            AppointmentType, organization=org, name=f"Test AppointmentType {unique}"
+        )
+        return owner, membership, primary_calendar, secondary_calendar, appointment_type
 
     # ------------------------------------------------------------------
-    # Happy path — scoped token reschedules its own grouped event
+    # Happy path — scoped token reschedules its own appointment-type event
     # ------------------------------------------------------------------
 
-    def test_reschedule_grouped_event_times_change_blocked_times_updated(self):
-        """Scoped token reschedules its own grouped event: primary event times change AND
+    def test_reschedule_appointment_type_event_times_change_blocked_times_updated(self):
+        """Scoped token reschedules its own appointment-type event: primary event times change AND
         the linked non-primary BlockedTime rows are updated to the new times.
         """
-        org = baker.make(Organization, name="GroupResched Org")
-        _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
-        grouped_event, blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
+        org = baker.make(Organization, name="AppointmentTypeResched Org")
+        _owner, membership, primary_cal, secondary_cal, appointment_type = (
+            self._make_appointment_type_setup(org)
+        )
+        appointment_type_event, blocked_time = _make_appointment_type_event(
+            org, appointment_type, primary_cal, secondary_cal
+        )
         system_user, token, auth_service = self._make_scoped_system_user(
             org, membership, [PublicAPIResources.CALENDAR_EVENT]
         )
@@ -11146,24 +11152,24 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         new_end = datetime.datetime(2026, 11, 5, 15, 0, 0, tzinfo=datetime.UTC)
 
         response = self._post(
-            _RESCHEDULE_CALENDAR_GROUP_EVENT,
+            _RESCHEDULE_APPOINTMENT_TYPE_EVENT,
             system_user,
             token,
             auth_service,
-            {"input": self._reschedule_group_input(org, grouped_event)},
+            {"input": self._reschedule_appointment_type_input(org, appointment_type_event)},
         )
 
         assert response.status_code == 200
         data = response.json()
         assert "errors" not in data or len(data.get("errors", [])) == 0
-        result = data["data"]["rescheduleCalendarGroupEvent"]
+        result = data["data"]["rescheduleAppointmentTypeEvent"]
         assert result is not None
-        assert result["title"] == "Group Meeting"
-        assert int(result["id"]) == grouped_event.id
+        assert result["title"] == "AppointmentType Meeting"
+        assert int(result["id"]) == appointment_type_event.id
 
         # Primary event times changed.
         updated_event = _CalendarEvent.objects.filter_by_organization(org.id).get(
-            id=grouped_event.id
+            id=appointment_type_event.id
         )
         assert updated_event.start_time_tz_unaware.replace(tzinfo=None) == new_start.replace(
             tzinfo=None
@@ -11183,42 +11189,42 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
     # Cross-owner denial — no existence leak
     # ------------------------------------------------------------------
 
-    def test_reschedule_grouped_event_cross_owner_not_found_no_mutation(self):
-        """Cross-owner grouped event: uniform 'Event not found.' — same as missing event.
+    def test_reschedule_appointment_type_event_cross_owner_not_found_no_mutation(self):
+        """Cross-owner appointment-type event: uniform 'Event not found.' — same as missing event.
 
-        Owner A's scoped token targets a grouped event on owner B's primary calendar.
+        Owner A's scoped token targets an appointment-type event on owner B's primary calendar.
         The response error must be identical to a genuinely missing event, and
         neither the primary event nor the linked BlockedTime may change.
         """
-        org = baker.make(Organization, name="GroupResched CrossOwner Org")
+        org = baker.make(Organization, name="AppointmentTypeResched CrossOwner Org")
         # Owner A: just used for token scoping.
-        _owner_a, membership_a, _primary_cal_a, _secondary_cal_a, _group_a = self._make_group_setup(
-            org
+        _owner_a, membership_a, _primary_cal_a, _secondary_cal_a, _appointment_type_a = (
+            self._make_appointment_type_setup(org)
         )
-        # Owner B: owns the primary calendar of the grouped event.
-        _owner_b, _membership_b, primary_cal_b, secondary_cal_b, group_b = self._make_group_setup(
-            org
+        # Owner B: owns the primary calendar of the appointment-type event.
+        _owner_b, _membership_b, primary_cal_b, secondary_cal_b, appointment_type_b = (
+            self._make_appointment_type_setup(org)
         )
-        grouped_event_b, blocked_time_b = _make_grouped_event(
-            org, group_b, primary_cal_b, secondary_cal_b
+        appointment_type_event_b, blocked_time_b = _make_appointment_type_event(
+            org, appointment_type_b, primary_cal_b, secondary_cal_b
         )
-        original_start = grouped_event_b.start_time_tz_unaware
+        original_start = appointment_type_event_b.start_time_tz_unaware
         original_bt_start = blocked_time_b.start_time_tz_unaware
 
         system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
             org, membership_a, [PublicAPIResources.CALENDAR_EVENT]
         )
 
-        # Attempt to reschedule B's grouped event from A's scoped token.
+        # Attempt to reschedule B's appointment-type event from A's scoped token.
         cross_response = self._post(
-            _RESCHEDULE_CALENDAR_GROUP_EVENT,
+            _RESCHEDULE_APPOINTMENT_TYPE_EVENT,
             system_user_a,
             token_a,
             auth_service_a,
             {
                 "input": {
                     "organizationId": org.id,
-                    "eventId": grouped_event_b.id,
+                    "eventId": appointment_type_event_b.id,
                     "startTime": datetime.datetime(
                         2026, 11, 5, 14, 0, 0, tzinfo=datetime.UTC
                     ).isoformat(),
@@ -11232,7 +11238,7 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
 
         # Attempt with a genuinely missing calendar's event_id.
         missing_response = self._post(
-            _RESCHEDULE_CALENDAR_GROUP_EVENT,
+            _RESCHEDULE_APPOINTMENT_TYPE_EVENT,
             system_user_a,
             token_a,
             auth_service_a,
@@ -11254,17 +11260,17 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         cross_msg = cross_response.json()["errors"][0]["message"]
         missing_msg = missing_response.json()["errors"][0]["message"]
         # Both cross-owner and missing-event cases must return the identical message —
-        # no existence leak (a cross-owner grouped event must be indistinguishable from
+        # no existence leak (a cross-owner appointment-type event must be indistinguishable from
         # a genuinely missing event_id).
         assert cross_msg == "Event not found."
         assert missing_msg == "Event not found."
         assert cross_msg == missing_msg
 
         # B's event and blocked time must be unmodified.
-        grouped_event_b.refresh_from_db()
-        assert grouped_event_b.start_time_tz_unaware.replace(tzinfo=None) == original_start.replace(
+        appointment_type_event_b.refresh_from_db()
+        assert appointment_type_event_b.start_time_tz_unaware.replace(
             tzinfo=None
-        )
+        ) == original_start.replace(tzinfo=None)
         updated_bt = _BlockedTime.objects.filter_by_organization(org.id).get(id=blocked_time_b.id)
         assert updated_bt.start_time_tz_unaware.replace(tzinfo=None) == original_bt_start.replace(
             tzinfo=None
@@ -11274,11 +11280,15 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
     # Org-wide token acts org-wide
     # ------------------------------------------------------------------
 
-    def test_reschedule_grouped_event_org_wide_token_acts_org_wide(self):
-        """An org-wide token can reschedule any grouped event in the org."""
-        org = baker.make(Organization, name="GroupResched OrgWide Org")
-        _owner, _membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
-        grouped_event, _blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
+    def test_reschedule_appointment_type_event_org_wide_token_acts_org_wide(self):
+        """An org-wide token can reschedule any appointment-type event in the org."""
+        org = baker.make(Organization, name="AppointmentTypeResched OrgWide Org")
+        _owner, _membership, primary_cal, secondary_cal, appointment_type = (
+            self._make_appointment_type_setup(org)
+        )
+        appointment_type_event, _blocked_time = _make_appointment_type_event(
+            org, appointment_type, primary_cal, secondary_cal
+        )
         system_user, token, auth_service = self._make_org_wide_system_user(
             org, [PublicAPIResources.CALENDAR_EVENT]
         )
@@ -11287,13 +11297,16 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         new_end = datetime.datetime(2026, 11, 5, 17, 0, 0, tzinfo=datetime.UTC)
 
         response = self._post(
-            _RESCHEDULE_CALENDAR_GROUP_EVENT,
+            _RESCHEDULE_APPOINTMENT_TYPE_EVENT,
             system_user,
             token,
             auth_service,
             {
-                "input": self._reschedule_group_input(
-                    org, grouped_event, startTime=new_start.isoformat(), endTime=new_end.isoformat()
+                "input": self._reschedule_appointment_type_input(
+                    org,
+                    appointment_type_event,
+                    startTime=new_start.isoformat(),
+                    endTime=new_end.isoformat(),
                 )
             },
         )
@@ -11301,41 +11314,43 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         assert response.status_code == 200
         data = response.json()
         assert "errors" not in data or len(data.get("errors", [])) == 0
-        result = data["data"]["rescheduleCalendarGroupEvent"]
+        result = data["data"]["rescheduleAppointmentTypeEvent"]
         assert result is not None
 
         updated_event = _CalendarEvent.objects.filter_by_organization(org.id).get(
-            id=grouped_event.id
+            id=appointment_type_event.id
         )
         assert updated_event.start_time_tz_unaware.replace(tzinfo=None) == new_start.replace(
             tzinfo=None
         )
 
     # ------------------------------------------------------------------
-    # Non-grouped event → "Event not found."
+    # Non-appointment-type event → "Event not found."
     # ------------------------------------------------------------------
 
-    def test_reschedule_non_grouped_event_returns_event_not_found(self):
-        """Passing a non-grouped event_id returns 'Event not found.' with no mutation."""
-        org = baker.make(Organization, name="GroupResched NonGrouped Org")
-        _owner, membership, calendar, _secondary_cal, _group = self._make_group_setup(org)
-        # Regular non-grouped event (calendar_group_fk is None).
-        non_grouped_event = _make_event_on_calendar(org, calendar, title="Plain Event")
-        original_start = non_grouped_event.start_time_tz_unaware
+    def test_reschedule_non_appointment_type_event_returns_event_not_found(self):
+        """Passing a non-appointment-type event_id returns 'Event not found.' with no mutation."""
+        org = baker.make(Organization, name="AppointmentTypeResched NonAppointmentType Org")
+        _owner, membership, calendar, _secondary_cal, _appointment_type = (
+            self._make_appointment_type_setup(org)
+        )
+        # Regular non-appointment-type event (appointment_type_fk is None).
+        non_appointment_type_event = _make_event_on_calendar(org, calendar, title="Plain Event")
+        original_start = non_appointment_type_event.start_time_tz_unaware
 
         system_user, token, auth_service = self._make_scoped_system_user(
             org, membership, [PublicAPIResources.CALENDAR_EVENT]
         )
 
         response = self._post(
-            _RESCHEDULE_CALENDAR_GROUP_EVENT,
+            _RESCHEDULE_APPOINTMENT_TYPE_EVENT,
             system_user,
             token,
             auth_service,
             {
                 "input": {
                     "organizationId": org.id,
-                    "eventId": non_grouped_event.id,
+                    "eventId": non_appointment_type_event.id,
                     "startTime": datetime.datetime(
                         2026, 11, 5, 14, 0, 0, tzinfo=datetime.UTC
                     ).isoformat(),
@@ -11353,8 +11368,8 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         assert data["errors"][0]["message"] == "Event not found."
 
         # Event must be unchanged.
-        non_grouped_event.refresh_from_db()
-        assert non_grouped_event.start_time_tz_unaware.replace(
+        non_appointment_type_event.refresh_from_db()
+        assert non_appointment_type_event.start_time_tz_unaware.replace(
             tzinfo=None
         ) == original_start.replace(tzinfo=None)
 
@@ -11370,12 +11385,16 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         reopen the third-string existence leak (the sentinel emitted by
         CalendarEventService.update_event for a racing cross-owner SystemUser).
 
-        Approach: monkeypatch ``reschedule_grouped_event`` to raise the sentinel
+        Approach: monkeypatch ``reschedule_appointment_type_event`` to raise the sentinel
         PermissionDenied and assert the resolver returns the uniform not-found message.
         """
-        org = baker.make(Organization, name="GroupResched Sentinel Org")
-        _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
-        grouped_event, _blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
+        org = baker.make(Organization, name="AppointmentTypeResched Sentinel Org")
+        _owner, membership, primary_cal, secondary_cal, appointment_type = (
+            self._make_appointment_type_setup(org)
+        )
+        appointment_type_event, _blocked_time = _make_appointment_type_event(
+            org, appointment_type, primary_cal, secondary_cal
+        )
         system_user, token, auth_service = self._make_scoped_system_user(
             org, membership, [PublicAPIResources.CALENDAR_EVENT]
         )
@@ -11383,16 +11402,16 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         sentinel = "Calendar matching query does not exist."
 
         with patch(
-            "calendar_integration.services.calendar_group_service.CalendarGroupService"
-            ".reschedule_grouped_event",
+            "calendar_integration.services.appointment_type_service.AppointmentTypeService"
+            ".reschedule_appointment_type_event",
             side_effect=_PermissionDenied(sentinel),
         ):
             response = self._post(
-                _RESCHEDULE_CALENDAR_GROUP_EVENT,
+                _RESCHEDULE_APPOINTMENT_TYPE_EVENT,
                 system_user,
                 token,
                 auth_service,
-                {"input": self._reschedule_group_input(org, grouped_event)},
+                {"input": self._reschedule_appointment_type_input(org, appointment_type_event)},
             )
 
         assert response.status_code == 200
@@ -11408,31 +11427,35 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
     # ------------------------------------------------------------------
 
     def test_service_validation_error_returns_clean_graphql_error(self):
-        """A CalendarGroupValidationError from the service layer returns a clean
+        """An AppointmentTypeValidationError from the service layer returns a clean
         GraphQL error (not a 500) with the service message.
 
-        Monkeypatches ``reschedule_grouped_event`` to raise the validation error.
+        Monkeypatches ``reschedule_appointment_type_event`` to raise the validation error.
         """
-        org = baker.make(Organization, name="GroupResched ValidationErr Org")
-        _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
-        grouped_event, _blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
+        org = baker.make(Organization, name="AppointmentTypeResched ValidationErr Org")
+        _owner, membership, primary_cal, secondary_cal, appointment_type = (
+            self._make_appointment_type_setup(org)
+        )
+        appointment_type_event, _blocked_time = _make_appointment_type_event(
+            org, appointment_type, primary_cal, secondary_cal
+        )
         system_user, token, auth_service = self._make_scoped_system_user(
             org, membership, [PublicAPIResources.CALENDAR_EVENT]
         )
 
-        service_message = "New time conflicts with an existing group event."
+        service_message = "New time conflicts with an existing appointment type event."
 
         with patch(
-            "calendar_integration.services.calendar_group_service.CalendarGroupService"
-            ".reschedule_grouped_event",
-            side_effect=CalendarGroupValidationError(service_message),
+            "calendar_integration.services.appointment_type_service.AppointmentTypeService"
+            ".reschedule_appointment_type_event",
+            side_effect=AppointmentTypeValidationError(service_message),
         ):
             response = self._post(
-                _RESCHEDULE_CALENDAR_GROUP_EVENT,
+                _RESCHEDULE_APPOINTMENT_TYPE_EVENT,
                 system_user,
                 token,
                 auth_service,
-                {"input": self._reschedule_group_input(org, grouped_event)},
+                {"input": self._reschedule_appointment_type_input(org, appointment_type_event)},
             )
 
         assert response.status_code == 200
@@ -11466,8 +11489,8 @@ class TestScopedTokenCancelEvent:
     - Single-occurrence cancel: ``recurrenceId`` set on a recurring master → a
       cancellation ``EventRecurrenceException`` (is_cancelled=True) is created, master +
       rule intact, the occurrence is omitted from ``get_occurrences_in_range``.
-    - Grouped cancel: cancelling a grouped event deletes the primary event AND the linked
-      ``group-event-*`` BlockedTimes.
+    - Appointment-type cancel: cancelling an appointment-type event deletes the primary event AND the linked
+      ``appointment-type-event-*`` BlockedTimes.
     - Cross-owner denial: scoped token A cancelling owner-B's event (B's calendar_id) →
       ``"Calendar not found."`` (same as missing calendar), nothing deleted (no
       existence leak).
@@ -11523,10 +11546,10 @@ class TestScopedTokenCancelEvent:
         base.update(overrides)
         return base
 
-    def _make_group_setup(self, org):
-        """Create a CalendarGroup with primary + secondary calendars and CalendarOwnership.
+    def _make_appointment_type_setup(self, org):
+        """Create an AppointmentType with primary + secondary calendars and CalendarOwnership.
 
-        Returns (owner_user, membership, primary_calendar, secondary_calendar, group).
+        Returns (owner_user, membership, primary_calendar, secondary_calendar, appointment type).
         """
         unique = uuid.uuid4().hex[:8]
         user_model = get_user_model()
@@ -11554,8 +11577,10 @@ class TestScopedTokenCancelEvent:
             external_id=f"secondary-cancel-cal-{unique}",
             manage_available_windows=False,
         )
-        group = baker.make(CalendarGroup, organization=org, name=f"Cancel Test Group {unique}")
-        return owner, membership, primary_calendar, secondary_calendar, group
+        appointment_type = baker.make(
+            AppointmentType, organization=org, name=f"Cancel Test AppointmentType {unique}"
+        )
+        return owner, membership, primary_calendar, secondary_calendar, appointment_type
 
     # ------------------------------------------------------------------
     # Happy path — single non-recurring event cancel
@@ -11745,15 +11770,19 @@ class TestScopedTokenCancelEvent:
             )
 
     # ------------------------------------------------------------------
-    # Grouped event cancel
+    # Appointment-type event cancel
     # ------------------------------------------------------------------
 
-    def test_cancel_grouped_event_deletes_primary_and_blocked_times(self):
-        """Cancelling a grouped event deletes the primary CalendarEvent AND the linked BlockedTimes."""
-        org = baker.make(Organization, name="Cancel Grouped Org")
-        _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
-        grouped_event, blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
-        event_id = grouped_event.id
+    def test_cancel_appointment_type_event_deletes_primary_and_blocked_times(self):
+        """Cancelling an appointment-type event deletes the primary CalendarEvent AND the linked BlockedTimes."""
+        org = baker.make(Organization, name="Cancel AppointmentType Org")
+        _owner, membership, primary_cal, secondary_cal, appointment_type = (
+            self._make_appointment_type_setup(org)
+        )
+        appointment_type_event, blocked_time = _make_appointment_type_event(
+            org, appointment_type, primary_cal, secondary_cal
+        )
+        event_id = appointment_type_event.id
         blocked_time_id = blocked_time.id
         system_user, token, auth_service = self._make_scoped_system_user(
             org, membership, [PublicAPIResources.CALENDAR_EVENT]
@@ -11764,7 +11793,7 @@ class TestScopedTokenCancelEvent:
             system_user,
             token,
             auth_service,
-            {"input": self._cancel_input(org, primary_cal, grouped_event)},
+            {"input": self._cancel_input(org, primary_cal, appointment_type_event)},
         )
 
         assert response.status_code == 200

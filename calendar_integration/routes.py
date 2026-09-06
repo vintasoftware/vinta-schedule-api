@@ -1,18 +1,18 @@
 from common.types import RouteDict
 
 from .views import (
+    AppointmentTypeScopedAvailabilityWindowViewSet,
+    AppointmentTypeScopedBlockedTimeViewSet,
+    AppointmentTypeScopedQuotaRuleViewSet,
+    AppointmentTypeViewSet,
     AvailableTimeViewSet,
     BlockedTimeViewSet,
     BookingCodeViewSet,
     BookingPolicyViewSet,
     CalendarEventViewSet,
-    CalendarGroupViewSet,
     CalendarPoolViewSet,
     CalendarViewSet,
     ExternalEventChangeRequestViewSet,
-    GroupScopedAvailabilityWindowViewSet,
-    GroupScopedBlockedTimeViewSet,
-    GroupScopedQuotaRuleViewSet,
 )
 
 
@@ -23,24 +23,24 @@ routes: list[RouteDict] = [
         "basename": "CalendarEvents",
     },
     {
-        "regex": r"calendar-groups",
-        "viewset": CalendarGroupViewSet,
-        "basename": "CalendarGroups",
+        "regex": r"appointment-types",
+        "viewset": AppointmentTypeViewSet,
+        "basename": "AppointmentTypes",
     },
     {
-        "regex": r"calendar-groups/<int:group_id>/slots/<int:slot_id>/availability-windows",
-        "viewset": GroupScopedAvailabilityWindowViewSet,
-        "basename": "GroupScopedAvailabilityWindows",
+        "regex": r"appointment-types/<int:appointment_type_id>/slots/<int:slot_id>/availability-windows",
+        "viewset": AppointmentTypeScopedAvailabilityWindowViewSet,
+        "basename": "AppointmentTypeScopedAvailabilityWindows",
     },
     {
-        "regex": r"calendar-groups/<int:group_id>/slots/<int:slot_id>/blocked-times",
-        "viewset": GroupScopedBlockedTimeViewSet,
-        "basename": "GroupScopedBlockedTimes",
+        "regex": r"appointment-types/<int:appointment_type_id>/slots/<int:slot_id>/blocked-times",
+        "viewset": AppointmentTypeScopedBlockedTimeViewSet,
+        "basename": "AppointmentTypeScopedBlockedTimes",
     },
     {
-        "regex": r"calendar-groups/<int:group_id>/slots/<int:slot_id>/quota-rules",
-        "viewset": GroupScopedQuotaRuleViewSet,
-        "basename": "GroupScopedQuotaRules",
+        "regex": r"appointment-types/<int:appointment_type_id>/slots/<int:slot_id>/quota-rules",
+        "viewset": AppointmentTypeScopedQuotaRuleViewSet,
+        "basename": "AppointmentTypeScopedQuotaRules",
     },
     {
         "regex": r"calendar-pools",

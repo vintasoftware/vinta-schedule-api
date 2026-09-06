@@ -601,14 +601,14 @@ class CalendarEventService:
         # owner-scoped path's authorization is the independently-verified ownership above,
         # so it bypasses this check (the permission service has no token initialized for it).
         #
-        # The group-authorized path bypasses the per-calendar ``accepts_public_scheduling``
-        # gate when CalendarGroupService has already performed a group-level authorization
-        # check. This prevents a private member calendar from blocking a booking the group
+        # The appointment-type-authorized path bypasses the per-calendar ``accepts_public_scheduling``
+        # gate when AppointmentTypeService has already performed an appointment-type-level authorization
+        # check. This prevents a private member calendar from blocking a booking the appointment type
         # itself permits. It does NOT skip the owner-scoped check (which runs before this
         # point) nor the availability check (which follows below).
         if (
             not is_owner_scoped_system_user
-            and not event_data.group_authorized
+            and not event_data.appointment_type_authorized
             and (
                 not context.calendar_permission_service.can_perform_scheduling(
                     calendar_id=calendar_id,
@@ -916,9 +916,9 @@ class CalendarEventService:
                 event, event_data, current_event=serialized_old_event
             ),
             # A plain FK id column -- no extra query. Lets can_perform_update
-            # check the NEW span against the group's duration pin for a
-            # grouped event; ``None`` for a non-grouped event is a no-op.
-            calendar_group_id=event.calendar_group_fk_id,
+            # check the NEW span against the appointment type's duration pin for a
+            # appointment-type event; ``None`` for a non-appointment-type event is a no-op.
+            appointment_type_id=event.appointment_type_fk_id,
         ):
             raise PermissionDenied("You do not have permission to update this event.")
 
@@ -2213,7 +2213,7 @@ class CalendarEventService:
             new_event=None,
             # Cancellation has no new span -- can_perform_update skips the
             # duration check whenever new_event is None regardless of this.
-            calendar_group_id=event.calendar_group_fk_id,
+            appointment_type_id=event.appointment_type_fk_id,
         ):
             raise PermissionDenied("You do not have permission to update this event.")
 

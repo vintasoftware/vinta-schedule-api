@@ -48,7 +48,7 @@ They'll be able to configure what's their default calendar, what of their calend
 
 ### 3.1. Create an admin Public API token
 
-This token needs to allow resources management, calendar groups management, and calendar bundles management, and Public API tokens management.
+This token needs to allow resources management, appointment types management, and calendar bundles management, and Public API tokens management.
 
 ### 3.2. Create webhooks for generating user tokens
 
@@ -60,11 +60,11 @@ vinta-schedule doesn't have user-specific Public API tokens that are restricted 
 
 ### 3.3. Create Patient token
 
-Create patient token that's only able to check availability and create appointment (passing the scheduling code or not depending if the calendars/calendar-groups/calendar-bundles is restricted)
+Create patient token that's only able to check availability and create appointment (passing the scheduling code or not depending if the calendars/appointment-types/calendar-bundles is restricted)
 
 #### Observation:
 
-vinta-schedule doesn't differentiate restricted/public calendars/calendar-groups/calendar-bundles. This needs to be implemented before creating tokens for patients ([3.3](#33-generate-patient-token-thats-only-able-to-check-availability-and-create-appointment-passing-the-scheduling-code-or-not-depending-if-the-calendarscalendar-groupscalendar-bundles-is-restricted)). We also need:
+vinta-schedule doesn't differentiate restricted/public calendars/appointment-types/calendar-bundles. This needs to be implemented before creating tokens for patients ([3.3](#33-generate-patient-token-thats-only-able-to-check-availability-and-create-appointment-passing-the-scheduling-code-or-not-depending-if-the-calendarsappointment-typescalendar-bundles-is-restricted)). We also need:
 
 * a mutation to generate a single-use scheduling code.  
 * a mutation to generate a single-use rescheduling code (that only allow rescheduling one specific event).  
@@ -74,7 +74,7 @@ vinta-schedule doesn't differentiate restricted/public calendars/calendar-groups
 
 ### 3.4. Implement single-use scheduling codes for Patients
 
-Generate appointment type unique, single-use scheduling code so patients can schedule an appointment on restricted calendars/calendar-groups/calendar-bundles
+Generate appointment type unique, single-use scheduling code so patients can schedule an appointment on restricted calendars/appointment-types/calendar-bundles
 
 ## 4\. How do the events get synchronized between VintaSchedule and the Building Blocks?
 
@@ -100,13 +100,13 @@ Here we're going to describe which queries and mutations are going to be necessa
 * editResourceCalendar(name, description, capacity)  
   * This one only works with manual resource calendars, not with the ones synced with Google Calendar.
 
-### Appointment Types & Calendar Groups & Bundles (Admin)
+### Appointment Types & Bundles (Admin)
 
-* List calendar groups (name, is\_private, slots { nodes { id, calendars { nodes { id, owners { nodes { id, user { id, email, profile { first\_name, last\_name, profile\_picture } } } } } })  
+* List appointment types (name, is\_private, slots { nodes { id, calendars { nodes { id, owners { nodes { id, user { id, email, profile { first\_name, last\_name, profile\_picture } } } } } })  
 * List calendar bundles (name, is\_private, children { nodes { id, owners { nodes { id, user { id, email, profile { first\_name, last\_name, profile\_picture } } } } } })  
-* createCalendarGroup(name, is\_private, slots)  
-* updateCalendarGroup(name, is\_private, slots)  
-* disableCalendarGroup(id)  
+* createAppointmentType(name, is\_private, slots)  
+* updateAppointmentType(name, is\_private, slots)  
+* disableAppointmentType(id)  
 * List calendars, filter by user  
 * createCalendarBundle(name, is\_private, childrenIds)  
 * updateCalendarBundle(name, is\_private, childrenIds)  
@@ -136,18 +136,18 @@ Here we're going to describe which queries and mutations are going to be necessa
 * List resources  
 * List calendar available times  
 * List user available times  
-* List calendar group available times  
+* List appointment type available times  
 * createCalendarEvent  
-* createCalendarGroupEvent
+* createAppointmentTypeEvent
 
 ### Booking Link Creation
 
 * createCalendarBookingCode(calendar\_id)  
-* createCalendarGroupBookingCode(calendar\_group\_id)  
+* createAppointmentTypeBookingCode(calendar\_appointment_type\_id)  
 * createCalendarRescheduleBookingCode(calendar\_id)  
-* createCalendarGroupRescheduleBookingCode(calendar\_group\_id)  
+* createAppointmentTypeRescheduleBookingCode(calendar\_appointment_type\_id)  
 * createCalendarCancellationBookingCode(calendar\_id)  
-* createCalendarGroupCancellationBookingCode(calendar\_group\_id)
+* createAppointmentTypeCancellationBookingCode(calendar\_appointment_type\_id)
 
 ### Appointment Details
 
@@ -158,9 +158,9 @@ Here we're going to describe which queries and mutations are going to be necessa
 * List resources  
 * List calendar available times  
 * List user available times  
-* List calendar group available times  
+* List appointment type available times  
 * rescheduleCalendarEvent()  
-* rescheduleCalendarGroupEvent()  
+* rescheduleAppointmentTypeEvent()  
 * cancelEvent()
 
 ## Patient Portal
@@ -178,12 +178,12 @@ Doesn't have integration
 * List resources  
 * List calendar available times  
 * List user available times  
-* List calendar group available times
+* List appointment type available times
 
 ### Booking Confirmation
 
 * createCalendarEvent  
-* createCalendarGroupEvent
+* createAppointmentTypeEvent
 
 ### Intake Flag
 
@@ -194,9 +194,9 @@ Doesn't have integration
 * List resources  
 * List calendar available times  
 * List user available times  
-* List calendar group available times  
+* List appointment type available times  
 * rescheduleCalendarEventWithCode()  
-* rescheduleCalendarGroupEventWithCode()  
+* rescheduleAppointmentTypeEventWithCode()  
 * cancelEventWithCode()
 
 ### Pre-visit Questionnaire

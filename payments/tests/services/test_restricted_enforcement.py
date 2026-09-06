@@ -41,17 +41,20 @@ from vinta_billing.services.subscription_service import SubscriptionService
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
 )
-from calendar_integration.services.calendar_group_service import CalendarGroupService
+from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.calendar_service import CalendarService
-from calendar_integration.services.dataclasses import CalendarEventInputData, CalendarGroupInputData
+from calendar_integration.services.dataclasses import (
+    AppointmentTypeInputData,
+    CalendarEventInputData,
+)
 from organizations.models import (
     Organization,
     OrganizationInvitation,
@@ -63,9 +66,9 @@ from organizations.permission_catalog import (
 )
 from organizations.tests.helpers import make_membership
 from payments.seams.resource_keys import (
+    APPOINTMENT_TYPES,
     AVAILABILITY_WINDOWS,
     BUNDLE_CALENDARS,
-    CALENDAR_GROUPS,
     EVENT_OCCURRENCES,
     ORGANIZATION_MEMBERS,
     PUBLIC_API_SYSTEM_USERS,
@@ -210,35 +213,37 @@ def _disable_resource_calendar(organization: Organization) -> None:
     service.disable_resource_calendar(calendar.id)
 
 
-def _create_calendar_group(organization: Organization) -> None:
-    service = CalendarGroupService()
+def _create_appointment_type(organization: Organization) -> None:
+    service = AppointmentTypeService()
     service.initialize(organization=organization)
-    service.create_group(CalendarGroupInputData(name="Blocked Group"))
+    service.create_appointment_type(AppointmentTypeInputData(name="Blocked AppointmentType"))
 
 
-def _update_calendar_group(organization: Organization) -> None:
-    group = baker.make(CalendarGroup, organization=organization)
-    service = CalendarGroupService()
+def _update_appointment_type(organization: Organization) -> None:
+    appointment_type = baker.make(AppointmentType, organization=organization)
+    service = AppointmentTypeService()
     service.initialize(organization=organization)
-    service.update_group(group.id, CalendarGroupInputData(name="Renamed Group"))
+    service.update_appointment_type(
+        appointment_type.id, AppointmentTypeInputData(name="Renamed AppointmentType")
+    )
 
 
-def _delete_calendar_group(organization: Organization) -> None:
-    group = baker.make(CalendarGroup, organization=organization)
-    service = CalendarGroupService()
+def _delete_appointment_type(organization: Organization) -> None:
+    appointment_type = baker.make(AppointmentType, organization=organization)
+    service = AppointmentTypeService()
     service.initialize(organization=organization)
-    service.delete_group(group.id)
+    service.delete_appointment_type(appointment_type.id)
 
 
-def _group_scoped_membership(
+def _appointment_type_scoped_membership(
     organization: Organization,
-) -> tuple[CalendarGroupSlot, Calendar, User]:
-    """A minimal (calendar, group slot) roster entry plus an org admin
-    authorized to write its group-scoped config -- mirrors the fixture shape
-    in ``test_calendar_group_service_blocked_time.py`` /
-    ``test_calendar_group_service_availability_windows.py``. An org admin
+) -> tuple[AppointmentTypeSlot, Calendar, User]:
+    """A minimal (calendar, appointment type slot) roster entry plus an org admin
+    authorized to write its appointment-type-scoped config -- mirrors the fixture shape
+    in ``test_appointment_type_service_blocked_time.py`` /
+    ``test_appointment_type_service_availability_windows.py``. An org admin
     (rather than a calendar owner) is used so the probe needs no
-    ``CalendarOwnership`` row -- ``can_manage_group_scoped_calendar_config``
+    ``CalendarOwnership`` row -- ``can_manage_appointment_type_scoped_calendar_config``
     grants org admins unconditionally.
     """
     admin_user = UserFactory().create_user()
@@ -255,32 +260,34 @@ def _group_scoped_membership(
         provider=CalendarProvider.GOOGLE,
         manage_available_windows=True,
     )
-    group = baker.make(CalendarGroup, organization=organization)
-    # ``CalendarGroupSlot.group`` / ``CalendarGroupSlotMembership.slot`` /
+    appointment_type = baker.make(AppointmentType, organization=organization)
+    # ``AppointmentTypeSlot.appointment_type`` / ``AppointmentTypeSlotMembership.slot`` /
     # ``.calendar`` are ``OrganizationForeignKey`` (a composite ``ForeignObject``,
     # not a plain ``ForeignKey``) -- model-bakery cannot auto-generate that field
     # type, so these two rows are created directly through the manager, exactly
-    # as ``test_calendar_group_service_blocked_time.py``'s fixtures do.
-    group_slot = CalendarGroupSlot.objects.create(
-        organization=organization, group=group, name="Restricted-guard slot"
+    # as ``test_appointment_type_service_blocked_time.py``'s fixtures do.
+    appointment_type_slot = AppointmentTypeSlot.objects.create(
+        organization=organization, appointment_type=appointment_type, name="Restricted-guard slot"
     )
-    CalendarGroupSlotMembership.objects.create(
-        organization=organization, slot=group_slot, calendar=calendar
+    AppointmentTypeSlotMembership.objects.create(
+        organization=organization, slot=appointment_type_slot, calendar=calendar
     )
-    return group_slot, calendar, admin_user
+    return appointment_type_slot, calendar, admin_user
 
 
-def _group_scoped_service(organization: Organization) -> CalendarGroupService:
-    service = CalendarGroupService()
+def _appointment_type_scoped_service(organization: Organization) -> AppointmentTypeService:
+    service = AppointmentTypeService()
     service.initialize(organization=organization)
     return service
 
 
-def _create_group_scoped_availability_window(organization: Organization) -> None:
-    group_slot, calendar, admin_user = _group_scoped_membership(organization)
-    _group_scoped_service(organization).create_group_scoped_availability_window(
+def _create_appointment_type_scoped_availability_window(organization: Organization) -> None:
+    appointment_type_slot, calendar, admin_user = _appointment_type_scoped_membership(organization)
+    _appointment_type_scoped_service(
+        organization
+    ).create_appointment_type_scoped_availability_window(
         acting_user=admin_user,
-        group_slot_id=group_slot.id,
+        appointment_type_slot_id=appointment_type_slot.id,
         calendar_id=calendar.id,
         start_time=datetime.datetime(2030, 1, 1, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2030, 1, 1, 17, 0, tzinfo=datetime.UTC),
@@ -288,42 +295,46 @@ def _create_group_scoped_availability_window(organization: Organization) -> None
     )
 
 
-def _update_group_scoped_availability_window(organization: Organization) -> None:
-    group_slot, calendar, admin_user = _group_scoped_membership(organization)
+def _update_appointment_type_scoped_availability_window(organization: Organization) -> None:
+    appointment_type_slot, calendar, admin_user = _appointment_type_scoped_membership(organization)
     window = baker.make(
         AvailableTime,
         organization=organization,
         calendar=calendar,
-        group_slot=group_slot,
+        appointment_type_slot=appointment_type_slot,
         timezone="UTC",
     )
-    _group_scoped_service(organization).update_group_scoped_availability_window(
+    _appointment_type_scoped_service(
+        organization
+    ).update_appointment_type_scoped_availability_window(
         acting_user=admin_user,
         window_id=window.id,
         tz="America/Sao_Paulo",
     )
 
 
-def _delete_group_scoped_availability_window(organization: Organization) -> None:
-    group_slot, calendar, admin_user = _group_scoped_membership(organization)
+def _delete_appointment_type_scoped_availability_window(organization: Organization) -> None:
+    appointment_type_slot, calendar, admin_user = _appointment_type_scoped_membership(organization)
     window = baker.make(
         AvailableTime,
         organization=organization,
         calendar=calendar,
-        group_slot=group_slot,
+        appointment_type_slot=appointment_type_slot,
         timezone="UTC",
     )
-    _group_scoped_service(organization).delete_group_scoped_availability_window(
+    _appointment_type_scoped_service(
+        organization
+    ).delete_appointment_type_scoped_availability_window(
         acting_user=admin_user,
         window_id=window.id,
     )
 
 
-def _create_group_scoped_blocked_time(organization: Organization) -> None:
-    group_slot, calendar, admin_user = _group_scoped_membership(organization)
-    _group_scoped_service(organization).create_group_scoped_blocked_time(
+def _create_appointment_type_scoped_blocked_time(organization: Organization) -> None:
+    appointment_type_slot, calendar, admin_user = _appointment_type_scoped_membership(organization)
+    _appointment_type_scoped_service(organization).create_appointment_type_scoped_blocked_time(
         acting_user=admin_user,
-        group_slot_id=group_slot.id,
+        appointment_type_slot_id=appointment_type_slot.id,
         calendar_id=calendar.id,
         start_time=datetime.datetime(2030, 1, 1, 9, 0, tzinfo=datetime.UTC),
         end_time=datetime.datetime(2030, 1, 1, 17, 0, tzinfo=datetime.UTC),
@@ -332,32 +343,32 @@ def _create_group_scoped_blocked_time(organization: Organization) -> None:
     )
 
 
-def _update_group_scoped_blocked_time(organization: Organization) -> None:
-    group_slot, calendar, admin_user = _group_scoped_membership(organization)
+def _update_appointment_type_scoped_blocked_time(organization: Organization) -> None:
+    appointment_type_slot, calendar, admin_user = _appointment_type_scoped_membership(organization)
     block = baker.make(
         BlockedTime,
         organization=organization,
         calendar=calendar,
-        group_slot=group_slot,
+        appointment_type_slot=appointment_type_slot,
         timezone="UTC",
     )
-    _group_scoped_service(organization).update_group_scoped_blocked_time(
+    _appointment_type_scoped_service(organization).update_appointment_type_scoped_blocked_time(
         acting_user=admin_user,
         block_id=block.id,
         reason="Renamed (restricted-guard)",
     )
 
 
-def _delete_group_scoped_blocked_time(organization: Organization) -> None:
-    group_slot, calendar, admin_user = _group_scoped_membership(organization)
+def _delete_appointment_type_scoped_blocked_time(organization: Organization) -> None:
+    appointment_type_slot, calendar, admin_user = _appointment_type_scoped_membership(organization)
     block = baker.make(
         BlockedTime,
         organization=organization,
         calendar=calendar,
-        group_slot=group_slot,
+        appointment_type_slot=appointment_type_slot,
         timezone="UTC",
     )
-    _group_scoped_service(organization).delete_group_scoped_blocked_time(
+    _appointment_type_scoped_service(organization).delete_appointment_type_scoped_blocked_time(
         acting_user=admin_user,
         block_id=block.id,
     )
@@ -581,10 +592,10 @@ RESTRICTED_WRITE_PROBES: dict[str, WriteProbe] = {
         update=_update_resource_calendar,
         delete=_disable_resource_calendar,
     ),
-    CALENDAR_GROUPS: WriteProbe(
-        create=_create_calendar_group,
-        update=_update_calendar_group,
-        delete=_delete_calendar_group,
+    APPOINTMENT_TYPES: WriteProbe(
+        create=_create_appointment_type,
+        update=_update_appointment_type,
+        delete=_delete_appointment_type,
     ),
     BUNDLE_CALENDARS: WriteProbe(
         create=_create_bundle_calendar,
@@ -606,23 +617,23 @@ RESTRICTED_WRITE_PROBES: dict[str, WriteProbe] = {
 }
 
 
-#: Group-scoped single-write probes.
-#: These six ``CalendarGroupService`` methods are NOT tied to a ``LimitedResource``
+#: AppointmentType-scoped single-write probes.
+#: These six ``AppointmentTypeService`` methods are NOT tied to a ``LimitedResource``
 #: ceiling -- they call ``_check_not_restricted()`` directly, never ``check_limit``
 #: -- so they cannot live in ``RESTRICTED_WRITE_PROBES`` (keyed exhaustively against
 #: ``RESOURCE_KEYS`` by ``test_every_limited_resource_has_a_create_probe``).
-#: Kept in a sibling registry, driven by ``TestRestrictedOrganizationBlocksGroupScopedWrites``
+#: Kept in a sibling registry, driven by ``TestRestrictedOrganizationBlocksAppointmentTypeScopedWrites``
 #: below, so the same real-guarded-method proof applies to them.
-GROUP_SCOPED_WRITE_PROBES: dict[str, WriteProbe] = {
-    "group_scoped_availability_windows": WriteProbe(
-        create=_create_group_scoped_availability_window,
-        update=_update_group_scoped_availability_window,
-        delete=_delete_group_scoped_availability_window,
+APPOINTMENT_TYPE_SCOPED_WRITE_PROBES: dict[str, WriteProbe] = {
+    "appointment_type_scoped_availability_windows": WriteProbe(
+        create=_create_appointment_type_scoped_availability_window,
+        update=_update_appointment_type_scoped_availability_window,
+        delete=_delete_appointment_type_scoped_availability_window,
     ),
-    "group_scoped_blocked_times": WriteProbe(
-        create=_create_group_scoped_blocked_time,
-        update=_update_group_scoped_blocked_time,
-        delete=_delete_group_scoped_blocked_time,
+    "appointment_type_scoped_blocked_times": WriteProbe(
+        create=_create_appointment_type_scoped_blocked_time,
+        update=_update_appointment_type_scoped_blocked_time,
+        delete=_delete_appointment_type_scoped_blocked_time,
     ),
 }
 
@@ -641,19 +652,19 @@ GUARDED_MUTATING_SERVICE_METHODS: list[tuple[type, str]] = [
     (CalendarService, "disable_bundle_calendar"),
     (CalendarService, "update_event"),
     (CalendarService, "delete_event"),
-    (CalendarGroupService, "update_group"),
-    (CalendarGroupService, "delete_group"),
+    (AppointmentTypeService, "update_appointment_type"),
+    (AppointmentTypeService, "delete_appointment_type"),
     (WebhookService, "update_configuration"),
     (WebhookService, "delete_configuration"),
-    # Group-scoped single-write methods: none call check_limit, so
+    # AppointmentType-scoped single-write methods: none call check_limit, so
     # (unlike the base creates above) their create half is guarded the same
     # way as update/delete -- all six belong here, not just update/delete.
-    (CalendarGroupService, "create_group_scoped_availability_window"),
-    (CalendarGroupService, "update_group_scoped_availability_window"),
-    (CalendarGroupService, "delete_group_scoped_availability_window"),
-    (CalendarGroupService, "create_group_scoped_blocked_time"),
-    (CalendarGroupService, "update_group_scoped_blocked_time"),
-    (CalendarGroupService, "delete_group_scoped_blocked_time"),
+    (AppointmentTypeService, "create_appointment_type_scoped_availability_window"),
+    (AppointmentTypeService, "update_appointment_type_scoped_availability_window"),
+    (AppointmentTypeService, "delete_appointment_type_scoped_availability_window"),
+    (AppointmentTypeService, "create_appointment_type_scoped_blocked_time"),
+    (AppointmentTypeService, "update_appointment_type_scoped_blocked_time"),
+    (AppointmentTypeService, "delete_appointment_type_scoped_blocked_time"),
 ]
 
 
@@ -679,9 +690,9 @@ def _probe_params() -> list[tuple[str, Callable[[Organization], None]]]:
     return params
 
 
-def _group_scoped_probe_ids() -> list[str]:
+def _appointment_type_scoped_probe_ids() -> list[str]:
     ids = []
-    for resource_key, probe in GROUP_SCOPED_WRITE_PROBES.items():
+    for resource_key, probe in APPOINTMENT_TYPE_SCOPED_WRITE_PROBES.items():
         ids.append(f"{resource_key}-create")
         if probe.update is not None:
             ids.append(f"{resource_key}-update")
@@ -690,9 +701,9 @@ def _group_scoped_probe_ids() -> list[str]:
     return ids
 
 
-def _group_scoped_probe_params() -> list[tuple[str, Callable[[Organization], None]]]:
+def _appointment_type_scoped_probe_params() -> list[tuple[str, Callable[[Organization], None]]]:
     params = []
-    for resource_key, probe in GROUP_SCOPED_WRITE_PROBES.items():
+    for resource_key, probe in APPOINTMENT_TYPE_SCOPED_WRITE_PROBES.items():
         params.append((resource_key, probe.create))
         if probe.update is not None:
             params.append((resource_key, probe.update))
@@ -785,16 +796,18 @@ class TestRestrictedOrganizationBlocksEveryWrite:
 
 
 @pytest.mark.django_db
-class TestRestrictedOrganizationBlocksGroupScopedWrites:
+class TestRestrictedOrganizationBlocksAppointmentTypeScopedWrites:
     """Sibling of ``TestRestrictedOrganizationBlocksEveryWrite`` for the six
-    group-scoped single-write ``CalendarGroupService`` methods --
+    appointment-type-scoped single-write ``AppointmentTypeService`` methods --
     kept separate because they are not ``LimitedResource``-keyed (see
-    ``GROUP_SCOPED_WRITE_PROBES``), but proven with the exact same shape:
+    ``APPOINTMENT_TYPE_SCOPED_WRITE_PROBES``), but proven with the exact same shape:
     drive the real guarded method against a RESTRICTED org and assert it is
     blocked."""
 
     @pytest.mark.parametrize(
-        "resource_key,action", _group_scoped_probe_params(), ids=_group_scoped_probe_ids()
+        "resource_key,action",
+        _appointment_type_scoped_probe_params(),
+        ids=_appointment_type_scoped_probe_ids(),
     )
     def test_restricted_blocks(self, resource_key, action):
         organization = _organization_with_billing_state(BillingState.RESTRICTED)
@@ -805,7 +818,9 @@ class TestRestrictedOrganizationBlocksGroupScopedWrites:
         assert exc_info.value.remedy == "resolve_billing"
 
     @pytest.mark.parametrize(
-        "resource_key,action", _group_scoped_probe_params(), ids=_group_scoped_probe_ids()
+        "resource_key,action",
+        _appointment_type_scoped_probe_params(),
+        ids=_appointment_type_scoped_probe_ids(),
     )
     def test_active_is_unaffected(self, resource_key, action):
         organization = _organization_with_billing_state(BillingState.ACTIVE)
@@ -813,7 +828,9 @@ class TestRestrictedOrganizationBlocksGroupScopedWrites:
         action(organization)  # must not raise
 
     @pytest.mark.parametrize(
-        "resource_key,action", _group_scoped_probe_params(), ids=_group_scoped_probe_ids()
+        "resource_key,action",
+        _appointment_type_scoped_probe_params(),
+        ids=_appointment_type_scoped_probe_ids(),
     )
     def test_grace_is_unaffected(self, resource_key, action):
         organization = _organization_with_billing_state(BillingState.GRACE)

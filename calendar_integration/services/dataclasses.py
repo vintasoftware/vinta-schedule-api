@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class _EffectivePolicyRow(Protocol):
     """Row shape consumed by ``EffectivePolicy.from_annotation``.
 
-    Any object (typically a ``Calendar`` or ``CalendarGroup`` fetched through an
+    Any object (typically a ``Calendar`` or ``AppointmentType`` fetched through an
     annotated queryset) exposing the four ``effective_*_seconds`` columns produced
     by ``annotate_effective_policy``. Each is ``int | None`` (NULL when no policy
     resolved).
@@ -117,12 +117,12 @@ class CalendarEventInputData:
     recurrence_rule: str | None = None  # RRULE string
     parent_event_id: int | None = None  # For creating instances/exceptions
     is_recurring_exception: bool = False
-    # Group-booking authorization flag. When True, the per-calendar
-    # ``accepts_public_scheduling`` gate is bypassed because the group-level
-    # authorization check has already been performed by ``CalendarGroupService``
+    # Appointment-type-booking authorization flag. When True, the per-calendar
+    # ``accepts_public_scheduling`` gate is bypassed because the appointment-type-level
+    # authorization check has already been performed by ``AppointmentTypeService``
     # before delegating to ``CalendarEventService``. Must NOT be set by external
-    # callers outside of the group-booking flow.
-    group_authorized: bool = False
+    # callers outside of the appointment-type-booking flow.
+    appointment_type_authorized: bool = False
     # None = omitted, leave untouched. [] = clear all. See
     # ``ExternalClientIdentifierService.replace_for_target``.
     external_client_identifiers: list[ExternalClientIdentifierData] | None = None
@@ -326,8 +326,8 @@ class AvailableTimeInputData:
 
 
 @dataclass
-class CalendarGroupSlotInputData:
-    """Input data describing a slot (pool) inside a CalendarGroup."""
+class AppointmentTypeSlotInputData:
+    """Input data describing a slot (pool) inside an AppointmentType."""
 
     name: str
     calendar_ids: list[int]
@@ -341,32 +341,32 @@ class CalendarGroupSlotInputData:
     #: "leave the slot's pool attachments exactly as they are" -- NOT "detach
     #: everything". An empty list is the explicit detach-all. The distinction
     #: matters because a client that never learned about pools must not silently
-    #: strip them from a group it round-trips.
+    #: strip them from an appointment type it round-trips.
     pool_ids: list[int] | None = None
 
 
 @dataclass
-class CalendarGroupInputData:
-    """Input data for creating/updating a CalendarGroup with its slots.
+class AppointmentTypeInputData:
+    """Input data for creating/updating an AppointmentType with its slots.
 
     ``duration`` and ``accepts_public_scheduling`` are both tri-state:
     ``None`` means "omitted, leave unchanged" on update (and "not set" on
     create). Both are settable on both client-facing surfaces -- the REST
-    ``CalendarGroupSerializer`` takes ``duration`` / ``accepts_public_scheduling``,
-    and the GraphQL ``CalendarGroupInput`` / ``UpdateCalendarGroupInput`` take
-    ``duration_seconds`` / ``is_private`` -- so a group can be made publicly
+    ``AppointmentTypeSerializer`` takes ``duration`` / ``accepts_public_scheduling``,
+    and the GraphQL ``AppointmentTypeInput`` / ``UpdateAppointmentTypeInput`` take
+    ``duration_seconds`` / ``is_private`` -- so an appointment type can be made publicly
     schedulable in a single call on either. See
-    ``CalendarGroupService.create_group`` / ``update_group`` for the invariant
+    ``AppointmentTypeService.create_appointment_type`` / ``update_appointment_type`` for the invariant
     tying the two together and why.
 
     Neither surface can *clear* a duration: ``None`` already means "leave
     unchanged", so there is no value that says "set it back to null". That is
-    deliberate -- clearing one on a publicly schedulable group would fail open.
+    deliberate -- clearing one on a publicly schedulable appointment type would fail open.
     """
 
     name: str
     description: str = ""
-    slots: list[CalendarGroupSlotInputData] = dataclass_field(default_factory=list)
+    slots: list[AppointmentTypeSlotInputData] = dataclass_field(default_factory=list)
     accepts_public_scheduling: bool | None = None
     duration: datetime.timedelta | None = None
 
@@ -375,9 +375,9 @@ class CalendarGroupInputData:
 class CalendarPoolInputData:
     """Input data for creating/updating a ``CalendarPool`` and its roster.
 
-    Unlike ``CalendarGroupSlotInputData.pool_ids``, ``calendar_ids`` here has
+    Unlike ``AppointmentTypeSlotInputData.pool_ids``, ``calendar_ids`` here has
     no "omitted means unchanged" sentinel -- a pool write always replaces the
-    roster wholesale (mirrors how ``CalendarGroupSlotSerializer.calendar_ids``
+    roster wholesale (mirrors how ``AppointmentTypeSlotSerializer.calendar_ids``
     is required, not optional).
     """
 
@@ -387,8 +387,8 @@ class CalendarPoolInputData:
 
 
 @dataclass
-class CalendarGroupSlotSelectionInputData:
-    """Per-slot calendar picks for a grouped booking. `len(calendar_ids)` must be
+class AppointmentTypeSlotSelectionInputData:
+    """Per-slot calendar picks for an appointment-type booking. `len(calendar_ids)` must be
     >= the slot's `required_count`."""
 
     slot_id: int
@@ -396,17 +396,17 @@ class CalendarGroupSlotSelectionInputData:
 
 
 @dataclass
-class CalendarGroupEventInputData:
+class AppointmentTypeEventInputData:
     """CalendarEventInputData-like payload + per-slot calendar selections used
-    when booking an event through a CalendarGroup."""
+    when booking an event through an AppointmentType."""
 
     title: str
     description: str
     start_time: datetime.datetime
     end_time: datetime.datetime
     timezone: str
-    group_id: int
-    slot_selections: list[CalendarGroupSlotSelectionInputData] = dataclass_field(
+    appointment_type_id: int
+    slot_selections: list[AppointmentTypeSlotSelectionInputData] = dataclass_field(
         default_factory=list
     )
     attendances: list[EventAttendanceInputData] = dataclass_field(default_factory=list)
@@ -416,7 +416,7 @@ class CalendarGroupEventInputData:
 
 
 @dataclass
-class CalendarGroupSlotAvailability:
+class AppointmentTypeSlotAvailability:
     """Per-slot view of which calendars in its pool are available for a range."""
 
     slot_id: int
@@ -429,17 +429,17 @@ class CalendarGroupSlotAvailability:
 
 
 @dataclass
-class CalendarGroupRangeAvailability:
-    """Availability of every slot in a group for a single range."""
+class AppointmentTypeRangeAvailability:
+    """Availability of every slot in an appointment type for a single range."""
 
     start_time: datetime.datetime
     end_time: datetime.datetime
-    slots: list[CalendarGroupSlotAvailability]
+    slots: list[AppointmentTypeSlotAvailability]
 
 
 @dataclass
 class BookableSlotProposal:
-    """A concrete time window where every slot of a group is satisfied."""
+    """A concrete time window where every slot of an appointment type is satisfied."""
 
     start_time: datetime.datetime
     end_time: datetime.datetime
@@ -451,11 +451,11 @@ class StaleSelection:
     roster since the selection was made.
 
     Staleness definition (Calendar Pools plan, Guiding Decisions -> Staleness
-    definition): no ``CalendarGroupSlotMembership`` row exists for the
+    definition): no ``AppointmentTypeSlotMembership`` row exists for the
     selection's ``(slot, calendar)`` pair, regardless of source -- inline or
     projected from a ``CalendarPool``. Carries scalar ids only, matching the
     plan's Data Model Changes -> Type plumbing, so ops-sweep consumers (REST,
-    GraphQL) do not have to load full ``CalendarEvent`` / ``CalendarGroupSlot``
+    GraphQL) do not have to load full ``CalendarEvent`` / ``AppointmentTypeSlot``
     / ``Calendar`` rows just to list the backlog.
     """
 
@@ -465,13 +465,13 @@ class StaleSelection:
 
 
 @dataclass
-class GroupScopedAvailabilityWriteResult:
-    """Result of a group-scoped availability window write (create/update/delete).
+class AppointmentTypeScopedAvailabilityWriteResult:
+    """Result of an appointment-type-scoped availability window write (create/update/delete).
 
     ``window`` is the saved ``AvailableTime`` row, or ``None`` after a delete.
     ``orphaned_bookings`` lists confirmed future ``CalendarEvent`` bookings in
-    the window's group slot, for the window's calendar, that fall outside the
-    calendar's group-scoped configuration *after* the write is applied --
+    the window's appointment type slot, for the window's calendar, that fall outside the
+    calendar's appointment-type-scoped configuration *after* the write is applied --
     populated only by the update path (spec UC-6: "admin tightens a window
     that orphans bookings"). Nothing about the orphaned bookings is modified;
     this is a read-only report for the caller to act on.
@@ -482,13 +482,13 @@ class GroupScopedAvailabilityWriteResult:
 
 
 @dataclass
-class GroupScopedBlockWriteResult:
-    """Result of a group-scoped blocked-time write (create/update/delete).
+class AppointmentTypeScopedBlockWriteResult:
+    """Result of an appointment-type-scoped blocked-time write (create/update/delete).
 
     ``block`` is the saved ``BlockedTime`` row, or ``None`` after a delete.
     ``orphaned_bookings`` lists confirmed future ``CalendarEvent`` bookings in
-    the block's group slot, for the block's calendar, that fall INSIDE the
-    calendar's group-scoped blocked time *after* the write is applied (spec
+    the block's appointment type slot, for the block's calendar, that fall INSIDE the
+    calendar's appointment-type-scoped blocked time *after* the write is applied (spec
     UC-6's rule applied to blocks). Unlike a window write -- where only the
     FIRST window flips the calendar from fall-through to narrowed, so only it
     can orphan a booking -- a block always independently removes time, so
@@ -504,7 +504,7 @@ class GroupScopedBlockWriteResult:
 
 @dataclass(frozen=True)
 class EffectivePolicy:
-    """The resolved set of booking guardrails for a calendar, bundle, or group.
+    """The resolved set of booking guardrails for a calendar, bundle, or appointment type.
 
     Field semantics (mirrors ``BookingPolicy`` field encoding):
     - ``lead_time``: minimum advance notice required before a slot can start.
@@ -557,7 +557,7 @@ class EffectivePolicy:
 
         ``row`` is any object exposing the four annotated attributes produced by
         ``annotate_effective_policy`` — typically a ``Calendar`` or
-        ``CalendarGroup`` instance fetched through an annotated queryset:
+        ``AppointmentType`` instance fetched through an annotated queryset:
 
         - ``effective_lead_time_seconds``
         - ``effective_max_horizon_seconds``

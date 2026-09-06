@@ -16,17 +16,17 @@ transport" Guiding Decision. This module owns:
   REST surface; GraphQL's own ``_validate_code_gated_range`` applies the
   same imported constant independently.
 - ``pinned_duration_error``, a view-layer helper that produces a message
-  naming a CalendarGroup's pinned duration. It exists purely for that
+  naming an AppointmentType's pinned duration. It exists purely for that
   message: the authorization guarantee itself lives in
-  ``CalendarPermissionService.can_perform_group_scheduling`` (and
-  ``can_perform_update`` for a grouped reschedule), which every surface that
-  honours group booking already calls. This helper must never drift from
-  that check -- it re-reads the same ``group.duration`` / span comparison,
+  ``CalendarPermissionService.can_perform_appointment_type_scheduling`` (and
+  ``can_perform_update`` for an appointment-type reschedule), which every surface that
+  honours appointment type booking already calls. This helper must never drift from
+  that check -- it re-reads the same ``appointment_type.duration`` / span comparison,
   not a separate rule. History note: an earlier draft of this design pinned
   duration on ``CalendarManagementToken`` instead, and this helper took a
-  token; duration pinning now lives on ``CalendarGroup`` (see that field's
+  token; duration pinning now lives on ``AppointmentType`` (see that field's
   help_text), so single-calendar codes carry no pin at all and this helper
-  takes a group instead of a token.
+  takes an appointment type instead of a token.
 - ``resolve_and_authorize_write`` and ``translate_booking_write_errors``,
   the resolve/authorize entry sequence and the exception-translation
   vocabulary shared by every code-gated write viewset's ``create()``
@@ -66,7 +66,7 @@ from calendar_integration.exceptions import (
     TokenExpiredError,
     TokenRevokedError,
 )
-from calendar_integration.models import CalendarGroup, CalendarManagementToken
+from calendar_integration.models import AppointmentType, CalendarManagementToken
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from organizations.models import Organization
 
@@ -84,7 +84,7 @@ def booking_code_header(request: HttpRequest | Request) -> str | None:
 
     Absence means "codeless" -- see the "Code transport" Guiding Decision.
     Callers that require a code (every write except the Phase 3 codeless
-    group-booking branch, and every read) reject ``None`` explicitly; callers
+    appointment-type-booking branch, and every read) reject ``None`` explicitly; callers
     that support a codeless path branch on it instead.
     """
     value = request.headers.get(BOOKING_CODE_HEADER)
@@ -129,7 +129,7 @@ def resolve_booking_code_opaquely(
     Every failure -- missing header, invalid, expired, used, revoked -- raises
     the same :class:`~calendar_integration.booking_exceptions.OpaqueCodeError`,
     per the plan's "Error contract (reads)" Guiding Decision. Wrong-scope
-    (a code that resolves to neither a calendar nor a group the endpoint
+    (a code that resolves to neither a calendar nor an appointment type the endpoint
     accepts) is NOT handled here -- callers raise ``OpaqueCodeError`` themselves
     once they inspect the resolved token's scope.
     """
@@ -174,36 +174,36 @@ def validate_code_gated_range(start: datetime.datetime, end: datetime.datetime) 
 
 
 def pinned_duration_error(
-    group: CalendarGroup | None,
+    appointment_type: AppointmentType | None,
     start_time: datetime.datetime,
     end_time: datetime.datetime,
 ) -> NotPermittedAPIException | None:
-    """Return a ``403 NOT_PERMITTED`` naming a CalendarGroup's pinned duration, or ``None``.
+    """Return a ``403 NOT_PERMITTED`` naming an AppointmentType's pinned duration, or ``None``.
 
-    ``None`` means either there is no group to check (single-calendar
+    ``None`` means either there is no appointment type to check (single-calendar
     booking -- no ``Calendar.duration`` exists, so nothing to name), the
-    group pins no duration (``group.duration is None``), or the requested
+    appointment type pins no duration (``appointment_type.duration is None``), or the requested
     span matches it exactly. This exists purely so the write endpoints can
     name the pinned duration in the error message -- the actual guarantee is
     enforced independently by
-    ``CalendarPermissionService.can_perform_group_scheduling`` (and
-    ``can_perform_update`` for a grouped reschedule), which every surface
-    that honours group booking already calls. Callers MUST still rely on
+    ``CalendarPermissionService.can_perform_appointment_type_scheduling`` (and
+    ``can_perform_update`` for an appointment-type reschedule), which every surface
+    that honours appointment type booking already calls. Callers MUST still rely on
     that service check; this helper is a better error message layered on
     top of it, not a substitute for it.
 
     Deliberately does NOT attempt to name the fail-closed case (a public
-    group with no duration at all) -- there is no pinned duration to name
+    appointment type with no duration at all) -- there is no pinned duration to name
     there, only a misconfiguration; that case still returns ``None`` here
     and the caller falls through to the service check's generic
     ``NOT_PERMITTED``.
     """
-    if group is None or group.duration is None:
+    if appointment_type is None or appointment_type.duration is None:
         return None
-    if (end_time - start_time) == group.duration:
+    if (end_time - start_time) == appointment_type.duration:
         return None
 
-    pinned_total_seconds = group.duration.total_seconds()
+    pinned_total_seconds = appointment_type.duration.total_seconds()
     if pinned_total_seconds % 60 == 0:
         pinned_minutes = int(pinned_total_seconds // 60)
         return NotPermittedAPIException(f"This code is fixed to a {pinned_minutes} minute booking.")
@@ -238,8 +238,8 @@ def resolve_and_authorize_write(
 
     Returns ``(token, code, organization)``.
 
-    Deliberately does NOT perform the calendar-vs-group scope check (single
-    calendar vs. group differs per endpoint and stays in the caller) and does
+    Deliberately does NOT perform the calendar-vs-appointment-type scope check (single
+    calendar vs. appointment type differs per endpoint and stays in the caller) and does
     NOT run the duration-pin check (``pinned_duration_error``) -- its call
     site sits after the scope check in every caller today, so it stays there
     too.
@@ -285,8 +285,8 @@ def translate_booking_write_errors(*, permission_denied_message: str) -> Iterato
     ``vinta_exception_handler``, which renders the shared 402 over-limit
     contract.
 
-    Any exception type not listed above (e.g. ``CalendarGroupError``,
-    ``CalendarGroup.DoesNotExist``) is left to propagate unchanged -- callers
+    Any exception type not listed above (e.g. ``AppointmentTypeError``,
+    ``AppointmentType.DoesNotExist``) is left to propagate unchanged -- callers
     that need those map them in their own ``except`` clauses around this
     context manager.
     """

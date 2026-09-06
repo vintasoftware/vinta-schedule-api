@@ -37,7 +37,7 @@ class Migration(migrations.Migration):
                 ('created', model_utils.fields.AutoCreatedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='created')),
                 ('modified', model_utils.fields.AutoLastModifiedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='modified')),
                 ('meta', models.JSONField(blank=True, default=dict, verbose_name='meta')),
-                ('resource_key', models.CharField(choices=[('organization_members', 'Organization members'), ('resource_calendars', 'Resource calendars'), ('calendar_groups', 'Calendar groups'), ('bundle_calendars', 'Bundle calendars'), ('availability_windows', 'Availability windows'), ('webhook_subscriptions', 'Webhook subscriptions'), ('public_api_system_users', 'Public API system users'), ('event_occurrences', 'Event occurrences')], max_length=100)),
+                ('resource_key', models.CharField(choices=[('organization_members', 'Organization members'), ('resource_calendars', 'Resource calendars'), ('appointment_types', 'Appointment types'), ('bundle_calendars', 'Bundle calendars'), ('availability_windows', 'Availability windows'), ('webhook_subscriptions', 'Webhook subscriptions'), ('public_api_system_users', 'Public API system users'), ('event_occurrences', 'Event occurrences')], max_length=100)),
                 ('limit_value', models.PositiveIntegerField(blank=True, null=True)),
                 ('kind', models.CharField(choices=[('prepaid', 'Prepaid'), ('postpaid', 'Postpaid')], max_length=20)),
                 ('overage_unit_price', models.DecimalField(blank=True, decimal_places=4, max_digits=10, null=True)),

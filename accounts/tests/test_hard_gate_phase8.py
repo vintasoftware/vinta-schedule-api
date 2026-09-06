@@ -19,7 +19,7 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
+from calendar_integration.models import AppointmentType, AvailableTime, BlockedTime, Calendar
 from organizations.models import Organization
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
@@ -151,16 +151,16 @@ class TestCalendarIntegrationGatedRefusal:
             "Available times list must be empty for membership-less user"
         )
 
-    def test_calendar_groups_list_returns_403_for_gated_user(self):
+    def test_appointment_types_list_returns_403_for_gated_user(self):
         """
-        GET /calendar-groups/ → 403 (CalendarGroupPermission requires membership
+        GET /appointment-types/ → 403 (AppointmentTypePermission requires membership
         via getattr check in has_permission).
         """
-        _, client = _gated_client("gated-groups-list@test.example")
-        url = reverse("api:CalendarGroups-list")
+        _, client = _gated_client("gated-appointment-types-list@test.example")
+        url = reverse("api:AppointmentTypes-list")
         response = client.get(url)
         assert response.status_code == status.HTTP_403_FORBIDDEN, (
-            f"Expected 403 for membership-less user on calendar-groups, "
+            f"Expected 403 for membership-less user on appointment-types, "
             f"got {response.status_code}: {response.data}"
         )
 
@@ -377,23 +377,23 @@ class TestWriteBulkGatedRefusal:
             "No AvailableTime row must be created for a gated user"
         )
 
-    def test_calendar_group_retrieve_does_not_500_for_gated_user(self):
+    def test_appointment_type_retrieve_does_not_500_for_gated_user(self):
         """
-        GET /calendar-groups/<pk>/ as a gated user → 403 (never 500).
-        CalendarGroupPermission.has_permission uses getattr to guard membership so
-        the missing membership raises no exception.  The group belongs to another
+        GET /appointment-types/<pk>/ as a gated user → 403 (never 500).
+        AppointmentTypePermission.has_permission uses getattr to guard membership so
+        the missing membership raises no exception.  The appointment type belongs to another
         org; the gated user is denied at the list-level permission check (has_permission
         returns False) before has_object_permission is even invoked.
         Covers the guarded has_object_permission path.
         """
         _, org, _ = _make_member("owner-cg@test.example")
-        group = baker.make(CalendarGroup, organization=org)
+        appointment_type = baker.make(AppointmentType, organization=org)
 
         _, gated_client = _gated_client("gated-cg-retrieve@test.example")
-        url = reverse("api:CalendarGroups-detail", args=[group.pk])
+        url = reverse("api:AppointmentTypes-detail", args=[appointment_type.pk])
         response = gated_client.get(url)
         assert response.status_code == status.HTTP_403_FORBIDDEN, (
-            f"Expected 403 (not 500) for gated user on GET /calendar-groups/<pk>/, "
+            f"Expected 403 (not 500) for gated user on GET /appointment-types/<pk>/, "
             f"got {response.status_code}: {response.data}"
         )
 

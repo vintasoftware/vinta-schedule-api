@@ -17,13 +17,13 @@ import pytest
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.factories import create_calendar_pool
 from calendar_integration.models import (
+    AppointmentTypeSlotMembership,
     Calendar,
-    CalendarGroupSlotMembership,
 )
-from calendar_integration.services.calendar_group_service import CalendarGroupService
+from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.dataclasses import (
-    CalendarGroupInputData,
-    CalendarGroupSlotInputData,
+    AppointmentTypeInputData,
+    AppointmentTypeSlotInputData,
 )
 from organizations.models import Organization
 
@@ -35,7 +35,7 @@ def organization(db):
 
 @pytest.fixture
 def service(organization):
-    svc = CalendarGroupService()
+    svc = AppointmentTypeService()
     svc.initialize(organization=organization)
     return svc
 
@@ -65,19 +65,19 @@ def pool(organization, calendars):
 
 
 @pytest.fixture
-def group(service, calendars, pool):
-    return service.create_group(
-        CalendarGroupInputData(
+def appointment_type(service, calendars, pool):
+    return service.create_appointment_type(
+        AppointmentTypeInputData(
             name="Clinic Appointments",
             description="",
             slots=[
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Physicians",
                     calendar_ids=[calendars["phys_a"].id],
                     pool_ids=[pool.id],
                     order=0,
                 ),
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Rooms",
                     calendar_ids=[calendars["room_1"].id],
                     order=1,
@@ -94,7 +94,7 @@ def _run(**options) -> str:
 
 
 @pytest.mark.django_db
-def test_clean_projection_reports_no_drift(group, organization):
+def test_clean_projection_reports_no_drift(appointment_type, organization):
     output = _run()
 
     assert "no drift found" in output
@@ -102,12 +102,14 @@ def test_clean_projection_reports_no_drift(group, organization):
 
 
 @pytest.mark.django_db
-def test_missing_projected_row_is_detected_and_repaired(group, organization, calendars, pool):
-    physicians = group.slots.get(name="Physicians")
+def test_missing_projected_row_is_detected_and_repaired(
+    appointment_type, organization, calendars, pool
+):
+    physicians = appointment_type.slots.get(name="Physicians")
     # Corrupt the projection: drop the row the attachment implies.
-    CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).projected().filter(
-        slot_fk=physicians, calendar_fk=calendars["phys_b"]
-    ).delete()
+    AppointmentTypeSlotMembership.objects.filter_by_organization(
+        organization.id
+    ).projected().filter(slot_fk=physicians, calendar_fk=calendars["phys_b"]).delete()
 
     dry_run_output = _run()
 
@@ -116,7 +118,7 @@ def test_missing_projected_row_is_detected_and_repaired(group, organization, cal
     assert "Dry run: nothing was written" in dry_run_output
     # Still corrupt -- the default run wrote nothing.
     assert (
-        not CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        not AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .projected()
         .filter(slot_fk=physicians, calendar_fk=calendars["phys_b"])
         .exists()
@@ -127,7 +129,7 @@ def test_missing_projected_row_is_detected_and_repaired(group, organization, cal
     assert "DRIFT DETECTED" in fix_output
     assert "Dry run" not in fix_output
     repaired = (
-        CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .projected()
         .filter(slot_fk=physicians, calendar_fk=calendars["phys_b"])
     )
@@ -137,11 +139,13 @@ def test_missing_projected_row_is_detected_and_repaired(group, organization, cal
 
 
 @pytest.mark.django_db
-def test_orphaned_projected_row_is_detected_and_repaired(group, organization, calendars, pool):
-    physicians = group.slots.get(name="Physicians")
+def test_orphaned_projected_row_is_detected_and_repaired(
+    appointment_type, organization, calendars, pool
+):
+    physicians = appointment_type.slots.get(name="Physicians")
     # Corrupt the projection the other way: a projected row for a calendar the
     # pool does not roster.
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization,
         slot=physicians,
         calendar=calendars["room_1"],
@@ -155,7 +159,7 @@ def test_orphaned_projected_row_is_detected_and_repaired(group, organization, ca
     _run(fix=True)
 
     assert (
-        not CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        not AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .projected()
         .filter(slot_fk=physicians, calendar_fk=calendars["room_1"])
         .exists()
@@ -164,11 +168,11 @@ def test_orphaned_projected_row_is_detected_and_repaired(group, organization, ca
 
 
 @pytest.mark.django_db
-def test_repair_never_touches_inline_rows(group, organization, calendars, pool):
+def test_repair_never_touches_inline_rows(appointment_type, organization, calendars, pool):
     """An inline row for a calendar no pool rosters is not "orphaned"."""
-    physicians = group.slots.get(name="Physicians")
+    physicians = appointment_type.slots.get(name="Physicians")
     inline_ids = set(
-        CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .inline()
         .values_list("id", flat=True)
     )
@@ -180,14 +184,14 @@ def test_repair_never_touches_inline_rows(group, organization, calendars, pool):
 
     assert (
         set(
-            CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+            AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
             .inline()
             .values_list("id", flat=True)
         )
         == inline_ids
     )
     assert (
-        CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .projected()
         .filter(slot_fk=physicians)
         .count()
@@ -197,12 +201,12 @@ def test_repair_never_touches_inline_rows(group, organization, calendars, pool):
 
 @pytest.mark.django_db
 def test_organization_without_pools_reports_clean(service, calendars):
-    service.create_group(
-        CalendarGroupInputData(
+    service.create_appointment_type(
+        AppointmentTypeInputData(
             name="No Pools Here",
             description="",
             slots=[
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Physicians",
                     calendar_ids=[calendars["phys_a"].id],
                     order=0,
@@ -224,7 +228,7 @@ def test_unknown_organization_id_is_a_command_error(db):
 
 @pytest.mark.django_db
 def test_fix_across_all_organizations_leaves_a_clean_organization_byte_identical(
-    group, organization, calendars, pool
+    appointment_type, organization, calendars, pool
 ):
     """The multi-organization loop: corrupting org A's projection and running
     `--fix` with no `--organization-id` filter must repair only org A. Org B's
@@ -245,14 +249,14 @@ def test_fix_across_all_organizations_leaves_a_clean_organization_byte_identical
         name="Other Nurses",
         calendars=[other_calendars["other_phys_y"]],
     )
-    other_service = CalendarGroupService()
+    other_service = AppointmentTypeService()
     other_service.initialize(organization=other_org)
-    other_group = other_service.create_group(
-        CalendarGroupInputData(
+    other_appointment_type = other_service.create_appointment_type(
+        AppointmentTypeInputData(
             name="Other Clinic",
             description="",
             slots=[
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Physicians",
                     calendar_ids=[other_calendars["other_phys_x"].id],
                     pool_ids=[other_pool.id],
@@ -261,9 +265,9 @@ def test_fix_across_all_organizations_leaves_a_clean_organization_byte_identical
             ],
         )
     )
-    other_physicians = other_group.slots.get(name="Physicians")
+    other_physicians = other_appointment_type.slots.get(name="Physicians")
     other_rows_before = list(
-        CalendarGroupSlotMembership.objects.filter_by_organization(other_org.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(other_org.id)
         .filter(slot_fk=other_physicians)
         .order_by("id")
         .values("id", "calendar_fk_id", "source_pool_fk_id")
@@ -271,10 +275,10 @@ def test_fix_across_all_organizations_leaves_a_clean_organization_byte_identical
     assert other_rows_before  # sanity: org B actually has rows to compare.
 
     # Corrupt only org A's projection.
-    physicians = group.slots.get(name="Physicians")
-    CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).projected().filter(
-        slot_fk=physicians, calendar_fk=calendars["phys_b"]
-    ).delete()
+    physicians = appointment_type.slots.get(name="Physicians")
+    AppointmentTypeSlotMembership.objects.filter_by_organization(
+        organization.id
+    ).projected().filter(slot_fk=physicians, calendar_fk=calendars["phys_b"]).delete()
 
     output = _run(fix=True)
 
@@ -282,7 +286,7 @@ def test_fix_across_all_organizations_leaves_a_clean_organization_byte_identical
     assert f"org={other_org.id}" not in output
     # Org A repaired.
     assert (
-        CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .projected()
         .filter(slot_fk=physicians, calendar_fk=calendars["phys_b"])
         .count()
@@ -290,7 +294,7 @@ def test_fix_across_all_organizations_leaves_a_clean_organization_byte_identical
     )
     # Org B untouched -- byte-identical to what it was before the sweep.
     other_rows_after = list(
-        CalendarGroupSlotMembership.objects.filter_by_organization(other_org.id)
+        AppointmentTypeSlotMembership.objects.filter_by_organization(other_org.id)
         .filter(slot_fk=other_physicians)
         .order_by("id")
         .values("id", "calendar_fk_id", "source_pool_fk_id")
@@ -299,22 +303,24 @@ def test_fix_across_all_organizations_leaves_a_clean_organization_byte_identical
 
 
 @pytest.mark.django_db
-def test_dry_run_and_fix_together_is_a_command_error(group, organization, calendars, pool):
+def test_dry_run_and_fix_together_is_a_command_error(
+    appointment_type, organization, calendars, pool
+):
     """`--dry-run --fix` used to silently take --fix's write despite the flag
     whose whole story is "this is safe to run." Passing both is refused."""
     from django.core.management.base import CommandError
 
-    physicians = group.slots.get(name="Physicians")
-    CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).projected().filter(
-        slot_fk=physicians, calendar_fk=calendars["phys_b"]
-    ).delete()
+    physicians = appointment_type.slots.get(name="Physicians")
+    AppointmentTypeSlotMembership.objects.filter_by_organization(
+        organization.id
+    ).projected().filter(slot_fk=physicians, calendar_fk=calendars["phys_b"]).delete()
 
     with pytest.raises(CommandError, match="mutually exclusive"):
         _run(dry_run=True, fix=True)
 
     # Refused before any write -- the corrupted projection is untouched.
     assert (
-        not CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        not AppointmentTypeSlotMembership.objects.filter_by_organization(organization.id)
         .projected()
         .filter(slot_fk=physicians, calendar_fk=calendars["phys_b"])
         .exists()

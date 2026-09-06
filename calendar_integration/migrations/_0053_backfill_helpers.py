@@ -1,4 +1,4 @@
-"""Importable backfill helpers for ``CalendarGroup.public_booking_slug``.
+"""Importable backfill helpers for ``AppointmentType.public_booking_slug``.
 
 Extracted from migration 0053 so tests can call
 ``backfill_public_booking_slugs()`` directly without going through the
@@ -27,7 +27,7 @@ Cross-organization raw SQL
 ---------------------------
 ``public_booking_slug`` uniqueness is GLOBAL, not organization-scoped (the
 codeless booking route carries no organization in its path), so this backfill
-must see every ``CalendarGroup`` row across every organization at once to
+must see every ``AppointmentType`` row across every organization at once to
 collision-check correctly. It uses the raw cursor directly rather than the
 org-scoped ORM manager, matching the documented exception in
 ``_0034_backfill_helpers.py`` for the same reason. Table name is a literal in
@@ -39,7 +39,7 @@ Drain loop, not a snapshotted ``MAX(id)`` bound
 -------------------------------------------------
 ``manage.py migrate`` runs inside Render's build step while the *previous*
 deploy's pods are still serving traffic, so old code can ``INSERT`` new
-``CalendarGroup`` rows for the whole duration of this backfill. A bound
+``AppointmentType`` rows for the whole duration of this backfill. A bound
 computed once up front (``SELECT MAX(id)`` before the loop starts) would
 never see a row inserted after that snapshot -- its id exceeds the bound, the
 loop's ``id <= upper_id`` condition never reaches it, and it would be left
@@ -74,7 +74,7 @@ BATCH_SIZE = 500
 def _load_existing_slugs() -> set[str]:
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT public_booking_slug FROM calendar_integration_calendargroup "
+            "SELECT public_booking_slug FROM calendar_integration_appointmenttype "
             "WHERE public_booking_slug IS NOT NULL"
         )
         return {row[0] for row in cursor.fetchall()}
@@ -88,7 +88,7 @@ def _generate_unused_slug(existing: set[str]) -> str:
 
 
 def backfill_public_booking_slugs() -> None:
-    """Fill ``public_booking_slug`` for every ``CalendarGroup`` row that lacks one.
+    """Fill ``public_booking_slug`` for every ``AppointmentType`` row that lacks one.
 
     Drains ``BATCH_SIZE``-sized batches of NULL-slug rows (never ``.all()``,
     never a snapshotted id bound -- see the module docstring's "Drain loop"
@@ -106,7 +106,7 @@ def backfill_public_booking_slugs() -> None:
     while True:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id FROM calendar_integration_calendargroup "
+                "SELECT id FROM calendar_integration_appointmenttype "
                 "WHERE public_booking_slug IS NULL ORDER BY id LIMIT %s",
                 [BATCH_SIZE],
             )
@@ -115,12 +115,12 @@ def backfill_public_booking_slugs() -> None:
         if not batch_ids:
             break
 
-        for group_id in batch_ids:
+        for appointment_type_id in batch_ids:
             slug = _generate_unused_slug(existing_slugs)
             existing_slugs.add(slug)
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "UPDATE calendar_integration_calendargroup SET public_booking_slug = %s "
+                    "UPDATE calendar_integration_appointmenttype SET public_booking_slug = %s "
                     "WHERE id = %s AND public_booking_slug IS NULL",
-                    [slug, group_id],
+                    [slug, appointment_type_id],
                 )

@@ -17,7 +17,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("calendar_integration", "0058_backfill_calendargroup_duration"),
+        ("calendar_integration", "0058_backfill_appointmenttype_duration"),
         migrations.swappable_dependency(settings.ORGANIZATION_MODEL),
     ]
 

@@ -2,7 +2,7 @@
 chain (Phase 7 of REST_CODE_GATED_SCHEDULING).
 
 Two layers, deliberately separate -- same shape as
-``test_calendargroup_public_booking_slug_backfill.py`` (Phase 3b's own
+``test_appointmenttype_public_booking_slug_backfill.py`` (Phase 3b's own
 migration-chain test):
 
 * the backfill helper itself
@@ -59,7 +59,7 @@ from organizations.models import Organization, OrganizationMembership
 
 
 APP_LABEL = "calendar_integration"
-BEFORE_ADD_FIELD = "0054_calendargroup_public_booking_slug_unique"
+BEFORE_ADD_FIELD = "0054_appointmenttype_public_booking_slug_unique"
 AFTER_ADD_FIELD = "0055_calendarmanagementtoken_kind"
 AFTER_BACKFILL = "0056_backfill_calendarmanagementtoken_kind"
 AFTER_NOT_NULL = "0057_calendarmanagementtoken_kind_not_null"
@@ -101,7 +101,7 @@ class TestBackfillHelperClassification:
         to, so an ORM ``.create()`` would either error (asking about a column
         that transiently does not exist) or rely on ORM internals never
         designed for this mismatch. Same approach as the Phase 3b precedent's
-        ``_insert_group_without_slug``.
+        ``_insert_appointment_type_without_slug``.
         """
         column_names = ["organization_id", *columns.keys()]
         placeholders = ", ".join(["%s"] * len(column_names))

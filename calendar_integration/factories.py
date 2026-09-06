@@ -8,9 +8,9 @@ from organizations.models import OrganizationMembership
 from .constants import CalendarProvider, ExternalEventChangeKind, QuotaPeriod, RecurrenceFrequency
 from .external_client_identifiers import normalize_system
 from .models import (
+    AppointmentTypeSlotQuotaRule,
     BookingPolicy,
     CalendarEvent,
-    CalendarGroupSlotQuotaRule,
     CalendarOwnership,
     CalendarPool,
     CalendarPoolMembership,
@@ -339,24 +339,24 @@ def create_external_event_change_request(
     )
 
 
-def create_group_slot_quota_rule(
+def create_appointment_type_slot_quota_rule(
     *,
     organization,
-    group_slot,
+    appointment_type_slot,
     calendar,
     period: str = QuotaPeriod.WEEK,
     cap: int = 3,
     **kwargs,
-) -> CalendarGroupSlotQuotaRule:
-    """Create a ``CalendarGroupSlotQuotaRule`` capping *calendar*'s live bookings
-    made through *group_slot* within one *period* (default: 3 a week).
+) -> AppointmentTypeSlotQuotaRule:
+    """Create an ``AppointmentTypeSlotQuotaRule`` capping *calendar*'s live bookings
+    made through *appointment_type_slot* within one *period* (default: 3 a week).
 
     ``organization`` is required explicitly (no default) so tests that forget
     to pass it fail loudly rather than silently cross-tenant.
     """
-    return CalendarGroupSlotQuotaRule.objects.create(
+    return AppointmentTypeSlotQuotaRule.objects.create(
         organization=organization,
-        group_slot=group_slot,
+        appointment_type_slot=appointment_type_slot,
         calendar=calendar,
         period=period,
         cap=cap,
@@ -414,7 +414,7 @@ def create_booking_policy(
     *,
     calendar=None,
     membership_user_id: int | None = None,
-    calendar_group=None,
+    appointment_type=None,
     is_organization_default: bool = False,
     organization=None,
     lead_time_seconds: int = 0,
@@ -427,33 +427,33 @@ def create_booking_policy(
 
     Exactly one target must be set: ``calendar`` (the default — pass a
     ``Calendar`` to attach a calendar-scoped policy), ``membership_user_id``,
-    ``calendar_group``, or ``is_organization_default=True``. Passing zero or more
+    ``appointment_type``, or ``is_organization_default=True``. Passing zero or more
     than one target raises ``ValueError`` before hitting the DB, so tests that
     want to exercise the ``bookingpolicy_exactly_one_target`` check constraint
     should build the row directly via ``BookingPolicy.objects.create(...)``.
 
     The organization is inferred from the provided ``calendar`` /
-    ``calendar_group`` target; for membership / organization-default targets the
+    ``appointment_type`` target; for membership / organization-default targets the
     ``organization`` kwarg is required. A mismatch between an explicit
     ``organization`` and the target's organization raises ``ValueError``.
     """
     targets = [
         calendar is not None,
         membership_user_id is not None,
-        calendar_group is not None,
+        appointment_type is not None,
         is_organization_default,
     ]
     if sum(targets) != 1:
         raise ValueError(
             "create_booking_policy requires exactly one target: calendar, "
-            "membership_user_id, calendar_group, or is_organization_default."
+            "membership_user_id, appointment type, or is_organization_default."
         )
 
     effective_org = organization
     if calendar is not None:
         effective_org = calendar.organization
-    elif calendar_group is not None:
-        effective_org = calendar_group.organization
+    elif appointment_type is not None:
+        effective_org = appointment_type.organization
 
     if effective_org is None:
         raise ValueError(
@@ -461,7 +461,7 @@ def create_booking_policy(
         )
     if (
         organization is not None
-        and (calendar is not None or calendar_group is not None)
+        and (calendar is not None or appointment_type is not None)
         and organization != effective_org
     ):
         raise ValueError(
@@ -473,7 +473,7 @@ def create_booking_policy(
         organization=effective_org,
         calendar=calendar,
         membership_user_id=membership_user_id,
-        calendar_group=calendar_group,
+        appointment_type=appointment_type,
         is_organization_default=is_organization_default,
         lead_time_seconds=lead_time_seconds,
         max_horizon_seconds=max_horizon_seconds,

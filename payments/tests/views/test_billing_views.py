@@ -54,7 +54,7 @@ from organizations.permission_catalog import (
 from organizations.services import OrganizationService
 from organizations.tests.helpers import make_membership
 from payments.seams.resource_keys import (
-    CALENDAR_GROUPS,
+    APPOINTMENT_TYPES,
     ORGANIZATION_MEMBERS,
     RESOURCE_CALENDARS,
     RESOURCE_KEYS,
@@ -878,12 +878,12 @@ class TestBillingErrorCodes:
         self, billing_client, admin_membership, subscription, billing_profile
     ):
         """``free_plan`` (the ``subscription`` fixture's plan) carries no
-        ``overage_unit_price`` for ``CALENDAR_GROUPS`` -- there is no
+        ``overage_unit_price`` for ``APPOINTMENT_TYPES`` -- there is no
         catalog-derived price to charge for it as an add-on."""
         response = billing_client.post(
             add_ons_url(),
             {
-                "resource_key": CALENDAR_GROUPS,
+                "resource_key": APPOINTMENT_TYPES,
                 "quantity": 1,
                 "is_recurring": False,
                 "idempotency_key": "idem-unpriced-1",

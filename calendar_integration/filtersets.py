@@ -8,11 +8,11 @@ from calendar_integration.constants import (
 )
 from calendar_integration.external_client_identifiers import normalize_system
 from calendar_integration.models import (
+    AppointmentType,
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
     CalendarPool,
     ExternalEventChangeRequest,
 )
@@ -200,8 +200,8 @@ class BlockedTimeFilterSet(filters.FilterSet):
         )
 
 
-class CalendarGroupFilterSet(filters.FilterSet):
-    """FilterSet for CalendarGroup."""
+class AppointmentTypeFilterSet(filters.FilterSet):
+    """FilterSet for AppointmentType."""
 
     name = filters.CharFilter(
         field_name="name",
@@ -210,7 +210,7 @@ class CalendarGroupFilterSet(filters.FilterSet):
     )
 
     class Meta:
-        model = CalendarGroup
+        model = AppointmentType
         fields = ("name",)
 
     def __init__(self, *args, **kwargs):
@@ -219,11 +219,11 @@ class CalendarGroupFilterSet(filters.FilterSet):
         membership = self.request.organization_membership if self.request else None
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="slots__memberships__calendar_fk_id",
-            label="Filter to groups whose slot pools include this calendar",
-            # A calendar can hold several CalendarGroupSlotMembership rows for one
+            label="Filter to appointment_types whose slot pools include this calendar",
+            # A calendar can hold several AppointmentTypeSlotMembership rows for one
             # slot since Calendar Pools projected pool rosters into that table
             # (inline plus one per attached pool listing it), and this join would
-            # otherwise return the group once per row.
+            # otherwise return the appointment type once per row.
             distinct=True,
             queryset=(
                 Calendar.objects.filter_by_organization(membership.organization_id)

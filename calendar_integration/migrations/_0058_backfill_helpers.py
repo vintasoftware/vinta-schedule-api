@@ -1,33 +1,33 @@
-"""Importable backfill helpers for ``CalendarGroup.duration``.
+"""Importable backfill helpers for ``AppointmentType.duration``.
 
 Extracted from migration 0058 so tests can call
-``backfill_calendargroup_duration()`` directly without going through the
+``backfill_appointmenttype_duration()`` directly without going through the
 migration runner -- same pattern as
 ``calendar_integration/migrations/_0056_backfill_helpers.py``.
 
-Why 30 minutes, for every group -- public AND private
+Why 30 minutes, for every appointment type -- public AND private
 --------------------------------------------------------
 ``CalendarPermissionService`` fails closed (see 0051's
-``CalendarGroup.duration`` help_text and
-``CalendarPermissionService._group_duration_pin_satisfied``): a group with
+``AppointmentType.duration`` help_text and
+``CalendarPermissionService._appointment_type_duration_pin_satisfied``): an appointment type with
 ``accepts_public_scheduling=True`` and a null ``duration`` refuses every
-booking rather than accepting any length. That is deliberate for groups
-created going forward -- ``CalendarGroupService.create_group`` /
-``update_group`` require ``duration`` be set whenever
+booking rather than accepting any length. That is deliberate for appointment types
+created going forward -- ``AppointmentTypeService.create_appointment_type`` /
+``update_appointment_type`` require ``duration`` be set whenever
 ``accepts_public_scheduling=True`` -- but it means every *pre-existing*
-public group would break on deploy, with no in-app way to fix it before
+public appointment type would break on deploy, with no in-app way to fix it before
 traffic starts hitting the fail-closed check.
 
-This backfill closes that gap by giving EVERY pre-existing group with a
+This backfill closes that gap by giving EVERY pre-existing appointment type with a
 NULL ``duration`` -- public and private alike -- ``timedelta(minutes=30)``,
 not just the public ones the fail-closed rule strictly requires. This is a
 deliberate, explicit choice (see 0058's own migration docstring for the
 full tradeoff), not an oversight: it also pins every pre-existing PRIVATE
-group's coded bookings to exactly 30 minutes, where before this migration
-they were unconstrained by any group-level duration at all. An organization
-that books other lengths through a private group must set that group's
+appointment type's coded bookings to exactly 30 minutes, where before this migration
+they were unconstrained by any appointment-type-level duration at all. An organization
+that books other lengths through a private appointment type must set that appointment type's
 ``duration`` explicitly after this deploys -- this backfill cannot know
-what length a given private group's bookings should be, and 30 minutes is
+what length a given private appointment type's bookings should be, and 30 minutes is
 a default, not a discovered fact.
 
 Idempotency
@@ -41,7 +41,7 @@ process -- already filled in.
 Cross-organization raw SQL
 ---------------------------
 Same documented exception as ``_0034_backfill_helpers.py``: a one-off
-data-migration backfill needs to see every ``CalendarGroup`` row across
+data-migration backfill needs to see every ``AppointmentType`` row across
 every organization at once, not a single tenant's slice, so it uses the raw
 cursor directly rather than the org-scoped ORM manager. Table name is a
 literal in the statement below (not interpolated from a variable) so
@@ -53,7 +53,7 @@ Drain loop, not a snapshotted ``MAX(id)`` bound
 -------------------------------------------------
 ``manage.py migrate`` runs inside Render's build step while the *previous*
 deploy's pods are still serving traffic, so old code -- which predates
-``duration`` entirely -- can ``INSERT`` new ``CalendarGroup`` rows with
+``duration`` entirely -- can ``INSERT`` new ``AppointmentType`` rows with
 ``duration`` NULL for the whole duration of this backfill. A bound
 computed once up front (``SELECT MAX(id)`` before the loop starts) would
 never see a row inserted after that snapshot -- its id exceeds the bound,
@@ -63,7 +63,7 @@ fail-closed break this migration exists to close, for a row inserted
 mid-deploy. This is exactly the bug a previous reviewer caught in an
 earlier draft of this app's backfill chain (see
 ``_0053_backfill_helpers.py``'s and ``_0056_backfill_helpers.py``'s own
-"Drain loop" sections). Instead, ``backfill_calendargroup_duration``
+"Drain loop" sections). Instead, ``backfill_appointmenttype_duration``
 repeatedly re-queries ``WHERE duration IS NULL ORDER BY id LIMIT <batch>``
 until a query returns nothing -- a true drain, not a fixed range -- so a
 row inserted mid-drain (by old code, or by anything else) is picked up by
@@ -80,11 +80,11 @@ shape as ``_0056_backfill_helpers.py``'s batch ``UPDATE``.
 
 No reverse helper
 ------------------
-This module intentionally has no ``reverse_backfill_calendargroup_duration``
+This module intentionally has no ``reverse_backfill_appointmenttype_duration``
 counterpart. 0058's migration reverse is ``RunPython.noop`` -- see that
 migration's docstring for why NULLing every duration back out would
-re-break every public group's fail-closed check (and silently unpin every
-private group's coded bookings back to "any length"), and buys nothing
+re-break every public appointment type's fail-closed check (and silently unpin every
+private appointment type's coded bookings back to "any length"), and buys nothing
 anyway: a full reverse past this point continues on to 0051's reverse,
 which drops the ``duration`` column outright regardless of what this step
 leaves in it.
@@ -99,7 +99,7 @@ from django.db import connection
 BATCH_SIZE = 500
 
 #: The value every NULL ``duration`` row is filled with. See the module
-#: docstring's "Why 30 minutes, for every group" section for the reasoning.
+#: docstring's "Why 30 minutes, for every appointment type" section for the reasoning.
 BACKFILL_DURATION = timedelta(minutes=30)
 
 # Table name is a literal in the statement below (not interpolated from a
@@ -108,11 +108,11 @@ BACKFILL_DURATION = timedelta(minutes=30)
 # duration value and batch size. Matches the convention in
 # ``_0056_backfill_helpers.py``.
 _UPDATE_BATCH = """
-    UPDATE calendar_integration_calendargroup
+    UPDATE calendar_integration_appointmenttype
     SET duration = %s
     WHERE duration IS NULL
       AND id IN (
-        SELECT id FROM calendar_integration_calendargroup
+        SELECT id FROM calendar_integration_appointmenttype
         WHERE duration IS NULL
         ORDER BY id
         LIMIT %s
@@ -120,12 +120,12 @@ _UPDATE_BATCH = """
 """
 
 
-def backfill_calendargroup_duration() -> None:
-    """Fill ``duration`` for every ``CalendarGroup`` row that lacks one.
+def backfill_appointmenttype_duration() -> None:
+    """Fill ``duration`` for every ``AppointmentType`` row that lacks one.
 
     Sets ``duration = timedelta(minutes=30)`` on EVERY row with
-    ``duration IS NULL`` -- public and private groups alike; see the module
-    docstring's "Why 30 minutes, for every group" section for why this is
+    ``duration IS NULL`` -- public and private appointment types alike; see the module
+    docstring's "Why 30 minutes, for every appointment type" section for why this is
     deliberate, not an oversight. Drains ``BATCH_SIZE``-sized batches
     (never ``.all()``, never a snapshotted id bound -- see the module
     docstring's "Drain loop" section for why) with a single parameterized

@@ -21,10 +21,10 @@ from calendar_integration.exceptions import (
     TokenRevokedError,
 )
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     Calendar,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
     CalendarManagementToken,
     CalendarOwnership,
     EventManagementPermissions,
@@ -378,92 +378,92 @@ class CalendarPermissionService:
 
         return required_permissions
 
-    def _group_duration_pin_satisfied(
+    def _appointment_type_duration_pin_satisfied(
         self,
-        group: CalendarGroup,
+        appointment_type: AppointmentType,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
     ) -> bool:
-        """Return ``False`` when ``group``'s duration constraint refuses this span.
+        """Return ``False`` when ``appointment_type``'s duration constraint refuses this span.
 
-        Duration pinning lives on ``CalendarGroup``, not on
-        ``CalendarManagementToken``: a codeless public-group booking
-        (``group.accepts_public_scheduling=True``) presents no code, so it
-        inherits no per-code pin. The group being booked is the only place a
+        Duration pinning lives on ``AppointmentType``, not on
+        ``CalendarManagementToken``: a codeless public-appointment-type booking
+        (``appointment_type.accepts_public_scheduling=True``) presents no code, so it
+        inherits no per-code pin. The appointment type being booked is the only place a
         length constraint can live for that path -- so it lives there for
         every path, code-gated or not.
 
-        - ``group.duration`` is set: the span must match it exactly.
-        - ``group.duration`` is ``None`` and ``group.accepts_public_scheduling``:
+        - ``appointment_type.duration`` is set: the span must match it exactly.
+        - ``appointment_type.duration`` is ``None`` and ``appointment_type.accepts_public_scheduling``:
           FAIL CLOSED -- refuse outright rather than allow any length. A
-          public group with no duration is misconfigured (``CalendarGroupService
-          .create_group`` / ``update_group`` refuse to create one going
-          forward, but a group predating that invariant can still exist at
+          public appointment type with no duration is misconfigured (``AppointmentTypeService
+          .create_appointment_type`` / ``update_appointment_type`` refuse to create one going
+          forward, but an appointment type predating that invariant can still exist at
           rest) and must surface immediately here rather than silently
           reopening the unbounded-length hole this whole mechanism exists to
           close.
-        - ``group.duration`` is ``None`` and the group is NOT publicly
-          schedulable: unaffected -- ``True``. A private group with no
+        - ``appointment_type.duration`` is ``None`` and the appointment type is NOT publicly
+          schedulable: unaffected -- ``True``. A private appointment type with no
           duration set is not constrained by this check at all (a
-          group-scoped token/code still has to pass its own scope check
+          appointment-type-scoped token/code still has to pass its own scope check
           elsewhere).
 
         Called BEFORE the ``accepts_public_scheduling`` short-circuit in
-        ``can_perform_group_scheduling`` -- that clause returns ``True``
+        ``can_perform_appointment_type_scheduling`` -- that clause returns ``True``
         without reading anything else, so a check placed after it would be
-        silently unenforced on exactly the groups most likely to be publicly
+        silently unenforced on exactly the appointment types most likely to be publicly
         bookable.
         """
-        if group.duration is not None:
-            return (end_time - start_time) == group.duration
-        return not group.accepts_public_scheduling
+        if appointment_type.duration is not None:
+            return (end_time - start_time) == appointment_type.duration
+        return not appointment_type.accepts_public_scheduling
 
     def can_perform_update(
         self,
         old_event: CalendarEventData,
         new_event: CalendarEventData | None,
         *,
-        calendar_group_id: int | None = None,
+        appointment_type_id: int | None = None,
     ) -> bool:
         """
         Check if the token has all the required permissions to perform the update.
 
-        ``calendar_group_id`` identifies the ``CalendarGroup`` the event being
-        updated was booked through (``CalendarEvent.calendar_group_fk_id``),
-        or ``None`` for an event that was not booked through a group. Callers
+        ``appointment_type_id`` identifies the ``AppointmentType`` the event being
+        updated was booked through (``CalendarEvent.appointment_type_fk_id``),
+        or ``None`` for an event that was not booked through an appointment type. Callers
         resolve it from the event they already loaded -- it is a plain FK id
         column, no extra query needed. When set and ``new_event`` is not
         ``None`` (i.e. this is a reschedule, not a cancellation), the NEW span
-        is checked against that group's duration pin
-        (``_group_duration_pin_satisfied``, including its fail-closed rule for
-        a misconfigured public group). Single-calendar events
-        (``calendar_group_id is None``) carry no duration constraint at all --
+        is checked against that appointment type's duration pin
+        (``_appointment_type_duration_pin_satisfied``, including its fail-closed rule for
+        a misconfigured public appointment type). Single-calendar events
+        (``appointment_type_id is None``) carry no duration constraint at all --
         see ``can_perform_scheduling``'s docstring for why that pin was
         dropped rather than relocated.
         """
         if not hasattr(self, "token") or self.token is None:
             return False
 
-        # Group-duration guard, checked before anything else: a reschedule of a
-        # grouped event is constrained by the GROUP's pinned duration, not any
-        # per-code pin -- duration pinning lives on CalendarGroup (see
-        # ``_group_duration_pin_satisfied``). Skipped for cancellation
-        # (``new_event is None`` -- no new span to check) and for non-grouped
-        # events (``calendar_group_id is None``).
-        if new_event is not None and calendar_group_id is not None:
-            group = (
-                CalendarGroup.objects.filter_by_organization(self.token.organization_id)
-                .filter(id=calendar_group_id)
+        # Appointment-type-duration guard, checked before anything else: a reschedule of a
+        # appointment-type event is constrained by the APPOINTMENT_TYPE's pinned duration, not any
+        # per-code pin -- duration pinning lives on AppointmentType (see
+        # ``_appointment_type_duration_pin_satisfied``). Skipped for cancellation
+        # (``new_event is None`` -- no new span to check) and for non-appointment-type
+        # events (``appointment_type_id is None``).
+        if new_event is not None and appointment_type_id is not None:
+            appointment_type = (
+                AppointmentType.objects.filter_by_organization(self.token.organization_id)
+                .filter(id=appointment_type_id)
                 .first()
             )
-            # A ``None`` group here would mean the event references a group id
+            # A ``None`` appointment type here would mean the event references an appointment type id
             # that no longer resolves in this org -- treat that defensively as
             # a failure rather than silently skipping the check. In practice
-            # this should not happen: CalendarEvent.calendar_group is a
-            # PROTECT FK, so the group cannot have been deleted out from under
+            # this should not happen: CalendarEvent.appointment type is a
+            # PROTECT FK, so the appointment type cannot have been deleted out from under
             # a live event.
-            if group is None or not self._group_duration_pin_satisfied(
-                group, new_event.start_time, new_event.end_time
+            if appointment_type is None or not self._appointment_type_duration_pin_satisfied(
+                appointment_type, new_event.start_time, new_event.end_time
             ):
                 return False
 
@@ -489,21 +489,21 @@ class CalendarPermissionService:
         1. The calendar accepts public scheduling (``accepts_public_scheduling=True``).
         2. The token is calendar-scoped (``calendar_fk_id == calendar_id``) and has
            the CREATE permission.
-        3. The token is group-scoped (``calendar_group_fk_id`` is set), has the CREATE
-           permission, **and** ``calendar_id`` is a member of one of that group's slots.
-           This case covers group-booking codes: the code is minted with a group scope,
-           and the create call targets the primary calendar of the group.
+        3. The token is appointment-type-scoped (``appointment_type_fk_id`` is set), has the CREATE
+           permission, **and** ``calendar_id`` is a member of one of that appointment type's slots.
+           This case covers appointment-type-booking codes: the code is minted with an appointment type scope,
+           and the create call targets the primary calendar of the appointment type.
 
         Single-calendar codes carry NO duration pin -- there is no
         ``Calendar.duration``. Duration pinning is a property of the
-        ``CalendarGroup`` being booked (see ``can_perform_group_scheduling`` /
-        ``_group_duration_pin_satisfied``): it exists specifically because a
-        codeless PUBLIC-GROUP booking has no code to pin a length to. A
+        ``AppointmentType`` being booked (see ``can_perform_appointment_type_scheduling`` /
+        ``_appointment_type_duration_pin_satisfied``): it exists specifically because a
+        codeless PUBLIC-APPOINTMENT_TYPE booking has no code to pin a length to. A
         single-calendar booking always requires a code (there is no codeless
         single-calendar path), so there was never an unconstrained hole here
         to close. This is a deliberate decision, not an oversight -- an
         earlier draft of this design pinned duration on the token instead,
-        which is exactly the design that left the codeless group path
+        which is exactly the design that left the codeless appointment type path
         unconstrained; per-calendar pinning was dropped rather than relocated
         when that was corrected.
         """
@@ -516,16 +516,16 @@ class CalendarPermissionService:
         if self.token.calendar_fk_id == calendar_id:  # type: ignore
             return self.has_permission(EventManagementPermissions.CREATE)
 
-        # Group-scoped token: authorize if calendar_id belongs to any slot of the bound group.
-        if self.token.calendar_group_fk_id is not None and self.has_permission(
+        # Appointment-type-scoped token: authorize if calendar_id belongs to any slot of the bound appointment type.
+        if self.token.appointment_type_fk_id is not None and self.has_permission(
             EventManagementPermissions.CREATE
         ):
             return (
-                CalendarGroupSlotMembership.objects.filter_by_organization(
+                AppointmentTypeSlotMembership.objects.filter_by_organization(
                     self.token.organization_id
                 )
                 .filter(
-                    slot__group_fk_id=self.token.calendar_group_fk_id,
+                    slot__appointment_type_fk_id=self.token.appointment_type_fk_id,
                     calendar_fk_id=calendar_id,
                 )
                 .exists()
@@ -533,42 +533,42 @@ class CalendarPermissionService:
 
         return False
 
-    def can_perform_group_scheduling(
+    def can_perform_appointment_type_scheduling(
         self,
-        group: CalendarGroup,
+        appointment_type: AppointmentType,
         *,
         start_time: datetime.datetime | None = None,
         end_time: datetime.datetime | None = None,
     ) -> bool:
-        """Check if the current context is authorized to book through ``group``.
+        """Check if the current context is authorized to book through ``appointment_type``.
 
         ``start_time`` / ``end_time`` are optional and keyword-only: when
-        both are supplied, ``group``'s duration pin is checked
-        (``_group_duration_pin_satisfied``) BEFORE anything else -- including
+        both are supplied, ``appointment_type``'s duration pin is checked
+        (``_appointment_type_duration_pin_satisfied``) BEFORE anything else -- including
         before clause 1 below, which returns ``True`` without reading
         anything else. Checking the pin after that short-circuit would leave
-        it silently unenforced on exactly the groups most likely to be
+        it silently unenforced on exactly the appointment types most likely to be
         publicly bookable -- the same ordering hazard
         ``can_perform_scheduling`` used to guard against for the (now
         removed) per-calendar-code pin. Omitting ``start_time`` /
-        ``end_time`` (the group-level "can this token/group even book" gate
+        ``end_time`` (the appointment-type-level "can this token/appointment type even book" gate
         some callers only need) skips the duration check entirely -- it is
         not a violation to ask the scope question without times in hand.
 
         Authorization is granted when any of the following holds:
 
-        1. The group accepts public scheduling (``group.accepts_public_scheduling=True``).
+        1. The appointment type accepts public scheduling (``appointment_type.accepts_public_scheduling=True``).
            This is the codeless public path — no token is required.
-        2. The token is group-scoped (``calendar_group_fk_id == group.id``) and has
-           the CREATE permission. This covers group-scoped management tokens and
-           single-use booking codes whose scope is the group.
+        2. The token is appointment-type-scoped (``appointment_type_fk_id == appointment type.id``) and has
+           the CREATE permission. This covers appointment-type-scoped management tokens and
+           single-use booking codes whose scope is the appointment type.
 
         Args:
-            group: The ``CalendarGroup`` being booked.
+            appointment type: The ``AppointmentType`` being booked.
             start_time: Requested event start, for duration-pin enforcement.
-                Omit (with ``end_time``) to check only the group/token scope.
+                Omit (with ``end_time``) to check only the appointment type/token scope.
             end_time: Requested event end, for duration-pin enforcement. Omit
-                (with ``start_time``) to check only the group/token scope.
+                (with ``start_time``) to check only the appointment type/token scope.
 
         Returns:
             ``True`` if the booking is authorized; ``False`` otherwise.
@@ -576,49 +576,51 @@ class CalendarPermissionService:
         if (
             start_time is not None
             and end_time is not None
-            and not self._group_duration_pin_satisfied(group, start_time, end_time)
+            and not self._appointment_type_duration_pin_satisfied(
+                appointment_type, start_time, end_time
+            )
         ):
             return False
 
-        if group.accepts_public_scheduling:
+        if appointment_type.accepts_public_scheduling:
             return True
 
         if not hasattr(self, "token") or self.token is None:
             return False
 
-        if self.token.calendar_group_fk_id == group.id and self.has_permission(  # type: ignore[attr-defined]
+        if self.token.appointment_type_fk_id == appointment_type.id and self.has_permission(  # type: ignore[attr-defined]
             EventManagementPermissions.CREATE
         ):
             return True
 
         return False
 
-    def can_manage_group_scoped_calendar_config(
-        self, user: User, calendar: Calendar, group_slot: CalendarGroupSlot
+    def can_manage_appointment_type_scoped_calendar_config(
+        self, user: User, calendar: Calendar, appointment_type_slot: AppointmentTypeSlot
     ) -> bool:
-        """Return True if `user` may create/update/delete group-scoped
+        """Return True if `user` may create/update/delete appointment-type-scoped
         availability configuration (windows, blocks, and quota rules) for
-        `calendar` within `group_slot`.
+        `calendar` within `appointment_type_slot`.
 
         Rules, in order:
-          1. Org admins in ``group_slot``'s organization may always manage it.
+          1. Org admins in ``appointment_type_slot``'s organization may always manage it.
           2. Otherwise, `user` must own `calendar` directly (a
              ``CalendarOwnership`` row) -- owning some *other* calendar in the
-             same group is not enough. Resource calendars with no owner are
+             same appointment type is not enough. Resource calendars with no owner are
              therefore admin-only by construction.
 
         Callers are responsible for having already resolved `calendar` as an
-        actual member of `group_slot` (e.g. via ``CalendarGroupSlotMembership``)
+        actual member of `appointment_type_slot` (e.g. via ``AppointmentTypeSlotMembership``)
         -- this method only decides whether `user` may act on `calendar`'s
-        config, not whether the (calendar, group_slot) pairing is real. Doing
+        config, not whether the (calendar, appointment_type_slot) pairing is real. Doing
         the membership resolution first and raising the same not-found-shaped
         error for both "no such membership" and "not authorized" is what keeps
-        a member from learning a group exists through the error shape alone.
+        a member from learning an appointment type exists through the error shape alone.
         """
-        if user.is_organization_admin(group_slot.organization_id):
+        if user.is_organization_admin(appointment_type_slot.organization_id):
             return True
         return (
-            CalendarOwnership.objects.filter_by_organization(group_slot.organization_id)
+            CalendarOwnership.objects.filter_by_organization(appointment_type_slot.organization_id)
             .filter(membership_user_id=user.id, calendar_fk=calendar)
             .exists()
         )
@@ -633,8 +635,8 @@ class CalendarPermissionService:
              ``CalendarOwnership`` row) -- owning some *other* calendar in the
              organization is not enough.
 
-        Mirrors ``can_view_calendar_group``'s admin-or-participant split, one
-        level down (a single calendar rather than a group).
+        Mirrors ``can_view_appointment_type``'s admin-or-participant split, one
+        level down (a single calendar rather than an appointment type).
         """
         if user.is_organization_admin(calendar.organization_id):
             return True
@@ -644,45 +646,45 @@ class CalendarPermissionService:
             .exists()
         )
 
-    def can_view_calendar_group(self, user: User, group: CalendarGroup) -> bool:
-        """Return True if `user` may see that `group` exists (list/retrieve,
-        and act as a participant against it -- e.g. book a group event,
+    def can_view_appointment_type(self, user: User, appointment_type: AppointmentType) -> bool:
+        """Return True if `user` may see that `appointment_type` exists (list/retrieve,
+        and act as a participant against it -- e.g. book an appointment type event,
         check availability).
 
         Rules, in order:
-          1. Org admins in the group's organization can always see it —
+          1. Org admins in the appointment type's organization can always see it —
              matches "admin-of-org can administer org-scoped resources" so
              schedulers/ops who don't personally own any pool calendar still
              work.
           2. Otherwise, the user must own at least one calendar inside the
-             group's slot pools (scoped to the group's organization) --
-             i.e. they participate in the group, even if that calendar
+             appointment type's slot pools (scoped to the appointment type's organization) --
+             i.e. they participate in the appointment type, even if that calendar
              lives in a different slot than the one being inspected.
         """
-        if user.is_organization_admin(group.organization_id):
+        if user.is_organization_admin(appointment_type.organization_id):
             return True
         return (
-            CalendarOwnership.objects.filter_by_organization(group.organization_id)
+            CalendarOwnership.objects.filter_by_organization(appointment_type.organization_id)
             .filter(
                 membership_user_id=user.id,
-                calendar_fk__group_slots__group_fk=group,
+                calendar_fk__appointment_type_slots__appointment_type_fk=appointment_type,
             )
             .exists()
         )
 
-    def can_manage_calendar_group(self, user: User, group: CalendarGroup) -> bool:
-        """Return True if `user` may create/update/delete `group` itself
+    def can_manage_appointment_type(self, user: User, appointment_type: AppointmentType) -> bool:
+        """Return True if `user` may create/update/delete `appointment_type` itself
         (mutate its name, slots, or roster).
 
         Restricted to organization admins. Owning a calendar inside the
-        group's slot pools grants *visibility* (``can_view_calendar_group``)
-        and the ability to manage that calendar's own group-scoped
-        availability config (``can_manage_group_scoped_calendar_config``),
-        but not the right to mutate the group's structure -- a member should
-        not be able to add/remove slots, rename the group, or delete it just
+        appointment type's slot pools grants *visibility* (``can_view_appointment_type``)
+        and the ability to manage that calendar's own appointment-type-scoped
+        availability config (``can_manage_appointment_type_scoped_calendar_config``),
+        but not the right to mutate the appointment type's structure -- a member should
+        not be able to add/remove slots, rename the appointment type, or delete it just
         because they happen to own one of its pool calendars.
         """
-        return user.is_organization_admin(group.organization_id)
+        return user.is_organization_admin(appointment_type.organization_id)
 
     def create_calendar_owner_token(
         self,
@@ -858,7 +860,7 @@ class CalendarPermissionService:
         minted_by: "SystemUser | None" = None,
         minted_by_user: User | None = None,
         calendar_id: int | None = None,
-        calendar_group_id: int | None = None,
+        appointment_type_id: int | None = None,
         event_id: int | None = None,
     ) -> tuple[CalendarManagementToken, str]:
         """Mint a new single-use booking code token.
@@ -872,13 +874,13 @@ class CalendarPermissionService:
         whether ``minted_by`` or ``minted_by_user`` is supplied at all (a
         codeless mint with neither is still a revokable booking code).
 
-        Scope rules (at most one of ``calendar_id``, ``calendar_group_id``,
-        ``event_id`` should be supplied, though ``calendar_id``/``calendar_group_id``
+        Scope rules (at most one of ``calendar_id``, ``appointment_type_id``,
+        ``event_id`` should be supplied, though ``calendar_id``/``appointment_type_id``
         and ``event_id`` may be combined for reschedule/cancel codes):
 
-        - Booking codes: ``calendar_id`` OR ``calendar_group_id`` (no ``event_id``).
+        - Booking codes: ``calendar_id`` OR ``appointment_type_id`` (no ``event_id``).
         - Reschedule / cancel codes: ``event_id`` PLUS either ``calendar_id`` or
-          ``calendar_group_id`` to record which calendar/group the event belongs to.
+          ``appointment_type_id`` to record which calendar/appointment type the event belongs to.
 
         Args:
             organization_id: Tenant scope.
@@ -891,9 +893,9 @@ class CalendarPermissionService:
                 ``token.minted_by_membership_user_id``. Mutually exclusive with
                 ``minted_by``.
             calendar_id: Scope to a single calendar (booking or reschedule/cancel).
-            calendar_group_id: Scope to a calendar group (group booking or reschedule/cancel).
-                Duration pinning for a group-scoped code, if any, lives on the
-                ``CalendarGroup`` itself (``CalendarGroup.duration``), not on this
+            appointment_type_id: Scope to an appointment type (appointment type booking or reschedule/cancel).
+                Duration pinning for an appointment-type-scoped code, if any, lives on the
+                ``AppointmentType`` itself (``AppointmentType.duration``), not on this
                 token -- there is no ``duration`` parameter here.
             event_id: Scope to a specific event (reschedule/cancel codes only).
 
@@ -932,8 +934,8 @@ class CalendarPermissionService:
         )
         if calendar_id is not None:
             token.calendar_fk_id = calendar_id
-        if calendar_group_id is not None:
-            token.calendar_group_fk_id = calendar_group_id
+        if appointment_type_id is not None:
+            token.appointment_type_fk_id = appointment_type_id
         if event_id is not None:
             token.event_fk_id = event_id
 
@@ -974,7 +976,7 @@ class CalendarPermissionService:
 
         Returns:
             The active ``CalendarManagementToken`` instance, with
-            ``permissions``, ``calendar``, ``calendar_group``, and ``event``
+            ``permissions``, ``calendar``, ``appointment_type``, and ``event``
             pre-fetched.
 
         Raises:
@@ -1014,9 +1016,9 @@ class CalendarPermissionService:
                 CalendarManagementToken.original_manager.select_related(
                     "calendar",
                     "event",
-                    "calendar_group",
+                    "appointment_type",
                     "event__calendar",
-                    "event__calendar_group",
+                    "event__appointment_type",
                 )
                 .prefetch_related("permissions")
                 .get(id=token_id)

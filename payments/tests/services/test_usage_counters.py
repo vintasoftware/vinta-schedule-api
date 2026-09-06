@@ -39,11 +39,11 @@ from vinta_billing.services.subscription_service import current_billing_period_s
 from audit_integration.services import OrganizationAuditService
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
     AvailableTime,
     BlockedTime,
     Calendar,
-    CalendarGroup,
-    CalendarGroupSlot,
 )
 from calendar_integration.services.availability_service import AvailabilityService
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
@@ -57,9 +57,9 @@ from organizations.models import (
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from payments.seams.resource_keys import (
+    APPOINTMENT_TYPES,
     AVAILABILITY_WINDOWS,
     BUNDLE_CALENDARS,
-    CALENDAR_GROUPS,
     EVENT_OCCURRENCES,
     ORGANIZATION_MEMBERS,
     PUBLIC_API_SYSTEM_USERS,
@@ -268,7 +268,7 @@ class TestAvailabilityWindowCounter:
 @pytest.mark.django_db
 class TestBlockedTimeCounter:
     """Blocked time is metered on the same ``availability_windows``
-    counter as availability windows, base and group-scoped rows alike.
+    counter as availability windows, base and appointment-type-scoped rows alike.
 
     Mirrors ``TestAvailabilityWindowCounter`` exactly -- the two models share
     ``RecurringMixin``, so the same recurrence-derived-row defect and the same
@@ -390,12 +390,12 @@ class TestBlockedTimeCounter:
 
         assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 2
 
-    def test_group_scoped_blocks_count_alongside_base_blocks(
+    def test_appointment_type_scoped_blocks_count_alongside_base_blocks(
         self, entitlement_service, availability_service, managed_calendar, organization
     ):
-        """``BlockedTime.objects`` (the default manager) excludes group-scoped rows
+        """``BlockedTime.objects`` (the default manager) excludes appointment-type-scoped rows
         by design. The counter must
-        read through ``unscoped()`` or a group-scoped block would bypass metering
+        read through ``unscoped()`` or an appointment-type-scoped block would bypass metering
         entirely -- the spec's rule is "every time window is metered" regardless of
         scope."""
         availability_service.create_blocked_time(
@@ -404,14 +404,16 @@ class TestBlockedTimeCounter:
             end_time=_utc(2025, 7, 1, 12),
             timezone="UTC",
         )
-        group = baker.make(CalendarGroup, organization=organization)
-        slot = baker.make(CalendarGroupSlot, organization=organization, group=group)
+        appointment_type = baker.make(AppointmentType, organization=organization)
+        slot = baker.make(
+            AppointmentTypeSlot, organization=organization, appointment_type=appointment_type
+        )
         baker.make(
             BlockedTime,
             organization=organization,
             calendar=managed_calendar,
             timezone="UTC",
-            group_slot=slot,
+            appointment_type_slot=slot,
         )
 
         assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 2
@@ -509,8 +511,8 @@ class TestUsageBreakdown:
     ``sum(breakdown.values()) == total`` instead would be vacuous:
     ``get_current_usage`` is *defined* as ``sum(get_usage_breakdown(...).values())``
     (see ``EntitlementService._count_usage``), so both sides are the same
-    computation and can never disagree, no matter how ``_group_counts_by_organization``
-    is broken. A bug that drops every group but the first would shrink both sides
+    computation and can never disagree, no matter how ``_appointment_type_counts_by_organization``
+    is broken. A bug that drops every appointment type but the first would shrink both sides
     together and the assertion would stay green. Pinning to a literal is the only
     way this test can fail when the grouping arithmetic is wrong — do not
     "simplify" it back to a breakdown-vs-total comparison.
@@ -580,9 +582,9 @@ class TestUsageBreakdown:
             external_id="breakdown-bundle-root-2",
         )
 
-        # calendar_groups
-        baker.make(CalendarGroup, organization=root)
-        baker.make(CalendarGroup, organization=child_b, _quantity=2)
+        # appointment_types
+        baker.make(AppointmentType, organization=root)
+        baker.make(AppointmentType, organization=child_b, _quantity=2)
 
         # availability_windows: AvailableTime and BlockedTime, base rows.
         # child_a gets both an AvailableTime and a BlockedTime so the two source
@@ -674,7 +676,7 @@ class TestUsageBreakdown:
         expected_breakdowns: dict[str, dict[int, int]] = {
             ORGANIZATION_MEMBERS: {root.pk: 1, child_a.pk: 2, child_b.pk: 1},
             RESOURCE_CALENDARS: {root.pk: 2, child_a.pk: 2},
-            CALENDAR_GROUPS: {root.pk: 1, child_b.pk: 2},
+            APPOINTMENT_TYPES: {root.pk: 1, child_b.pk: 2},
             BUNDLE_CALENDARS: {child_b.pk: 1, root.pk: 2},
             AVAILABILITY_WINDOWS: {child_a.pk: 3, root.pk: 1},
             WEBHOOK_SUBSCRIPTIONS: {child_b.pk: 1, child_a.pk: 2},
@@ -701,9 +703,9 @@ class TestUsageBreakdown:
         pooled_subtree: tuple[Organization, Organization, Organization],
     ):
         root, child_a, child_b = pooled_subtree
-        baker.make(CalendarGroup, organization=root)
+        baker.make(AppointmentType, organization=root)
 
-        breakdown = entitlement_service.get_usage_breakdown(root, CALENDAR_GROUPS)
+        breakdown = entitlement_service.get_usage_breakdown(root, APPOINTMENT_TYPES)
 
         assert breakdown == {root.pk: 1}
         assert child_a.pk not in breakdown
@@ -754,6 +756,6 @@ class TestUsageBreakdown:
         with pytest.raises(InapplicableUsageExtraError):
             entitlement_service.get_usage_breakdown(
                 root,
-                CALENDAR_GROUPS,
+                APPOINTMENT_TYPES,
                 usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
             )

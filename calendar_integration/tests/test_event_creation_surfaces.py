@@ -6,7 +6,7 @@ Six distinct entry points reach ``create_event``: REST
 (``calendar_integration/token_views.py``), and three GraphQL mutations
 (``public_api/mutations.py``'s ``scheduleEvent``, and
 ``calendar_integration/mutations.py``'s ``createCalendarEventWithCode`` /
-``createCalendarGroupEventWithCode``), plus the bulk sync writer
+``createAppointmentTypeEventWithCode``), plus the bulk sync writer
 (``calendar_integration/services/calendar_sync_service.py``). Guarding a viewset
 would leave the sync path unmetered, so the enforcement layer is the service --
 these tests prove every *surface* still reaches it and renders the resulting
@@ -51,11 +51,11 @@ from calendar_integration.constants import (
     EventManagementPermissions,
 )
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
     CalendarManagementToken,
     CalendarManagementTokenPermission,
     CalendarOwnership,
@@ -767,12 +767,12 @@ class TestBookingCodeRestEventSurface:
 
 
 # ----------------------------------------------------------------------------------
-# 5. Booking-code GraphQL -- createCalendarGroupEventWithCode
+# 5. Booking-code GraphQL -- createAppointmentTypeEventWithCode
 # ----------------------------------------------------------------------------------
 
-_CREATE_GROUP_EVENT_WITH_CODE = """
-mutation CreateCalendarGroupEventWithCode($input: CreateGroupEventWithCodeInput!) {
-    createCalendarGroupEventWithCode(input: $input) {
+_CREATE_APPOINTMENT_TYPE_EVENT_WITH_CODE = """
+mutation CreateAppointmentTypeEventWithCode($input: CreateAppointmentTypeEventWithCodeInput!) {
+    createAppointmentTypeEventWithCode(input: $input) {
         success
         errorCode
         errorMessage
@@ -782,7 +782,7 @@ mutation CreateCalendarGroupEventWithCode($input: CreateGroupEventWithCodeInput!
 """
 
 
-def _group_with_one_slot(
+def _appointment_type_with_one_slot(
     organization: Organization, accepts_public_scheduling: bool = False
 ) -> tuple[object, object, Calendar]:
     calendar = baker.make(
@@ -790,58 +790,64 @@ def _group_with_one_slot(
         organization=organization,
         provider=CalendarProvider.INTERNAL,
         accepts_public_scheduling=False,
-        external_id=f"group-code-cal-{organization.pk}",
+        external_id=f"appointment-type-code-cal-{organization.pk}",
     )
-    # A publicly schedulable group must carry a duration --
-    # ``can_perform_group_scheduling`` fails closed (403) for a public group
+    # A publicly schedulable appointment type must carry a duration --
+    # ``can_perform_appointment_type_scheduling`` fails closed (403) for a public appointment type
     # with ``duration=None``, treating it as misconfigured rather than
-    # unbounded-length. ``_rest_group_booking_payload`` below books exactly
+    # unbounded-length. ``_rest_appointment_type_booking_payload`` below books exactly
     # one hour, so that is the pin here.
     duration = datetime.timedelta(hours=1) if accepts_public_scheduling else None
-    group = baker.make(
-        CalendarGroup,
+    appointment_type = baker.make(
+        AppointmentType,
         organization=organization,
         accepts_public_scheduling=accepts_public_scheduling,
         duration=duration,
     )
-    slot = CalendarGroupSlot.objects.create(
-        organization=organization, group=group, name="Providers", order=0, required_count=1
+    slot = AppointmentTypeSlot.objects.create(
+        organization=organization,
+        appointment_type=appointment_type,
+        name="Providers",
+        order=0,
+        required_count=1,
     )
-    CalendarGroupSlotMembership.objects.create(
+    AppointmentTypeSlotMembership.objects.create(
         organization=organization, slot=slot, calendar=calendar
     )
-    return group, slot, calendar
+    return appointment_type, slot, calendar
 
 
-def _group_booking_code(organization: Organization, group) -> tuple[CalendarManagementToken, str]:
+def _appointment_type_booking_code(
+    organization: Organization, appointment_type
+) -> tuple[CalendarManagementToken, str]:
     permission_service = CalendarPermissionService()
     token, code = permission_service.create_booking_token(
         organization_id=organization.id,
         permissions=[EventManagementPermissions.CREATE],
-        calendar_group_id=group.id,
+        appointment_type_id=appointment_type.id,
     )
     return token, code
 
 
 @pytest.mark.django_db
-class TestBookingCodeGroupEventSurface:
+class TestBookingCodeAppointmentTypeEventSurface:
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
     def test_blocked_at_the_allowance_is_a_graphql_error_not_a_result(self, mock_rate_limiter):
         mock_rate_limiter.return_value = iter([None])
         organization, _subscription = _at_the_allowance_no_payment_method()
-        group, slot, calendar = _group_with_one_slot(organization)
-        token, code = _group_booking_code(organization, group)
+        appointment_type, slot, calendar = _appointment_type_with_one_slot(organization)
+        token, code = _appointment_type_booking_code(organization, appointment_type)
 
         start = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
         client = APIClient()
         response = client.post(
             "/graphql/",
             data={
-                "query": _CREATE_GROUP_EVENT_WITH_CODE,
+                "query": _CREATE_APPOINTMENT_TYPE_EVENT_WITH_CODE,
                 "variables": {
                     "input": {
                         "code": code,
-                        "title": "Group Booking Code Surface Event",
+                        "title": "AppointmentType Booking Code Surface Event",
                         "description": "",
                         "startTime": start.isoformat(),
                         "endTime": (start + datetime.timedelta(hours=1)).isoformat(),
@@ -869,19 +875,19 @@ class TestBookingCodeGroupEventSurface:
         mock_rate_limiter.return_value = iter([None])
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
         _seed_metered_occurrences(organization, subscription, 1)
-        group, slot, calendar = _group_with_one_slot(organization)
-        _token, code = _group_booking_code(organization, group)
+        appointment_type, slot, calendar = _appointment_type_with_one_slot(organization)
+        _token, code = _appointment_type_booking_code(organization, appointment_type)
 
         start = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
         client = APIClient()
         response = client.post(
             "/graphql/",
             data={
-                "query": _CREATE_GROUP_EVENT_WITH_CODE,
+                "query": _CREATE_APPOINTMENT_TYPE_EVENT_WITH_CODE,
                 "variables": {
                     "input": {
                         "code": code,
-                        "title": "Group Booking Code Surface Event",
+                        "title": "AppointmentType Booking Code Surface Event",
                         "description": "",
                         "startTime": start.isoformat(),
                         "endTime": (start + datetime.timedelta(hours=1)).isoformat(),
@@ -897,20 +903,20 @@ class TestBookingCodeGroupEventSurface:
         assert response.status_code == 200
         data = response.json()
         assert "errors" not in data or not data.get("errors"), data
-        assert data["data"]["createCalendarGroupEventWithCode"]["success"] is True
+        assert data["data"]["createAppointmentTypeEventWithCode"]["success"] is True
 
 
 # ----------------------------------------------------------------------------------
-# 5b. Booking-code REST group -- calendar_integration/booking_views.py
-#     BookingCodeGroupEventViewSet
-#     (POST /public/booking/calendar-groups/<public_slug>/events/)
+# 5b. Booking-code REST appointment type -- calendar_integration/booking_views.py
+#     BookingCodeAppointmentTypeEventViewSet
+#     (POST /public/booking/appointment-types/<public_slug>/events/)
 # ----------------------------------------------------------------------------------
 
 
-def _rest_group_booking_payload(slot, calendar: Calendar) -> dict:
+def _rest_appointment_type_booking_payload(slot, calendar: Calendar) -> dict:
     start = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
     return {
-        "title": "REST Group Booking Code Surface Event",
+        "title": "REST AppointmentType Booking Code Surface Event",
         "description": "",
         "start_time": start.isoformat(),
         "end_time": (start + datetime.timedelta(hours=1)).isoformat(),
@@ -921,25 +927,25 @@ def _rest_group_booking_payload(slot, calendar: Calendar) -> dict:
 
 
 @pytest.mark.django_db
-class TestBookingCodeRestGroupEventSurface:
-    """The REST counterpart of ``TestBookingCodeGroupEventSurface`` above --
-    ``POST /public/booking/calendar-groups/<public_slug>/events/`` reaches
-    ``create_event`` through ``CalendarGroupService.create_grouped_event`` ->
+class TestBookingCodeRestAppointmentTypeEventSurface:
+    """The REST counterpart of ``TestBookingCodeAppointmentTypeEventSurface`` above --
+    ``POST /public/booking/appointment-types/<public_slug>/events/`` reaches
+    ``create_event`` through ``AppointmentTypeService.create_appointment_type_event`` ->
     ``CalendarService.create_event``, so it must meter and gate identically.
     """
 
     def test_blocked_at_the_allowance_returns_402(self):
         organization, _subscription = _at_the_allowance_no_payment_method()
-        group, slot, calendar = _group_with_one_slot(organization)
-        token, code = _group_booking_code(organization, group)
+        appointment_type, slot, calendar = _appointment_type_with_one_slot(organization)
+        token, code = _appointment_type_booking_code(organization, appointment_type)
 
         client = APIClient()
         response = client.post(
             reverse(
-                "calendar_booking_api:booking-calendar-group-events-list",
-                kwargs={"public_slug": group.public_booking_slug},
+                "calendar_booking_api:booking-appointment-type-events-list",
+                kwargs={"public_slug": appointment_type.public_booking_slug},
             ),
-            _rest_group_booking_payload(slot, calendar),
+            _rest_appointment_type_booking_payload(slot, calendar),
             format="json",
             headers=_rest_booking_headers(code),
         )
@@ -955,16 +961,16 @@ class TestBookingCodeRestGroupEventSurface:
     def test_unlimited_plan_is_unchanged(self):
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
         _seed_metered_occurrences(organization, subscription, 1)
-        group, slot, calendar = _group_with_one_slot(organization)
-        _token, code = _group_booking_code(organization, group)
+        appointment_type, slot, calendar = _appointment_type_with_one_slot(organization)
+        _token, code = _appointment_type_booking_code(organization, appointment_type)
 
         client = APIClient()
         response = client.post(
             reverse(
-                "calendar_booking_api:booking-calendar-group-events-list",
-                kwargs={"public_slug": group.public_booking_slug},
+                "calendar_booking_api:booking-appointment-type-events-list",
+                kwargs={"public_slug": appointment_type.public_booking_slug},
             ),
-            _rest_group_booking_payload(slot, calendar),
+            _rest_appointment_type_booking_payload(slot, calendar),
             format="json",
             headers=_rest_booking_headers(code),
         )
@@ -973,21 +979,23 @@ class TestBookingCodeRestGroupEventSurface:
 
     # --------------------------------------------------------------------------
     # Codeless (Phase 3): no X-Booking-Code header, authorized instead by the
-    # group's own accepts_public_scheduling flag. Reaches the exact same
-    # create_grouped_event -> create_event path, so it must meter identically.
+    # appointment type's own accepts_public_scheduling flag. Reaches the exact same
+    # create_appointment_type_event -> create_event path, so it must meter identically.
     # --------------------------------------------------------------------------
 
     def test_codeless_blocked_at_the_allowance_returns_402(self):
         organization, _subscription = _at_the_allowance_no_payment_method()
-        group, slot, calendar = _group_with_one_slot(organization, accepts_public_scheduling=True)
+        appointment_type, slot, calendar = _appointment_type_with_one_slot(
+            organization, accepts_public_scheduling=True
+        )
 
         client = APIClient()
         response = client.post(
             reverse(
-                "calendar_booking_api:booking-calendar-group-events-list",
-                kwargs={"public_slug": group.public_booking_slug},
+                "calendar_booking_api:booking-appointment-type-events-list",
+                kwargs={"public_slug": appointment_type.public_booking_slug},
             ),
-            _rest_group_booking_payload(slot, calendar),
+            _rest_appointment_type_booking_payload(slot, calendar),
             format="json",
         )
 
@@ -1000,15 +1008,17 @@ class TestBookingCodeRestGroupEventSurface:
     def test_codeless_unlimited_plan_is_unchanged(self):
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
         _seed_metered_occurrences(organization, subscription, 1)
-        group, slot, calendar = _group_with_one_slot(organization, accepts_public_scheduling=True)
+        appointment_type, slot, calendar = _appointment_type_with_one_slot(
+            organization, accepts_public_scheduling=True
+        )
 
         client = APIClient()
         response = client.post(
             reverse(
-                "calendar_booking_api:booking-calendar-group-events-list",
-                kwargs={"public_slug": group.public_booking_slug},
+                "calendar_booking_api:booking-appointment-type-events-list",
+                kwargs={"public_slug": appointment_type.public_booking_slug},
             ),
-            _rest_group_booking_payload(slot, calendar),
+            _rest_appointment_type_booking_payload(slot, calendar),
             format="json",
         )
 

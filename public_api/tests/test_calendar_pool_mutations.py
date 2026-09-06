@@ -6,7 +6,7 @@ Covers:
   scoped-admin tokens get full CRUD; a scoped-member token cannot write at
   all (fail closed, matching ``CalendarPoolPermission`` on REST).
 - deleteCalendarPool refused while the pool is attached to a slot -- reported
-  as data (``success=False`` + ``referencingGroups``), never as a GraphQL
+  as data (``success=False`` + ``referencingAppointmentTypes``), never as a GraphQL
   ``errors[]`` entry.
 - Cross-organization rejection: a pool id from another org resolves to "not
   found", not a cross-tenant read/write or an existence leak.
@@ -22,10 +22,10 @@ from vinta_billing.models import Subscription
 
 from calendar_integration.factories import create_calendar_pool
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotPool,
     Calendar,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotPool,
     CalendarPool,
     CalendarPoolMembership,
 )
@@ -73,7 +73,7 @@ mutation DeleteCalendarPool($input: DeleteCalendarPoolInput!) {
     deleteCalendarPool(input: $input) {
         success
         errorMessage
-        referencingGroups
+        referencingAppointmentTypes
     }
 }
 """
@@ -85,7 +85,7 @@ class TestCalendarPoolMutations:
         self.client = APIClient()
 
     # ------------------------------------------------------------------
-    # Helpers (mirror public_api/tests/test_calendar_group_role_scoping.py)
+    # Helpers (mirror public_api/tests/test_appointment_type_role_scoping.py)
     # ------------------------------------------------------------------
 
     def _org(self) -> Organization:
@@ -103,7 +103,10 @@ class TestCalendarPoolMutations:
         )
 
     def _make_membership(
-        self, org: Organization, *, groups: tuple[str, ...] = (GROUP_ORGANIZATION_MEMBER,)
+        self,
+        org: Organization,
+        *,
+        groups: tuple[str, ...] = (GROUP_ORGANIZATION_MEMBER,),
     ) -> tuple[User, OrganizationMembership]:
         unique = uuid.uuid4().hex[:8]
         user = baker.make(User, email=f"user_{unique}@example.com")
@@ -158,7 +161,7 @@ class TestCalendarPoolMutations:
         RESTRICTED in place -- applied AFTER any setup (e.g. system-user-token
         creation) that itself goes through a guarded, limit-checked path, so
         that setup is not blocked by the very state under test. Mirrors
-        ``TestGroupScopedQuotaRules._restrict_organization``."""
+        ``TestAppointmentTypeScopedQuotaRules._restrict_organization``."""
         Subscription.objects.filter(organization=organization).update(
             billing_state=BillingState.RESTRICTED
         )
@@ -339,7 +342,7 @@ class TestCalendarPoolMutations:
         instead) must be refused by OrganizationResourceAccess -- not reach
         the mutation body at all."""
         org = self._org()
-        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
 
         response = self._post(
             CREATE_CALENDAR_POOL_MUTATION,
@@ -475,7 +478,7 @@ class TestCalendarPoolMutations:
     def test_update_calendar_pool_wrong_resource_token_refused(self):
         org = self._org()
         pool = create_calendar_pool(organization=org, name="Nurses")
-        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
 
         response = self._post(
             UPDATE_CALENDAR_POOL_MUTATION,
@@ -516,21 +519,23 @@ class TestCalendarPoolMutations:
         assert not CalendarPool.objects.filter_by_organization(org.id).filter(id=pool.id).exists()
 
     def test_delete_calendar_pool_refused_when_attached_surfaces_as_data(self):
-        """Refusal is data (success=False + referencingGroups), never a GraphQL
+        """Refusal is data (success=False + referencingAppointmentTypes), never a GraphQL
         errors[] entry -- matches how this API surfaces every other domain
-        failure (e.g. CalendarGroupMutations). The token here holds
-        CALENDAR_GROUP in addition to CALENDAR_POOL, so it is entitled to see
-        the referencing group's name -- see the CALENDAR_POOL-only variant
+        failure (e.g. AppointmentTypeMutations). The token here holds
+        APPOINTMENT_TYPE in addition to CALENDAR_POOL, so it is entitled to see
+        the referencing appointment type's name -- see the CALENDAR_POOL-only variant
         below for the resource-boundary gate on that same field."""
         org = self._org()
         cal = self._make_calendar(org)
         pool = create_calendar_pool(organization=org, name="Nurses", calendars=[cal])
-        group = CalendarGroup.objects.create(organization=org, name="Appointments")
-        slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
-        CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
+        appointment_type = AppointmentType.objects.create(organization=org, name="Appointments")
+        slot = AppointmentTypeSlot.objects.create(
+            organization=org, appointment_type=appointment_type, name="Slot"
+        )
+        AppointmentTypeSlotPool.objects.create(organization=org, slot=slot, pool=pool)
 
         system_user, token, auth = self._org_wide_token(
-            org, [PublicAPIResources.CALENDAR_POOL, PublicAPIResources.CALENDAR_GROUP]
+            org, [PublicAPIResources.CALENDAR_POOL, PublicAPIResources.APPOINTMENT_TYPE]
         )
 
         response = self._post(
@@ -547,21 +552,27 @@ class TestCalendarPoolMutations:
         result = data["data"]["deleteCalendarPool"]
         assert result["success"] is False
         assert "Appointments" in result["errorMessage"]
-        assert result["referencingGroups"] == ["Appointments"]
+        assert result["referencingAppointmentTypes"] == ["Appointments"]
         assert CalendarPool.objects.filter_by_organization(org.id).filter(id=pool.id).exists()
 
-    def test_delete_calendar_pool_refused_without_group_resource_hides_group_names(self):
+    def test_delete_calendar_pool_refused_without_appointment_type_resource_hides_appointment_type_names(
+        self,
+    ):
         """Resource-boundary leak (this phase's Scope item 5): a token holding
-        only CALENDAR_POOL -- explicitly denied CALENDAR_GROUP -- must not learn
-        the names of the groups referencing the pool through this refusal.
-        ``referencingGroups`` is empty and the message carries only a count, so
+        only CALENDAR_POOL -- explicitly denied APPOINTMENT_TYPE -- must not learn
+        the names of the appointment types referencing the pool through this refusal.
+        ``referencingAppointmentTypes`` is empty and the message carries only a count, so
         the caller still learns *why* the delete failed without the names."""
         org = self._org()
         cal = self._make_calendar(org)
         pool = create_calendar_pool(organization=org, name="Nurses", calendars=[cal])
-        group = CalendarGroup.objects.create(organization=org, name="Confidential Client Intake")
-        slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
-        CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
+        appointment_type = AppointmentType.objects.create(
+            organization=org, name="Confidential Client Intake"
+        )
+        slot = AppointmentTypeSlot.objects.create(
+            organization=org, appointment_type=appointment_type, name="Slot"
+        )
+        AppointmentTypeSlotPool.objects.create(organization=org, slot=slot, pool=pool)
 
         system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_POOL])
 
@@ -577,7 +588,7 @@ class TestCalendarPoolMutations:
         assert data.get("errors", []) == []
         result = data["data"]["deleteCalendarPool"]
         assert result["success"] is False
-        assert result["referencingGroups"] == []
+        assert result["referencingAppointmentTypes"] == []
         assert "Confidential Client Intake" not in result["errorMessage"]
         assert "1" in result["errorMessage"]
         assert CalendarPool.objects.filter_by_organization(org.id).filter(id=pool.id).exists()
@@ -596,7 +607,7 @@ class TestCalendarPoolMutations:
     def test_delete_calendar_pool_wrong_resource_token_refused(self):
         org = self._org()
         pool = create_calendar_pool(organization=org, name="Nurses")
-        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.APPOINTMENT_TYPE])
 
         response = self._post(
             DELETE_CALENDAR_POOL_MUTATION,

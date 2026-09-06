@@ -11,9 +11,9 @@ Covers:
 - ``client_ip_from_request``.
 - ``validate_code_gated_range`` rejecting a backwards range and a range over
   366 days, and accepting a valid one.
-- ``pinned_duration_error`` -- ``None`` when there is no group, an unpinned
-  group, or a matching span; a ``NotPermittedAPIException`` naming the
-  pinned duration otherwise. Duration pinning lives on ``CalendarGroup``,
+- ``pinned_duration_error`` -- ``None`` when there is no appointment type, an unpinned
+  appointment type, or a matching span; a ``NotPermittedAPIException`` naming the
+  pinned duration otherwise. Duration pinning lives on ``AppointmentType``,
   not ``CalendarManagementToken`` -- see that field's help_text.
 - ``CalendarPermissionService.resolve_code`` (the real service, not a mock)
   rejecting a malformed token id (non-numeric, oversized) as the same
@@ -52,7 +52,7 @@ from calendar_integration.exceptions import (
     TokenExpiredError,
     TokenRevokedError,
 )
-from calendar_integration.models import CalendarGroup
+from calendar_integration.models import AppointmentType
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 
 
@@ -306,8 +306,8 @@ def test_validate_code_gated_range_within_bound_does_not_raise():
 
 
 @pytest.mark.django_db
-def test_pinned_duration_error_none_when_no_group():
-    """Single-calendar booking -- no group to check at all (there is no
+def test_pinned_duration_error_none_when_no_appointment_type():
+    """Single-calendar booking -- no appointment type to check at all (there is no
     ``Calendar.duration``)."""
     start = datetime.datetime(2030, 1, 1, 10, 0, tzinfo=datetime.UTC)
 
@@ -315,31 +315,37 @@ def test_pinned_duration_error_none_when_no_group():
 
 
 @pytest.mark.django_db
-def test_pinned_duration_error_none_when_group_unpinned():
+def test_pinned_duration_error_none_when_appointment_type_unpinned():
     org = baker.make("organizations.Organization")
-    group = baker.make(CalendarGroup, organization=org, duration=None)
+    appointment_type = baker.make(AppointmentType, organization=org, duration=None)
     start = datetime.datetime(2030, 1, 1, 10, 0, tzinfo=datetime.UTC)
 
-    assert pinned_duration_error(group, start, start + datetime.timedelta(hours=5)) is None
+    assert (
+        pinned_duration_error(appointment_type, start, start + datetime.timedelta(hours=5)) is None
+    )
 
 
 @pytest.mark.django_db
 def test_pinned_duration_error_none_when_span_matches():
     org = baker.make("organizations.Organization")
-    group = baker.make(CalendarGroup, organization=org, duration=datetime.timedelta(minutes=30))
+    appointment_type = baker.make(
+        AppointmentType, organization=org, duration=datetime.timedelta(minutes=30)
+    )
     start = datetime.datetime(2030, 1, 1, 10, 0, tzinfo=datetime.UTC)
 
-    result = pinned_duration_error(group, start, start + datetime.timedelta(minutes=30))
+    result = pinned_duration_error(appointment_type, start, start + datetime.timedelta(minutes=30))
     assert result is None
 
 
 @pytest.mark.django_db
 def test_pinned_duration_error_names_pinned_duration_on_mismatch():
     org = baker.make("organizations.Organization")
-    group = baker.make(CalendarGroup, organization=org, duration=datetime.timedelta(minutes=30))
+    appointment_type = baker.make(
+        AppointmentType, organization=org, duration=datetime.timedelta(minutes=30)
+    )
     start = datetime.datetime(2030, 1, 1, 10, 0, tzinfo=datetime.UTC)
 
-    result = pinned_duration_error(group, start, start + datetime.timedelta(minutes=45))
+    result = pinned_duration_error(appointment_type, start, start + datetime.timedelta(minutes=45))
     assert result is not None
     assert result.status_code == 403
     assert result.detail["error_code"] == "NOT_PERMITTED"
@@ -351,10 +357,12 @@ def test_pinned_duration_error_renders_seconds_for_sub_minute_pin():
     """A sub-minute pin (e.g. 45 seconds) must not floor to '0 minute' -- Phase 6
     accepts any positive ``duration_seconds``, including sub-minute spans."""
     org = baker.make("organizations.Organization")
-    group = baker.make(CalendarGroup, organization=org, duration=datetime.timedelta(seconds=45))
+    appointment_type = baker.make(
+        AppointmentType, organization=org, duration=datetime.timedelta(seconds=45)
+    )
     start = datetime.datetime(2030, 1, 1, 10, 0, tzinfo=datetime.UTC)
 
-    result = pinned_duration_error(group, start, start + datetime.timedelta(minutes=5))
+    result = pinned_duration_error(appointment_type, start, start + datetime.timedelta(minutes=5))
     assert result is not None
     assert "45 second" in result.detail["detail"]
     assert "minute" not in result.detail["detail"]
@@ -364,10 +372,12 @@ def test_pinned_duration_error_renders_seconds_for_sub_minute_pin():
 def test_pinned_duration_error_renders_seconds_for_non_whole_minute_pin():
     """A 90-second pin must render '90 second', not floor/round to '1 minute'."""
     org = baker.make("organizations.Organization")
-    group = baker.make(CalendarGroup, organization=org, duration=datetime.timedelta(seconds=90))
+    appointment_type = baker.make(
+        AppointmentType, organization=org, duration=datetime.timedelta(seconds=90)
+    )
     start = datetime.datetime(2030, 1, 1, 10, 0, tzinfo=datetime.UTC)
 
-    result = pinned_duration_error(group, start, start + datetime.timedelta(minutes=5))
+    result = pinned_duration_error(appointment_type, start, start + datetime.timedelta(minutes=5))
     assert result is not None
     assert "90 second" in result.detail["detail"]
 

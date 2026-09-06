@@ -29,15 +29,15 @@ from vinta_billing.exceptions import OverLimitError
 from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
 
 from calendar_integration.constants import CalendarType
-from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
-from calendar_integration.services.calendar_group_service import CalendarGroupService
+from calendar_integration.models import AppointmentType, AvailableTime, Calendar
+from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.calendar_service import CalendarService
-from calendar_integration.services.dataclasses import CalendarGroupInputData
+from calendar_integration.services.dataclasses import AppointmentTypeInputData
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from payments.seams.resource_keys import (
+    APPOINTMENT_TYPES,
     AVAILABILITY_WINDOWS,
     BUNDLE_CALENDARS,
-    CALENDAR_GROUPS,
     EVENT_OCCURRENCES,
     ORGANIZATION_MEMBERS,
     PUBLIC_API_SYSTEM_USERS,
@@ -140,21 +140,21 @@ def _probe_resource_calendars() -> None:
     )
 
 
-def _probe_calendar_groups() -> None:
-    organization = _organization_with_limit(CALENDAR_GROUPS, 1)
-    baker.make(CalendarGroup, organization=organization)
+def _probe_appointment_types() -> None:
+    organization = _organization_with_limit(APPOINTMENT_TYPES, 1)
+    baker.make(AppointmentType, organization=organization)
 
-    service = CalendarGroupService()
+    service = AppointmentTypeService()
     service.initialize(organization=organization)
 
     with pytest.raises(OverLimitError) as exc_info:
-        service.create_group(CalendarGroupInputData(name="Blocked Group"))
+        service.create_appointment_type(AppointmentTypeInputData(name="Blocked AppointmentType"))
 
-    assert exc_info.value.resource_key == CALENDAR_GROUPS
+    assert exc_info.value.resource_key == APPOINTMENT_TYPES
     assert (
-        not CalendarGroup.objects.filter_by_organization(organization)
+        not AppointmentType.objects.filter_by_organization(organization)
         .filter(
-            name="Blocked Group",
+            name="Blocked AppointmentType",
         )
         .exists()
     )
@@ -276,7 +276,7 @@ def _probe_public_api_system_users() -> None:
 GUARDED_CREATION_PROBES = {
     ORGANIZATION_MEMBERS: _probe_organization_members,
     RESOURCE_CALENDARS: _probe_resource_calendars,
-    CALENDAR_GROUPS: _probe_calendar_groups,
+    APPOINTMENT_TYPES: _probe_appointment_types,
     BUNDLE_CALENDARS: _probe_bundle_calendars,
     AVAILABILITY_WINDOWS: _probe_availability_windows,
     WEBHOOK_SUBSCRIPTIONS: _probe_webhook_subscriptions,

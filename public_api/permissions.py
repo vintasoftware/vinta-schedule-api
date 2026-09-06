@@ -35,16 +35,16 @@ class OrganizationResourceAccess(BasePermission):
         "availabilityWindows": PublicAPIResources.AVAILABILITY_WINDOWS,
         "unavailableWindows": PublicAPIResources.UNAVAILABLE_WINDOWS,
         "users": PublicAPIResources.USER,
-        "calendarGroup": PublicAPIResources.CALENDAR_GROUP,
-        "calendarGroups": PublicAPIResources.CALENDAR_GROUP,
-        "calendarGroupAvailability": PublicAPIResources.CALENDAR_GROUP,
-        "calendarGroupBookableSlots": PublicAPIResources.CALENDAR_GROUP,
-        "calendarGroupEvents": PublicAPIResources.CALENDAR_GROUP,
-        "createCalendarGroup": PublicAPIResources.CALENDAR_GROUP,
-        "updateCalendarGroup": PublicAPIResources.CALENDAR_GROUP,
-        "deleteCalendarGroup": PublicAPIResources.CALENDAR_GROUP,
-        "createCalendarGroupEvent": PublicAPIResources.CALENDAR_GROUP,
-        "calendarGroupStaleSelections": PublicAPIResources.CALENDAR_GROUP,
+        "appointmentType": PublicAPIResources.APPOINTMENT_TYPE,
+        "appointmentTypes": PublicAPIResources.APPOINTMENT_TYPE,
+        "appointmentTypeAvailability": PublicAPIResources.APPOINTMENT_TYPE,
+        "appointmentTypeBookableSlots": PublicAPIResources.APPOINTMENT_TYPE,
+        "appointmentTypeEvents": PublicAPIResources.APPOINTMENT_TYPE,
+        "createAppointmentType": PublicAPIResources.APPOINTMENT_TYPE,
+        "updateAppointmentType": PublicAPIResources.APPOINTMENT_TYPE,
+        "deleteAppointmentType": PublicAPIResources.APPOINTMENT_TYPE,
+        "createAppointmentTypeEvent": PublicAPIResources.APPOINTMENT_TYPE,
+        "appointmentTypeStaleSelections": PublicAPIResources.APPOINTMENT_TYPE,
         "calendarPool": PublicAPIResources.CALENDAR_POOL,
         "calendarPools": PublicAPIResources.CALENDAR_POOL,
         "createCalendarPool": PublicAPIResources.CALENDAR_POOL,
@@ -63,11 +63,11 @@ class OrganizationResourceAccess(BasePermission):
         "childOrganizations": PublicAPIResources.CHILD_ORG_ANALYTICS,
         # Single-use booking-code create / revoke mutations
         "createCalendarBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
-        "createCalendarGroupBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createAppointmentTypeBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
         "createCalendarRescheduleBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
-        "createCalendarGroupRescheduleBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createAppointmentTypeRescheduleBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
         "createCalendarCancellationBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
-        "createCalendarGroupCancellationBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
+        "createAppointmentTypeCancellationBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
         "revokeBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
         "createCalendar": PublicAPIResources.CREATE_CALENDAR,
         "updateCalendar": PublicAPIResources.UPDATE_CALENDAR,
@@ -79,17 +79,17 @@ class OrganizationResourceAccess(BasePermission):
         "updateAvailabilityWindow": PublicAPIResources.UPDATE_AVAILABILITY_WINDOW,
         "deleteAvailabilityWindow": PublicAPIResources.DELETE_AVAILABILITY_WINDOW,
         "batchUpdateAvailabilityWindows": PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS,
-        "groupScopedAvailabilityWindows": PublicAPIResources.GROUP_SCOPED_AVAILABILITY_WINDOWS,
-        "batchUpsertGroupScopedAvailabilityWindows": (
-            PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS
+        "appointmentTypeScopedAvailabilityWindows": PublicAPIResources.APPOINTMENT_TYPE_SCOPED_AVAILABILITY_WINDOWS,
+        "batchUpsertAppointmentTypeScopedAvailabilityWindows": (
+            PublicAPIResources.BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_AVAILABILITY_WINDOWS
         ),
-        "groupScopedBlockedTimes": PublicAPIResources.GROUP_SCOPED_BLOCKED_TIMES,
-        "batchUpsertGroupScopedBlockedTimes": (
-            PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES
+        "appointmentTypeScopedBlockedTimes": PublicAPIResources.APPOINTMENT_TYPE_SCOPED_BLOCKED_TIMES,
+        "batchUpsertAppointmentTypeScopedBlockedTimes": (
+            PublicAPIResources.BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_BLOCKED_TIMES
         ),
-        "groupScopedQuotaRules": PublicAPIResources.GROUP_SCOPED_QUOTA_RULES,
-        "batchUpsertGroupScopedQuotaRules": (
-            PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES
+        "appointmentTypeScopedQuotaRules": PublicAPIResources.APPOINTMENT_TYPE_SCOPED_QUOTA_RULES,
+        "batchUpsertAppointmentTypeScopedQuotaRules": (
+            PublicAPIResources.BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_QUOTA_RULES
         ),
         "createBlockedTime": PublicAPIResources.CREATE_BLOCKED_TIME,
         "updateBlockedTime": PublicAPIResources.UPDATE_BLOCKED_TIME,
@@ -97,7 +97,7 @@ class OrganizationResourceAccess(BasePermission):
         "scheduleEvent": PublicAPIResources.CALENDAR_EVENT,
         "updateCalendarEvent": PublicAPIResources.CALENDAR_EVENT,
         "rescheduleCalendarEvent": PublicAPIResources.CALENDAR_EVENT,
-        "rescheduleCalendarGroupEvent": PublicAPIResources.CALENDAR_EVENT,
+        "rescheduleAppointmentTypeEvent": PublicAPIResources.CALENDAR_EVENT,
         "cancelEvent": PublicAPIResources.CALENDAR_EVENT,
         "calendarBundles": PublicAPIResources.CALENDAR_BUNDLE,
         "createCalendarBundle": PublicAPIResources.CREATE_CALENDAR_BUNDLE,

@@ -1,8 +1,8 @@
 """Tests for BookableSlotsService + slot_engine.
 
 Integration coverage:
-- A single managed calendar yields the same slots a one-calendar group would.
-- A single unmanaged calendar yields the same slots a one-calendar group would.
+- A single managed calendar yields the same slots a one-appointment type would.
+- A single unmanaged calendar yields the same slots a one-appointment type would.
 - A bundle with two free children yields the slot; a busy child suppresses it.
 - Lead-time, max-horizon, buffer-before and buffer-after each drop the expected
   candidates.
@@ -36,13 +36,13 @@ from calendar_integration.models import (
     ChildrenCalendarRelationship,
 )
 from calendar_integration.services import slot_engine
+from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.bookable_slots_service import BookableSlotsService
 from calendar_integration.services.booking_policy_service import BookingPolicyService
-from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.dataclasses import (
+    AppointmentTypeInputData,
+    AppointmentTypeSlotInputData,
     BookableSlotProposal,
-    CalendarGroupInputData,
-    CalendarGroupSlotInputData,
     EffectivePolicy,
 )
 from organizations.models import Organization
@@ -66,8 +66,8 @@ def service(organization):
 
 
 @pytest.fixture
-def group_service(organization):
-    svc = CalendarGroupService()
+def appointment_type_service(organization):
+    svc = AppointmentTypeService()
     svc.initialize(organization=organization)
     return svc
 
@@ -126,13 +126,13 @@ def _event(calendar: Calendar, start, end) -> CalendarEvent:
     )
 
 
-def _one_calendar_group(group_service: CalendarGroupService, calendar: Calendar):
-    return group_service.create_group(
-        CalendarGroupInputData(
+def _one_appointment_type(appointment_type_service: AppointmentTypeService, calendar: Calendar):
+    return appointment_type_service.create_appointment_type(
+        AppointmentTypeInputData(
             name=f"grp-{calendar.id}",
             description="",
             slots=[
-                CalendarGroupSlotInputData(
+                AppointmentTypeSlotInputData(
                     name="Only",
                     calendar_ids=[calendar.id],
                     required_count=1,
@@ -148,12 +148,14 @@ def _times(proposals: list[BookableSlotProposal]):
 
 
 # ---------------------------------------------------------------------------
-# Single-calendar parity with a one-calendar group
+# Single-calendar parity with a one-appointment type
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-def test_single_managed_calendar_matches_one_calendar_group(service, group_service, organization):
+def test_single_managed_calendar_matches_one_appointment_type(
+    service, appointment_type_service, organization
+):
     cal = _calendar(organization, managed=True)
     now = timezone.now().replace(microsecond=0)
     window_start = now + timedelta(hours=1)
@@ -168,16 +170,20 @@ def test_single_managed_calendar_matches_one_calendar_group(service, group_servi
         slot_step=timedelta(minutes=15),
     )
 
-    group = _one_calendar_group(group_service, cal)
-    group_proposals = group_service.find_bookable_slots(group_id=group.id, **kwargs)
+    appointment_type = _one_appointment_type(appointment_type_service, cal)
+    appointment_type_proposals = appointment_type_service.find_bookable_slots(
+        appointment_type_id=appointment_type.id, **kwargs
+    )
     cal_proposals = service.find_bookable_slots_for_calendar(calendar_id=cal.id, **kwargs)
 
-    assert _times(cal_proposals) == _times(group_proposals)
+    assert _times(cal_proposals) == _times(appointment_type_proposals)
     assert _times(cal_proposals) == [(good_start, good_end)]
 
 
 @pytest.mark.django_db
-def test_single_unmanaged_calendar_matches_one_calendar_group(service, group_service, organization):
+def test_single_unmanaged_calendar_matches_one_appointment_type(
+    service, appointment_type_service, organization
+):
     cal = _calendar(organization, managed=False)
     now = timezone.now().replace(microsecond=0)
     window_start = now + timedelta(hours=1)
@@ -191,11 +197,13 @@ def test_single_unmanaged_calendar_matches_one_calendar_group(service, group_ser
         slot_step=timedelta(minutes=15),
     )
 
-    group = _one_calendar_group(group_service, cal)
-    group_proposals = group_service.find_bookable_slots(group_id=group.id, **kwargs)
+    appointment_type = _one_appointment_type(appointment_type_service, cal)
+    appointment_type_proposals = appointment_type_service.find_bookable_slots(
+        appointment_type_id=appointment_type.id, **kwargs
+    )
     cal_proposals = service.find_bookable_slots_for_calendar(calendar_id=cal.id, **kwargs)
 
-    assert _times(cal_proposals) == _times(group_proposals)
+    assert _times(cal_proposals) == _times(appointment_type_proposals)
     # The 0:00 and 0:15 candidates overlap the block; 0:30 is free.
     assert _times(cal_proposals) == [
         (window_start + timedelta(minutes=30), window_start + timedelta(minutes=60))
@@ -338,10 +346,10 @@ def test_invalid_durations_rejected(service, organization):
 
 
 @pytest.mark.django_db
-def test_no_policy_matches_one_calendar_group(service, group_service, organization):
+def test_no_policy_matches_one_appointment_type(service, appointment_type_service, organization):
     """With no policy anywhere, the service result is byte-for-byte identical to the
-    pre-feature reference: ``CalendarGroupService.find_bookable_slots`` for a
-    one-calendar group containing the same single calendar."""
+    pre-feature reference: ``AppointmentTypeService.find_bookable_slots`` for a
+    one-appointment type containing the same single calendar."""
     cal = _calendar(organization, managed=False)
     now = timezone.now().replace(microsecond=0)
     window_start = now + timedelta(hours=1)
@@ -355,11 +363,13 @@ def test_no_policy_matches_one_calendar_group(service, group_service, organizati
         slot_step=timedelta(minutes=15),
     )
 
-    group = _one_calendar_group(group_service, cal)
-    group_proposals = group_service.find_bookable_slots(group_id=group.id, **kwargs)
+    appointment_type = _one_appointment_type(appointment_type_service, cal)
+    appointment_type_proposals = appointment_type_service.find_bookable_slots(
+        appointment_type_id=appointment_type.id, **kwargs
+    )
     service_proposals = service.find_bookable_slots_for_calendar(calendar_id=cal.id, **kwargs)
 
-    assert _times(service_proposals) == _times(group_proposals)
+    assert _times(service_proposals) == _times(appointment_type_proposals)
 
 
 # ---------------------------------------------------------------------------

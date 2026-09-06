@@ -11,7 +11,7 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.factories import create_booking_policy
-from calendar_integration.models import BookingPolicy, Calendar, CalendarGroup
+from calendar_integration.models import AppointmentType, BookingPolicy, Calendar
 from organizations.models import OrganizationMembership
 
 
@@ -36,7 +36,7 @@ def test_factory_builds_valid_calendar_policy():
     assert policy.pk is not None
     assert policy.calendar_fk_id == calendar.id
     assert policy.membership_user_id is None
-    assert policy.calendar_group_fk_id is None
+    assert policy.appointment_type_fk_id is None
     assert policy.is_organization_default is False
     assert policy.lead_time_seconds == 3600
 
@@ -53,13 +53,13 @@ def test_factory_builds_valid_membership_policy():
 
 
 @pytest.mark.django_db
-def test_factory_builds_valid_group_policy():
+def test_factory_builds_valid_appointment_type_policy():
     org = baker.make("organizations.Organization")
-    group = CalendarGroup.objects.create(organization=org, name="Clinic")
+    appointment_type = AppointmentType.objects.create(organization=org, name="Clinic")
 
-    policy = create_booking_policy(calendar_group=group)
+    policy = create_booking_policy(appointment_type=appointment_type)
 
-    assert policy.calendar_group_fk_id == group.id
+    assert policy.appointment_type_fk_id == appointment_type.id
 
 
 @pytest.mark.django_db
@@ -98,13 +98,15 @@ def test_check_constraint_rejects_zero_target():
 
 
 @pytest.mark.django_db
-def test_check_constraint_rejects_multi_target_calendar_and_group():
+def test_check_constraint_rejects_multi_target_calendar_and_appointment_type():
     org = baker.make("organizations.Organization")
     calendar = _make_calendar(org)
-    group = CalendarGroup.objects.create(organization=org, name="Clinic")
+    appointment_type = AppointmentType.objects.create(organization=org, name="Clinic")
 
     with pytest.raises(IntegrityError):
-        BookingPolicy.objects.create(organization=org, calendar=calendar, calendar_group=group)
+        BookingPolicy.objects.create(
+            organization=org, calendar=calendar, appointment_type=appointment_type
+        )
 
 
 @pytest.mark.django_db
@@ -139,13 +141,13 @@ def test_uniq_membership_rejects_duplicate():
 
 
 @pytest.mark.django_db
-def test_uniq_group_rejects_duplicate():
+def test_uniq_appointment_type_rejects_duplicate():
     org = baker.make("organizations.Organization")
-    group = CalendarGroup.objects.create(organization=org, name="Clinic")
-    create_booking_policy(calendar_group=group)
+    appointment_type = AppointmentType.objects.create(organization=org, name="Clinic")
+    create_booking_policy(appointment_type=appointment_type)
 
     with pytest.raises(IntegrityError):
-        create_booking_policy(calendar_group=group)
+        create_booking_policy(appointment_type=appointment_type)
 
 
 @pytest.mark.django_db

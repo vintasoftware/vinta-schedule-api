@@ -12,14 +12,14 @@ from django.utils.html import format_html
 from calendar_integration.constants import IncomingWebhookProcessingStatus
 from calendar_integration.external_client_identifiers import normalize_system
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
+    AppointmentTypeSlotQuotaRule,
     AvailableTime,
     BlockedTime,
     BookingPolicy,
-    CalendarEventGroupSelection,
-    CalendarGroup,
-    CalendarGroupSlot,
-    CalendarGroupSlotMembership,
-    CalendarGroupSlotQuotaRule,
+    CalendarEventAppointmentTypeSelection,
     CalendarPool,
     CalendarPoolMembership,
     CalendarWebhookEvent,
@@ -323,27 +323,27 @@ class CalendarWebhookEventAdmin(admin.ModelAdmin):
         self.message_user(request, f"Reset {count} events for reprocessing.")
 
 
-class CalendarGroupSlotMembershipInline(admin.TabularInline):
-    """Inline admin for memberships within a CalendarGroupSlot."""
+class AppointmentTypeSlotMembershipInline(admin.TabularInline):
+    """Inline admin for memberships within an AppointmentTypeSlot."""
 
-    model = CalendarGroupSlotMembership
+    model = AppointmentTypeSlotMembership
     fk_name = "slot_fk"
     fields = ("calendar_fk",)
     extra = 1
 
 
-class CalendarGroupSlotInline(admin.TabularInline):
-    """Inline admin for slots within a CalendarGroup."""
+class AppointmentTypeSlotInline(admin.TabularInline):
+    """Inline admin for slots within an AppointmentType."""
 
-    model = CalendarGroupSlot
-    fk_name = "group_fk"
+    model = AppointmentTypeSlot
+    fk_name = "appointment_type_fk"
     fields = ("name", "order", "required_count", "description")
     extra = 1
 
 
-@admin.register(CalendarGroup)
-class CalendarGroupAdmin(admin.ModelAdmin):
-    """Admin interface for CalendarGroup."""
+@admin.register(AppointmentType)
+class AppointmentTypeAdmin(admin.ModelAdmin):
+    """Admin interface for AppointmentType."""
 
     list_display = ("id", "name", "organization", "slot_count", "created")
     list_filter = ("organization", "created")
@@ -357,7 +357,7 @@ class CalendarGroupAdmin(admin.ModelAdmin):
         "created",
         "modified",
     )
-    inlines: ClassVar = [CalendarGroupSlotInline]
+    inlines: ClassVar = [AppointmentTypeSlotInline]
 
     def get_queryset(self, request: HttpRequest):
         return (
@@ -368,21 +368,21 @@ class CalendarGroupAdmin(admin.ModelAdmin):
         )
 
     @admin.display(description="Slots", ordering="_slot_count")
-    def slot_count(self, obj: CalendarGroup) -> int:
+    def slot_count(self, obj: AppointmentType) -> int:
         return getattr(obj, "_slot_count", obj.slots.count())
 
 
-@admin.register(CalendarGroupSlot)
-class CalendarGroupSlotAdmin(admin.ModelAdmin):
-    """Admin interface for CalendarGroupSlot."""
+@admin.register(AppointmentTypeSlot)
+class AppointmentTypeSlotAdmin(admin.ModelAdmin):
+    """Admin interface for AppointmentTypeSlot."""
 
-    list_display = ("id", "name", "group", "order", "required_count", "calendar_count")
-    list_filter = ("group_fk", "organization")
-    search_fields = ("name", "group_fk__name")
+    list_display = ("id", "name", "appointment_type", "order", "required_count", "calendar_count")
+    list_filter = ("appointment_type_fk", "organization")
+    search_fields = ("name", "appointment_type_fk__name")
     readonly_fields = ("created", "modified")
     fields = (
         "organization",
-        "group_fk",
+        "appointment_type_fk",
         "name",
         "description",
         "order",
@@ -390,13 +390,13 @@ class CalendarGroupSlotAdmin(admin.ModelAdmin):
         "created",
         "modified",
     )
-    inlines: ClassVar = [CalendarGroupSlotMembershipInline]
+    inlines: ClassVar = [AppointmentTypeSlotMembershipInline]
 
     def get_queryset(self, request: HttpRequest):
         return (
             super()
             .get_queryset(request)
-            .select_related("organization", "group_fk")
+            .select_related("organization", "appointment_type_fk")
             # Distinct CALENDARS, not membership rows: a calendar reachable both
             # inline and through an attached CalendarPool holds one row per
             # source, and counting rows would overstate the roster.
@@ -404,13 +404,13 @@ class CalendarGroupSlotAdmin(admin.ModelAdmin):
         )
 
     @admin.display(description="Calendars", ordering="_calendar_count")
-    def calendar_count(self, obj: CalendarGroupSlot) -> int:
+    def calendar_count(self, obj: AppointmentTypeSlot) -> int:
         return getattr(obj, "_calendar_count", obj.calendars.distinct().count())
 
 
-@admin.register(CalendarEventGroupSelection)
-class CalendarEventGroupSelectionAdmin(admin.ModelAdmin):
-    """Admin interface for CalendarEventGroupSelection."""
+@admin.register(CalendarEventAppointmentTypeSelection)
+class CalendarEventAppointmentTypeSelectionAdmin(admin.ModelAdmin):
+    """Admin interface for CalendarEventAppointmentTypeSelection."""
 
     list_display = ("id", "event", "slot", "calendar", "created")
     list_filter = ("organization", "created")
@@ -426,17 +426,17 @@ class CalendarEventGroupSelectionAdmin(admin.ModelAdmin):
         )
 
 
-@admin.register(CalendarGroupSlotQuotaRule)
-class CalendarGroupSlotQuotaRuleAdmin(admin.ModelAdmin):
-    """Admin interface for CalendarGroupSlotQuotaRule."""
+@admin.register(AppointmentTypeSlotQuotaRule)
+class AppointmentTypeSlotQuotaRuleAdmin(admin.ModelAdmin):
+    """Admin interface for AppointmentTypeSlotQuotaRule."""
 
-    list_display = ("id", "calendar", "group_slot", "period", "cap")
-    list_filter = ("organization", "group_slot_fk", "period")
-    search_fields = ("calendar_fk__name", "group_slot_fk__name")
+    list_display = ("id", "calendar", "appointment_type_slot", "period", "cap")
+    list_filter = ("organization", "appointment_type_slot_fk", "period")
+    search_fields = ("calendar_fk__name", "appointment_type_slot_fk__name")
     readonly_fields = ("created", "modified")
     fields = (
         "organization",
-        "group_slot_fk",
+        "appointment_type_slot_fk",
         "calendar_fk",
         "period",
         "cap",
@@ -448,7 +448,7 @@ class CalendarGroupSlotQuotaRuleAdmin(admin.ModelAdmin):
         return (
             super()
             .get_queryset(request)
-            .select_related("organization", "calendar_fk", "group_slot_fk")
+            .select_related("organization", "calendar_fk", "appointment_type_slot_fk")
         )
 
 
@@ -491,20 +491,20 @@ class BlockedTimeAdmin(admin.ModelAdmin):
 
     Uses the manager's ``unscoped()`` accessor rather than the default
     ``get_queryset(request)`` chain: ``BlockedTimeManager.get_queryset`` (the
-    default manager, ``objects``) excludes group-scoped rows by design, and
+    default manager, ``objects``) excludes appointment-type-scoped rows by design, and
     ``ModelAdmin`` builds its own queryset from the model's default manager.
-    Without this override, admin would silently stop showing group-scoped
+    Without this override, admin would silently stop showing appointment-type-scoped
     blocks the moment any exist.
     """
 
-    list_display = ("id", "calendar", "group_slot", "start_time", "end_time", "reason")
-    list_filter = ("organization", "group_slot_fk")
+    list_display = ("id", "calendar", "appointment_type_slot", "start_time", "end_time", "reason")
+    list_filter = ("organization", "appointment_type_slot_fk")
     search_fields = ("reason", "external_id", "calendar_fk__name")
     readonly_fields = ("created", "modified")
     fields = (
         "organization",
         "calendar_fk",
-        "group_slot_fk",
+        "appointment_type_slot_fk",
         "reason",
         "external_id",
         "start_time_tz_unaware",
@@ -516,7 +516,7 @@ class BlockedTimeAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request: HttpRequest):
         return self.model.objects.unscoped().select_related(
-            "organization", "calendar_fk", "group_slot_fk"
+            "organization", "calendar_fk", "appointment_type_slot_fk"
         )
 
 
@@ -525,18 +525,18 @@ class AvailableTimeAdmin(admin.ModelAdmin):
     """Admin interface for AvailableTime.
 
     Uses the manager's ``unscoped()`` accessor for the same reason documented
-    on :class:`BlockedTimeAdmin` — the default manager excludes group-scoped
+    on :class:`BlockedTimeAdmin` — the default manager excludes appointment-type-scoped
     rows, and admin must keep showing every row.
     """
 
-    list_display = ("id", "calendar", "group_slot", "start_time", "end_time")
-    list_filter = ("organization", "group_slot_fk")
+    list_display = ("id", "calendar", "appointment_type_slot", "start_time", "end_time")
+    list_filter = ("organization", "appointment_type_slot_fk")
     search_fields = ("calendar_fk__name",)
     readonly_fields = ("created", "modified")
     fields = (
         "organization",
         "calendar_fk",
-        "group_slot_fk",
+        "appointment_type_slot_fk",
         "start_time_tz_unaware",
         "end_time_tz_unaware",
         "timezone",
@@ -546,7 +546,7 @@ class AvailableTimeAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request: HttpRequest):
         return self.model.objects.unscoped().select_related(
-            "organization", "calendar_fk", "group_slot_fk"
+            "organization", "calendar_fk", "appointment_type_slot_fk"
         )
 
 
@@ -687,8 +687,8 @@ class BookingPolicyAdmin(admin.ModelAdmin):
     """Admin interface for BookingPolicy.
 
     A policy targets exactly one of: a calendar, an owning membership, a
-    calendar group, or the organization default. The concrete composite-FK
-    columns (``calendar_fk`` / ``membership_user_id`` / ``calendar_group_fk``)
+    appointment type, or the organization default. The concrete composite-FK
+    columns (``calendar_fk`` / ``membership_user_id`` / ``appointment_type_fk``)
     are surfaced directly since the ``ForeignObject`` joins are non-editable.
     """
 
@@ -697,7 +697,7 @@ class BookingPolicyAdmin(admin.ModelAdmin):
         "organization",
         "calendar_fk",
         "membership_user_id",
-        "calendar_group_fk",
+        "appointment_type_fk",
         "is_organization_default",
         "lead_time_seconds",
         "max_horizon_seconds",
@@ -711,7 +711,7 @@ class BookingPolicyAdmin(admin.ModelAdmin):
         "organization",
         "calendar_fk",
         "membership_user_id",
-        "calendar_group_fk",
+        "appointment_type_fk",
         "is_organization_default",
         "lead_time_seconds",
         "max_horizon_seconds",
@@ -725,7 +725,7 @@ class BookingPolicyAdmin(admin.ModelAdmin):
         return (
             super()
             .get_queryset(request)
-            .select_related("organization", "calendar_fk", "calendar_group_fk")
+            .select_related("organization", "calendar_fk", "appointment_type_fk")
         )
 
 

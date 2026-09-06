@@ -15,7 +15,7 @@ from graphql import GraphQLError
 from calendar_integration.booking_auth import MAX_CODE_GATED_RANGE
 from calendar_integration.constants import CalendarType, ExternalEventChangeRequestStatus
 from calendar_integration.exceptions import (
-    CalendarGroupValidationError,
+    AppointmentTypeValidationError,
     InvalidTokenError,
     TokenAlreadyUsedError,
     TokenExpiredError,
@@ -23,6 +23,12 @@ from calendar_integration.exceptions import (
 )
 from calendar_integration.external_client_identifiers import normalize_system
 from calendar_integration.graphql import (
+    AppointmentTypeGraphQLType,
+    AppointmentTypeRangeAvailabilityGraphQLType,
+    AppointmentTypeScopedAvailabilityWindowGraphQLType,
+    AppointmentTypeScopedBlockedTimeGraphQLType,
+    AppointmentTypeScopedQuotaRuleGraphQLType,
+    AppointmentTypeSlotAvailabilityGraphQLType,
     AvailableTimeGraphQLType,
     AvailableTimeWindowGraphQLType,
     BlockedTimeGraphQLType,
@@ -31,30 +37,24 @@ from calendar_integration.graphql import (
     CalendarBundleGraphQLType,
     CalendarEventGraphQLType,
     CalendarGraphQLType,
-    CalendarGroupGraphQLType,
-    CalendarGroupRangeAvailabilityGraphQLType,
-    CalendarGroupSlotAvailabilityGraphQLType,
     CalendarPoolGraphQLType,
     CalendarWebhookEventGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
     ExternalEventChangeRequestGraphQLType,
-    GroupScopedAvailabilityWindowGraphQLType,
-    GroupScopedBlockedTimeGraphQLType,
-    GroupScopedQuotaRuleGraphQLType,
     StaleSelectionGraphQLType,
     UnavailableTimeWindowGraphQLType,
     WebhookSubscriptionStatusGraphQLType,
-    group_scoped_availability_window_from_model,
-    group_scoped_blocked_time_from_model,
-    group_scoped_quota_rule_from_model,
+    appointment_type_scoped_availability_window_from_model,
+    appointment_type_scoped_blocked_time_from_model,
+    appointment_type_scoped_quota_rule_from_model,
 )
 from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlotQuotaRule,
     AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
-    CalendarGroup,
-    CalendarGroupSlotQuotaRule,
     CalendarManagementToken,
     CalendarPool,
     CalendarWebhookEvent,
@@ -73,7 +73,7 @@ from public_api.permissions import (
     OrganizationResourceAccess,
 )
 from public_api.scoping import (
-    scoped_calendar_group_queryset,
+    scoped_appointment_type_queryset,
     scoped_calendar_ids,
     scoped_calendar_pool_queryset,
 )
@@ -89,12 +89,12 @@ from webhooks.models import WebhookConfiguration, WebhookEvent
 
 
 if TYPE_CHECKING:
+    from calendar_integration.services.appointment_type_service import AppointmentTypeService
     from calendar_integration.services.bookable_slots_service import BookableSlotsService
     from calendar_integration.services.booking_policy_permission_service import (
         BookingPolicyPermissionService,
     )
     from calendar_integration.services.booking_policy_service import BookingPolicyService
-    from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.calendar_service import CalendarService
 
@@ -106,21 +106,25 @@ _CODE_GATED_ERROR_MESSAGE = "Invalid or expired code."
 @dataclass
 class QueryDependencies:
     calendar_service: "CalendarService"
-    calendar_group_service: "CalendarGroupService"
+    appointment_type_service: "AppointmentTypeService"
     calendar_permission_service: "CalendarPermissionService | None" = None
 
 
 @inject
 def get_query_dependencies(
     calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
-    calendar_group_service: Annotated[
-        "CalendarGroupService | None", Provide["calendar_group_service"]
+    appointment_type_service: Annotated[
+        "AppointmentTypeService | None", Provide["appointment_type_service"]
     ] = None,
     calendar_permission_service: Annotated[
         "CalendarPermissionService | None", Provide["calendar_permission_service"]
     ] = None,
 ) -> QueryDependencies:
-    required_dependencies = [calendar_service, calendar_group_service, calendar_permission_service]
+    required_dependencies = [
+        calendar_service,
+        appointment_type_service,
+        calendar_permission_service,
+    ]
     if any(dep is None for dep in required_dependencies):
         raise GraphQLError(
             f"Missing required dependency {', '.join([str(dep) for dep in required_dependencies if dep is None])}"
@@ -128,7 +132,7 @@ def get_query_dependencies(
 
     return QueryDependencies(
         calendar_service=cast("CalendarService", calendar_service),
-        calendar_group_service=cast("CalendarGroupService", calendar_group_service),
+        appointment_type_service=cast("AppointmentTypeService", appointment_type_service),
         calendar_permission_service=cast("CalendarPermissionService", calendar_permission_service),
     )
 
@@ -238,17 +242,17 @@ def _prepare_service_and_calendar_for_org(
     return deps.calendar_service
 
 
-def _prepare_group_service_for_org(
+def _prepare_appointment_type_service_for_org(
     deps: "QueryDependencies", org: Organization
-) -> "CalendarGroupService":
-    """Initialize CalendarGroupService with the given org and return it.
+) -> "AppointmentTypeService":
+    """Initialize AppointmentTypeService with the given org and return it.
 
     Used by code-gated (unauthenticated) reads where the org is derived from
     the booking code.
     Receives an already-resolved ``deps`` object to avoid a second DI resolution.
     """
-    deps.calendar_group_service.initialize(organization=org)
-    return deps.calendar_group_service
+    deps.appointment_type_service.initialize(organization=org)
+    return deps.appointment_type_service
 
 
 def _resolve_code_from_deps(deps: QueryDependencies, code: str) -> "CalendarManagementToken":
@@ -292,7 +296,7 @@ def _validate_code_gated_range(start: datetime.datetime, end: datetime.datetime)
 
 @strawberry.input
 class DateTimeRangeInput:
-    """A single [start_time, end_time] window used by calendar-group availability queries."""
+    """A single [start_time, end_time] window used by appointment-type availability queries."""
 
     start_time: datetime.datetime
     end_time: datetime.datetime
@@ -864,61 +868,61 @@ class Query:
         )
 
     # ------------------------------------------------------------------
-    # CalendarGroup queries
+    # AppointmentType queries
     # ------------------------------------------------------------------
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendar_group(
-        self, info: strawberry.Info, group_id: int
-    ) -> CalendarGroupGraphQLType | None:
-        """Fetch a single CalendarGroup scoped to the caller's organization.
+    def appointment_type(
+        self, info: strawberry.Info, appointment_type_id: int
+    ) -> AppointmentTypeGraphQLType | None:
+        """Fetch a single AppointmentType scoped to the caller's organization.
 
-        Role-aware scope (calendar-group membership-permissions fix): org-wide
-        and scoped-admin tokens may fetch any group in the org; a scoped-member
-        token only a group it participates in (owns a calendar in one of the
-        group's slots); a scoped token whose membership is missing/inactive
+        Role-aware scope (appointment-type membership-permissions fix): org-wide
+        and scoped-admin tokens may fetch any appointment type in the org; a scoped-member
+        token only an appointment type it participates in (owns a calendar in one of the
+        appointment type's slots); a scoped token whose membership is missing/inactive
         sees none (fail closed) -- see ``public_api.scoping.system_user_scope``.
         """
         org = _get_org(info)
         request: PublicApiHttpRequest = info.context.request
-        qs = scoped_calendar_group_queryset(
+        qs = scoped_appointment_type_queryset(
             request.public_api_system_user,
             org,
-            CalendarGroup.objects.filter_by_organization(org.id),
+            AppointmentType.objects.filter_by_organization(org.id),
         )
-        # Same prefetch ``calendar_groups`` (plural) uses -- without it, a
-        # group with several slots each carrying a pool N+1s on
+        # Same prefetch ``appointment_types`` (plural) uses -- without it, a
+        # appointment type with several slots each carrying a pool N+1s on
         # ``slots.pools.calendars``, unbounded by tenant configuration.
         qs = qs.prefetch_related(
             "slots__calendars__ownerships__membership",
             "slots__pools__calendars__ownerships__membership",
         )
-        return qs.filter(id=group_id).first()
+        return qs.filter(id=appointment_type_id).first()
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendar_groups(
+    def appointment_types(
         self,
         info: strawberry.Info,
         offset: int = 0,
         limit: int = 100,
-    ) -> list[CalendarGroupGraphQLType]:
-        """List CalendarGroups for the caller's organization.
+    ) -> list[AppointmentTypeGraphQLType]:
+        """List AppointmentTypes for the caller's organization.
 
-        Role-aware scope: see ``calendar_group`` above -- org-wide/scoped-admin
-        see every group, scoped-member sees only groups it participates in,
+        Role-aware scope: see ``appointment_type`` above -- org-wide/scoped-admin
+        see every appointment type, scoped-member sees only appointment types it participates in,
         missing/inactive scoped membership sees none.
         """
         org = _get_org(info)
         request: PublicApiHttpRequest = info.context.request
-        qs = scoped_calendar_group_queryset(
+        qs = scoped_appointment_type_queryset(
             request.public_api_system_user,
             org,
-            CalendarGroup.objects.filter_by_organization(org.id),
+            AppointmentType.objects.filter_by_organization(org.id),
         )
         qs = qs.prefetch_related(
             "slots__calendars__ownerships__membership",
             "slots__pools__calendars__ownerships__membership",
         ).order_by("pk")
-        return cast(list[CalendarGroupGraphQLType], list(_slice_qs(qs, offset, limit)))
+        return cast(list[AppointmentTypeGraphQLType], list(_slice_qs(qs, offset, limit)))
 
     # ------------------------------------------------------------------
     # CalendarPool queries
@@ -927,7 +931,7 @@ class Query:
     def calendar_pool(self, info: strawberry.Info, pool_id: int) -> CalendarPoolGraphQLType | None:
         """Fetch a single CalendarPool scoped to the caller's organization.
 
-        Role-aware scope, matching ``calendar_group``: org-wide and
+        Role-aware scope, matching ``appointment_type``: org-wide and
         scoped-admin tokens may fetch any pool in the org; a scoped-member
         token only a pool it participates in (owns a roster calendar); a
         scoped token whose membership is missing/inactive sees none (fail
@@ -992,27 +996,27 @@ class Query:
         return cast(list[CalendarBundleGraphQLType], list(_slice_qs(qs, offset, limit)))
 
     @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendar_group_availability(
+    def appointment_type_availability(
         self,
         info: strawberry.Info,
-        group_id: int,
+        appointment_type_id: int,
         ranges: list[DateTimeRangeInput],
-    ) -> list[CalendarGroupRangeAvailabilityGraphQLType]:
+    ) -> list[AppointmentTypeRangeAvailabilityGraphQLType]:
         """For each range, list which calendars in each slot's pool are available."""
         org = _get_org(info)
         deps = get_query_dependencies()
-        deps.calendar_group_service.initialize(organization=org)
+        deps.appointment_type_service.initialize(organization=org)
 
-        result = deps.calendar_group_service.check_group_availability(
-            group_id=group_id,
+        result = deps.appointment_type_service.check_appointment_type_availability(
+            appointment_type_id=appointment_type_id,
             ranges=[(r.start_time, r.end_time) for r in ranges],
         )
         return [
-            CalendarGroupRangeAvailabilityGraphQLType(
+            AppointmentTypeRangeAvailabilityGraphQLType(
                 start_time=r.start_time,
                 end_time=r.end_time,
                 slots=[
-                    CalendarGroupSlotAvailabilityGraphQLType(
+                    AppointmentTypeSlotAvailabilityGraphQLType(
                         slot_id=s.slot_id,
                         available_calendar_ids=s.available_calendar_ids,
                         required_count=s.required_count,
@@ -1024,23 +1028,23 @@ class Query:
         ]
 
     @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendar_group_bookable_slots(
+    def appointment_type_bookable_slots(
         self,
         info: strawberry.Info,
-        group_id: int,
+        appointment_type_id: int,
         search_window_start: datetime.datetime,
         search_window_end: datetime.datetime,
         duration_seconds: int,
         slot_step_seconds: int = 15 * 60,
     ) -> list[BookableSlotProposalGraphQLType]:
         """Return time windows within the search range where every slot in the
-        group has enough available calendars to satisfy its required_count."""
+        appointment type has enough available calendars to satisfy its required_count."""
         org = _get_org(info)
         deps = get_query_dependencies()
-        deps.calendar_group_service.initialize(organization=org)
+        deps.appointment_type_service.initialize(organization=org)
 
-        proposals = deps.calendar_group_service.find_bookable_slots(
-            group_id=group_id,
+        proposals = deps.appointment_type_service.find_bookable_slots(
+            appointment_type_id=appointment_type_id,
             search_window_start=search_window_start,
             search_window_end=search_window_end,
             duration=datetime.timedelta(seconds=duration_seconds),
@@ -1095,67 +1099,67 @@ class Query:
         ]
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendar_group_events(
+    def appointment_type_events(
         self,
         info: strawberry.Info,
-        group_id: int,
+        appointment_type_id: int,
         start_datetime: datetime.datetime,
         end_datetime: datetime.datetime,
     ) -> list[CalendarEventGraphQLType]:
-        """Return events booked under a CalendarGroup overlapping the window."""
+        """Return events booked under an AppointmentType overlapping the window."""
         org = _get_org(info)
         deps = get_query_dependencies()
-        deps.calendar_group_service.initialize(organization=org)
-        events = deps.calendar_group_service.get_group_events(
-            group_id=group_id, start=start_datetime, end=end_datetime
+        deps.appointment_type_service.initialize(organization=org)
+        events = deps.appointment_type_service.get_appointment_type_events(
+            appointment_type_id=appointment_type_id, start=start_datetime, end=end_datetime
         )
         return cast(list[CalendarEventGraphQLType], list(events))
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def calendar_group_stale_selections(
+    def appointment_type_stale_selections(
         self,
         info: strawberry.Info,
-        group_id: int,
+        appointment_type_id: int,
         window_start: datetime.datetime | None = None,
         window_end: datetime.datetime | None = None,
         offset: int = 0,
         limit: int = 100,
     ) -> list[StaleSelectionGraphQLType]:
-        """List every `(event, slot, calendar)` triple in a CalendarGroup whose
+        """List every `(event, slot, calendar)` triple in an AppointmentType whose
         calendar has left its slot's roster -- the ops-sweep counterpart to
         the per-selection `isInCurrentRoster` field.
 
-        Role-aware scope, matching ``calendar_group``: org-wide and
-        scoped-admin tokens may sweep any group in the org; a scoped-member
-        token only a group it participates in (owns a calendar in one of the
-        group's slots); a scoped token whose membership is missing/inactive
+        Role-aware scope, matching ``appointment_type``: org-wide and
+        scoped-admin tokens may sweep any appointment type in the org; a scoped-member
+        token only an appointment type it participates in (owns a calendar in one of the
+        appointment type's slots); a scoped token whose membership is missing/inactive
         sees none (fail closed). Checked explicitly here against
-        ``scoped_calendar_group_queryset`` -- unlike ``calendar_group_events``
+        ``scoped_appointment_type_queryset`` -- unlike ``appointment_type_events``
         above, whose service call enforces only the organization boundary --
         because this phase's acceptance is specifically that a scoped member
-        sees stale selections only for groups it participates in.
+        sees stale selections only for appointment types it participates in.
         """
         org = _get_org(info)
         request: PublicApiHttpRequest = info.context.request
-        visible_groups = scoped_calendar_group_queryset(
+        visible_groups = scoped_appointment_type_queryset(
             request.public_api_system_user,
             org,
-            CalendarGroup.objects.filter_by_organization(org.id),
+            AppointmentType.objects.filter_by_organization(org.id),
         )
-        if not visible_groups.filter(id=group_id).exists():
+        if not visible_groups.filter(id=appointment_type_id).exists():
             return []
 
         deps = get_query_dependencies()
-        deps.calendar_group_service.initialize(organization=org)
+        deps.appointment_type_service.initialize(organization=org)
         try:
-            stale = deps.calendar_group_service.find_stale_selections(
-                group_id=group_id,
+            stale = deps.appointment_type_service.find_stale_selections(
+                appointment_type_id=appointment_type_id,
                 window_start=window_start,
                 window_end=window_end,
                 offset=offset,
                 limit=limit,
             )
-        except CalendarGroupValidationError as exc:
+        except AppointmentTypeValidationError as exc:
             # Same error shape every other paginated field in this file raises
             # via `_slice_qs` -- bounds are validated inside
             # `find_stale_selections` itself now (also the REST caller's
@@ -1169,15 +1173,15 @@ class Query:
         ]
 
     @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def group_scoped_availability_windows(
+    def appointment_type_scoped_availability_windows(
         self,
         info: strawberry.Info,
-        group_slot_id: int,
+        appointment_type_slot_id: int,
         calendar_id: int | None = None,
         offset: int = 0,
         limit: int = 100,
-    ) -> list[GroupScopedAvailabilityWindowGraphQLType]:
-        """List group-scoped availability windows for a group slot's roster.
+    ) -> list[AppointmentTypeScopedAvailabilityWindowGraphQLType]:
+        """List appointment-type-scoped availability windows for an appointment type slot's roster.
 
         Returns raw window rows (one per recurring master or one-off window,
         not expanded occurrences) -- mirrors the internal REST surface's list
@@ -1186,7 +1190,7 @@ class Query:
         org = _get_org(info)
 
         qs = (
-            AvailableTime.objects.for_group_slot(group_slot_id)
+            AvailableTime.objects.for_appointment_type_slot(appointment_type_slot_id)
             .filter_by_organization(org.id)
             .select_related("recurrence_rule")
         )
@@ -1204,18 +1208,18 @@ class Query:
             qs = qs.filter(calendar_fk_id=calendar_id)
 
         windows = _slice_qs(qs.order_by("pk"), offset, limit)
-        return [group_scoped_availability_window_from_model(w) for w in windows]
+        return [appointment_type_scoped_availability_window_from_model(w) for w in windows]
 
     @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def group_scoped_blocked_times(
+    def appointment_type_scoped_blocked_times(
         self,
         info: strawberry.Info,
-        group_slot_id: int,
+        appointment_type_slot_id: int,
         calendar_id: int | None = None,
         offset: int = 0,
         limit: int = 100,
-    ) -> list[GroupScopedBlockedTimeGraphQLType]:
-        """List group-scoped blocked times for a group slot's roster.
+    ) -> list[AppointmentTypeScopedBlockedTimeGraphQLType]:
+        """List appointment-type-scoped blocked times for an appointment type slot's roster.
 
         Returns raw block rows (one per recurring master or one-off block,
         not expanded occurrences) -- mirrors the internal REST surface's
@@ -1225,7 +1229,7 @@ class Query:
         org = _get_org(info)
 
         qs = (
-            BlockedTime.objects.for_group_slot(group_slot_id)
+            BlockedTime.objects.for_appointment_type_slot(appointment_type_slot_id)
             .filter_by_organization(org.id)
             .select_related("recurrence_rule")
         )
@@ -1243,26 +1247,26 @@ class Query:
             qs = qs.filter(calendar_fk_id=calendar_id)
 
         blocks = _slice_qs(qs.order_by("pk"), offset, limit)
-        return [group_scoped_blocked_time_from_model(b) for b in blocks]
+        return [appointment_type_scoped_blocked_time_from_model(b) for b in blocks]
 
     @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
-    def group_scoped_quota_rules(
+    def appointment_type_scoped_quota_rules(
         self,
         info: strawberry.Info,
-        group_slot_id: int,
+        appointment_type_slot_id: int,
         calendar_id: int | None = None,
         offset: int = 0,
         limit: int = 100,
-    ) -> list[GroupScopedQuotaRuleGraphQLType]:
-        """List group-scoped quota rules for a group slot's roster.
+    ) -> list[AppointmentTypeScopedQuotaRuleGraphQLType]:
+        """List appointment-type-scoped quota rules for an appointment type slot's roster.
 
         Mirrors the internal REST surface's list shape. Optionally filtered
         to a single calendar in the slot's roster.
         """
         org = _get_org(info)
 
-        qs = CalendarGroupSlotQuotaRule.objects.for_group_slot(
-            group_slot_id
+        qs = AppointmentTypeSlotQuotaRule.objects.for_appointment_type_slot(
+            appointment_type_slot_id
         ).filter_by_organization(org.id)
 
         # Owner-scope: for scoped tokens, only return rules on calendars in
@@ -1278,7 +1282,7 @@ class Query:
             qs = qs.filter(calendar_fk_id=calendar_id)
 
         rules = _slice_qs(qs.order_by("pk"), offset, limit)
-        return [group_scoped_quota_rule_from_model(r) for r in rules]
+        return [appointment_type_scoped_quota_rule_from_model(r) for r in rules]
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def child_organizations(
@@ -1289,7 +1293,7 @@ class Query:
     ) -> list[ChildOrganizationMetrics]:
         """List the acting reseller's direct child organizations with aggregate counts.
 
-        Counts (memberships, calendars, events, calendar groups) are computed as
+        Counts (memberships, calendars, events, appointment types) are computed as
         ORM Subquery annotations to avoid join fan-out double-counting that arises
         when multiple Count() calls are combined in a single annotate() call across
         different related models.
@@ -1329,8 +1333,8 @@ class Query:
             .annotate(cnt=DjangoCount("id"))
             .values("cnt")
         )
-        group_sq = (
-            CalendarGroup.original_manager.filter(organization_id=OuterRef("pk"))
+        appointment_type_sq = (
+            AppointmentType.original_manager.filter(organization_id=OuterRef("pk"))
             .values("organization_id")
             .annotate(cnt=DjangoCount("id"))
             .values("cnt")
@@ -1342,7 +1346,7 @@ class Query:
                 membership_count=Subquery(membership_sq),
                 calendar_count=Subquery(calendar_sq),
                 event_count=Subquery(event_sq),
-                calendar_group_count=Subquery(group_sq),
+                appointment_type_count=Subquery(appointment_type_sq),
             )
             .order_by("pk")
         )
@@ -1356,7 +1360,7 @@ class Query:
                 membership_count=child.membership_count or 0,
                 calendar_count=child.calendar_count or 0,
                 event_count=child.event_count or 0,
-                calendar_group_count=child.calendar_group_count or 0,
+                appointment_type_count=child.appointment_type_count or 0,
             )
             for child in qs
         ]
@@ -1481,7 +1485,7 @@ class Query:
         info: strawberry.Info,
         calendar_id: int | None = None,
         membership_user_id: int | None = None,
-        calendar_group_id: int | None = None,
+        appointment_type_id: int | None = None,
         is_organization_default: bool | None = None,
         offset: int = 0,
         limit: int = 100,
@@ -1510,8 +1514,8 @@ class Query:
             qs = qs.filter(calendar_fk_id=calendar_id)
         if membership_user_id is not None:
             qs = qs.filter(membership_user_id=membership_user_id)
-        if calendar_group_id is not None:
-            qs = qs.filter(calendar_group_fk_id=calendar_group_id)
+        if appointment_type_id is not None:
+            qs = qs.filter(appointment_type_fk_id=appointment_type_id)
         if is_organization_default is not None:
             qs = qs.filter(is_organization_default=is_organization_default)
 
@@ -1539,12 +1543,12 @@ class Query:
         token = _resolve_code_from_deps(deps, code)
 
         # Resolve the bound calendar (calendar-scope or event.calendar fallback).
-        # A token itself scoped to a GROUP must never fall through to
-        # ``event.calendar`` -- for a group booking that always resolves to the
-        # specific staff member's calendar the event landed on, which a group
+        # A token itself scoped to a APPOINTMENT_TYPE must never fall through to
+        # ``event.calendar`` -- for an appointment type booking that always resolves to the
+        # specific staff member's calendar the event landed on, which an appointment type
         # code must never disclose. See the identical guard in
         # ``calendar_integration.booking_read_views._resolve_calendar_scope_opaquely``.
-        if token.calendar_group_fk_id is not None:
+        if token.appointment_type_fk_id is not None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
         calendar = token.calendar
         if calendar is None and token.event is not None:
@@ -1578,10 +1582,10 @@ class Query:
         deps = get_query_dependencies()
         token = _resolve_code_from_deps(deps, code)
 
-        # A token itself scoped to a GROUP must never fall through to
+        # A token itself scoped to a APPOINTMENT_TYPE must never fall through to
         # ``event.calendar`` -- see the identical guard in
         # ``calendar_integration.booking_read_views._resolve_calendar_scope_opaquely``.
-        if token.calendar_group_fk_id is not None:
+        if token.appointment_type_fk_id is not None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
         calendar = token.calendar
         if calendar is None and token.event is not None:
@@ -1623,10 +1627,10 @@ class Query:
         deps = get_query_dependencies()
         token = _resolve_code_from_deps(deps, code)
 
-        # A token itself scoped to a GROUP must never fall through to
+        # A token itself scoped to a APPOINTMENT_TYPE must never fall through to
         # ``event.calendar`` -- see the identical guard in
         # ``calendar_integration.booking_read_views._resolve_calendar_scope_opaquely``.
-        if token.calendar_group_fk_id is not None:
+        if token.appointment_type_fk_id is not None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
         calendar = token.calendar
         if calendar is None and token.event is not None:
@@ -1650,7 +1654,7 @@ class Query:
         ]
 
     @strawberry.field()
-    def calendar_group_bookable_slots_with_code(
+    def appointment_type_bookable_slots_with_code(
         self,
         code: str,
         search_window_start: datetime.datetime,
@@ -1658,32 +1662,32 @@ class Query:
         duration_seconds: int,
         slot_step_seconds: int = 15 * 60,
     ) -> list[BookableSlotProposalGraphQLType]:
-        """Return bookable slot proposals for the group bound to a booking code.
+        """Return bookable slot proposals for the appointment type bound to a booking code.
 
-        No org token required.  The code gates access to its bound calendar group only.
+        No org token required.  The code gates access to its bound appointment type only.
         Reads are repeatable: the code is never consumed by this query.
         """
         _validate_code_gated_range(search_window_start, search_window_end)
         deps = get_query_dependencies()
         token = _resolve_code_from_deps(deps, code)
 
-        # Resolve the bound group (group-scope or event.calendar_group fallback).
+        # Resolve the bound appointment type (appointment-type-scope or event.appointment type fallback).
         # A token itself scoped to a single CALENDAR must never fall through to
-        # ``event.calendar_group`` -- symmetric to the calendar-scoped guard.
-        # See ``calendar_integration.booking_read_views._resolve_group_scope_opaquely``.
+        # ``event.appointment_type`` -- symmetric to the calendar-scoped guard.
+        # See ``calendar_integration.booking_read_views._resolve_appointment_type_scope_opaquely``.
         if token.calendar_fk_id is not None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
-        group = token.calendar_group
-        if group is None and token.event is not None:
-            group = token.event.calendar_group
-        if group is None:
+        appointment_type = token.appointment_type
+        if appointment_type is None and token.event is not None:
+            appointment_type = token.event.appointment_type
+        if appointment_type is None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
 
         org = _get_org_from_token(token)
-        calendar_group_service = _prepare_group_service_for_org(deps, org)
+        appointment_type_service = _prepare_appointment_type_service_for_org(deps, org)
 
-        proposals = calendar_group_service.find_bookable_slots(
-            group_id=group.id,
+        proposals = appointment_type_service.find_bookable_slots(
+            appointment_type_id=appointment_type.id,
             search_window_start=search_window_start,
             search_window_end=search_window_end,
             duration=datetime.timedelta(seconds=duration_seconds),
@@ -1707,7 +1711,7 @@ class Query:
 
         No org token required.  The code gates access to its bound calendar or
         calendar bundle only. Reads are repeatable: the code is never consumed by
-        this query. A group-scoped code is rejected (single/bundle calendars only).
+        this query. An appointment-type-scoped code is rejected (single/bundle calendars only).
 
         The response omits policy rule values — slots only.
         """
@@ -1716,11 +1720,11 @@ class Query:
         token = _resolve_code_from_deps(deps, code)
 
         # Resolve the bound calendar (calendar-scope or event.calendar fallback).
-        # Reject group-scoped codes (single/bundle only). A token itself scoped
-        # to a GROUP must never fall through to ``event.calendar`` -- see the
+        # Reject appointment-type-scoped codes (single/bundle only). A token itself scoped
+        # to a APPOINTMENT_TYPE must never fall through to ``event.calendar`` -- see the
         # identical guard in
         # ``calendar_integration.booking_read_views._resolve_calendar_scope_opaquely``.
-        if token.calendar_group_fk_id is not None:
+        if token.appointment_type_fk_id is not None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
         calendar = token.calendar
         if calendar is None and token.event is not None:
@@ -1745,14 +1749,14 @@ class Query:
         ]
 
     @strawberry.field()
-    def calendar_group_availability_with_code(
+    def appointment_type_availability_with_code(
         self,
         code: str,
         ranges: list[DateTimeRangeInput],
-    ) -> list[CalendarGroupRangeAvailabilityGraphQLType]:
-        """Return per-range slot availability for the group bound to a booking code.
+    ) -> list[AppointmentTypeRangeAvailabilityGraphQLType]:
+        """Return per-range slot availability for the appointment type bound to a booking code.
 
-        No org token required.  The code gates access to its bound calendar group only.
+        No org token required.  The code gates access to its bound appointment type only.
         Reads are repeatable: the code is never consumed by this query.
         """
         for r in ranges:
@@ -1761,29 +1765,29 @@ class Query:
         token = _resolve_code_from_deps(deps, code)
 
         # A token itself scoped to a single CALENDAR must never fall through to
-        # ``event.calendar_group`` -- symmetric to the calendar-scoped guard.
-        # See ``calendar_integration.booking_read_views._resolve_group_scope_opaquely``.
+        # ``event.appointment_type`` -- symmetric to the calendar-scoped guard.
+        # See ``calendar_integration.booking_read_views._resolve_appointment_type_scope_opaquely``.
         if token.calendar_fk_id is not None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
-        group = token.calendar_group
-        if group is None and token.event is not None:
-            group = token.event.calendar_group
-        if group is None:
+        appointment_type = token.appointment_type
+        if appointment_type is None and token.event is not None:
+            appointment_type = token.event.appointment_type
+        if appointment_type is None:
             raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
 
         org = _get_org_from_token(token)
-        calendar_group_service = _prepare_group_service_for_org(deps, org)
+        appointment_type_service = _prepare_appointment_type_service_for_org(deps, org)
 
-        result = calendar_group_service.check_group_availability(
-            group_id=group.id,
+        result = appointment_type_service.check_appointment_type_availability(
+            appointment_type_id=appointment_type.id,
             ranges=[(r.start_time, r.end_time) for r in ranges],
         )
         return [
-            CalendarGroupRangeAvailabilityGraphQLType(
+            AppointmentTypeRangeAvailabilityGraphQLType(
                 start_time=r.start_time,
                 end_time=r.end_time,
                 slots=[
-                    CalendarGroupSlotAvailabilityGraphQLType(
+                    AppointmentTypeSlotAvailabilityGraphQLType(
                         slot_id=s.slot_id,
                         available_calendar_ids=s.available_calendar_ids,
                         required_count=s.required_count,
