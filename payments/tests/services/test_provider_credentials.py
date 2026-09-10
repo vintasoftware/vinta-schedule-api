@@ -14,6 +14,7 @@ from vinta_billing.services.provider_credentials import (
 )
 
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 from payments.tests.provider_settings import use_providers
 
 
@@ -74,7 +75,7 @@ class TestPaymentProviderResolver:
         billing_address = baker.make("vinta_billing.BillingAddress")
         baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             contact_email="billing@example.com",
             document_type="CPF",
             document_number="12345678900",
@@ -92,7 +93,7 @@ class TestPaymentProviderResolver:
         billing_address = baker.make("vinta_billing.BillingAddress")
         baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             contact_email="billing@example.com",
             document_type="CPF",
             document_number="12345678900",

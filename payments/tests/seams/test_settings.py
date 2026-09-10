@@ -28,6 +28,11 @@ DOTTED_PATH_KEYS = (
     "NOTIFIER",
     "OCCURRENCE_SOURCE",
     "BILLING_RECIPIENTS",
+    # Added in the 0.8.0 upgrade. Bridges this project's own
+    # `X-Organization-Id` tenancy to the scope that bills the resolved
+    # organization; a typo here means every billing endpoint resolves no scope
+    # and 404s, so it belongs on the "must resolve" list with the rest.
+    "SCOPE_RESOLVER",
     "VIEW_MIXIN",
     "SERVICE_CONTAINER",
 )

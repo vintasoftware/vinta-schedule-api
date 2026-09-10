@@ -17,6 +17,7 @@ from vinta_billing.services.entitlement_service import EntitlementService
 
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.permissions import IsOrganizationAdmin
+from payments.seams.scopes import scope_for
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.docs_content import get_concept_doc, list_concept_docs
 from public_api.models import ResourceAccess, SystemUser
@@ -170,7 +171,7 @@ class SystemUserTokenViewSet(
         """
         system_user = self.get_object()
         if system_user.organization_id is not None:
-            self.entitlement_service.check_not_restricted(system_user.organization)
+            self.entitlement_service.check_not_restricted(scope_for(system_user.organization))
         system_user.is_active = False
         system_user.save(update_fields=["is_active"])
 
@@ -196,7 +197,7 @@ class SystemUserTokenViewSet(
         """
         system_user = self.get_object()
         if system_user.organization_id is not None:
-            self.entitlement_service.check_not_restricted(system_user.organization)
+            self.entitlement_service.check_not_restricted(scope_for(system_user.organization))
 
         # Validate input
         input_serializer = SystemUserTokenUpdateSerializer(data=request.data)

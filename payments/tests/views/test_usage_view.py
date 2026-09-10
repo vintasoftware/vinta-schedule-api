@@ -52,6 +52,7 @@ from payments.seams.resource_keys import (
     RESOURCE_KEYS,
     WEBHOOK_SUBSCRIPTIONS,
 )
+from payments.seams.scopes import scope_for
 from public_api.models import SystemUser
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
@@ -71,7 +72,7 @@ LIMIT_VALUE = 1000
 def make_complete_plan() -> BillingPlan:
     plan = baker.make(
         BillingPlan,
-        is_default_for_new_organizations=False,
+        is_default_for_new_scopes=False,
         monthly_price=Decimal("0"),
         annual_price=None,
     )
@@ -157,7 +158,7 @@ def _seed_event_occurrences(organization: Organization, subscription) -> None:
     for i in range(2):
         baker.make(
             MeteredOccurrence,
-            organization=organization,
+            scope=scope_for(organization),
             subscription=subscription,
             event_id=1000 + i,
             occurrence_start=timezone.now() + datetime.timedelta(hours=i),
@@ -189,7 +190,7 @@ def organization() -> Organization:
 @pytest.fixture
 def subscription(organization):
     plan = make_complete_plan()
-    return SubscriptionService().create_subscription_for_organization(organization, plan=plan)
+    return SubscriptionService().create_subscription_for_scope(scope_for(organization), plan=plan)
 
 
 @pytest.fixture(autouse=True)
@@ -228,7 +229,7 @@ class TestUsageMatchesEnforcement:
             enforcement_result = entitlement_service.check_postpaid_allowance(organization, delta=0)
         else:
             enforcement_result = entitlement_service.check_limit(
-                organization, resource_key, delta=0
+                scope_for(organization), resource_key, delta=0
             )
 
         response = auth_client.get(usage_url())
@@ -298,14 +299,16 @@ class TestBackwardsCompatibility:
                 "overage_unit_price",
             } <= set(row)
 
-            effective_limit = entitlement_service.get_effective_limit(organization, resource_key)
+            effective_limit = entitlement_service.get_effective_limit(
+                scope_for(organization), resource_key
+            )
             if resource_key == EVENT_OCCURRENCES:
                 enforcement_result = entitlement_service.check_postpaid_allowance(
                     organization, delta=0
                 )
             else:
                 enforcement_result = entitlement_service.check_limit(
-                    organization, resource_key, delta=0
+                    scope_for(organization), resource_key, delta=0
                 )
 
             assert row["resource_key"] == resource_key
@@ -327,7 +330,7 @@ class TestPooledAttributionOmitsNonContributors:
         contributing_child = baker.make(Organization, parent=root, can_invite_organizations=False)
         silent_child = baker.make(Organization, parent=root, can_invite_organizations=False)
         plan = make_complete_plan()
-        SubscriptionService().create_subscription_for_organization(root, plan=plan)
+        SubscriptionService().create_subscription_for_scope(scope_for(root), plan=plan)
         make_membership(
             organization=contributing_child,
             user=user,
@@ -346,18 +349,17 @@ class TestPooledAttributionOmitsNonContributors:
 
         assert response.status_code == status.HTTP_200_OK
         rows = {row["resource_key"]: row for row in response.data["limits"]}
-        by_organization = {
-            entry["organization_id"]: entry for entry in rows[RESOURCE_CALENDARS]["by_organization"]
-        }
-        assert by_organization[contributing_child.pk] == {
-            "organization_id": contributing_child.pk,
+        by_scope = {entry["scope_id"]: entry for entry in rows[RESOURCE_CALENDARS]["by_scope"]}
+        contributing_child_scope = scope_for(contributing_child)
+        assert by_scope[contributing_child_scope.pk] == {
+            "scope_id": contributing_child_scope.pk,
             "name": contributing_child.name,
             "usage": 2,
         }
         # Neither the root nor the silent child contributed any resource
         # calendars -- both are omitted, never present with usage: 0.
-        assert root.pk not in by_organization
-        assert silent_child.pk not in by_organization
+        assert scope_for(root).pk not in by_scope
+        assert scope_for(silent_child).pk not in by_scope
 
 
 @pytest.mark.django_db
@@ -369,7 +371,7 @@ class TestEstimatedOverageTotal:
         for i in range(3):
             baker.make(
                 MeteredOccurrence,
-                organization=organization,
+                scope=scope_for(organization),
                 subscription=subscription,
                 event_id=6000 + i,
                 occurrence_start=timezone.now() + datetime.timedelta(hours=i),
@@ -401,10 +403,12 @@ class TestEstimatedOverageTotal:
         contributing_child = baker.make(Organization, parent=root, can_invite_organizations=False)
         sibling_root = baker.make(Organization, parent=None, can_invite_organizations=True)
         plan = make_complete_plan()
-        subscription = SubscriptionService().create_subscription_for_organization(root, plan=plan)
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(root), plan=plan
+        )
         sibling_plan = make_complete_plan()
-        sibling_subscription = SubscriptionService().create_subscription_for_organization(
-            sibling_root, plan=sibling_plan
+        sibling_subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(sibling_root), plan=sibling_plan
         )
         make_membership(
             organization=contributing_child,
@@ -416,7 +420,7 @@ class TestEstimatedOverageTotal:
         billing_period_start = current_billing_period_start(subscription)
         baker.make(
             MeteredOccurrence,
-            organization=contributing_child,
+            scope=scope_for(contributing_child),
             subscription=subscription,
             event_id=8000,
             occurrence_start=timezone.now(),
@@ -427,7 +431,7 @@ class TestEstimatedOverageTotal:
         sibling_billing_period_start = current_billing_period_start(sibling_subscription)
         baker.make(
             MeteredOccurrence,
-            organization=sibling_root,
+            scope=scope_for(sibling_root),
             subscription=sibling_subscription,
             event_id=8001,
             occurrence_start=timezone.now(),
@@ -439,7 +443,7 @@ class TestEstimatedOverageTotal:
         response = auth_client.get(usage_url())
 
         assert response.status_code == status.HTTP_200_OK
-        assert response.data["billing_root_organization_id"] == root.pk
+        assert response.data["billing_root_scope_id"] == scope_for(root).pk
         # Only the contributing child's overage counts -- the sibling root's own
         # subtree is a disjoint pool and must not be summed in here.
         assert Decimal(response.data["estimated_overage_total"]) == Decimal("0.05")
@@ -463,7 +467,7 @@ class TestNoSubscriptionOrganization:
         assert response.data["plan"] is None
         assert response.data["billing_period"] is None
         assert response.data["estimated_overage_total"] == "0.0000"
-        assert response.data["billing_root_organization_id"] == free_organization.pk
+        assert response.data["billing_root_scope_id"] == scope_for(free_organization).pk
 
 
 @pytest.mark.django_db
@@ -502,7 +506,7 @@ class TestRootResolutionAndSubtreeWalkHappenOnce:
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
         plan = make_complete_plan()
-        SubscriptionService().create_subscription_for_organization(root, plan=plan)
+        SubscriptionService().create_subscription_for_scope(scope_for(root), plan=plan)
         make_membership(
             organization=child,
             user=user,

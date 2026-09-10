@@ -24,6 +24,7 @@ from vinta_billing.services.cycle_close_service import CycleCloseService
 
 from organizations.models import Organization
 from payments.seams.resource_keys import EVENT_OCCURRENCES
+from payments.seams.scopes import scope_for
 
 
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)
@@ -65,7 +66,7 @@ def organization(db) -> Organization:
 
 @pytest.fixture
 def subscription(organization: Organization) -> Subscription:
-    subscription = Subscription.objects.get(organization=organization)
+    subscription = Subscription.objects.get(scope=scope_for(organization))
     subscription.current_period_start = PERIOD_START
     subscription.current_period_end = PERIOD_END
     subscription.save(update_fields=["current_period_start", "current_period_end", "modified"])

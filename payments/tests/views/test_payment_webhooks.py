@@ -34,6 +34,7 @@ from vinta_billing.services.subscription_adapters.stripe_subscription_adapter im
 from vinta_billing.services.subscription_service import SubscriptionService
 
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 from payments.tests.provider_settings import use_providers
 
 
@@ -589,8 +590,8 @@ class TestSubscriptionPaymentUpdateWebhook:
         Opts out of conftest's autouse ``provision_default_subscription``: this
         test builds its own ``Subscription`` (``OneToOne`` with ``Organization``)
         via ``create_subscription_for_organization`` below."""
-        subscription = SubscriptionService().create_subscription_for_organization(
-            billing_profile.organization
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(billing_profile.organization)
         )
         assert subscription is not None
         subscription.external_id = "sub-123"
@@ -636,8 +637,8 @@ class TestSubscriptionPaymentUpdateWebhook:
         """
         assert billing_profile.payment_provider == ""
         billing_profile.organization.refresh_from_db()
-        subscription = SubscriptionService().create_subscription_for_organization(
-            billing_profile.organization
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(billing_profile.organization)
         )
         assert subscription is not None
         subscription.payment_provider = PaymentProviders.MERCADOPAGO
@@ -674,8 +675,8 @@ class TestSubscriptionPaymentUpdateWebhook:
         ``create_subscription_for_organization`` below."""
         use_providers(settings, default_provider=PaymentProviders.STRIPE)
         assert billing_profile.payment_provider == ""
-        subscription = SubscriptionService().create_subscription_for_organization(
-            billing_profile.organization
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(billing_profile.organization)
         )
         assert subscription is not None
         assert subscription.payment_provider == PaymentProviders.STRIPE
@@ -751,8 +752,8 @@ class TestZeroAmountSubscriptionPaymentDoesNotResolveDunning:
         }
 
     def _grace_subscription(self, billing_profile):
-        subscription = SubscriptionService().create_subscription_for_organization(
-            billing_profile.organization
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(billing_profile.organization)
         )
         assert subscription is not None
         subscription.payment_provider = PaymentProviders.MERCADOPAGO
@@ -872,8 +873,8 @@ class TestStripeInvoicePaidResolvesOffTheEventsOwnInvoice:
     STRIPE_WEBHOOK_SECRET = "whsec_test_secret"
 
     def _grace_subscription(self, billing_profile, external_id: str = "sub_stripe_1"):
-        subscription = SubscriptionService().create_subscription_for_organization(
-            billing_profile.organization
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(billing_profile.organization)
         )
         assert subscription is not None
         subscription.payment_provider = PaymentProviders.STRIPE

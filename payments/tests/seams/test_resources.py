@@ -46,6 +46,7 @@ from payments.seams.resource_keys import (
     RESOURCE_KEYS,
     WEBHOOK_SUBSCRIPTIONS,
 )
+from payments.seams.scopes import scope_for, scope_ids_for_organization_ids
 from public_api.models import SystemUser
 from webhooks.models import WebhookConfiguration
 
@@ -153,8 +154,8 @@ def _make_subscription(organization: Organization) -> Subscription:
     see that constant's docstring for why."""
     return baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         current_period_start=_EVENT_OCCURRENCES_STALE_PERIOD_START,
         current_period_end=_EVENT_OCCURRENCES_STALE_PERIOD_END,
     )
@@ -166,8 +167,38 @@ class TestCounterBreakdowns:
     ``{organization_id: count}`` breakdown the registered counter returns."""
 
     @staticmethod
-    def _breakdown(resource_key: str, organization_ids: list[int]) -> dict[int, int]:
-        return resources.counter_for(resource_key)(UsageContext(organization_ids=organization_ids))
+    def _breakdown(
+        resource_key: str,
+        organization_ids: list[int],
+        extra: dict | None = None,
+        subscription=None,
+    ) -> dict[int, int]:
+        """Drive a registered counter in scope space, answer in organization space.
+
+        ``vinta-django-billing`` 0.8.0 re-keyed counters onto scopes: they take
+        ``UsageContext.scope_ids`` and return ``{scope_id: count}``. What each
+        counter *counts* did not change, so every assertion below still names
+        organizations and still expects organization-keyed counts -- this helper
+        is the inverse of the translation ``@counts_by_organization``
+        (``payments.seams.counting``) makes on the production path, and keeping
+        it here is what lets those assertions stay untouched.
+        """
+        organization_to_scope = scope_ids_for_organization_ids(organization_ids)
+        scope_to_organization = {
+            scope_id: organization_id for organization_id, scope_id in organization_to_scope.items()
+        }
+        breakdown = resources.counter_for(resource_key)(
+            UsageContext(
+                scope_ids=list(scope_to_organization),
+                extra=extra,
+                subscription=subscription,
+            )
+        )
+        return {
+            scope_to_organization[scope_id]: count
+            for scope_id, count in breakdown.items()
+            if scope_id in scope_to_organization
+        }
 
     def test_organization_members(self, organization_one, organization_two):
         baker.make(
@@ -199,11 +230,10 @@ class TestCounterBreakdowns:
             expires_at=timezone.now() + datetime.timedelta(days=7),
         )
 
-        breakdown = resources.counter_for(ORGANIZATION_MEMBERS)(
-            UsageContext(
-                organization_ids=[organization_one.pk, organization_two.pk],
-                extra={"exclude_invitation_id": invitation.pk},
-            )
+        breakdown = self._breakdown(
+            ORGANIZATION_MEMBERS,
+            [organization_one.pk, organization_two.pk],
+            extra={"exclude_invitation_id": invitation.pk},
         )
         assert breakdown == {}
 
@@ -288,7 +318,7 @@ class TestCounterBreakdowns:
             now = timezone.now()
             baker.make(
                 MeteredOccurrence,
-                organization=organization_one,
+                scope=scope_for(organization_one),
                 subscription=subscription_one,
                 event_id=1,
                 occurrence_start=now,
@@ -298,7 +328,7 @@ class TestCounterBreakdowns:
             )
             baker.make(
                 MeteredOccurrence,
-                organization=organization_one,
+                scope=scope_for(organization_one),
                 subscription=subscription_one,
                 event_id=2,
                 occurrence_start=now,
@@ -308,7 +338,7 @@ class TestCounterBreakdowns:
             )
             baker.make(
                 MeteredOccurrence,
-                organization=organization_two,
+                scope=scope_for(organization_two),
                 subscription=subscription_two,
                 event_id=3,
                 occurrence_start=now,
@@ -317,8 +347,8 @@ class TestCounterBreakdowns:
                 unit_price=Decimal("0"),
             )
 
-            breakdown = resources.counter_for(EVENT_OCCURRENCES)(
-                UsageContext(organization_ids=[organization_one.pk], subscription=subscription_one)
+            breakdown = self._breakdown(
+                EVENT_OCCURRENCES, [organization_one.pk], subscription=subscription_one
             )
             assert breakdown == {organization_one.pk: 2}
 
@@ -326,7 +356,9 @@ class TestCounterBreakdowns:
         """Fail-open: a subscription-less pool is a broken invariant, and
         ``event_occurrences`` is post-paid, so under-reporting cannot block
         anybody."""
+        # A scope id that resolves to no organization, which is what an unknown
+        # id looks like to the counter after 0.8.0's re-keying.
         breakdown = resources.counter_for(EVENT_OCCURRENCES)(
-            UsageContext(organization_ids=[1], subscription=None)
+            UsageContext(scope_ids=[1], subscription=None)
         )
         assert breakdown == {}

@@ -105,6 +105,7 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from payments.seams.occurrences import CalendarEventOccurrenceSource
+from payments.seams.scopes import scope_for
 from public_api.models import SystemUser
 from users.models import User
 
@@ -467,7 +468,7 @@ class CalendarEventService:
         entitlement_service = self._context.entitlement_service
         if entitlement_service is None or self._context.organization is None:
             return
-        entitlement_service.check_not_restricted(self._context.organization)
+        entitlement_service.check_not_restricted(scope_for(self._context.organization))
 
     @staticmethod
     def _check_new_master_postpaid_allowance(

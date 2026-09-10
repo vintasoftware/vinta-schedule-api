@@ -77,6 +77,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
 from calendar_integration.services.type_guards import is_authenticated_calendar_service
 from organizations.models import ExternalEventUpdatePolicy, OrganizationMembership
 from payments.seams.resource_keys import RESOURCE_CALENDARS
+from payments.seams.scopes import scope_for
 from users.models import User
 
 
@@ -214,7 +215,7 @@ class CalendarSyncService:
         entitlement_service = self._context.entitlement_service
         if entitlement_service is None or self._context.organization is None:
             return
-        entitlement_service.check_not_restricted(self._context.organization)
+        entitlement_service.check_not_restricted(scope_for(self._context.organization))
 
     # ------------------------------------------------------------------
     # Organization-resource import
@@ -376,7 +377,7 @@ class CalendarSyncService:
         resources = list({resource.external_id: resource for resource in resources}.values())
 
         # Take the guard lock before the split read below -- see the docstring.
-        entitlement_service.lock_billing_root(organization)
+        entitlement_service.lock_billing_root(scope_for(organization))
 
         free_ids = Calendar.objects.filter_by_organization(
             organization.id
@@ -391,7 +392,7 @@ class CalendarSyncService:
             return resources, None
 
         result = entitlement_service.check_limit(
-            organization,
+            scope_for(organization),
             RESOURCE_CALENDARS,
             delta=len(chargeable_resources),
             lock=True,

@@ -26,6 +26,7 @@ from vinta_billing.models import BillingPeriodResourceUsage, BillingPeriodSummar
 from organizations.models import Organization
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
+from payments.seams.scopes import scope_for
 
 
 def periods_list_url() -> str:
@@ -56,7 +57,7 @@ def make_summary(
     return baker.make(
         BillingPeriodSummary,
         subscription=subscription,
-        organization=organization,
+        scope=scope_for(organization),
         billing_period_start=billing_period_start,
         billing_period_end=billing_period_end or billing_period_start + datetime.timedelta(days=30),
         plan_slug=plan_slug,
@@ -258,7 +259,7 @@ class TestDetailReturnsResourcesAndDistinguishesNulls:
             total=14,
             limit_value=25,
             overage_unit_price=None,
-            by_organization={str(root.pk): 14},
+            by_scope={str(scope_for(root).pk): 14},
         )
         baker.make(
             BillingPeriodResourceUsage,
@@ -268,7 +269,7 @@ class TestDetailReturnsResourcesAndDistinguishesNulls:
             total=1250,
             limit_value=1000,
             overage_unit_price=Decimal("0.0100"),
-            by_organization={str(root.pk): 1250},
+            by_scope={str(scope_for(root).pk): 1250},
         )
 
         response = auth_client.get(period_detail_url(summary.pk))
@@ -282,8 +283,8 @@ class TestDetailReturnsResourcesAndDistinguishesNulls:
         assert members_row["total"] == 14
         assert members_row["limit_value"] == 25
         assert members_row["overage_unit_price"] is None
-        assert members_row["by_organization"] == [
-            {"organization_id": root.pk, "name": root.name, "usage": 14}
+        assert members_row["by_scope"] == [
+            {"scope_id": scope_for(root).pk, "name": root.name, "usage": 14}
         ]
 
         occurrences_row = resources_by_key["event_occurrences"]
@@ -425,7 +426,7 @@ class TestDetailPrefetchesResources:
 
 @pytest.mark.django_db
 class TestDetailByOrganizationAttribution:
-    """``by_organization`` on the detail action mirrors ``GET
+    """``by_scope`` on the detail action mirrors ``GET
     /billing/usage/``'s ``UsageByOrganizationSerializer`` shape -- a list of
     ``{organization_id, name, usage}``, names batch-resolved in one extra
     query regardless of how many organizations or resource rows contributed.
@@ -457,7 +458,7 @@ class TestDetailByOrganizationAttribution:
             summary=summary,
             resource_key="organization_members",
             total=2,
-            by_organization={str(root.pk): 2},
+            by_scope={str(scope_for(root).pk): 2},
         )
 
         with CaptureQueriesContext(connection) as captured_one_row_one_org:
@@ -485,7 +486,7 @@ class TestDetailByOrganizationAttribution:
                 summary=summary,
                 resource_key=resource_key,
                 total=3,
-                by_organization={str(root.pk): 2, str(child.pk): 1},
+                by_scope={str(scope_for(root).pk): 2, str(scope_for(child).pk): 1},
             )
 
         with CaptureQueriesContext(connection) as captured_eight_rows_two_orgs:
@@ -507,10 +508,11 @@ class TestDetailByOrganizationAttribution:
             captured_one_row_one_org.captured_queries
         )
 
-    def test_unknown_organization_renders_blank_name_and_still_counts_toward_total(
+    def test_unknown_scope_renders_blank_name_and_still_counts_toward_total(
         self, auth_client, child_admin_membership, root, subscription
     ):
-        deleted_organization_pk = 999_999
+        deleted_scope_pk = 999_999
+        root_scope = scope_for(root)
         summary = make_summary(
             organization=root,
             subscription=subscription,
@@ -521,7 +523,7 @@ class TestDetailByOrganizationAttribution:
             summary=summary,
             resource_key="organization_members",
             total=6,
-            by_organization={str(root.pk): 4, str(deleted_organization_pk): 2},
+            by_scope={str(root_scope.pk): 4, str(deleted_scope_pk): 2},
         )
 
         response = auth_client.get(period_detail_url(summary.pk))
@@ -532,17 +534,19 @@ class TestDetailByOrganizationAttribution:
             for row in response.data["resources"]
             if row["resource_key"] == "organization_members"
         )
-        by_organization = {entry["organization_id"]: entry for entry in row["by_organization"]}
-        assert by_organization[root.pk] == {
-            "organization_id": root.pk,
+        by_scope = {entry["scope_id"]: entry for entry in row["by_scope"]}
+        # `name` is the scope's label, which `payments.seams.scopes` keeps equal
+        # to the organization's name.
+        assert by_scope[root_scope.pk] == {
+            "scope_id": root_scope.pk,
             "name": root.name,
             "usage": 4,
         }
-        # The no-longer-existing organization is not dropped -- its count
-        # still counts toward `total` -- it just has no resolvable name.
-        assert by_organization[deleted_organization_pk] == {
-            "organization_id": deleted_organization_pk,
+        # The no-longer-existing scope is not dropped -- its count still counts
+        # toward `total` -- it just has no resolvable name.
+        assert by_scope[deleted_scope_pk] == {
+            "scope_id": deleted_scope_pk,
             "name": "",
             "usage": 2,
         }
-        assert row["total"] == sum(entry["usage"] for entry in row["by_organization"])
+        assert row["total"] == sum(entry["usage"] for entry in row["by_scope"])

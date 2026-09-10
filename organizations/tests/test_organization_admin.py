@@ -17,6 +17,7 @@ from vinta_billing.models import Subscription
 from vinta_billing.services.subscription_service import SubscriptionService
 
 from organizations.models import Organization, OrganizationBranding
+from payments.seams.scopes import scope_for
 
 
 User = get_user_model()
@@ -51,7 +52,7 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
 
         assert response.status_code == 302
         organization = Organization.objects.get(name="Admin-created Org")
-        subscription = Subscription.objects.get(organization=organization)
+        subscription = Subscription.objects.get(scope=scope_for(organization))
         assert subscription.plan.slug == "unlimited"
 
     def test_editing_an_existing_organization_does_not_duplicate_the_subscription(
@@ -60,7 +61,7 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
         organization = baker.make(
             Organization, name="Existing Org", parent=None, slug="existing-org"
         )
-        SubscriptionService().create_subscription_for_organization(organization)
+        SubscriptionService().create_subscription_for_scope(scope_for(organization))
         change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
 
         response = admin_client.post(
@@ -75,7 +76,7 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
         )
 
         assert response.status_code == 302
-        assert Subscription.objects.filter(organization=organization).count() == 1
+        assert Subscription.objects.filter(scope=scope_for(organization)).count() == 1
 
     def test_toggling_can_invite_organizations_on_an_existing_child_creates_a_subscription(
         self, admin_client
@@ -87,7 +88,7 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
         — not just on creation.
         """
         root = baker.make(Organization, name="Root", parent=None, can_invite_organizations=True)
-        SubscriptionService().create_subscription_for_organization(root)
+        SubscriptionService().create_subscription_for_scope(scope_for(root))
         child = baker.make(
             Organization,
             name="Child",
@@ -95,7 +96,7 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
             can_invite_organizations=False,
             slug="child-org",
         )
-        assert not Subscription.objects.filter(organization=child).exists()
+        assert not Subscription.objects.filter(scope=scope_for(child)).exists()
 
         change_url = reverse("admin:organizations_organization_change", args=[child.pk])
         response = admin_client.post(
@@ -114,7 +115,7 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
         assert response.status_code == 302
         child.refresh_from_db()
         assert child.can_invite_organizations is True
-        assert Subscription.objects.filter(organization=child).exists()
+        assert Subscription.objects.filter(scope=scope_for(child)).exists()
 
 
 @pytest.mark.django_db

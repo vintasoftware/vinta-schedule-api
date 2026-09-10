@@ -38,6 +38,7 @@ from calendar_integration.models import (
 )
 from organizations.models import Organization, OrganizationMembership
 from payments.seams.resource_keys import AVAILABILITY_WINDOWS, PARTNER_API
+from payments.seams.scopes import scope_for
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -198,8 +199,8 @@ class TestAppointmentTypeScopedAvailabilityWindowsPublicAPI:
         now = django_timezone.now()
         subscription = baker.make(
             Subscription,
-            organization=organization,
-            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            scope=scope_for(organization),
+            plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
             billing_state=BillingState.FREE,
             current_period_start=now,
             current_period_end=now + datetime.timedelta(days=30),

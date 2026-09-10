@@ -32,6 +32,7 @@ from vinta_billing.services.subscription_service import SubscriptionService
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from organizations.slug_generation import opaque_organization_slug
 from organizations.slug_validation import validate_organization_slug
+from payments.seams.scopes import scope_for
 
 
 # ``vinta_orgs.admin`` registers a ``ModelAdmin`` against whatever
@@ -261,7 +262,7 @@ class OrganizationAdmin(admin.ModelAdmin):
                 f"(DI not wired?) — organization {obj.pk} saved with no Subscription "
                 f"guarantee."
             )
-        subscription_service.create_subscription_for_organization(obj)
+        subscription_service.create_subscription_for_scope(scope_for(obj))
 
 
 class OrganizationBrandingAdminForm(forms.ModelForm):

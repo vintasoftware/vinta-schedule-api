@@ -51,6 +51,7 @@ from payments.seams.resource_keys import (
     RESOURCE_CALENDARS,
     RESOURCE_KEYS,
 )
+from payments.seams.scopes import scope_for
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -72,7 +73,7 @@ def make_complete_plan(
     limit_values = limit_values or {}
     plan = baker.make(
         BillingPlan,
-        is_default_for_new_organizations=False,
+        is_default_for_new_scopes=False,
         monthly_price=monthly_price,
         annual_price=annual_price,
         grace_period_days=grace_period_days,
@@ -130,8 +131,8 @@ def _subscription_for(
     ``Subscription.plan`` FK) are what ``EntitlementService``/``purchase_add_on``
     actually read.
     """
-    subscription = SubscriptionService().create_subscription_for_organization(
-        organization, plan=plan
+    subscription = SubscriptionService().create_subscription_for_scope(
+        scope_for(organization), plan=plan
     )
     assert subscription is not None
     subscription.billing_interval = billing_interval
@@ -376,7 +377,7 @@ class TestUpgrade:
     ):
         free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3})
         incomplete_plan = baker.make(
-            BillingPlan, is_default_for_new_organizations=False, monthly_price=Decimal("999")
+            BillingPlan, is_default_for_new_scopes=False, monthly_price=Decimal("999")
         )
         subscription = _subscription_for(organization, free_plan)
 
@@ -727,7 +728,9 @@ class TestPurchaseAddOn:
         assert add_on.payment.value == Decimal("5.0000")
         assert fake_payment_service.calls == ["create_payment"]
         # Initiated-but-unconfirmed purchase grants no capacity.
-        effective_limit = EntitlementService().get_effective_limit(organization, RESOURCE_CALENDARS)
+        effective_limit = EntitlementService().get_effective_limit(
+            scope_for(organization), RESOURCE_CALENDARS
+        )
         assert effective_limit.limit_value == 3
 
     def test_confirming_the_payment_activates_and_lifts_the_effective_limit(
@@ -746,7 +749,9 @@ class TestPurchaseAddOn:
 
         service.activate_add_on(add_on)
 
-        effective_limit = EntitlementService().get_effective_limit(organization, RESOURCE_CALENDARS)
+        effective_limit = EntitlementService().get_effective_limit(
+            scope_for(organization), RESOURCE_CALENDARS
+        )
         assert effective_limit.limit_value == 5
 
     def test_same_idempotency_key_twice_yields_one_add_on_and_one_charge(
@@ -846,13 +851,15 @@ class TestRecordPaymentMethod:
         assert payment_method is not None
         assert payment_method.is_active is True
         assert PaymentMethod.objects.filter(
-            organization=organization, provider=PaymentProviders.MERCADOPAGO, external_id="card-123"
+            scope=scope_for(organization),
+            provider=PaymentProviders.MERCADOPAGO,
+            external_id="card-123",
         ).exists()
 
     def test_reactivates_a_previously_deactivated_row(self, service, organization):
         existing = baker.make(
             PaymentMethod,
-            organization=organization,
+            scope=scope_for(organization),
             provider=PaymentProviders.MERCADOPAGO,
             external_id="card-123",
             is_active=False,
@@ -867,4 +874,4 @@ class TestRecordPaymentMethod:
         result = service.record_payment_method(organization, PaymentProviders.MERCADOPAGO, "")
 
         assert result is None
-        assert not PaymentMethod.objects.filter(organization=organization).exists()
+        assert not PaymentMethod.objects.filter(scope=scope_for(organization)).exists()

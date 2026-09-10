@@ -61,6 +61,7 @@ from calendar_integration.tasks.calendar_sync_tasks import (
 )
 from organizations.models import Organization
 from payments.seams.resource_keys import EXTERNAL_CALENDAR_GOOGLE, RESOURCE_CALENDARS
+from payments.seams.scopes import scope_for
 from users.models import Profile, User
 
 
@@ -136,8 +137,8 @@ def _organization_with_resource_calendar_limit(limit_value: int | None) -> Organ
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -654,8 +655,8 @@ class TestSyncPathIsWiredThroughDI:
         # This module opts out of the autouse subscription fixture, and `authenticate()`
         # gates on `external_calendar_google` — which fails closed without a
         # subscription. Provision the same `unlimited` subscription production would.
-        SubscriptionService().create_subscription_for_organization(
-            organization, plan=BillingPlan.objects.get(slug="unlimited")
+        SubscriptionService().create_subscription_for_scope(
+            scope_for(organization), plan=BillingPlan.objects.get(slug="unlimited")
         )
         user = User.objects.create_user(email="di-sync@example.com", password="pw")  # noqa: S106
         Profile.objects.create(user=user)
@@ -719,8 +720,8 @@ class TestSyncTasksSkipRatherThanFailOnMissingEntitlement:
         now = timezone.now()
         subscription = baker.make(
             Subscription,
-            organization=organization,
-            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            scope=scope_for(organization),
+            plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
             billing_state=BillingState.FREE,
             current_period_start=now,
             current_period_end=now + datetime.timedelta(days=30),

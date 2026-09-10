@@ -3861,7 +3861,7 @@ paths:
   /billing-profile/create_billing_profile/:
     post:
       operationId: billing_profile_create_billing_profile_create
-      description: Create a new billing profile for the active organization.
+      description: Create a new billing profile for the active scope.
       summary: Create billing profile
       parameters:
       - in: header
@@ -3902,15 +3902,14 @@ paths:
           content:
             application/json:
               schema:
-                description: 'This organization already has a billing profile. Not
-                  a `BillingError` and not routed through `vinta_billing.exception_handling`
-                  -- the body is DRF''s `{''detail'': ...}`, with no machine-readable
-                  `code`.'
+                description: 'This scope already has a billing profile. Not a `BillingError`
+                  and not routed through `vinta_billing.exception_handling` -- the
+                  body is DRF''s `{''detail'': ...}`, with no machine-readable `code`.'
           description: ''
   /billing-profile/create_billing_profile{format}:
     post:
       operationId: billing_profile_create_billing_profile_formatted_create
-      description: Create a new billing profile for the active organization.
+      description: Create a new billing profile for the active scope.
       summary: Create billing profile
       parameters:
       - in: header
@@ -3958,15 +3957,14 @@ paths:
           content:
             application/json:
               schema:
-                description: 'This organization already has a billing profile. Not
-                  a `BillingError` and not routed through `vinta_billing.exception_handling`
-                  -- the body is DRF''s `{''detail'': ...}`, with no machine-readable
-                  `code`.'
+                description: 'This scope already has a billing profile. Not a `BillingError`
+                  and not routed through `vinta_billing.exception_handling` -- the
+                  body is DRF''s `{''detail'': ...}`, with no machine-readable `code`.'
           description: ''
   /billing-profile/partial_update_billing_profile/:
     patch:
       operationId: billing_profile_partial_update_billing_profile_partial_update
-      description: Partially update the billing profile of the active organization.
+      description: Partially update the billing profile of the active scope.
       summary: Partially update billing profile
       parameters:
       - in: header
@@ -4005,7 +4003,7 @@ paths:
   /billing-profile/partial_update_billing_profile{format}:
     patch:
       operationId: billing_profile_partial_update_billing_profile_formatted_partial_update
-      description: Partially update the billing profile of the active organization.
+      description: Partially update the billing profile of the active scope.
       summary: Partially update billing profile
       parameters:
       - in: header
@@ -4051,7 +4049,7 @@ paths:
   /billing-profile/retrieve_billing_profile/:
     get:
       operationId: billing_profile_retrieve_billing_profile_retrieve
-      description: Retrieve the billing profile of the active organization.
+      description: Retrieve the billing profile of the active scope.
       summary: Retrieve billing profile
       parameters:
       - in: header
@@ -4079,7 +4077,7 @@ paths:
   /billing-profile/retrieve_billing_profile{format}:
     get:
       operationId: billing_profile_retrieve_billing_profile_formatted_retrieve
-      description: Retrieve the billing profile of the active organization.
+      description: Retrieve the billing profile of the active scope.
       summary: Retrieve billing profile
       parameters:
       - in: header
@@ -4114,7 +4112,7 @@ paths:
   /billing-profile/update_billing_profile/:
     put:
       operationId: billing_profile_update_billing_profile_update
-      description: Update the billing profile of the active organization.
+      description: Update the billing profile of the active scope.
       summary: Update billing profile
       parameters:
       - in: header
@@ -4154,7 +4152,7 @@ paths:
   /billing-profile/update_billing_profile{format}:
     put:
       operationId: billing_profile_update_billing_profile_formatted_update
-      description: Update the billing profile of the active organization.
+      description: Update the billing profile of the active scope.
       summary: Update billing profile
       parameters:
       - in: header
@@ -4258,8 +4256,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingErrorBody'
-          description: 'The provider this organization resolves to is not configured
-            in this deployment, so the one-time charge cannot be driven (`code: "payment_provider_not_configured"`,
+          description: 'The provider this scope resolves to is not configured in this
+            deployment, so the one-time charge cannot be driven (`code: "payment_provider_not_configured"`,
             `PaymentProviderNotConfiguredError`). A deployment fault, not a bad request
             -- retrying the same call changes nothing until an operator configures
             the provider.'
@@ -4330,8 +4328,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingErrorBody'
-          description: 'The provider this organization resolves to is not configured
-            in this deployment, so the one-time charge cannot be driven (`code: "payment_provider_not_configured"`,
+          description: 'The provider this scope resolves to is not configured in this
+            deployment, so the one-time charge cannot be driven (`code: "payment_provider_not_configured"`,
             `PaymentProviderNotConfiguredError`). A deployment fault, not a bad request
             -- retrying the same call changes nothing until an operator configures
             the provider.'
@@ -4425,9 +4423,9 @@ paths:
   /billing/payment-provider/:
     get:
       operationId: billing_payment_provider_retrieve
-      description: Returns the payment provider the active organization is pinned
-        to (or the system default when unpinned) plus its browser-safe public credentials.
-      summary: Get the active organization's payment provider
+      description: Returns the payment provider the active scope is pinned to (or
+        the system default when unpinned) plus its browser-safe public credentials.
+      summary: Get the active scope's payment provider
       parameters:
       - in: header
         name: X-Organization-Id
@@ -4455,7 +4453,7 @@ paths:
           content:
             application/json:
               schema:
-                description: No active organization.
+                description: No active scope.
           description: ''
         '503':
           content:
@@ -4833,8 +4831,8 @@ paths:
                 $ref: '#/components/schemas/BillingErrorBody'
           description: 'A deployment fault, not a bad request -- the same call will
             fail identically until an operator fixes the deployment, so do not retry
-            with different input. Either the provider this organization resolves to
-            is not configured in this deployment (`code: "payment_provider_not_configured"`,
+            with different input. Either the provider this scope resolves to is not
+            configured in this deployment (`code: "payment_provider_not_configured"`,
             `PaymentProviderNotConfiguredError`), or the target plan is missing a
             `PlanLimit` row for a registered resource, so the downgrade has no well-defined
             ceiling to apply (`code: "incomplete_billing_plan"`, `IncompleteBillingPlanError`).
@@ -4909,8 +4907,8 @@ paths:
                 $ref: '#/components/schemas/BillingErrorBody'
           description: 'A deployment fault, not a bad request -- the same call will
             fail identically until an operator fixes the deployment, so do not retry
-            with different input. Either the provider this organization resolves to
-            is not configured in this deployment (`code: "payment_provider_not_configured"`,
+            with different input. Either the provider this scope resolves to is not
+            configured in this deployment (`code: "payment_provider_not_configured"`,
             `PaymentProviderNotConfiguredError`), or the target plan is missing a
             `PlanLimit` row for a registered resource, so the downgrade has no well-defined
             ceiling to apply (`code: "incomplete_billing_plan"`, `IncompleteBillingPlanError`).
@@ -5053,13 +5051,12 @@ paths:
           description: 'One of four conflicts: the subscription is not currently GRACE/RESTRICTED
             (`code: "retry_payment_not_applicable"`, `RetryPaymentNotApplicableError`);
             it has never attached a payment instrument at the provider (`code: "subscription_not_attached"`,
-            `SubscriptionNotAttachedError` -- such an organization has never paid
-            and belongs on `change-plan`''s first-upgrade path instead); the provider
-            reports nothing actually owed for this subscription right now (`code:
-            "no_outstanding_balance"`, `NoOutstandingBalanceError`); or the resolved
-            provider has no verified balance-collection primitive to drive (`code:
-            "collection_not_supported"`, `CollectionNotSupportedError` -- MercadoPago,
-            as of this writing).'
+            `SubscriptionNotAttachedError` -- such an scope has never paid and belongs
+            on `change-plan`''s first-upgrade path instead); the provider reports
+            nothing actually owed for this subscription right now (`code: "no_outstanding_balance"`,
+            `NoOutstandingBalanceError`); or the resolved provider has no verified
+            balance-collection primitive to drive (`code: "collection_not_supported"`,
+            `CollectionNotSupportedError` -- MercadoPago, as of this writing).'
   /billing/subscription/retry-payment{format}:
     post:
       operationId: billing_subscription_retry_payment_formatted_create
@@ -5138,13 +5135,12 @@ paths:
           description: 'One of four conflicts: the subscription is not currently GRACE/RESTRICTED
             (`code: "retry_payment_not_applicable"`, `RetryPaymentNotApplicableError`);
             it has never attached a payment instrument at the provider (`code: "subscription_not_attached"`,
-            `SubscriptionNotAttachedError` -- such an organization has never paid
-            and belongs on `change-plan`''s first-upgrade path instead); the provider
-            reports nothing actually owed for this subscription right now (`code:
-            "no_outstanding_balance"`, `NoOutstandingBalanceError`); or the resolved
-            provider has no verified balance-collection primitive to drive (`code:
-            "collection_not_supported"`, `CollectionNotSupportedError` -- MercadoPago,
-            as of this writing).'
+            `SubscriptionNotAttachedError` -- such an scope has never paid and belongs
+            on `change-plan`''s first-upgrade path instead); the provider reports
+            nothing actually owed for this subscription right now (`code: "no_outstanding_balance"`,
+            `NoOutstandingBalanceError`); or the resolved provider has no verified
+            balance-collection primitive to drive (`code: "collection_not_supported"`,
+            `CollectionNotSupportedError` -- MercadoPago, as of this writing).'
   /billing/usage/occurrences/:
     get:
       operationId: billing_usage_occurrences_list
@@ -5152,7 +5148,7 @@ paths:
         ``GET /billing/usage/occurrences/`` -- the line-item ledger behind
         post-paid charges: every ``MeteredOccurrence`` row in the caller's pooled
         billing subtree, paginated and filterable by period, allowance side,
-        organization, and occurrence-start range, so a customer disputing an
+        scope, and occurrence-start range, so a customer disputing an
         invoice can tie every unit of money to a specific occurrence.
 
         **Stricter than every other read in this module.** ``BillingUsageViewSet``
@@ -5167,8 +5163,8 @@ paths:
         resolved billing root -- the same two-step dance
         ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
         perform, and for the same reason their comments document:
-        ``has_permission`` cannot know *which* organization this read is for,
-        because ``request.organization`` is not resolved yet at that point in
+        ``has_permission`` cannot know *which* scope this read is for,
+        because ``request.scope`` is not resolved yet at that point in
         ``TenantScopedViewMixin.initial()``'s ordering (see
         ``IsBillingManager``'s docstring).
       summary: List metered occurrences behind post-paid charges
@@ -5236,12 +5232,12 @@ paths:
         explode: false
         style: form
       - in: query
-        name: organization
+        name: scope
         schema:
           type: integer
-        description: Only rows attributed to this organization. Must be inside the
-          caller's pooled billing subtree -- an id outside it is a validation error,
-          not an empty result.
+        description: Only rows attributed to this scope. Must be inside the caller's
+          pooled billing subtree -- an id outside it is a validation error, not an
+          empty result.
       tags:
       - billing
       security:
@@ -5261,7 +5257,7 @@ paths:
         ``GET /billing/usage/occurrences/`` -- the line-item ledger behind
         post-paid charges: every ``MeteredOccurrence`` row in the caller's pooled
         billing subtree, paginated and filterable by period, allowance side,
-        organization, and occurrence-start range, so a customer disputing an
+        scope, and occurrence-start range, so a customer disputing an
         invoice can tie every unit of money to a specific occurrence.
 
         **Stricter than every other read in this module.** ``BillingUsageViewSet``
@@ -5276,8 +5272,8 @@ paths:
         resolved billing root -- the same two-step dance
         ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
         perform, and for the same reason their comments document:
-        ``has_permission`` cannot know *which* organization this read is for,
-        because ``request.organization`` is not resolved yet at that point in
+        ``has_permission`` cannot know *which* scope this read is for,
+        because ``request.scope`` is not resolved yet at that point in
         ``TenantScopedViewMixin.initial()``'s ordering (see
         ``IsBillingManager``'s docstring).
       summary: List metered occurrences behind post-paid charges
@@ -5352,12 +5348,12 @@ paths:
         explode: false
         style: form
       - in: query
-        name: organization
+        name: scope
         schema:
           type: integer
-        description: Only rows attributed to this organization. Must be inside the
-          caller's pooled billing subtree -- an id outside it is a validation error,
-          not an empty result.
+        description: Only rows attributed to this scope. Must be inside the caller's
+          pooled billing subtree -- an id outside it is a validation error, not an
+          empty result.
       tags:
       - billing
       security:
@@ -5382,7 +5378,7 @@ paths:
         lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
-        ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
+        ``resolve_billing_root`` then ``get_pooled_scope_ids``, both
         resolved once in ``get_queryset()``. A pk outside that pool is filtered out
         of the queryset before ``get_object()`` ever runs, so it 404s -- never
         403 -- and this endpoint never confirms the existence of another tenant's
@@ -5390,16 +5386,16 @@ paths:
 
         ``IsAuthenticated`` only, matching ``GET /billing/usage/``'s
         read-never-blocks rule: a closed statement is exactly the kind of read an
-        organization needs in order to resolve billing, including while
+        scope needs in order to resolve billing, including while
         ``RESTRICTED``.
 
         History is forward-only:
-        an organization with no closed periods yet gets ``200`` with an empty list,
-        never a ``404`` -- there is nothing wrong with that organization, cycle
+        an scope with no closed periods yet gets ``200`` with an empty list,
+        never a ``404`` -- there is nothing wrong with that scope, cycle
         close simply has not run for it yet. A caller with **no active
-        organization** (``request.organization is None``) is a different state --
+        scope** (``request.scope is None``) is a different state --
         there is no pool to resolve a billing root against at all -- and gets
-        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        ``403``, matching ``GET /billing/usage/``'s ``_require_scope`` rule
         rather than the empty-list state above.
       summary: List closed billing period statements
       parameters:
@@ -5466,7 +5462,7 @@ paths:
         lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
-        ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
+        ``resolve_billing_root`` then ``get_pooled_scope_ids``, both
         resolved once in ``get_queryset()``. A pk outside that pool is filtered out
         of the queryset before ``get_object()`` ever runs, so it 404s -- never
         403 -- and this endpoint never confirms the existence of another tenant's
@@ -5474,16 +5470,16 @@ paths:
 
         ``IsAuthenticated`` only, matching ``GET /billing/usage/``'s
         read-never-blocks rule: a closed statement is exactly the kind of read an
-        organization needs in order to resolve billing, including while
+        scope needs in order to resolve billing, including while
         ``RESTRICTED``.
 
         History is forward-only:
-        an organization with no closed periods yet gets ``200`` with an empty list,
-        never a ``404`` -- there is nothing wrong with that organization, cycle
+        an scope with no closed periods yet gets ``200`` with an empty list,
+        never a ``404`` -- there is nothing wrong with that scope, cycle
         close simply has not run for it yet. A caller with **no active
-        organization** (``request.organization is None``) is a different state --
+        scope** (``request.scope is None``) is a different state --
         there is no pool to resolve a billing root against at all -- and gets
-        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        ``403``, matching ``GET /billing/usage/``'s ``_require_scope`` rule
         rather than the empty-list state above.
       summary: List closed billing period statements
       parameters:
@@ -5557,7 +5553,7 @@ paths:
         lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
-        ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
+        ``resolve_billing_root`` then ``get_pooled_scope_ids``, both
         resolved once in ``get_queryset()``. A pk outside that pool is filtered out
         of the queryset before ``get_object()`` ever runs, so it 404s -- never
         403 -- and this endpoint never confirms the existence of another tenant's
@@ -5565,16 +5561,16 @@ paths:
 
         ``IsAuthenticated`` only, matching ``GET /billing/usage/``'s
         read-never-blocks rule: a closed statement is exactly the kind of read an
-        organization needs in order to resolve billing, including while
+        scope needs in order to resolve billing, including while
         ``RESTRICTED``.
 
         History is forward-only:
-        an organization with no closed periods yet gets ``200`` with an empty list,
-        never a ``404`` -- there is nothing wrong with that organization, cycle
+        an scope with no closed periods yet gets ``200`` with an empty list,
+        never a ``404`` -- there is nothing wrong with that scope, cycle
         close simply has not run for it yet. A caller with **no active
-        organization** (``request.organization is None``) is a different state --
+        scope** (``request.scope is None``) is a different state --
         there is no pool to resolve a billing root against at all -- and gets
-        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        ``403``, matching ``GET /billing/usage/``'s ``_require_scope`` rule
         rather than the empty-list state above.
       summary: Retrieve one closed billing period statement
       parameters:
@@ -5617,7 +5613,7 @@ paths:
         lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
-        ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
+        ``resolve_billing_root`` then ``get_pooled_scope_ids``, both
         resolved once in ``get_queryset()``. A pk outside that pool is filtered out
         of the queryset before ``get_object()`` ever runs, so it 404s -- never
         403 -- and this endpoint never confirms the existence of another tenant's
@@ -5625,16 +5621,16 @@ paths:
 
         ``IsAuthenticated`` only, matching ``GET /billing/usage/``'s
         read-never-blocks rule: a closed statement is exactly the kind of read an
-        organization needs in order to resolve billing, including while
+        scope needs in order to resolve billing, including while
         ``RESTRICTED``.
 
         History is forward-only:
-        an organization with no closed periods yet gets ``200`` with an empty list,
-        never a ``404`` -- there is nothing wrong with that organization, cycle
+        an scope with no closed periods yet gets ``200`` with an empty list,
+        never a ``404`` -- there is nothing wrong with that scope, cycle
         close simply has not run for it yet. A caller with **no active
-        organization** (``request.organization is None``) is a different state --
+        scope** (``request.scope is None``) is a different state --
         there is no pool to resolve a billing root against at all -- and gets
-        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        ``403``, matching ``GET /billing/usage/``'s ``_require_scope`` rule
         rather than the empty-list state above.
       summary: Retrieve one closed billing period statement
       parameters:
@@ -5678,12 +5674,12 @@ paths:
       description: |-
         ``GET /billing/usage/`` -- current usage against effective limits, per
         resource, plus ``billing_state``, the plan snapshot, the current billing
-        period's bounds, the plan/add-on split of each ceiling, per-organization
+        period's bounds, the plan/add-on split of each ceiling, per-scope
         attribution across the caller's pooled subtree, and the overage accrued so
         far this cycle. Resolved at the billing root, same as every other read in
         this app.
 
-        The "pull" half of "an organization can see where it stands". It reads
+        The "pull" half of "an scope can see where it stands". It reads
         usage through ``EntitlementService.effective_limit_from_resolved`` /
         ``usage_breakdown_for_root`` -- pre-resolved entry points onto the
         identical ``get_effective_limit`` / ``get_current_usage`` implementation
@@ -5694,9 +5690,9 @@ paths:
         warning can never disagree about a number.
 
         No permission beyond ``IsAuthenticated``, deliberately -- a read never
-        blocks, including for a ``RESTRICTED`` organization (a RESTRICTED
-        organization has its writes blocked and sync paused, never its reads; an
-        organization must be able to see exactly what it needs to resolve before it
+        blocks, including for a ``RESTRICTED`` scope (a RESTRICTED
+        scope has its writes blocked and sync paused, never its reads; an
+        scope must be able to see exactly what it needs to resolve before it
         can act on it).
       summary: Get current usage against effective limits
       parameters:
@@ -5728,12 +5724,12 @@ paths:
       description: |-
         ``GET /billing/usage/`` -- current usage against effective limits, per
         resource, plus ``billing_state``, the plan snapshot, the current billing
-        period's bounds, the plan/add-on split of each ceiling, per-organization
+        period's bounds, the plan/add-on split of each ceiling, per-scope
         attribution across the caller's pooled subtree, and the overage accrued so
         far this cycle. Resolved at the billing root, same as every other read in
         this app.
 
-        The "pull" half of "an organization can see where it stands". It reads
+        The "pull" half of "an scope can see where it stands". It reads
         usage through ``EntitlementService.effective_limit_from_resolved`` /
         ``usage_breakdown_for_root`` -- pre-resolved entry points onto the
         identical ``get_effective_limit`` / ``get_current_usage`` implementation
@@ -5744,9 +5740,9 @@ paths:
         warning can never disagree about a number.
 
         No permission beyond ``IsAuthenticated``, deliberately -- a read never
-        blocks, including for a ``RESTRICTED`` organization (a RESTRICTED
-        organization has its writes blocked and sync paused, never its reads; an
-        organization must be able to see exactly what it needs to resolve before it
+        blocks, including for a ``RESTRICTED`` scope (a RESTRICTED
+        scope has its writes blocked and sync paused, never its reads; an
+        scope must be able to see exactly what it needs to resolve before it
         can act on it).
       summary: Get current usage against effective limits
       parameters:
@@ -18892,21 +18888,20 @@ components:
             rather than the live effective limit, so a later price change cannot make
             this row disagree with overage_total. null for a prepaid resource, or
             when no single stamped price applies to this period.
-        by_organization:
+        by_scope:
           type: array
           items:
-            $ref: '#/components/schemas/UsageByOrganization'
-          description: 'Per-organization contribution to total, across the pooled
-            subtree at close time. An organization that contributed nothing is omitted,
-            never present with usage: 0. Ordered by organization_id ascending -- the
-            identical shape GET /billing/usage/''s by_organization uses. Names are
-            resolved at **read time** against the organizations table, so they reflect
-            each organization''s current name, not its name as of when this period
-            closed -- this row has no name snapshot. An organization that no longer
-            exists renders with name: "" rather than being dropped from the list;
-            its count still counts toward total.'
+            $ref: '#/components/schemas/UsageByScope'
+          description: 'Per-scope contribution to total, across the pooled subtree
+            at close time. An scope that contributed nothing is omitted, never present
+            with usage: 0. Ordered by scope_id ascending -- the identical shape GET
+            /billing/usage/''s by_scope uses. Names are resolved at **read time**
+            against the scopes table, so they reflect each scope''s current name,
+            not its name as of when this period closed -- this row has no name snapshot.
+            An scope that no longer exists renders with name: "" rather than being
+            dropped from the list; its count still counts toward total.'
       required:
-      - by_organization
+      - by_scope
       - kind
       - limit_value
       - overage_unit_price
@@ -19065,7 +19060,7 @@ components:
         is_active:
           type: boolean
           readOnly: true
-        is_default_for_new_organizations:
+        is_default_for_new_scopes:
           type: boolean
           readOnly: true
         monthly_price:
@@ -19103,7 +19098,7 @@ components:
       - grace_period_days
       - id
       - is_active
-      - is_default_for_new_organizations
+      - is_default_for_new_scopes
       - limits
       - monthly_price
       - name
@@ -20346,16 +20341,16 @@ components:
             resource. included_in_plan + add_on_quantity == limit_value whenever limit_value
             is non-null -- these two fields decompose limit_value, they do not redefine
             it.
-        by_organization:
+        by_scope:
           type: array
           items:
-            $ref: '#/components/schemas/UsageByOrganization'
-          description: 'Per-organization attribution of current_usage across the caller''s
-            pooled billing subtree. An organization that contributed nothing is omitted,
-            never present with usage: 0. Ordered by organization_id ascending.'
+            $ref: '#/components/schemas/UsageByScope'
+          description: 'Per-scope attribution of current_usage across the caller''s
+            pooled billing subtree. An scope that contributed nothing is omitted,
+            never present with usage: 0. Ordered by scope_id ascending.'
       required:
       - add_on_quantity
-      - by_organization
+      - by_scope
       - current_usage
       - included_in_plan
       - kind
@@ -20724,19 +20719,19 @@ components:
         behind an overage charge, so a customer disputing an invoice can tie every
         unit of money to a specific occurrence.
 
-        ``event``/``organization`` are not model relations on ``MeteredOccurrence``
-        (``event_id`` is a soft reference; ``organization`` has no name of its own
+        ``event``/``scope`` are not model relations on ``MeteredOccurrence``
+        (``event_id`` is a soft reference; ``scope`` has no name of its own
         here) -- both are built in ``to_representation`` from maps the view
         resolves once per page and threads through ``context`` (``event_map``,
-        ``organization_names``), never a per-row query.
+        ``scope_labels``), never a per-row query.
       properties:
         id:
           type: integer
           readOnly: true
-        organization:
+        scope:
           allOf:
-          - $ref: '#/components/schemas/MeteredOccurrenceOrganization'
-          description: The organization this occurrence is attributed to.
+          - $ref: '#/components/schemas/MeteredOccurrenceScope'
+          description: The scope this occurrence is attributed to.
         event:
           allOf:
           - $ref: '#/components/schemas/LedgerEvent'
@@ -20767,22 +20762,22 @@ components:
       - id
       - is_within_allowance
       - occurrence_start
-      - organization
+      - scope
       - unit_price
-    MeteredOccurrenceOrganization:
+    MeteredOccurrenceScope:
       type: object
       description: |-
-        The organization a ledger row is attributed to -- ``GET
-        /billing/usage/occurrences/``'s ``organization`` field. Names are batch
+        The scope a ledger row is attributed to -- ``GET
+        /billing/usage/occurrences/``'s ``scope`` field. Names are batch
         resolved by the view (``MeteredOccurrenceViewSet``) once per page, the
-        same pattern ``UsageByOrganizationSerializer`` uses.
+        same pattern ``UsageByScopeSerializer`` uses.
       properties:
         id:
           type: integer
-          description: pk of the attributed organization.
+          description: pk of the attributed scope.
         name:
           type: string
-          description: The attributed organization's name.
+          description: The attributed scope's name.
       required:
       - id
       - name
@@ -23356,37 +23351,37 @@ components:
       - reason
       - reason_description
       - start_time
-    UsageByOrganization:
+    UsageByScope:
       type: object
       description: |-
-        One organization's contribution to a pooled ``GET /billing/usage/`` figure.
+        One scope's contribution to a pooled ``GET /billing/usage/`` figure.
 
         Sourced from ``EntitlementService.get_usage_breakdown`` / the ``usage_breakdown_for_root``
-        entry point it shares with ``CycleCloseService``. An organization in the pool
+        entry point it shares with ``CycleCloseService``. An scope in the pool
         that contributed **nothing** to this resource is **omitted from the list
         entirely** -- never present with ``usage: 0`` -- matching that breakdown's
         absent-not-zero contract.
       properties:
-        organization_id:
+        scope_id:
           type: integer
-          description: pk of the contributing organization, within the caller's pooled
-            billing subtree.
+          description: pk of the contributing scope, within the caller's pooled billing
+            subtree.
         name:
           type: string
-          description: The contributing organization's name.
+          description: The contributing scope's name.
         usage:
           type: integer
-          description: This organization's share of the resource's usage.
+          description: This scope's share of the resource's usage.
       required:
       - name
-      - organization_id
+      - scope_id
       - usage
     UsageResponse:
       type: object
       properties:
         billing_state:
           type: string
-        billing_root_organization_id:
+        billing_root_scope_id:
           type: integer
           description: pk of the billing root this response was resolved against.
         plan:
@@ -23414,7 +23409,7 @@ components:
             $ref: '#/components/schemas/EffectiveLimitUsage'
       required:
       - billing_period
-      - billing_root_organization_id
+      - billing_root_scope_id
       - billing_state
       - estimated_overage_total
       - limits

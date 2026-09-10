@@ -75,6 +75,7 @@ from calendar_integration.services.dataclasses import (
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization, OrganizationMembership
 from payments.seams.resource_keys import EVENT_OCCURRENCES
+from payments.seams.scopes import scope_for
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from users.models import Profile, User
@@ -103,8 +104,8 @@ def _organization_with_postpaid_limit(
     now = datetime.datetime.now(datetime.UTC)
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=billing_state,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -132,7 +133,7 @@ def _attach_payment_method(organization: Organization) -> PaymentMethod:
     ``billing_state=ACTIVE`` proxy this module used before it existed."""
     return baker.make(
         PaymentMethod,
-        organization=organization,
+        scope=scope_for(organization),
         provider=PaymentProviders.MERCADOPAGO,
         external_id="pm-test-token",
         is_active=True,

@@ -38,6 +38,7 @@ from organizations.permission_catalog import (
     GROUP_ORGANIZATION_BILLING_OWNER,
 )
 from organizations.tests.helpers import make_membership
+from payments.seams.scopes import scope_for
 from users.factories import UserFactory
 
 
@@ -57,7 +58,7 @@ def make_occurrence(
 ) -> MeteredOccurrence:
     return baker.make(
         MeteredOccurrence,
-        organization=organization,
+        scope=scope_for(organization),
         subscription=subscription,
         event_id=event_id,
         occurrence_start=occurrence_start,
@@ -292,7 +293,7 @@ class TestOrganizationFilterValidatesPoolMembership:
     ):
         outside_organization = baker.make(Organization, parent=None, can_invite_organizations=True)
 
-        response = auth_client.get(occurrences_url(), {"organization": outside_organization.pk})
+        response = auth_client.get(occurrences_url(), {"scope": scope_for(outside_organization).pk})
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert "organization" in response.data
@@ -316,7 +317,7 @@ class TestOrganizationFilterValidatesPoolMembership:
             billing_period_start=billing_period_start,
         )
 
-        response = auth_client.get(occurrences_url(), {"organization": root.pk})
+        response = auth_client.get(occurrences_url(), {"scope": scope_for(root).pk})
 
         assert response.status_code == status.HTTP_200_OK
         returned_ids = [row["id"] for row in response.data["results"]]

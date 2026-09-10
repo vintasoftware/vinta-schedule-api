@@ -894,6 +894,29 @@ BILLING_DEFAULT_GRACE_PERIOD_DAYS = config("BILLING_DEFAULT_GRACE_PERIOD_DAYS", 
 # of these five objects out of settings, and Phase 0's whole job is to make
 # them resolvable.
 VINTA_BILLING = {
+    # What `ORGANIZATION_MODEL` named before 0.8.0 moved billing onto scopes.
+    # Read by `vinta_billing/migrations/0005_backfill_scopes.py` and by nothing
+    # else: it names the content type the backfill stamps on every scope it
+    # creates, so the generic key points back at the organization that row used
+    # to carry. The migration *raises* rather than guessing when this is unset
+    # and there are rows to migrate -- deliberately, because a scope naming the
+    # wrong content type is silent and very hard to unpick afterwards.
+    #
+    # Keep this here until `vinta_billing`'s 0004-0006 are squashed away
+    # upstream. It is dead weight on a fresh database (0005 short-circuits with
+    # no rows to migrate) but load-bearing on every environment that has ever
+    # run 0.7.
+    "LEGACY_SCOPE_MODEL": "organizations.Organization",
+    # 0.8.0 stopped reading `vinta-django-orgs`' middleware and context state
+    # directly. This bridges the `request.organization` this project already
+    # resolves (`common.utils.view_utils.TenantScopedViewMixin`, off
+    # `X-Organization-Id`) to the scope that bills it.
+    #
+    # The package default (`utils.default_scope_resolver`) would fall back to
+    # the *caller's own* scope, which for this project is never right: every
+    # payer here is an organization, never a user, so an unresolved request must
+    # answer "no scope" rather than quietly bill somebody's personal scope.
+    "SCOPE_RESOLVER": "vinta_billing.contrib.orgs.resolve_scope_from_organization",
     # `organizations.Organization` is self-referential (`parent`) with a
     # `can_invite_organizations` reseller flag -- exactly the shape
     # `ParentFieldHierarchy` expects. See `payments.seams.hierarchy
@@ -905,7 +928,17 @@ VINTA_BILLING = {
     # one here -- see AGENTS.md's billing section / the migration plan's
     # "Who may manage billing" guiding decision for why the package does not
     # default to this itself.
-    "BILLING_MANAGER_PREDICATE": "vinta_billing.permissions.member_holding_manage_billing",
+    # Moved module in 0.8.0. Billing dropped `vinta-django-orgs` as a hard
+    # dependency when it stopped hanging off an organization, and the four
+    # membership-backed policy functions went with it into
+    # `vinta_billing.contrib.orgs` (shipped under the `orgs` extra, which
+    # pyproject now requests). Same function, same behaviour -- it reads the
+    # organization back off the scope's generic key rather than being handed
+    # one. Left at the old path this is an ImportError at first access; left at
+    # the package's *new* default (`owner_may_manage_billing`) it would silently
+    # 403 every billing endpoint, because migration 0005 backfills scopes with
+    # no owner.
+    "BILLING_MANAGER_PREDICATE": "vinta_billing.contrib.orgs.member_holding_manage_billing",
     # Forwards dunning/usage-warning notifications to the vintasend
     # `NotificationService` the DI container already builds for every other
     # notification-sending service in this project.
@@ -922,7 +955,7 @@ VINTA_BILLING = {
     # The counterpart to `BILLING_MANAGER_PREDICATE`: who the dunning ladder
     # and usage warnings tell. Same "safe because 0028 already seeds the
     # grant" reasoning.
-    "BILLING_RECIPIENTS": "vinta_billing.recipients.members_holding_manage_billing",
+    "BILLING_RECIPIENTS": "vinta_billing.contrib.orgs.members_holding_manage_billing",
     # `vinta_billing`'s MercadoPago adapters `reverse()` their own webhook
     # callback URLs through this namespace (`vinta_billing/urls_helpers.py`),
     # and those two names -- `Payments-payment-update` and

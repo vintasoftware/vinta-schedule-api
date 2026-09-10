@@ -28,6 +28,7 @@ from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 from payments.tasks import (
     meter_event_occurrences,
     meter_subscription_event_occurrences,
@@ -41,7 +42,7 @@ def organization(db) -> Organization:
 
 @pytest.fixture
 def subscription(organization: Organization) -> Subscription:
-    return Subscription.objects.get(organization=organization)
+    return Subscription.objects.get(scope=scope_for(organization))
 
 
 @pytest.fixture

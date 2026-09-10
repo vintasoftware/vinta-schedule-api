@@ -23,6 +23,7 @@ from common.utils.authentication_utils import generate_long_lived_token, hash_lo
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from organizations.services import OrganizationService
 from payments.seams.resource_keys import ORGANIZATION_MEMBERS
+from payments.seams.scopes import scope_for
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -38,8 +39,8 @@ def _organization_with_seat_limit(
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),

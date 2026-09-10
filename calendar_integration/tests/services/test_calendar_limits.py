@@ -40,6 +40,7 @@ from payments.seams.resource_keys import (
     BUNDLE_CALENDARS,
     RESOURCE_CALENDARS,
 )
+from payments.seams.scopes import scope_for
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -60,8 +61,8 @@ def _organization_with_limit(resource_key: str, limit_value: int | None) -> Orga
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),

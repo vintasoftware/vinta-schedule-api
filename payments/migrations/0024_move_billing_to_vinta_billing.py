@@ -82,7 +82,7 @@ TABLES: list[tuple[str, tuple[str, ...]]] = [
             "slug",
             "name",
             "is_active",
-            "is_default_for_new_organizations",
+            "is_default_for_new_scopes",
             "monthly_price",
             "annual_price",
             "currency",

@@ -95,6 +95,7 @@ from organizations.serializers import (
     ServiceAccountWriteSerializer,
 )
 from organizations.services import OrganizationService, assign_membership_groups
+from payments.seams.scopes import scope_for
 
 
 logger = logging.getLogger(__name__)
@@ -285,7 +286,9 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
                 # upsert below is a real user-initiated write on an
                 # organization-scoped model (``GoogleCalendarServiceAccount``) --
                 # block it here, the same check every other blocked write consults.
-                self.organization_service.entitlement_service.check_not_restricted(instance)
+                self.organization_service.entitlement_service.check_not_restricted(
+                    scope_for(instance)
+                )
                 GoogleCalendarServiceAccount.objects.filter_by_organization(instance.id).filter(
                     calendar_fk__isnull=True
                 ).delete()
@@ -550,7 +553,7 @@ class ServiceAccountViewSet(
 
         # A RESTRICTED organization may not write, including provisioning a service
         # account -- the same check every other blocked write consults.
-        self.entitlement_service.check_not_restricted(membership.organization)
+        self.entitlement_service.check_not_restricted(scope_for(membership.organization))
 
         serializer = ServiceAccountWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -594,7 +597,7 @@ class ServiceAccountViewSet(
         # A RESTRICTED organization may not rotate/update its service account.
         # ``partial_update`` routes through this method, so both
         # PUT and PATCH are covered here.
-        self.entitlement_service.check_not_restricted(account.organization)
+        self.entitlement_service.check_not_restricted(scope_for(account.organization))
 
         serializer = ServiceAccountWriteSerializer(data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
@@ -615,7 +618,7 @@ class ServiceAccountViewSet(
 
         # A RESTRICTED organization may not delete its service account -- the same
         # check every other blocked write consults.
-        self.entitlement_service.check_not_restricted(account.organization)
+        self.entitlement_service.check_not_restricted(scope_for(account.organization))
 
         account.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -793,7 +796,9 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         # this write, unlike every other membership write in this module, has never
         # gone through the service layer; moving the whole action there is a larger
         # refactor than this check warrants.
-        self.organization_service.entitlement_service.check_not_restricted(target.organization)
+        self.organization_service.entitlement_service.check_not_restricted(
+            scope_for(target.organization)
+        )
 
         # Guard: prevent self-deactivation
         if target.user_id == user.id:
@@ -904,7 +909,9 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
             self.get_object()
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
 
-        self.organization_service.entitlement_service.check_not_restricted(target.organization)
+        self.organization_service.entitlement_service.check_not_restricted(
+            scope_for(target.organization)
+        )
 
         serializer = AssignMembershipGroupsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

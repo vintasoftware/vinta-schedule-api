@@ -41,6 +41,7 @@ from organizations.branding_logo import (
 from organizations.models import Organization, OrganizationBranding
 from organizations.slug_validation import validate_organization_slug
 from payments.seams.resource_keys import WHITE_LABEL_BRANDING
+from payments.seams.scopes import scope_for
 
 
 # This module builds its own Subscription rows (mirroring organizations/tests/
@@ -55,8 +56,8 @@ def _org_with_entitlement(entitlement_key: str, is_enabled: bool, **org_kwargs) 
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=org,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(org),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),

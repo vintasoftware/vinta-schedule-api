@@ -68,6 +68,7 @@ from payments.seams.resource_keys import (
     WEBHOOK_SUBSCRIPTIONS,
 )
 from payments.seams.resources import EXCLUDE_INVITATION_ID
+from payments.seams.scopes import scope_for
 from public_api.models import SystemUser
 from users.models import Profile, User
 from webhooks.models import WebhookConfiguration
@@ -524,7 +525,7 @@ class TestUsageBreakdown:
         pooled_subtree: tuple[Organization, Organization, Organization],
     ):
         root, child_a, child_b = pooled_subtree
-        subscription = Subscription.objects.get(organization=root)
+        subscription = Subscription.objects.get(scope=scope_for(root))
 
         # organization_members: memberships on two organizations, a pending
         # invitation on the third. child_a already carries >1 row, so this
@@ -641,7 +642,7 @@ class TestUsageBreakdown:
         # constraint on (organization, event_id, occurrence_start).
         period_start = current_billing_period_start(subscription)
         MeteredOccurrence.objects.create(
-            organization=root,
+            scope=scope_for(root),
             subscription=subscription,
             event_id=1,
             occurrence_start=period_start + datetime.timedelta(hours=1),
@@ -650,7 +651,7 @@ class TestUsageBreakdown:
             unit_price=Decimal("0"),
         )
         MeteredOccurrence.objects.create(
-            organization=root,
+            scope=scope_for(root),
             subscription=subscription,
             event_id=2,
             occurrence_start=period_start + datetime.timedelta(hours=2),
@@ -659,7 +660,7 @@ class TestUsageBreakdown:
             unit_price=Decimal("0"),
         )
         MeteredOccurrence.objects.create(
-            organization=child_b,
+            scope=scope_for(child_b),
             subscription=subscription,
             event_id=3,
             occurrence_start=period_start + datetime.timedelta(hours=3),

@@ -31,6 +31,7 @@ from organizations.models import (
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, MANAGE_MEMBERS
 from organizations.tests.helpers import grant_membership_groups, make_membership
 from organizations.views import OrganizationViewSet
+from payments.seams.scopes import scope_for
 from users.factories import UserFactory
 
 
@@ -3517,7 +3518,7 @@ class TestServiceAccountRestrictedGuard:
     def _set_billing_state(self, organization, billing_state):
         # Every ``baker.make(Organization)`` gets the autouse default subscription
         # (unlimited plan); flip only its billing_state for this guard test.
-        subscription = Subscription.objects.get(organization=organization)
+        subscription = Subscription.objects.get(scope=scope_for(organization))
         subscription.billing_state = billing_state
         subscription.save(update_fields=["billing_state"])
 

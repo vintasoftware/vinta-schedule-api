@@ -20,6 +20,7 @@ import pytest
 from vinta_billing.models import Subscription
 
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 from payments.tasks import close_billing_periods, close_subscription_billing_period
 
 
@@ -33,7 +34,7 @@ def organization(db) -> Organization:
 
 @pytest.fixture
 def subscription(organization: Organization) -> Subscription:
-    return Subscription.objects.get(organization=organization)
+    return Subscription.objects.get(scope=scope_for(organization))
 
 
 @pytest.mark.django_db
@@ -57,7 +58,7 @@ class TestCloseBillingPeriodsFanOut:
 
         # A second subscription whose period is comfortably in the future.
         other_org = Organization.objects.create(name="Future Org", should_sync_rooms=False)
-        other = Subscription.objects.get(organization=other_org)
+        other = Subscription.objects.get(scope=scope_for(other_org))
         other.current_period_start = timezone.now()
         other.current_period_end = timezone.now() + datetime.timedelta(days=30)
         other.save(update_fields=["current_period_start", "current_period_end"])

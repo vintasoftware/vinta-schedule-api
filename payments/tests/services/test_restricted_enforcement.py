@@ -76,6 +76,7 @@ from payments.seams.resource_keys import (
     RESOURCE_KEYS,
     WEBHOOK_SUBSCRIPTIONS,
 )
+from payments.seams.scopes import scope_for
 from public_api.models import SystemUser
 from users.factories import UserFactory
 from users.models import User
@@ -113,8 +114,8 @@ def _organization_with_billing_state(billing_state: str, *, unlimited: bool = Tr
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=billing_state,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -847,7 +848,7 @@ class TestIsBillingRootRestricted:
         otherwise follows forbids."""
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
 
-        assert EntitlementService().is_billing_root_restricted(organization) is False
+        assert EntitlementService().is_billing_root_restricted(scope_for(organization)) is False
         # And a guarded create actually goes through, not just the predicate:
         _create_resource_calendar(organization)
 
@@ -857,14 +858,14 @@ class TestIsBillingRootRestricted:
         now = timezone.now()
         baker.make(
             Subscription,
-            organization=root,
-            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            scope=scope_for(root),
+            plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
             billing_state=BillingState.RESTRICTED,
             current_period_start=now,
             current_period_end=now + datetime.timedelta(days=30),
         )
 
-        assert EntitlementService().is_billing_root_restricted(child) is True
+        assert EntitlementService().is_billing_root_restricted(scope_for(child)) is True
 
 
 @pytest.mark.django_db
@@ -875,7 +876,7 @@ class TestRestrictedOrganizationReadsStayOpen:
 
         # Must not raise for a restricted organization -- only writes are guarded.
         service.get_current_usage(organization, RESOURCE_CALENDARS)
-        service.get_effective_limit(organization, RESOURCE_CALENDARS)
+        service.get_effective_limit(scope_for(organization), RESOURCE_CALENDARS)
 
     def test_calendar_reads_are_open(self):
         organization = _organization_with_billing_state(BillingState.RESTRICTED)
@@ -907,7 +908,7 @@ def _plan(
     limit_values = limit_values or {}
     plan = baker.make(
         BillingPlan,
-        is_default_for_new_organizations=False,
+        is_default_for_new_scopes=False,
         monthly_price=monthly_price,
         annual_price=None,
     )
@@ -935,8 +936,8 @@ class TestRestrictedOrganizationBillingSurfaceStaysOpen:
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
         pro_plan = _plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
         free_plan = _plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
-        subscription = SubscriptionService().create_subscription_for_organization(
-            organization, plan=pro_plan
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(organization), plan=pro_plan
         )
         assert subscription is not None
         subscription.billing_state = BillingState.RESTRICTED

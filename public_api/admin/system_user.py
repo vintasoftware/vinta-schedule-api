@@ -13,6 +13,7 @@ from vinta_billing.exceptions import OverLimitError
 
 from common.managers import unscoped_default_manager
 from payments.seams.resource_keys import PUBLIC_API_SYSTEM_USERS
+from payments.seams.scopes import scope_for
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
 
@@ -72,7 +73,7 @@ class SystemUserAdminForm(forms.ModelForm):
             # Org-less tokens are unmetered by design (see create_system_user).
             return cleaned_data
 
-        result = entitlement_service.check_limit(organization, PUBLIC_API_SYSTEM_USERS)
+        result = entitlement_service.check_limit(scope_for(organization), PUBLIC_API_SYSTEM_USERS)
         if not result.allowed:
             raise forms.ValidationError(
                 {"organization": OverLimitError.from_check_result(result).as_error_body()["detail"]}

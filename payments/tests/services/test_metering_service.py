@@ -35,6 +35,7 @@ from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar, CalendarEvent
 from organizations.models import Organization
 from payments.seams.resource_keys import EVENT_OCCURRENCES
+from payments.seams.scopes import scope_for
 
 
 #: A whole calendar month used as the subscription's billing period, chosen so the
@@ -66,7 +67,7 @@ def subscription(organization: Organization) -> Subscription:
     ``unlimited`` plan (every ``limit_value`` NULL) — the state every organization
     is in for the whole rollout, and therefore the state that has to be right.
     """
-    subscription = Subscription.objects.get(organization=organization)
+    subscription = Subscription.objects.get(scope=scope_for(organization))
     subscription.current_period_start = PERIOD_START
     subscription.current_period_end = PERIOD_END
     subscription.save(update_fields=["current_period_start", "current_period_end", "modified"])

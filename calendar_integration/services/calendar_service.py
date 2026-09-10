@@ -149,6 +149,7 @@ from payments.seams.resource_keys import (
     EXTERNAL_CALENDAR_MICROSOFT,
     RESOURCE_CALENDARS,
 )
+from payments.seams.scopes import scope_for
 from public_api.models import SystemUser
 from users.models import User
 
@@ -467,7 +468,9 @@ class CalendarService(BaseCalendarService):
         entitlement_key = _PROVIDER_ENTITLEMENTS.get(provider) if provider else None
         if entitlement_key is None or self.organization is None:
             return
-        if not self.entitlement_service.has_entitlement(self.organization, entitlement_key):
+        if not self.entitlement_service.has_entitlement(
+            scope_for(self.organization), entitlement_key
+        ):
             raise OverLimitError.from_missing_entitlement(entitlement_key)
 
     def _check_not_restricted(self, bypass_limits: bool = False) -> None:
@@ -488,7 +491,7 @@ class CalendarService(BaseCalendarService):
             return
         if self.organization is None:
             return
-        self.entitlement_service.check_not_restricted(self.organization)
+        self.entitlement_service.check_not_restricted(scope_for(self.organization))
 
     def authenticate(
         self,
@@ -959,7 +962,7 @@ class CalendarService(BaseCalendarService):
 
         if not bypass_limits and entitlement_service is not None:
             result = entitlement_service.check_limit(
-                self.organization, RESOURCE_CALENDARS, lock=True
+                scope_for(self.organization), RESOURCE_CALENDARS, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)

@@ -21,6 +21,7 @@ from vinta_billing.services.payment_adapters.mercadopago_payment_adapter import 
 )
 
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 from payments.tests.historical_apps import historical_apps
 
 
@@ -43,7 +44,7 @@ def billing_address():
 def billing_profile(organization, billing_address):
     return baker.make(
         BillingProfile,
-        organization=organization,
+        scope=scope_for(organization),
         billing_address=billing_address,
     )
 
@@ -57,24 +58,22 @@ def billing_plan():
 class TestBillingPlan:
     def test_only_one_default_plan_allowed(self):
         """The `uniq_default_billing_plan` partial unique constraint enforces at
-        most one `is_default_for_new_organizations=True` row. The plan catalog seed
+        most one `is_default_for_new_scopes=True` row. The plan catalog seed
         migration already put `unlimited` in that slot, so a second default row must
         be rejected without this test creating the first one itself."""
-        assert BillingPlan.objects.filter(is_default_for_new_organizations=True).exists()
+        assert BillingPlan.objects.filter(is_default_for_new_scopes=True).exists()
 
         with pytest.raises(IntegrityError):
-            baker.make(BillingPlan, is_default_for_new_organizations=True)
+            baker.make(BillingPlan, is_default_for_new_scopes=True)
 
     def test_multiple_non_default_plans_allowed(self):
         """The partial constraint only applies to `True` rows."""
-        before = BillingPlan.objects.filter(is_default_for_new_organizations=False).count()
+        before = BillingPlan.objects.filter(is_default_for_new_scopes=False).count()
 
-        baker.make(BillingPlan, is_default_for_new_organizations=False)
-        baker.make(BillingPlan, is_default_for_new_organizations=False)
+        baker.make(BillingPlan, is_default_for_new_scopes=False)
+        baker.make(BillingPlan, is_default_for_new_scopes=False)
 
-        assert (
-            BillingPlan.objects.filter(is_default_for_new_organizations=False).count() == before + 2
-        )
+        assert BillingPlan.objects.filter(is_default_for_new_scopes=False).count() == before + 2
 
 
 @pytest.mark.django_db
@@ -125,7 +124,7 @@ class TestBackfillBillingProfilePaymentProviderMigration:
     ):
         profile = baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             billing_address=billing_address,
             payment_provider="",
         )
@@ -138,7 +137,7 @@ class TestBackfillBillingProfilePaymentProviderMigration:
     def test_an_already_pinned_profile_is_left_untouched(self, organization, billing_address):
         profile = baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             billing_address=billing_address,
             payment_provider=PaymentProviders.MERCADOPAGO,
         )
@@ -151,7 +150,7 @@ class TestBackfillBillingProfilePaymentProviderMigration:
     def test_idempotent_rerun_matches_nothing(self, organization, billing_address):
         profile = baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             billing_address=billing_address,
             payment_provider="",
         )
@@ -165,7 +164,7 @@ class TestBackfillBillingProfilePaymentProviderMigration:
     def test_reverse_sets_stripe_rows_back_to_blank(self, organization, billing_address):
         profile = baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             billing_address=billing_address,
             payment_provider="",
         )
@@ -182,7 +181,7 @@ class TestBackfillBillingProfilePaymentProviderMigration:
         is not blanked out by reversing this migration."""
         profile = baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             billing_address=billing_address,
             payment_provider=PaymentProviders.MERCADOPAGO,
         )
@@ -200,7 +199,7 @@ class TestSubscription:
         now = datetime.datetime.now(tz=datetime.UTC)
         subscription = baker.make(
             Subscription,
-            organization=organization,
+            scope=scope_for(organization),
             plan=billing_plan,
             current_period_start=now,
             current_period_end=now + datetime.timedelta(days=30),
@@ -213,7 +212,7 @@ class TestSubscription:
         now = datetime.datetime.now(tz=datetime.UTC)
         subscription = baker.make(
             Subscription,
-            organization=organization,
+            scope=scope_for(organization),
             plan=billing_plan,
             current_period_start=now,
             current_period_end=now + datetime.timedelta(days=30),

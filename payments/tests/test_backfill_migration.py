@@ -41,6 +41,7 @@ from vinta_billing.models import BillingPlan, Subscription
 
 from organizations.models import Organization
 from payments.seams.resource_keys import RESOURCE_KEYS
+from payments.seams.scopes import scope_for
 from payments.tests.historical_apps import historical_apps
 
 
@@ -70,7 +71,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         backfill_unlimited_subscriptions(historical_apps, None)
 
         for org in (root_a, root_b):
-            subscription = Subscription.objects.get(organization=org)
+            subscription = Subscription.objects.get(scope=scope_for(org))
             assert subscription.plan.slug == "unlimited"
             assert subscription.plan.slug != "free"
 
@@ -83,7 +84,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
 
         backfill_unlimited_subscriptions(historical_apps, None)
 
-        subscription = Subscription.objects.get(organization=org)
+        subscription = Subscription.objects.get(scope=scope_for(org))
         assert subscription.meta.get("backfilled_by") == "payments.0009"
 
     def test_reverse_deletes_only_the_subscriptions_it_backfilled(self):
@@ -99,14 +100,14 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         # the documented support rollback) by clearing the migration's stamp on
         # its subscription — this is what distinguishes it from a truly
         # backfilled row, since both otherwise reference the same plan.
-        organic_subscription = Subscription.objects.get(organization=organic_org)
+        organic_subscription = Subscription.objects.get(scope=scope_for(organic_org))
         organic_subscription.meta = {}
         organic_subscription.save(update_fields=["meta"])
 
         migration_module.delete_backfilled_subscriptions(historical_apps, None)
 
-        assert not Subscription.objects.filter(organization=backfilled_org).exists()
-        assert Subscription.objects.filter(organization=organic_org).exists()
+        assert not Subscription.objects.filter(scope=scope_for(backfilled_org)).exists()
+        assert Subscription.objects.filter(scope=scope_for(organic_org)).exists()
 
     def test_reseller_child_gets_no_subscription(self):
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
@@ -114,8 +115,8 @@ class TestBackfillUnlimitedSubscriptionsMigration:
 
         backfill_unlimited_subscriptions(historical_apps, None)
 
-        assert Subscription.objects.filter(organization=root).exists()
-        assert not Subscription.objects.filter(organization=child).exists()
+        assert Subscription.objects.filter(scope=scope_for(root)).exists()
+        assert not Subscription.objects.filter(scope=scope_for(child)).exists()
 
     def test_nested_reseller_gets_its_own_subscription(self):
         """A nested reseller (`can_invite_organizations=True` with `parent` set) is
@@ -127,16 +128,16 @@ class TestBackfillUnlimitedSubscriptionsMigration:
 
         backfill_unlimited_subscriptions(historical_apps, None)
 
-        assert Subscription.objects.filter(organization=root).exists()
-        assert Subscription.objects.filter(organization=mid).exists()
-        assert not Subscription.objects.filter(organization=leaf).exists()
+        assert Subscription.objects.filter(scope=scope_for(root)).exists()
+        assert Subscription.objects.filter(scope=scope_for(mid)).exists()
+        assert not Subscription.objects.filter(scope=scope_for(leaf)).exists()
 
     def test_copies_every_limited_resource_as_a_subscription_plan_limit(self):
         org = baker.make(Organization, parent=None)
 
         backfill_unlimited_subscriptions(historical_apps, None)
 
-        subscription = Subscription.objects.get(organization=org)
+        subscription = Subscription.objects.get(scope=scope_for(org))
         assert subscription.limits.count() == len(RESOURCE_KEYS)
         assert all(limit.limit_value is None for limit in subscription.limits.all())
 
@@ -144,7 +145,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         org = baker.make(Organization, parent=None)
 
         backfill_unlimited_subscriptions(historical_apps, None)
-        first_subscription = Subscription.objects.get(organization=org)
+        first_subscription = Subscription.objects.get(scope=scope_for(org))
 
         # An org already placed on a real (non-unlimited) plan by the time the
         # migration re-runs (e.g. a re-deploy) must not be touched.
@@ -154,7 +155,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
 
         backfill_unlimited_subscriptions(historical_apps, None)
 
-        assert Subscription.objects.filter(organization=org).count() == 1
+        assert Subscription.objects.filter(scope=scope_for(org)).count() == 1
         first_subscription.refresh_from_db()
         assert first_subscription.plan.slug == "free"
 
@@ -169,7 +170,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         backfill_unlimited_subscriptions(historical_apps, None)
 
         for org in orgs:
-            subscription = Subscription.objects.get(organization=org)
+            subscription = Subscription.objects.get(scope=scope_for(org))
             assert subscription.plan.slug == "unlimited"
         assert Subscription.objects.filter(organization__in=orgs).count() == len(orgs)
 

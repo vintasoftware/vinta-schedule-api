@@ -29,6 +29,7 @@ from model_bakery import baker
 from vinta_billing.models import BillingPeriodResourceUsage, BillingPeriodSummary, Subscription
 
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 
 
 PERIOD_START = datetime.datetime(2026, 7, 1, tzinfo=datetime.UTC)
@@ -53,7 +54,7 @@ def summary(organization: Organization, subscription: Subscription) -> BillingPe
     return baker.make(
         BillingPeriodSummary,
         subscription=subscription,
-        organization=organization,
+        scope=scope_for(organization),
         billing_period_start=PERIOD_START,
         billing_period_end=PERIOD_END,
         overage_total="12.5000",
@@ -77,7 +78,7 @@ class TestBillingPeriodSummaryUniqueConstraint:
             baker.make(
                 BillingPeriodSummary,
                 subscription=subscription,
-                organization=organization,
+                scope=scope_for(organization),
                 billing_period_start=PERIOD_START,
                 billing_period_end=PERIOD_END,
                 overage_total="0.0000",
@@ -96,7 +97,7 @@ class TestBillingPeriodSummaryUniqueConstraint:
         second = baker.make(
             BillingPeriodSummary,
             subscription=subscription,
-            organization=organization,
+            scope=scope_for(organization),
             billing_period_start=next_period_start,
             billing_period_end=next_period_end,
             overage_total="0.0000",
@@ -214,7 +215,7 @@ class TestBillingPeriodSummaryQuerySetForOrganizations:
         in_pool_summary = baker.make(
             BillingPeriodSummary,
             subscription=in_pool_org.subscription,
-            organization=in_pool_org,
+            scope=scope_for(in_pool_org),
             billing_period_start=PERIOD_START,
             billing_period_end=PERIOD_END,
             overage_total="0.0000",
@@ -226,7 +227,7 @@ class TestBillingPeriodSummaryQuerySetForOrganizations:
         baker.make(
             BillingPeriodSummary,
             subscription=outside_pool_org.subscription,
-            organization=outside_pool_org,
+            scope=scope_for(outside_pool_org),
             billing_period_start=PERIOD_START,
             billing_period_end=PERIOD_END,
             overage_total="0.0000",

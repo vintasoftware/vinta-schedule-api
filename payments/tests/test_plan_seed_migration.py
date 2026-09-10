@@ -38,7 +38,7 @@ class TestPlanSeedMigration:
         plan = BillingPlan.objects.get(slug="unlimited")
 
         assert plan.is_active is True
-        assert plan.is_default_for_new_organizations is True
+        assert plan.is_default_for_new_scopes is True
 
     def test_unlimited_plan_has_a_null_limit_for_every_limited_resource(self):
         """The closing condition: `unlimited` must never be silently missing a
@@ -84,7 +84,7 @@ class TestPlanSeedMigration:
         plan = BillingPlan.objects.get(slug="free")
 
         assert plan.is_active is True
-        assert plan.is_default_for_new_organizations is False
+        assert plan.is_default_for_new_scopes is False
         assert plan.limits.count() == len(RESOURCE_KEYS)
         assert all(limit.limit_value is not None for limit in plan.limits.all())
 
@@ -129,7 +129,7 @@ class TestPlanSeedMigration:
             )
 
     def test_only_one_default_plan_across_the_seeded_catalog(self):
-        assert BillingPlan.objects.filter(is_default_for_new_organizations=True).count() == 1
+        assert BillingPlan.objects.filter(is_default_for_new_scopes=True).count() == 1
 
     def test_seeding_converges_and_updates_existing_plans(self):
         """If a plan with slug `unlimited` already exists with wrong values (from a
@@ -144,7 +144,7 @@ class TestPlanSeedMigration:
 
         # Simulate a partial deploy or manual correction that left the plan
         # in an incorrect state.
-        plan.is_default_for_new_organizations = False
+        plan.is_default_for_new_scopes = False
         plan.is_active = False
         plan.save()
 
@@ -159,7 +159,7 @@ class TestPlanSeedMigration:
         # Assert the plan was corrected.
         plan.refresh_from_db()
         assert plan.is_active is True
-        assert plan.is_default_for_new_organizations is True
+        assert plan.is_default_for_new_scopes is True
 
         # Assert the PlanLimit was corrected.
         limit.refresh_from_db()

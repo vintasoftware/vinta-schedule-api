@@ -39,6 +39,7 @@ from calendar_integration.services.calendar_permission_service import (
 )
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization, OrganizationMembership
+from payments.seams.scopes import organization_for, scope_for
 from users.models import Profile, User
 
 
@@ -81,7 +82,7 @@ def organization(db) -> Organization:
 
 @pytest.fixture
 def subscription(organization: Organization) -> Subscription:
-    subscription = Subscription.objects.get(organization=organization)
+    subscription = Subscription.objects.get(scope=scope_for(organization))
     subscription.current_period_start = PERIOD_START
     subscription.current_period_end = PERIOD_END
     subscription.save(update_fields=["current_period_start", "current_period_end", "modified"])
@@ -369,7 +370,12 @@ class TestRecurrenceExceptionCountedOnce:
             modified_title="Moved",
         )
         assert exception_event is not None
-        assert CalendarEvent.objects.filter_by_organization(subscription.organization).count() == 2
+        assert (
+            CalendarEvent.objects.filter_by_organization(
+                organization_for(subscription.scope)
+            ).count()
+            == 2
+        )
 
         _meter_the_period(metering_service, subscription)
 
@@ -633,7 +639,7 @@ class TestFirstOccurrenceSplitIsNotDeduplicated:
             modified_title="First one moved",
         )
         replacement = (
-            CalendarEvent.objects.filter_by_organization(subscription.organization)
+            CalendarEvent.objects.filter_by_organization(organization_for(subscription.scope))
             .exclude(pk=weekly_series.pk)
             .filter(recurrence_rule__isnull=False)
             .first()
@@ -936,9 +942,9 @@ class TestBulkModificationWithOffsetTilesTheTimeline:
         continuation = self._split_with_offset(event_service, social_account, weekly_series)
         assert continuation is not None
 
-        parent = CalendarEvent.objects.filter_by_organization(subscription.organization).get(
-            pk=weekly_series.pk
-        )
+        parent = CalendarEvent.objects.filter_by_organization(
+            organization_for(subscription.scope)
+        ).get(pk=weekly_series.pk)
 
         assert parent.recurrence_rule_fk_id == original_rule_id, (
             "the parent keeps its original rule row"
@@ -946,9 +952,9 @@ class TestBulkModificationWithOffsetTilesTheTimeline:
         assert continuation.recurrence_rule_fk_id != original_rule_id, (
             "the continuation gets a fresh rule row, built from an rrule string"
         )
-        parent_rule = RecurrenceRule.objects.filter_by_organization(subscription.organization).get(
-            pk=original_rule_id
-        )
+        parent_rule = RecurrenceRule.objects.filter_by_organization(
+            organization_for(subscription.scope)
+        ).get(pk=original_rule_id)
         assert (parent_rule.count, parent_rule.until) == (None, ALL_MONDAYS[0]), (
             "the parent's rule row holds the truncation, bounded at the last "
             "occurrence before the split"
@@ -992,9 +998,9 @@ class TestBulkModificationWithOffsetTilesTheTimeline:
             modified_start_time_offset=datetime.timedelta(minutes=30),
         )
 
-        parent = CalendarEvent.objects.filter_by_organization(subscription.organization).get(
-            pk=series.pk
-        )
+        parent = CalendarEvent.objects.filter_by_organization(
+            organization_for(subscription.scope)
+        ).get(pk=series.pk)
         assert (parent.recurrence_rule.count, parent.recurrence_rule.until) == (
             None,
             ALL_MONDAYS[0],

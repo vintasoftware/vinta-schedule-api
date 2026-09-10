@@ -35,6 +35,7 @@ from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar
 from organizations.models import Organization
 from payments.seams.resource_keys import EVENT_OCCURRENCES
+from payments.seams.scopes import scope_for
 
 
 # This module builds its own `Subscription` rows on specific organizations
@@ -49,7 +50,7 @@ FIRST_MONDAY = datetime.datetime(2025, 6, 2, 10, 0, tzinfo=datetime.UTC)
 
 @pytest.fixture
 def plan() -> BillingPlan:
-    return baker.make(BillingPlan, is_default_for_new_organizations=False)
+    return baker.make(BillingPlan, is_default_for_new_scopes=False)
 
 
 @pytest.fixture
@@ -64,7 +65,7 @@ def make_subscription(organization: Organization, plan: BillingPlan) -> Subscrip
     """A subscription pinned to June 2025 with an unlimited occurrence allowance."""
     subscription = baker.make(
         Subscription,
-        organization=organization,
+        scope=scope_for(organization),
         plan=plan,
         billing_state=BillingState.FREE,
         current_period_start=PERIOD_START,
@@ -165,7 +166,7 @@ class TestMeteringPoolBoundary:
 
         assert result.occurrences_recorded == 15
         assert metered_organization_ids(subscription) == {root.pk, child.pk, grandchild.pk}
-        assert not Subscription.objects.filter(organization=child).exists()
+        assert not Subscription.objects.filter(scope=scope_for(child)).exists()
 
     def test_the_pool_stops_at_a_nested_billing_root(self, metering_service, plan):
         """A nested reseller pays for its own subtree.

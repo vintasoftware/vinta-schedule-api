@@ -61,6 +61,7 @@ from vinta_billing.services.subscription_service import (
 from calendar_integration.tasks.calendar_sync_tasks import resync_organization_calendars_task
 from organizations.models import Organization
 from payments.seams.resource_keys import RESOURCE_KEYS
+from payments.seams.scopes import scope_for
 
 
 # This module builds its own Subscription rows directly via SubscriptionService,
@@ -88,7 +89,7 @@ def make_complete_plan(
     name."""
     plan = baker.make(
         BillingPlan,
-        is_default_for_new_organizations=False,
+        is_default_for_new_scopes=False,
         monthly_price=monthly_price,
         annual_price=None,
         grace_period_days=grace_period_days,
@@ -139,8 +140,8 @@ def _subscription_for(
     grace_period_ends_at: datetime.datetime | None = None,
     last_dunning_attempt_at: datetime.datetime | None = None,
 ) -> Subscription:
-    subscription = SubscriptionService().create_subscription_for_organization(
-        organization, plan=plan
+    subscription = SubscriptionService().create_subscription_for_scope(
+        scope_for(organization), plan=plan
     )
     assert subscription is not None
     subscription.billing_state = billing_state

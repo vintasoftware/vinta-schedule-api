@@ -1,4 +1,15 @@
-"""Notification contexts for the dunning ladder's in-app and email notifications.
+"""Every builder here takes ``scope_name`` and emits ``organization_name``.
+
+That asymmetry is deliberate and is the whole 0.8.0 adaptation for this module.
+``vinta-django-billing`` 0.8.0 renamed the kwarg it passes -- a scope may name
+something that is not an organization, so it sends the payer's ``label`` under a
+neutral name. Every payer in *this* project is an organization, and the
+templates under ``templates/payments/emails/`` have said ``{{ organization_name }}``
+since before the billing engine was extracted. Renaming the parameter follows
+the engine; renaming the context key would mean editing a dozen translated
+templates to say the same thing in a less specific way.
+
+Notification contexts for the dunning ladder's in-app and email notifications.
 
 Contexts are registered via the ``@register_context`` decorator, which registers
 on import. Imported from ``PaymentsConfig.ready()`` so the contexts are
@@ -19,7 +30,7 @@ from vintasend.services.notification_service import register_context
 
 @register_context("dunning_entered_grace_context")
 def dunning_entered_grace_context(
-    organization_name: str, grace_period_ends_at: str, **kwargs: Any
+    scope_name: str, grace_period_ends_at: str, **kwargs: Any
 ) -> dict[str, Any]:
     """Context for the notice sent once, when a subscription enters GRACE.
 
@@ -27,7 +38,7 @@ def dunning_entered_grace_context(
     same facts, two renderings.
     """
     return {
-        "organization_name": organization_name,
+        "organization_name": scope_name,
         "grace_period_ends_at": grace_period_ends_at,
         **kwargs,
     }
@@ -35,7 +46,7 @@ def dunning_entered_grace_context(
 
 @register_context("dunning_reminder_context")
 def dunning_reminder_context(
-    organization_name: str,
+    scope_name: str,
     grace_period_ends_at: str,
     urgency: str,
     **kwargs: Any,
@@ -48,7 +59,7 @@ def dunning_reminder_context(
         ladder's escalation, read by the template to change its tone/subject.
     """
     return {
-        "organization_name": organization_name,
+        "organization_name": scope_name,
         "grace_period_ends_at": grace_period_ends_at,
         "urgency": urgency,
         **kwargs,
@@ -56,15 +67,15 @@ def dunning_reminder_context(
 
 
 @register_context("dunning_restricted_context")
-def dunning_restricted_context(organization_name: str, **kwargs: Any) -> dict[str, Any]:
+def dunning_restricted_context(scope_name: str, **kwargs: Any) -> dict[str, Any]:
     """Context for the notice sent once, when the grace period expires unresolved
     and the subscription moves to RESTRICTED."""
-    return {"organization_name": organization_name, **kwargs}
+    return {"organization_name": scope_name, **kwargs}
 
 
 @register_context("approaching_limit_context")
 def approaching_limit_context(
-    organization_name: str,
+    scope_name: str,
     resource_key: str,
     current_usage: int,
     limit_value: int,
@@ -75,7 +86,7 @@ def approaching_limit_context(
     ``usage_warning_service.APPROACHING_LIMIT_THRESHOLD`` (default 80%) of the
     resource's effective limit, without yet being at or over it."""
     return {
-        "organization_name": organization_name,
+        "organization_name": scope_name,
         "resource_key": resource_key,
         "resource_label": resources.get(resource_key).label,
         "current_usage": current_usage,
@@ -86,7 +97,7 @@ def approaching_limit_context(
 
 @register_context("limit_reached_context")
 def limit_reached_context(
-    organization_name: str,
+    scope_name: str,
     resource_key: str,
     current_usage: int,
     limit_value: int,
@@ -96,7 +107,7 @@ def limit_reached_context(
     resource per billing cycle once usage is at or over the resource's
     effective limit."""
     return {
-        "organization_name": organization_name,
+        "organization_name": scope_name,
         "resource_key": resource_key,
         "resource_label": resources.get(resource_key).label,
         "current_usage": current_usage,

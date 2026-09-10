@@ -56,6 +56,7 @@ from organizations.permissions import (
 )
 from organizations.tests.helpers import make_membership
 from payments.seams.resource_keys import WHITE_LABEL_BRANDING
+from payments.seams.scopes import scope_for
 
 
 User = get_user_model()
@@ -68,8 +69,8 @@ def _organization(*, entitled: bool, **kwargs) -> Organization:
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),

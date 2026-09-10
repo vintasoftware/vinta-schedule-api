@@ -34,6 +34,7 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarEventInputData
 from organizations.models import Organization
 from payments.seams.resource_keys import EVENT_OCCURRENCES
+from payments.seams.scopes import scope_for
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -54,8 +55,8 @@ def _organization_with_postpaid_limit(
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=billing_state,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -96,7 +97,7 @@ def _attach_payment_method(organization: Organization, is_active: bool = True) -
     ``_organization_with_postpaid_limit``'s ``billing_state`` parameter."""
     return baker.make(
         PaymentMethod,
-        organization=organization,
+        scope=scope_for(organization),
         provider=PaymentProviders.MERCADOPAGO,
         external_id="pm-test-token",
         is_active=is_active,
@@ -188,7 +189,7 @@ class TestHasPaymentMethod:
         organization, _subscription = _organization_with_postpaid_limit(1, billing_state)
         _attach_payment_method(organization)
 
-        assert EntitlementService().has_payment_method(organization) is True
+        assert EntitlementService().has_payment_method(scope_for(organization)) is True
 
     @pytest.mark.parametrize(
         "billing_state",
@@ -201,7 +202,7 @@ class TestHasPaymentMethod:
         must not manufacture a ``True`` answer."""
         organization, _subscription = _organization_with_postpaid_limit(1, billing_state)
 
-        assert EntitlementService().has_payment_method(organization) is False
+        assert EntitlementService().has_payment_method(scope_for(organization)) is False
 
     def test_inactive_payment_method_is_false(self):
         """A deactivated instrument (e.g. removed/replaced) does not count, even
@@ -209,14 +210,14 @@ class TestHasPaymentMethod:
         organization, _subscription = _organization_with_postpaid_limit(1, BillingState.ACTIVE)
         _attach_payment_method(organization, is_active=False)
 
-        assert EntitlementService().has_payment_method(organization) is False
+        assert EntitlementService().has_payment_method(scope_for(organization)) is False
 
     def test_no_subscription_has_no_payment_method(self):
         """Nothing to charge, so ``False``. (On the post-paid path this rarely
         decides anything: a subscription-less pool resolves to an unlimited ceiling
         and returns before this is consulted.)"""
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
-        assert EntitlementService().has_payment_method(organization) is False
+        assert EntitlementService().has_payment_method(scope_for(organization)) is False
 
     def test_payment_method_of_a_different_organization_does_not_count(self):
         """Tenant isolation on the new record: org A's card must never answer for
@@ -225,8 +226,8 @@ class TestHasPaymentMethod:
         organization_b, _sub_b = _organization_with_postpaid_limit(1, BillingState.FREE)
         _attach_payment_method(organization_b)
 
-        assert EntitlementService().has_payment_method(organization_a) is False
-        assert EntitlementService().has_payment_method(organization_b) is True
+        assert EntitlementService().has_payment_method(scope_for(organization_a)) is False
+        assert EntitlementService().has_payment_method(scope_for(organization_b)) is True
 
 
 @pytest.mark.django_db
@@ -365,7 +366,7 @@ class TestCreateEventPostpaidGuard:
             window_end=event.end_time + datetime.timedelta(minutes=1),
         )
         assert result.occurrences_recorded == 1
-        recorded = MeteredOccurrence.objects.get(organization=organization, event_id=event.pk)
+        recorded = MeteredOccurrence.objects.get(scope=scope_for(organization), event_id=event.pk)
         assert recorded.is_within_allowance is False
 
     def test_without_payment_method_at_the_allowance_blocks(self):

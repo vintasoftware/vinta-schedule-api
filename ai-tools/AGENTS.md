@@ -333,7 +333,16 @@ pin, and known package gaps); this is the load-bearing summary.
     import cycle with any of those apps' own `models.py`.
   - `resources.py` — registers the eight resources / five entitlements against
     `vinta_billing.registry`, with a counter function per resource.
-  - `hierarchy.py` — `ResellerHierarchy`, this project's parent/child reseller shape.
+  - `hierarchy.py` — `ResellerHierarchy`, this project's parent/child reseller shape,
+    walked over the **scope** tree since 0.8.0. The reseller flag lives in the scope's
+    `meta` JSON, not a column; read that module's docstring before changing it.
+  - `scopes.py` — the `Organization` ↔ `BillingScope` bridge. `scope_for(organization)`
+    is what every call site into a billing service goes through, and a `post_save`
+    receiver keeps one scope per organization with `parent` and the reseller flag
+    mirrored.
+  - `counting.py` — lets the eight counters in `resources.py` keep reading and returning
+    **organization** ids under a package that speaks scope ids. `@counts_by_organization`
+    translates in both directions.
   - `notifier.py` — bridges the package's notification calls to the vintasend
     `NotificationService` the DI container builds.
   - `occurrences.py` — the metered-occurrence source over `calendar_integration.CalendarEvent`.
@@ -356,6 +365,19 @@ pin, and known package gaps); this is the load-bearing summary.
   `TextChoices` — a billing library cannot own the closed set of things *this* product
   sells, so they became registrations against `vinta_billing.registry` instead. Use the
   string constants in `payments/seams/resource_keys.py`.
+- **Billing hangs off a `BillingScope`, not an organization** (0.8.0). Every service
+  method, permission, signal payload and serializer field in the package takes or emits
+  a *scope* — a row naming whoever pays. This project sells only to organizations, so
+  its scope table is a mirror of its organization table maintained by
+  `payments/seams/scopes.py`. Two consequences worth knowing before touching billing:
+  - **Never pass an organization into a billing service.** Pass `scope_for(organization)`.
+    The old signatures still accept a positional argument, so a missed call site is a
+    wrong-object bug at runtime, not a `TypeError`.
+  - **`BILLING_SCOPE_MODEL` is swappable but this project cannot use it.** The upgrade
+    path is what blocks it: `vinta_billing`'s `0003` creates the shipped `BillingScope`
+    as swappable while its `0005` backfill hardcodes `apps.get_model("vinta_billing",
+    "BillingScope")`, so pointing the setting at a project-owned model makes the
+    backfill write to a table Django never created. Revisit if upstream fixes `0005`.
 - **Upgrading the pin:** bump `vinta-django-billing` in `pyproject.toml`, `uv sync`,
   then run the full suite — the package's own 700+-test suite is what covers the engine
   internals this project no longer duplicates in `payments/tests/`. Check `HISTORY.md`

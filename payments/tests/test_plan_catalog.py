@@ -73,7 +73,7 @@ class TestTheLiveSeederWritesACompleteCatalog:
             )
 
     def test_exactly_one_plan_is_the_default_for_new_organizations(self):
-        assert BillingPlan.objects.filter(is_default_for_new_organizations=True).count() == 1
+        assert BillingPlan.objects.filter(is_default_for_new_scopes=True).count() == 1
 
     def test_seeding_twice_converges_instead_of_duplicating(self):
         plan = BillingPlan.objects.get(slug=UNLIMITED_PLAN_SLUG)

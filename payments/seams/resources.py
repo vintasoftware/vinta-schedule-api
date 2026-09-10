@@ -15,11 +15,18 @@ cycle this split exists to break).
 
 Every counter here is the corresponding ``_count_*`` function that used to
 live on ``payments.services.entitlement_service``, rewritten against
-``vinta_billing.counting.UsageContext`` / ``count_by_organization`` /
-``merge_breakdowns`` in place of the module-private helpers that used to do
-the same job. The counting logic itself -- which rows count, which are
-excluded, why two tables get merged instead of concatenated -- is unchanged;
-only the plumbing it is built on moved.
+``count_by_organization`` / ``merge_breakdowns`` in place of the module-private
+helpers that used to do the same job. The counting logic itself -- which rows
+count, which are excluded, why two tables get merged instead of concatenated --
+is unchanged; only the plumbing it is built on moved.
+
+Each counter still reads organization ids and still returns
+``{organization_id: count}``, even though ``vinta-django-billing`` 0.8.0 re-keyed
+usage onto scopes. ``@counts_by_organization`` (``payments.seams.counting``)
+does the translation in both directions, so this project's tables -- none of
+which have a ``scope_id`` column -- are still counted by the column they
+actually have. See that module for why the adaptation lives in a decorator
+rather than in these eight bodies.
 
 Registration already happens from process start without any help:
 ``di_core``'s DI wiring (``DICoreConfig.ready()``) imports every submodule
@@ -37,7 +44,9 @@ from typing import cast
 from django.utils.translation import gettext as _
 
 from vinta_billing.constants import LimitKind, LimitRemedy
-from vinta_billing.counting import UsageContext, count_by_organization, merge_breakdowns
+from vinta_billing.counting import (
+    UsageContext,  # noqa: F401  (re-exported for counters' type hints)
+)
 from vinta_billing.models import MeteredOccurrence, Subscription
 from vinta_billing.registry import entitlements, resources
 from vinta_billing.services.subscription_service import current_billing_period_start
@@ -45,6 +54,12 @@ from vinta_billing.services.subscription_service import current_billing_period_s
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AppointmentType, AvailableTime, BlockedTime, Calendar
 from organizations.models import OrganizationInvitation, OrganizationMembership
+from payments.seams.counting import (
+    OrganizationUsageContext,
+    count_by_organization,
+    counts_by_organization,
+    merge_breakdowns,
+)
 from payments.seams.resource_keys import (
     ADVANCED_SCHEDULING,
     APPOINTMENT_TYPES,
@@ -83,7 +98,8 @@ EXCLUDE_INVITATION_ID = "exclude_invitation_id"
 READS_NO_USAGE_EXTRA: frozenset[str] = frozenset()
 
 
-def _count_organization_members(context: UsageContext) -> dict[int, int]:
+@counts_by_organization
+def _count_organization_members(context: OrganizationUsageContext) -> dict[int, int]:
     """Seats in use per organization: active memberships plus still-open invitations.
 
     Pending invitations count toward the ceiling deliberately -- without that, an
@@ -112,7 +128,8 @@ def _count_organization_members(context: UsageContext) -> dict[int, int]:
     return merge_breakdowns(members, pending_invitations)
 
 
-def _count_resource_calendars(context: UsageContext) -> dict[int, int]:
+@counts_by_organization
+def _count_resource_calendars(context: OrganizationUsageContext) -> dict[int, int]:
     """Resource/room calendars per organization, excluding soft-deleted ones.
 
     ``unscoped()`` for the reason given on every pooled counter below: a usage
@@ -129,7 +146,8 @@ def _count_resource_calendars(context: UsageContext) -> dict[int, int]:
     )
 
 
-def _count_bundle_calendars(context: UsageContext) -> dict[int, int]:
+@counts_by_organization
+def _count_bundle_calendars(context: OrganizationUsageContext) -> dict[int, int]:
     """Bundle calendars per organization, excluding soft-deleted ones.
 
     ``unscoped()``: see :func:`_count_resource_calendars`.
@@ -141,7 +159,8 @@ def _count_bundle_calendars(context: UsageContext) -> dict[int, int]:
     )
 
 
-def _count_appointment_types(context: UsageContext) -> dict[int, int]:
+@counts_by_organization
+def _count_appointment_types(context: OrganizationUsageContext) -> dict[int, int]:
     """Appointment types per organization.
 
     ``unscoped()``: see :func:`_count_resource_calendars`.
@@ -151,7 +170,8 @@ def _count_appointment_types(context: UsageContext) -> dict[int, int]:
     )
 
 
-def _count_availability_windows(context: UsageContext) -> dict[int, int]:
+@counts_by_organization
+def _count_availability_windows(context: OrganizationUsageContext) -> dict[int, int]:
     """Every time window the organization actually authored, per organization --
     availability windows and blocked time alike, positive or negative.
 
@@ -189,7 +209,8 @@ def _count_availability_windows(context: UsageContext) -> dict[int, int]:
     return merge_breakdowns(availability_windows, blocked_times)
 
 
-def _count_webhook_subscriptions(context: UsageContext) -> dict[int, int]:
+@counts_by_organization
+def _count_webhook_subscriptions(context: OrganizationUsageContext) -> dict[int, int]:
     """Webhook configurations per organization, excluding soft-deleted ones
     (``deleted_at`` set)."""
     # ``unscoped()`` first, like the ``calendar_integration`` counters above: a
@@ -203,7 +224,8 @@ def _count_webhook_subscriptions(context: UsageContext) -> dict[int, int]:
     )
 
 
-def _count_public_api_system_users(context: UsageContext) -> dict[int, int]:
+@counts_by_organization
+def _count_public_api_system_users(context: OrganizationUsageContext) -> dict[int, int]:
     """Active, non-soft-deleted public-API system users, per organization.
 
     ``SystemUser.organization`` is nullable, so a system user with no organization
@@ -219,7 +241,8 @@ def _count_public_api_system_users(context: UsageContext) -> dict[int, int]:
     )
 
 
-def _count_event_occurrences(context: UsageContext) -> dict[int, int]:
+@counts_by_organization
+def _count_event_occurrences(context: OrganizationUsageContext) -> dict[int, int]:
     """Metered event occurrences in the subscription's current billing period, per
     organization.
 

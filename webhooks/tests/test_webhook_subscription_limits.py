@@ -22,6 +22,7 @@ from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimi
 
 from organizations.models import Organization
 from payments.seams.resource_keys import WEBHOOK_SUBSCRIPTIONS
+from payments.seams.scopes import scope_for
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
 from webhooks.services.webhook_service import WebhookService
@@ -42,8 +43,8 @@ def _organization_with_limit(limit_value: int | None) -> Organization:
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),

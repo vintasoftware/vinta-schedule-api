@@ -23,6 +23,7 @@ from django.db.models import Prefetch
 from vinta_billing.metering import Occurrence
 
 from calendar_integration.models import CalendarEvent, CalendarOwnership
+from payments.seams.scopes import organization_ids_for_scope_ids
 
 
 #: Occurrences to expand per master per window. A window is hours wide, so this
@@ -43,12 +44,20 @@ class CalendarEventOccurrenceSource:
 
     def iter_occurrences(
         self,
-        organization_ids: Sequence[int],
+        scope_ids: Sequence[int],
         window_start: datetime.datetime,
         window_end: datetime.datetime,
     ) -> Iterable[Occurrence]:
         """Every billable occurrence starting in ``[window_start, window_end)``
-        for the pooled subtree ``organization_ids`` names.
+        for the pooled subtree ``scope_ids`` names.
+
+        ``vinta-django-billing`` 0.8.0 re-keyed metering onto scopes: the meter
+        passes scope ids and each ``Occurrence`` carries a ``scope_id``.
+        ``CalendarEvent`` is keyed by ``organization_id`` and has no scope
+        column, so the ids are translated at both ends here -- once into
+        organization space to read the events, once back to stamp each
+        occurrence. Same adaptation the usage counters make, and for the same
+        reason; see ``payments.seams.counting``.
 
         **An occurrence is identified by its series root and its current start
         time** -- ``(series root pk, occurrence start)``. Exactly one half of
@@ -75,7 +84,13 @@ class CalendarEventOccurrenceSource:
         about either -- but it filters both anyway, matching the source this
         was lifted from, rather than relying on the caller's second check.
         """
-        organization_ids = list(organization_ids)
+        scope_to_organization = organization_ids_for_scope_ids(scope_ids)
+        if not scope_to_organization:
+            return
+        organization_to_scope = {
+            organization_id: scope_id for scope_id, organization_id in scope_to_organization.items()
+        }
+        organization_ids = list(scope_to_organization.values())
         masters = list(
             # ``unscoped()``: this reads a subscription's *whole* reseller
             # subtree (``organization_ids``, resolved from the billing root by
@@ -98,9 +113,17 @@ class CalendarEventOccurrenceSource:
                 if identity in seen:
                     continue
                 seen.add(identity)
+                scope_id = organization_to_scope.get(master.organization_id)
+                if scope_id is None:
+                    # The master's organization is outside the pool this call
+                    # resolved. `organization_id__in` above already excludes
+                    # that, so this is unreachable in practice -- kept because
+                    # `Occurrence.scope_id` has no sane null and a `None` here
+                    # would surface as a foreign-key error deep in the meter.
+                    continue
                 yield Occurrence(
                     external_id=series_root_id,
-                    organization_id=master.organization_id,
+                    scope_id=scope_id,
                     occurred_at=occurrence_start,
                 )
 

@@ -33,6 +33,7 @@ from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from payments.seams.resource_keys import RESOURCE_KEYS
+from payments.seams.scopes import scope_for
 from payments.tasks import process_dunning, process_dunning_for_subscription
 from users.models import User
 
@@ -70,7 +71,7 @@ def make_complete_plan(
     limit_values = limit_values or {}
     plan = baker.make(
         BillingPlan,
-        is_default_for_new_organizations=False,
+        is_default_for_new_scopes=False,
         monthly_price=Decimal("50"),
         annual_price=None,
         grace_period_days=grace_period_days,
@@ -94,8 +95,8 @@ def _subscription_for(
     billing_state: str,
     grace_period_ends_at: datetime.datetime | None = None,
 ) -> Subscription:
-    subscription = subscription_service.create_subscription_for_organization(
-        organization, plan=plan
+    subscription = subscription_service.create_subscription_for_scope(
+        scope_for(organization), plan=plan
     )
     assert subscription is not None
     subscription.billing_state = billing_state

@@ -8,6 +8,7 @@ from vinta_billing.models import BillingPlan, Subscription
 from vinta_billing.services.subscription_plan_factory.billing_plan_factory import BillingPlanFactory
 
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -36,7 +37,7 @@ def subscription(organization, billing_plan):
     now = datetime.datetime(2026, 3, 15, tzinfo=datetime.UTC)
     return baker.make(
         Subscription,
-        organization=organization,
+        scope=scope_for(organization),
         plan=billing_plan,
         billing_interval=BillingInterval.MONTHLY,
         current_period_start=now,
@@ -62,7 +63,7 @@ class TestBillingPlanFactory:
         now = datetime.datetime(2026, 1, 5, tzinfo=datetime.UTC)
         annual_subscription = baker.make(
             Subscription,
-            organization=organization,
+            scope=scope_for(organization),
             plan=billing_plan,
             billing_interval=BillingInterval.ANNUAL,
             current_period_start=now,
@@ -82,7 +83,7 @@ class TestBillingPlanFactory:
         now = datetime.datetime(2026, 1, 31, tzinfo=datetime.UTC)
         subscription = baker.make(
             Subscription,
-            organization=organization,
+            scope=scope_for(organization),
             plan=billing_plan,
             billing_interval=BillingInterval.MONTHLY,
             current_period_start=now,
@@ -101,7 +102,7 @@ class TestBillingPlanFactory:
         now = datetime.datetime(2026, 1, 5, tzinfo=datetime.UTC)
         annual_subscription = baker.make(
             Subscription,
-            organization=organization,
+            scope=scope_for(organization),
             plan=plan_without_annual_price,
             billing_interval=BillingInterval.ANNUAL,
             current_period_start=now,

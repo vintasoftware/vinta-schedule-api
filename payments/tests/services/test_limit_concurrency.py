@@ -33,6 +33,7 @@ from vinta_billing.services.entitlement_service import EntitlementService
 
 from organizations.models import Organization, OrganizationMembership
 from payments.seams.resource_keys import ORGANIZATION_MEMBERS
+from payments.seams.scopes import scope_for
 from users.models import User
 
 
@@ -54,8 +55,8 @@ def _build_organization_at_one_seat_of_headroom(seat_limit: int = 3):
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -96,7 +97,9 @@ def _run_two_racing_seat_claims(organization: Organization, lock: bool) -> list[
         try:
             start_barrier.wait()
             with transaction.atomic():
-                result = service.check_limit(organization, ORGANIZATION_MEMBERS, lock=lock)
+                result = service.check_limit(
+                    scope_for(organization), ORGANIZATION_MEMBERS, lock=lock
+                )
                 # Simulate the work a real caller does between the check and the
                 # write. Under `lock=True` the other thread is blocked on the
                 # subscription row for this whole window.

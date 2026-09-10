@@ -29,6 +29,7 @@ from vinta_billing.constants import PaymentProviders, PaymentStatuses
 from vinta_billing.models import BillingPlan, Payment, Subscription
 
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 from payments.tests.historical_apps import historical_apps
 from payments.tests.provider_settings import use_providers
 
@@ -68,7 +69,7 @@ def _subscription(organization: Organization, plan: BillingPlan, provider: str) 
     value is unambiguously the test's own, not whatever a service resolved."""
     return baker.make(
         Subscription,
-        organization=organization,
+        scope=scope_for(organization),
         plan=plan,
         payment_provider=provider,
         current_period_start=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
@@ -78,7 +79,7 @@ def _subscription(organization: Organization, plan: BillingPlan, provider: str) 
 
 @pytest.fixture
 def plan():
-    return baker.make(BillingPlan, is_default_for_new_organizations=False)
+    return baker.make(BillingPlan, is_default_for_new_scopes=False)
 
 
 @pytest.mark.django_db

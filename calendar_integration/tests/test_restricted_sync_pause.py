@@ -49,6 +49,7 @@ from calendar_integration.tasks.calendar_sync_tasks import (
 )
 from organizations.models import Organization, OrganizationMembership
 from payments.seams.resource_keys import EXTERNAL_CALENDAR_GOOGLE
+from payments.seams.scopes import scope_for
 from users.models import Profile, User
 
 
@@ -71,8 +72,8 @@ def _organization_with_billing_state(
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=billing_state,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -321,8 +322,8 @@ def _reseller_tree(root_billing_state: str) -> tuple[Organization, Organization]
     now = timezone.now()
     baker.make(
         Subscription,
-        organization=root,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(root),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=root_billing_state,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -473,7 +474,7 @@ class TestRecoveryDispatchesAResync:
 
     def test_resolve_payment_success_from_restricted_queues_the_resync(self):
         organization, _calendar = self._active_org_with_owned_calendar()
-        subscription = Subscription.objects.get(organization=organization)
+        subscription = Subscription.objects.get(scope=scope_for(organization))
         entitlement_service = EntitlementService()
         dunning_service = DunningService(
             subscription_service=SubscriptionService(),
@@ -497,7 +498,7 @@ class TestRecoveryDispatchesAResync:
         """GRACE never paused sync in the first place -- leaving GRACE has
         nothing to reconcile."""
         organization = _organization_with_billing_state(BillingState.GRACE)
-        subscription = Subscription.objects.get(organization=organization)
+        subscription = Subscription.objects.get(scope=scope_for(organization))
         dunning_service = DunningService(
             subscription_service=SubscriptionService(),
             entitlement_service=EntitlementService(),

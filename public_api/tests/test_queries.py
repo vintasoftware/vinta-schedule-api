@@ -41,6 +41,7 @@ from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from payments.seams.resource_keys import WHITE_LABEL_BRANDING
+from payments.seams.scopes import scope_for
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.queries import _vinta_default_branding
@@ -6806,8 +6807,8 @@ class TestBrandingForTenantEntitlementDowngrade:
         now = _timezone.now()
         subscription = baker.make(
             Subscription,
-            organization=reseller,
-            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            scope=scope_for(reseller),
+            plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
             billing_state=BillingState.FREE,
             current_period_start=now,
             current_period_end=now + _datetime.timedelta(days=30),

@@ -19,6 +19,7 @@ from accounts.account_adapters import (
 from legal.factories import UserConsentFactory
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from payments.seams.resource_keys import ORGANIZATION_MEMBERS
+from payments.seams.scopes import scope_for
 from users.models import Profile, User
 
 
@@ -35,8 +36,8 @@ def _org_at_seat_limit_with_pending_invitation(email: str) -> Organization:
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),

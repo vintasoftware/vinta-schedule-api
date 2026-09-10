@@ -48,6 +48,7 @@ from calendar_integration.services.dataclasses import (
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
+from payments.seams.scopes import scope_for
 from users.models import Profile, User
 
 
@@ -363,7 +364,7 @@ def test_removing_calendar_from_roster_does_not_free_availability_windows_capaci
 
     def usage_count() -> int:
         breakdown = resources.counter_for(AVAILABILITY_WINDOWS)(
-            UsageContext(organization_ids=[service.organization_id])
+            UsageContext(scope_ids=[scope_for(service.organization).pk])
         )
         return breakdown.get(service.organization_id, 0)
 

@@ -104,7 +104,7 @@ class TestTheTablesMoved:
         plan = BillingPlan.objects.get(slug="unlimited")
 
         assert plan.is_active is True
-        assert plan.is_default_for_new_organizations is True
+        assert plan.is_default_for_new_scopes is True
         assert {limit.resource_key for limit in plan.limits.all()} == set(RESOURCE_KEYS)
         assert all(limit.limit_value is None for limit in plan.limits.all())
         assert {row.entitlement_key for row in plan.entitlements.all()} == set(ENTITLEMENT_KEYS)

@@ -10,6 +10,7 @@ from vinta_billing.exceptions import BillingRootCycleError
 
 from organizations.models import Organization
 from payments.seams.hierarchy import ResellerHierarchy
+from payments.seams.scopes import scope_for
 
 
 @pytest.fixture
@@ -22,19 +23,19 @@ class TestIsBillingRoot:
     def test_a_parentless_organization_is_a_root(self, hierarchy):
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
 
-        assert hierarchy.is_billing_root(organization) is True
+        assert hierarchy.is_billing_root(scope_for(organization)) is True
 
     def test_a_child_flagged_can_invite_organizations_is_its_own_root(self, hierarchy):
         parent = baker.make(Organization, parent=None, can_invite_organizations=False)
         child = baker.make(Organization, parent=parent, can_invite_organizations=True)
 
-        assert hierarchy.is_billing_root(child) is True
+        assert hierarchy.is_billing_root(scope_for(child)) is True
 
     def test_a_plain_child_is_not_a_root(self, hierarchy):
         parent = baker.make(Organization, parent=None, can_invite_organizations=False)
         child = baker.make(Organization, parent=parent, can_invite_organizations=False)
 
-        assert hierarchy.is_billing_root(child) is False
+        assert hierarchy.is_billing_root(scope_for(child)) is False
 
 
 @pytest.mark.django_db
@@ -42,7 +43,7 @@ class TestResolveBillingRoot:
     def test_a_parentless_organization_resolves_to_itself(self, hierarchy):
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
 
-        assert hierarchy.resolve_billing_root(organization) == organization
+        assert hierarchy.resolve_billing_root(scope_for(organization)) == organization
 
     def test_a_reseller_child_resolves_to_itself(self, hierarchy):
         """A reseller pays for its own subtree, not its parent's -- it must not
@@ -50,13 +51,13 @@ class TestResolveBillingRoot:
         parent = baker.make(Organization, parent=None, can_invite_organizations=False)
         reseller_child = baker.make(Organization, parent=parent, can_invite_organizations=True)
 
-        assert hierarchy.resolve_billing_root(reseller_child) == reseller_child
+        assert hierarchy.resolve_billing_root(scope_for(reseller_child)) == reseller_child
 
     def test_a_plain_child_resolves_to_its_reseller(self, hierarchy):
         reseller = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=reseller, can_invite_organizations=False)
 
-        assert hierarchy.resolve_billing_root(child) == reseller
+        assert hierarchy.resolve_billing_root(scope_for(child)) == reseller
 
     def test_a_grandchild_resolves_to_the_nearest_reseller_ancestor(self, hierarchy):
         """The nearest ancestor wins, not the top of the whole chain -- a nested
@@ -67,7 +68,7 @@ class TestResolveBillingRoot:
             Organization, parent=nested_reseller, can_invite_organizations=False
         )
 
-        assert hierarchy.resolve_billing_root(grandchild) == nested_reseller
+        assert hierarchy.resolve_billing_root(scope_for(grandchild)) == nested_reseller
 
     def test_a_parent_cycle_raises_instead_of_hanging(self, hierarchy):
         """``parent`` is user-mutable (Django admin), so a cycle is reachable in
@@ -82,7 +83,7 @@ class TestResolveBillingRoot:
         organization_a.save(update_fields=["parent"])
 
         with pytest.raises(BillingRootCycleError):
-            hierarchy.resolve_billing_root(organization_a)
+            hierarchy.resolve_billing_root(scope_for(organization_a))
 
 
 @pytest.mark.django_db

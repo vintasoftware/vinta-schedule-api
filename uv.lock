@@ -2352,7 +2352,7 @@ wheels = [
 
 [[package]]
 name = "vinta-django-billing"
-version = "0.7.0"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django" },
@@ -2361,11 +2361,15 @@ dependencies = [
     { name = "django-virtual-models" },
     { name = "djangorestframework" },
     { name = "python-dateutil" },
-    { name = "vinta-django-orgs" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e6/fc/271ad6d6cb034234e7292a4cc7d830db04cc52a770ebffdda2741051899d/vinta_django_billing-0.7.0.tar.gz", hash = "sha256:53cce0727c11422e042aa7bd964c4a65c229199e3c932dd40b683a9fe6736fe2", size = 236712, upload-time = "2026-09-01T12:27:51.628Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6f/1b/5dae3429f04086825bafe4ec170224ac2dc140797697393a272fa6f0c70b/vinta_django_billing-0.8.0.tar.gz", hash = "sha256:0b8db50a8bead1cc137cf72a1d28bfcd2af5b54b74f19ea03192215bf2b8b2b7", size = 260782, upload-time = "2026-09-09T17:36:28.578Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/05/7a/90f511c4ad3469e87ba32511cb011e0e2a840f50a0a1e9ebc16008042c53/vinta_django_billing-0.7.0-py3-none-any.whl", hash = "sha256:e7d40ec7c75f9a0323455795dd09cb0499feed854116dc16c23eb9017bf3ff5f", size = 262971, upload-time = "2026-09-01T12:27:50.102Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/c5/d8fccf34cd21f3f08c8417d7a8db59c6fbe40bf64f512a444ad54b2ab006/vinta_django_billing-0.8.0-py3-none-any.whl", hash = "sha256:9ca5744898b5648022ebe3491852ac821f185292ec63ed7f06b18b1bf57f7f58", size = 280557, upload-time = "2026-09-09T17:36:27.112Z" },
+]
+
+[package.optional-dependencies]
+orgs = [
+    { name = "vinta-django-orgs" },
 ]
 
 [[package]]
@@ -2437,7 +2441,7 @@ dependencies = [
     { name = "stripe" },
     { name = "twilio" },
     { name = "vinta-django-audit-logs" },
-    { name = "vinta-django-billing" },
+    { name = "vinta-django-billing", extra = ["orgs"] },
     { name = "vinta-django-orgs" },
     { name = "vintasend" },
     { name = "vintasend-celery" },
@@ -2516,7 +2520,7 @@ requires-dist = [
     { name = "stripe", specifier = ">=15.3.1,<16" },
     { name = "twilio", specifier = ">=9.6.5,<10" },
     { name = "vinta-django-audit-logs", specifier = ">=0.1.2,<0.2" },
-    { name = "vinta-django-billing", specifier = ">=0.7,<0.8" },
+    { name = "vinta-django-billing", extras = ["orgs"], specifier = ">=0.8,<0.9" },
     { name = "vinta-django-orgs", specifier = ">=0.5,<0.6" },
     { name = "vintasend", specifier = ">=1.2.0,<2" },
     { name = "vintasend-celery", specifier = ">=1.2.0,<2" },

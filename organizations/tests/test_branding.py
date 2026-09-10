@@ -58,6 +58,7 @@ from organizations.redirect_url_validation import validate_redirect_url
 from organizations.serializers import CurrentMembershipSerializer, MyMembershipSerializer
 from organizations.tests.helpers import make_membership
 from payments.seams.resource_keys import WHITE_LABEL_BRANDING
+from payments.seams.scopes import scope_for
 from users.factories import UserFactory
 
 
@@ -236,8 +237,8 @@ def _reseller_with_entitlement(entitlement_key: str, is_enabled: bool) -> Organi
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=reseller,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(reseller),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -277,8 +278,8 @@ class TestResolveBrandingForDisplayEntitlementGate:
         now = timezone.now()
         baker.make(
             Subscription,
-            organization=reseller,
-            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            scope=scope_for(reseller),
+            plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
             billing_state=BillingState.FREE,
             current_period_start=now,
             current_period_end=now + datetime.timedelta(days=30),
@@ -310,7 +311,7 @@ class TestResolveBrandingForDisplayEntitlementGate:
         deliberately migrated, so this must see byte-for-byte unchanged behavior."""
         reseller = baker.make(Organization, can_invite_organizations=True)
         plan = BillingPlan.objects.get(slug="unlimited")
-        SubscriptionService().create_subscription_for_organization(reseller, plan=plan)
+        SubscriptionService().create_subscription_for_scope(scope_for(reseller), plan=plan)
         branding = baker.make(OrganizationBranding, organization=reseller)
 
         result = resolve_branding_for_display(reseller)
@@ -411,8 +412,8 @@ def _org_with_entitlement(entitlement_key: str, is_enabled: bool, **org_kwargs) 
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=org,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(org),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -465,7 +466,7 @@ class TestResolveBrandingForDisplayParentlessOrganization:
         assert resolve_branding_for_display(org) is None
 
         subscription_entitlement = SubscriptionEntitlement.objects.get(
-            subscription__organization=org, entitlement_key=WHITE_LABEL_BRANDING
+            subscription__scope=scope_for(org), entitlement_key=WHITE_LABEL_BRANDING
         )
         subscription_entitlement.is_enabled = True
         subscription_entitlement.save(update_fields=["is_enabled"])
