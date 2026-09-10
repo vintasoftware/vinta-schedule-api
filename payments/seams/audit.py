@@ -62,11 +62,10 @@ def record_payment_provider_repoint(
         )
 
     # 0.8.0 sends the paying *scope* rather than the organization. The audit log
-    # is organization-keyed (``audit_integration.OrganizationAuditScope``), so
-    # the organization is read back off the scope's generic key -- the same
-    # translation ``vinta_billing.contrib.orgs`` makes for the permission and
-    # recipient seams.
-    organization_id = int(scope.object_id)
+    # is organization-keyed (``audit_integration.OrganizationAuditScope``), and
+    # a billing scope holds its organization in a real foreign key, so this is
+    # the id column rather than a lookup.
+    organization_id = scope.organization_id
 
     audit_service = container.audit_service()
     actor_snapshot = (

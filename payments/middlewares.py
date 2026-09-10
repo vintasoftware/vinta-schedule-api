@@ -17,11 +17,21 @@ from payments.seams.scopes import scope_translation_cache
 class BillingScopeTranslationCacheMiddleware:
     """Activate the scope-to-organization memo for the whole request.
 
-    ``vinta-django-billing`` 0.8.0 keys usage on ``BillingScope``; this
-    project's own tables are keyed by ``organization_id``. Every registered
-    resource's counter therefore translates the same pooled scope ids back into
-    organization ids, and unmemoized that is one query per resource -- eight on
+    ``vinta-django-billing`` 0.8.0 keys usage on the scope; this project's own
+    tables are keyed by ``organization_id``. Every registered resource's counter
+    therefore translates the same pooled scope ids back into organization ids,
+    and unmemoized that is one query per resource -- eight on
     ``GET /billing/usage/``. The memo collapses them to one.
+
+    Note what this is *not* about. Pointing ``BILLING_SCOPE_MODEL`` at
+    ``billing_integration.OrganizationBillingScope`` gave scopes a real
+    ``organization`` foreign key, which retired the rest of the translation
+    scaffolding -- ``scope_for`` is a reverse one-to-one Django caches per
+    instance, and the reseller flag is a column the hierarchy filters on
+    directly. It did not retire this: the counters read organization-keyed
+    tables and the engine hands them scope ids, so somebody still has to map
+    between the two, once per counter. Deleting this middleware took the
+    usage endpoint from 23 queries to 29, which is how it earned its way back.
 
     **Middleware rather than a view override.** The natural place looked like a
     ``dispatch`` override on ``VINTA_BILLING['VIEW_MIXIN']``, and that is wrong:

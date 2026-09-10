@@ -87,13 +87,17 @@ def _count(table: str) -> int:
 
 #: Tables ``vinta_billing`` added *after* ``0024``, which therefore exist at HEAD
 #: but are not part of what that migration moved. ``billingscope`` arrives in
-#: ``0003_billingscope`` (0.8.0) -- the row naming whoever pays.
+#: Empty. ``0003_billingscope`` (0.8.0) would add ``billingscope``, but it
+#: creates that model as swappable and this project points
+#: ``BILLING_SCOPE_MODEL`` at ``billing_integration.OrganizationBillingScope``
+#: -- so Django skips the table and the package's tables are exactly the twenty
+#: ``0024`` moved.
 #:
-#: Kept separate from ``EXPECTED_TABLES`` rather than folded into it: that set is
-#: the column-for-column contract ``0024`` is written against, and widening it to
-#: keep a HEAD-state assertion green would quietly weaken the migration's own
-#: checks.
-TABLES_ADDED_AFTER_THE_MOVE = {"billingscope"}
+#: Kept as its own name rather than folded away: it is the seam to add to if
+#: the package ever grows a table this project does not swap out, and
+#: ``EXPECTED_TABLES`` is the column-for-column contract ``0024`` is written
+#: against rather than a description of HEAD.
+TABLES_ADDED_AFTER_THE_MOVE: set[str] = set()
 
 
 @pytest.mark.django_db

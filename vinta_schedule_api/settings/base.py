@@ -61,6 +61,10 @@ INTERNAL_INSTALLED_APPS = [
     "users",
     "organizations",
     "audit_integration",
+    # Holds `OrganizationBillingScope`, which `BILLING_SCOPE_MODEL` names. Its
+    # own app rather than part of `payments` for a migration-ordering reason --
+    # see the model's docstring.
+    "billing_integration",
     "payments",
     "notifications",
     "calendar_integration",
@@ -133,6 +137,16 @@ INSTALLED_APPS = [
 # package's own concrete ``Organization`` / ``OrganizationMembership`` as swapped
 # out: no tables are created for them, and ``User.delete()`` does not carry a
 # phantom CASCADE to a second, unused membership table.
+# The scope every billing row hangs off. Read as a *top-level* setting, like
+# `ORGANIZATION_MODEL` below and for the same reason: Django resolves
+# `Meta.swappable` with a plain `getattr(settings, ...)`.
+#
+# Pointing it at this project's own model marks `vinta_billing`'s shipped
+# `BillingScope` as swapped out, so no table is created for it, and gives every
+# scope relation a real `organization` foreign key instead of a generic key.
+# See `billing_integration.models` for what that buys.
+BILLING_SCOPE_MODEL = "billing_integration.OrganizationBillingScope"
+
 ORGANIZATION_MODEL = "organizations.Organization"
 ORGANIZATION_MEMBERSHIP_MODEL = "organizations.OrganizationMembership"
 
@@ -919,7 +933,7 @@ VINTA_BILLING = {
     # the *caller's own* scope, which for this project is never right: every
     # payer here is an organization, never a user, so an unresolved request must
     # answer "no scope" rather than quietly bill somebody's personal scope.
-    "SCOPE_RESOLVER": "vinta_billing.contrib.orgs.resolve_scope_from_organization",
+    "SCOPE_RESOLVER": "payments.seams.policy.resolve_scope_from_organization",
     # `organizations.Organization` is self-referential (`parent`) with a
     # `can_invite_organizations` reseller flag -- exactly the shape
     # `ParentFieldHierarchy` expects. See `payments.seams.hierarchy
@@ -931,17 +945,13 @@ VINTA_BILLING = {
     # one here -- see AGENTS.md's billing section / the migration plan's
     # "Who may manage billing" guiding decision for why the package does not
     # default to this itself.
-    # Moved module in 0.8.0. Billing dropped `vinta-django-orgs` as a hard
-    # dependency when it stopped hanging off an organization, and the four
-    # membership-backed policy functions went with it into
-    # `vinta_billing.contrib.orgs` (shipped under the `orgs` extra, which
-    # pyproject now requests). Same function, same behaviour -- it reads the
-    # organization back off the scope's generic key rather than being handed
-    # one. Left at the old path this is an ImportError at first access; left at
-    # the package's *new* default (`owner_may_manage_billing`) it would silently
-    # 403 every billing endpoint, because migration 0005 backfills scopes with
-    # no owner.
-    "BILLING_MANAGER_PREDICATE": "vinta_billing.contrib.orgs.member_holding_manage_billing",
+    # This project's own, not `vinta_billing.contrib.orgs`'. Those read the
+    # payer off the shipped scope's generic key, which
+    # `billing_integration.OrganizationBillingScope` does not have -- it holds a
+    # real `organization` foreign key. Pointed at the package they fail
+    # *quietly*: the predicate refuses everybody and the recipient list comes
+    # back empty. See `payments.seams.policy`.
+    "BILLING_MANAGER_PREDICATE": "payments.seams.policy.member_holding_manage_billing",
     # Forwards dunning/usage-warning notifications to the vintasend
     # `NotificationService` the DI container already builds for every other
     # notification-sending service in this project.
@@ -958,7 +968,7 @@ VINTA_BILLING = {
     # The counterpart to `BILLING_MANAGER_PREDICATE`: who the dunning ladder
     # and usage warnings tell. Same "safe because 0028 already seeds the
     # grant" reasoning.
-    "BILLING_RECIPIENTS": "vinta_billing.contrib.orgs.members_holding_manage_billing",
+    "BILLING_RECIPIENTS": "payments.seams.policy.members_holding_manage_billing",
     # `vinta_billing`'s MercadoPago adapters `reverse()` their own webhook
     # callback URLs through this namespace (`vinta_billing/urls_helpers.py`),
     # and those two names -- `Payments-payment-update` and

@@ -32,8 +32,9 @@ from django.urls import reverse
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
+from vinta_billing.conf import get_scope_model
 from vinta_billing.exceptions import BillingRootCycleError
-from vinta_billing.models import BillingScope, Subscription
+from vinta_billing.models import Subscription
 from vinta_billing.services.subscription_service import (
     SubscriptionService,
     billing_root_filter,
@@ -289,9 +290,14 @@ class TestNoPlanlessOrganization:
             )
 
         # `billing_root_filter()` is a Q over *scopes* since 0.8.0, so it selects
-        # against the scope table rather than the organization one. Same
-        # invariant either way: no billing root is left without a subscription.
+        # against the scope table rather than the organization one. Resolved
+        # through `get_scope_model()` rather than importing a model directly:
+        # this project swaps `BILLING_SCOPE_MODEL`, so the shipped
+        # `vinta_billing.BillingScope` has no manager to query. Same invariant
+        # either way: no billing root is left without a subscription.
         assert (
-            BillingScope.objects.filter(billing_root_filter(), subscription__isnull=True).count()
+            get_scope_model()
+            .objects.filter(billing_root_filter(), subscription__isnull=True)
+            .count()
             == 0
         )

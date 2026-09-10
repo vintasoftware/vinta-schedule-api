@@ -1369,9 +1369,9 @@ def test_set_payment_provider_writes_audit_entry_naming_previous_provider(
 
     assert mock_task.delay.call_count == 1
     payload = mock_task.delay.call_args_list[0].args[0]
-    # The audit scope key is the organization pk as a string, which is exactly
-    # what the billing scope's generic key already holds.
-    assert payload["scope"]["scope_key"] == str(billing_profile.scope.object_id)
+    # The audit scope key is the organization pk as a string, which the billing
+    # scope holds in a real foreign key.
+    assert payload["scope"]["scope_key"] == str(billing_profile.scope.organization_id)
     assert payload["action_key"] == AuditAction.UPDATE
     assert payload["subject"]["subject_type"] == "vinta_billing.billingprofile"
     assert payload["subject"]["subject_id"] == str(billing_profile.pk)

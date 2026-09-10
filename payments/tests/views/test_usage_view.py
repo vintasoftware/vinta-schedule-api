@@ -526,12 +526,14 @@ class TestRootResolutionAndSubtreeWalkHappenOnce:
         # the pool's tree -- two for this two-level tree, never one per
         # LimitedResource member (eight).
         #
-        # The walk is over `vinta_billing_billingscope` since 0.8.0, not over
+        # The walk is over the scope table since 0.8.0, not over
         # `organizations_organization`: the hierarchy resolves billing roots and
         # pools among *scopes* now, and `payments.seams.scopes` mirrors the
         # organization tree onto them.
         subtree_walk_queries = [
-            query for query in queries if '"vinta_billing_billingscope"."parent_id" IN' in query
+            query
+            for query in queries
+            if '"billing_integration_organizationbillingscope"."parent_id" IN' in query
         ]
         assert 0 < len(subtree_walk_queries) < len(RESOURCE_KEYS)
 
@@ -540,9 +542,11 @@ class TestRootResolutionAndSubtreeWalkHappenOnce:
         # once per resource and not sixteen times across the whole response.
         #
         # Over the scope table since 0.8.0, for the same reason as the subtree
-        # walk above: the chain being walked is `BillingScope.parent`.
+        # walk above: the chain being walked is `OrganizationBillingScope.parent`.
         root_walk_queries = [
-            query for query in queries if '"vinta_billing_billingscope"."id" = ' in query
+            query
+            for query in queries
+            if '"billing_integration_organizationbillingscope"."id" = ' in query
         ]
         assert len(root_walk_queries) == 1
 
@@ -559,16 +563,18 @@ class TestRootResolutionAndSubtreeWalkHappenOnce:
         # gate protects is intact:
         #
         # 1. Resolving the request's own scope. `SCOPE_RESOLVER` maps the bound
-        #    organization to the scope that bills it, and nothing joins the two
-        #    (the shipped scope model addresses its payer through a generic
-        #    key), so it cannot be folded into a query beside it.
+        #    organization to the scope that bills it -- one indexed read on a
+        #    real foreign key, and only unfolded because the view has no
+        #    organization queryset to `select_related` it onto.
         # 2. Translating the pooled scope ids back into organization ids for
         #    the counters, which read this project's own organization-keyed
         #    tables. Once for the whole response, not once per resource --
         #    `payments.seams.scopes.scope_translation_cache`, activated by
         #    `payments.middlewares.BillingScopeTranslationCacheMiddleware`, is
         #    what collapses that fan-out. Take that memo away and this number
-        #    goes to 30.
+        #    goes to 29 -- measured, when the scope model gained a real foreign
+        #    key and the memo looked redundant. It is not: the counters read
+        #    organization-keyed tables whatever the scope model looks like.
         #
         # Every other scope query here replaced an organization one rather than
         # adding to it: the parent-chain walk, the subtree BFS and the display

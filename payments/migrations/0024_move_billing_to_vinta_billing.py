@@ -468,8 +468,10 @@ def _content_type_and_permission(apps, db_alias, app_label: str):
     content_type, _ = ContentType.objects.using(db_alias).get_or_create(
         app_label=app_label, model="subscription"
     )
+    # `content_type_id=`, not `content_type=` -- see the note in
+    # `_move_manage_billing` on why the instance is not safe to pass here.
     permission, _ = Permission.objects.using(db_alias).get_or_create(
-        content_type=content_type,
+        content_type_id=content_type.pk,
         codename=MANAGE_BILLING_CODENAME,
         defaults={"name": MANAGE_BILLING_NAME},
     )
@@ -509,8 +511,28 @@ def _move_manage_billing(apps, schema_editor, *, to_app_label: str, from_app_lab
         .first()
     )
     if stale is not None:
-        Permission.objects.using(db_alias).filter(content_type=stale).delete()
-        stale.delete()
+        # `content_type_id=`, not `content_type=`. Django type-checks a model
+        # instance passed to a relation filter with `isinstance`, and the
+        # historical `Permission` and historical `ContentType` here are not
+        # guaranteed to come from the same rendered state -- when they do not,
+        # the instance is rejected as "Must be ContentType instance" even
+        # though it is one. Filtering on the id asks the same question without
+        # depending on class identity.
+        Permission.objects.using(db_alias).filter(content_type_id=stale.pk).delete()
+        # Raw DELETE rather than `stale.delete()`. Deleting through the ORM
+        # runs Django's cascade collector, which walks every model with a
+        # foreign key to `ContentType` -- including `vinta_billing.BillingScope`
+        # in the historical state -- and type-checks the instance it filters
+        # with. Those two models are not guaranteed to come from the same
+        # rendered state, and when they are not the collector rejects a
+        # perfectly good `ContentType` as "Must be ContentType instance".
+        #
+        # Nothing references this row by now: the permissions pointing at it
+        # were deleted on the line above, and a billing scope names an
+        # organization, never a subscription. So there is no cascade to run and
+        # no protection to honour -- only the collector's opinion to avoid.
+        with schema_editor.connection.cursor() as cursor:
+            cursor.execute("DELETE FROM django_content_type WHERE id = %s", [stale.pk])
 
 
 def grant_on_vinta_billing(apps, schema_editor):

@@ -52,13 +52,15 @@ def test_vinta_billing_owns_the_billing_models():
     """The other half of the same statement: the models are somewhere, and that
     somewhere is the package's app label.
 
-    Twenty-one since 0.8.0, which added ``BillingScope`` -- the row naming
-    whoever pays, that every other billing table now points at.
+    Twenty, still. 0.8.0 added ``BillingScope`` -- the row naming whoever pays
+    -- but this project points ``BILLING_SCOPE_MODEL`` at its own
+    ``billing_integration.OrganizationBillingScope``, which swaps the shipped
+    one out of the app registry entirely.
     """
     model_names = {model.__name__ for model in apps.get_app_config("vinta_billing").get_models()}
 
-    assert len(model_names) == 21
-    assert "BillingScope" in model_names
+    assert len(model_names) == 20
+    assert "BillingScope" not in model_names
     assert {"Subscription", "BillingPlan", "BillingProfile", "MeteredOccurrence"} <= model_names
 
 

@@ -334,12 +334,17 @@ pin, and known package gaps); this is the load-bearing summary.
   - `resources.py` — registers the eight resources / five entitlements against
     `vinta_billing.registry`, with a counter function per resource.
   - `hierarchy.py` — `ResellerHierarchy`, this project's parent/child reseller shape,
-    walked over the **scope** tree since 0.8.0. The reseller flag lives in the scope's
-    `meta` JSON, not a column; read that module's docstring before changing it.
-  - `scopes.py` — the `Organization` ↔ `BillingScope` bridge. `scope_for(organization)`
-    is what every call site into a billing service goes through, and a `post_save`
-    receiver keeps one scope per organization with `parent` and the reseller flag
+    walked over the **scope** tree. Two field names and nothing else, now that both
+    `parent` and `is_reseller_root` are real columns.
+  - `scopes.py` — the `Organization` ↔ scope bridge. `scope_for(organization)` is what
+    every call site into a billing service goes through, and a `post_save` receiver
+    keeps one scope per organization with `parent`, the reseller flag and the label
     mirrored.
+  - `policy.py` — who may manage billing, who hears about it, and whose billing a
+    request acts on. This project's own rather than `vinta_billing.contrib.orgs`',
+    which reads the payer off the shipped scope's generic key. Pointed at the package
+    these fail *quietly*: 403 on every billing endpoint and a dunning ladder that
+    tells nobody.
   - `counting.py` — lets the eight counters in `resources.py` keep reading and returning
     **organization** ids under a package that speaks scope ids. `@counts_by_organization`
     translates in both directions.
@@ -373,11 +378,15 @@ pin, and known package gaps); this is the load-bearing summary.
   - **Never pass an organization into a billing service.** Pass `scope_for(organization)`.
     The old signatures still accept a positional argument, so a missed call site is a
     wrong-object bug at runtime, not a `TypeError`.
-  - **`BILLING_SCOPE_MODEL` is swappable but this project cannot use it.** The upgrade
-    path is what blocks it: `vinta_billing`'s `0003` creates the shipped `BillingScope`
-    as swappable while its `0005` backfill hardcodes `apps.get_model("vinta_billing",
-    "BillingScope")`, so pointing the setting at a project-owned model makes the
-    backfill write to a table Django never created. Revisit if upstream fixes `0005`.
+  - **`BILLING_SCOPE_MODEL` points at `billing_integration.OrganizationBillingScope`**,
+    a project-owned model with a real `organization` foreign key. That is what lets
+    `scope_for()` be a reverse one-to-one and the reseller flag be a column the
+    hierarchy filters on directly. Its own app, not `payments`: a scope model must be
+    creatable before `vinta_billing`'s `0004` adds the foreign keys pointing at it, and
+    `payments`' migrations already depend on `vinta_billing`.
+    - **Deploying that swap to an existing database needs a manual pre-step** — Django
+      emits no DDL for it and `migrate` refuses to start. See
+      [billing_integration/README.md](billing_integration/README.md) before touching it.
 - **Upgrading the pin:** bump `vinta-django-billing` in `pyproject.toml`, `uv sync`,
   then run the full suite — the package's own 700+-test suite is what covers the engine
   internals this project no longer duplicates in `payments/tests/`. Check `HISTORY.md`

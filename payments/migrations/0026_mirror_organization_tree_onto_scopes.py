@@ -32,6 +32,22 @@ from django.db import migrations
 RESELLER_ROOT_META_KEY = "is_reseller_root"
 
 
+def shipped_scope_table_exists(schema_editor) -> bool:
+    """Whether ``vinta_billing``'s own scope table is present.
+
+    It is not, on any database built after ``BILLING_SCOPE_MODEL`` was pointed
+    at ``billing_integration.OrganizationBillingScope``: ``vinta_billing``'s
+    ``0003`` creates ``BillingScope`` as swappable, so Django skips it and only
+    the project's model gets a table.
+
+    Both directions of this migration read that table, so both ask first. An
+    installation that predates the swap still has it, still has rows in it, and
+    still needs the mirror -- ``billing_integration.0002`` copies what this
+    writes onto the project's own model in the same deploy.
+    """
+    return "vinta_billing_billingscope" in schema_editor.connection.introspection.table_names()
+
+
 def _scope_by_organization_id(apps):
     """``{organization_id: scope}`` for every scope naming an organization.
 
@@ -57,6 +73,9 @@ def _scope_by_organization_id(apps):
 
 
 def forwards(apps, schema_editor):
+    if not shipped_scope_table_exists(schema_editor):
+        return
+
     Organization = apps.get_model("organizations", "Organization")
     BillingScope = apps.get_model("vinta_billing", "BillingScope")
 
@@ -91,6 +110,9 @@ def forwards(apps, schema_editor):
 
 
 def backwards(apps, schema_editor):
+    if not shipped_scope_table_exists(schema_editor):
+        return
+
     """Undo exactly what ``forwards`` set, and nothing else."""
     BillingScope = apps.get_model("vinta_billing", "BillingScope")
 
