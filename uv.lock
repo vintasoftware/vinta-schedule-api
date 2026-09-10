@@ -2520,7 +2520,7 @@ requires-dist = [
     { name = "stripe", specifier = ">=15.3.1,<16" },
     { name = "twilio", specifier = ">=9.6.5,<10" },
     { name = "vinta-django-audit-logs", specifier = ">=0.1.2,<0.2" },
-    { name = "vinta-django-billing", extras = ["orgs"], specifier = ">=0.8.1,<0.9" },
+    { name = "vinta-django-billing", extras = ["orgs"], specifier = ">=0.8.2,<0.9" },
     { name = "vinta-django-orgs", specifier = ">=0.5,<0.6" },
     { name = "vintasend", specifier = ">=1.2.0,<2" },
     { name = "vintasend-celery", specifier = ">=1.2.0,<2" },
