@@ -602,7 +602,7 @@ class TestStatementPersistence:
         # T3: the linked payment must belong to the *same* organization the
         # statement is for, not a different tenant the payment fixture happened
         # to fabricate.
-        assert summary.payment.scope_id == summary.scope_id
+        assert summary.payment.scope.pk == summary.scope_id
 
         resources = list(summary.resources.all())
         assert len(resources) == len(RESOURCE_KEYS)

@@ -42,6 +42,8 @@ child that silently bills nowhere. ``post_save`` is the one hook all four share.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -298,6 +300,47 @@ def scope_ids_for_organization_ids(organization_ids: Iterable[int]) -> dict[int,
     }
 
 
+#: Request-scoped memo for :func:`organization_ids_for_scope_ids`.
+#:
+#: A contextvar rather than a module-level dict for the reason
+#: ``vinta_billing.entitlement_cache`` gives for its own: a module-level cache
+#: would leak between concurrently-handled requests, and -- worse here -- across
+#: tests, where a rolled-back transaction hands the next test the same primary
+#: keys pointing at different organizations.
+_scope_translation_cache: contextvars.ContextVar[dict[int, int] | None] = contextvars.ContextVar(
+    "scope_translation_cache", default=None
+)
+
+
+@contextlib.contextmanager
+def scope_translation_cache():
+    """Memoize scope-to-organization translation for the duration of the block.
+
+    Worth having because the engine asks each registered resource's counter for
+    its own breakdown, and every one of them translates the *same* pooled scope
+    ids back into organization ids. Unmemoized that is one query per resource --
+    eight on ``GET /billing/usage/`` -- which is exactly the fan-out
+    ``payments/tests/views/test_usage_view.py``'s query-count oracle exists to
+    catch.
+
+    Safe to memoize because the mapping is immutable: a scope's ``content_type``
+    and ``object_id`` are set when it is created and nothing updates them, so
+    within one request a scope cannot come to name a different organization.
+
+    Re-entrant, so a nested block reuses the outer cache rather than shadowing
+    it. Outside any block the translation still runs, just once per call -- the
+    memo is an optimization, never a correctness requirement.
+    """
+    if _scope_translation_cache.get() is not None:
+        yield
+        return
+    token = _scope_translation_cache.set({})
+    try:
+        yield
+    finally:
+        _scope_translation_cache.reset(token)
+
+
 def organization_ids_for_scope_ids(scope_ids: Iterable[int]) -> dict[int, int]:
     """``{scope_id: organization_id}`` -- the inverse, for counter input.
 
@@ -307,19 +350,32 @@ def organization_ids_for_scope_ids(scope_ids: Iterable[int]) -> dict[int, int]:
     organization, but a row that somehow does not is skipped rather than
     crashing the count.
     """
-    scope_model = get_scope_model()
     ids = list(scope_ids)
     if not ids:
         return {}
+
+    memo = _scope_translation_cache.get()
+    if memo is not None:
+        known = {sid: memo[sid] for sid in ids if sid in memo}
+        if len(known) == len(ids):
+            return known
+        ids = [sid for sid in ids if sid not in memo]
+    else:
+        known = {}
+
+    scope_model = get_scope_model()
     content_type = _organization_content_type()
-    mapping: dict[int, int] = {}
+    mapping: dict[int, int] = dict(known)
     for scope_id, object_id in scope_model.objects.filter(
         pk__in=ids, content_type=content_type
     ).values_list("pk", "object_id"):
         try:
-            mapping[scope_id] = int(object_id)
+            organization_id = int(object_id)
         except (TypeError, ValueError):
             continue
+        mapping[scope_id] = organization_id
+        if memo is not None:
+            memo[scope_id] = organization_id
     return mapping
 
 

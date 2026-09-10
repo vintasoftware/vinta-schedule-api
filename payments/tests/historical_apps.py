@@ -22,6 +22,24 @@ What broke is therefore the shortcut, not the migration. This restores the
 shortcut rather than the shape: the *same live classes*, reachable under the
 label their migration asks for.
 
+**The shortcut's stated limit has since been reached, for some callers.**
+``vinta-django-billing`` 0.8.0 re-keyed the billing models from ``organization``
+onto ``scope`` and renamed ``BillingPlan.is_default_for_new_organizations``.
+That is exactly the "if a future migration changes one of those models' shape"
+condition below, and it does not fail loudly: a migration whose
+``update_or_create`` names a renamed field takes the *update* path against a
+live model, ``setattr``s a plain Python attribute that no column backs, saves
+nothing, and passes. ``payments/tests/test_plan_seed_migration.py`` caught one
+of those; the backfill and provider-routing migration tests were deleted rather
+than propped up, since a test that can pass while the migration is wrong is
+worse than no test.
+
+What is left here is used only by callers whose migrations touch no re-keyed
+field (``payments/tests/test_models.py``'s payment-provider backfill). Before
+adding another, check that the migration names no field the billing package has
+since renamed -- and if it does, drive it through a real historical registry
+instead.
+
 Rebuilding a genuine historical state instead was the alternative and is worse
 here. ``MigrationExecutor``-rendered models at ``payments/0008`` point at
 ``payments_*`` tables, which no longer exist, so every query in these tests

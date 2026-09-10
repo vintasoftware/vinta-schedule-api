@@ -926,14 +926,21 @@ class TestExternalClientIdentifiersGraphQL:
             "identifier": None,
         }
 
-        # 9 queries regardless of N: auth/entitlement/rate-limit plumbing (5), the
-        # calendar lookup (1), the non-recurring events queryset (1), the recurring
+        # 10 queries regardless of N: auth/entitlement/rate-limit plumbing (5),
+        # the billing-scope lookup the entitlement gate needs (1), the calendar
+        # lookup (1), the non-recurring events queryset (1), the recurring
         # (empty) master queryset (1), and ONE prefetch query for
-        # external_client_identifiers covering all 3 events (1). Pinned literal, not
-        # a relative comparison -- with the fix reverted this is 11 (one extra query
-        # per event instead of a single batched one). See the fixer's report for the
-        # captured "before" query log.
-        with django_assert_num_queries(9):
+        # external_client_identifiers covering all 3 events (1). Pinned literal,
+        # not a relative comparison -- with the fix reverted this is 12 (one
+        # extra query per event instead of a single batched one). See the
+        # fixer's report for the captured "before" query log.
+        #
+        # The scope lookup is the one added by vinta-django-billing 0.8.0:
+        # `PublicApiSystemUserMiddleware`'s partner-API entitlement check takes a
+        # `BillingScope`, and nothing joins an organization to its scope. It is
+        # constant in N, which is what this gate is actually about -- the
+        # per-event fan-out it was built to catch is unaffected.
+        with django_assert_num_queries(10):
             response = self._post_json(
                 _CALENDAR_EVENTS_BY_CALENDAR, system_user, token, auth_service, variables
             )

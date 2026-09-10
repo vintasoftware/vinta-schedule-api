@@ -277,16 +277,23 @@ class TestUserAdministersBrandingEligibleOrganization:
     def test_an_admitted_caller_pays_the_entitlement_half_and_nothing_more(
         self, entitled, django_assert_num_queries
     ):
-        """The control for the count above: one membership query plus the two
-        the entitlement half has always cost (subscription, entitlement row).
+        """The control for the count above: one membership query, the scope
+        lookup, and the two the entitlement half has always cost (subscription,
+        entitlement row).
 
         Without it, ``1`` above is also satisfied by a callable that never
         reaches ``is_branding_eligible_organization`` at all.
+
+        The scope lookup is the fourth and arrived with vinta-django-billing
+        0.8.0: the entitlement check takes a ``BillingScope``, and nothing joins
+        an organization to its scope, so resolving one costs a query.
+        ``payments.seams.scopes.scope_for`` memoizes per organization instance,
+        so a caller that asks repeatedly still pays once -- this path asks once.
         """
         user = baker.make(User)
         make_membership(user=user, organization=entitled, groups=[GROUP_ORGANIZATION_ADMIN])
 
-        with django_assert_num_queries(3):
+        with django_assert_num_queries(4):
             assert user_administers_branding_eligible_organization(user) is True
 
     def test_it_answers_with_no_organization_bound(self, entitled):

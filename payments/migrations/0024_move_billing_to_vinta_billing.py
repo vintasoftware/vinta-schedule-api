@@ -555,8 +555,20 @@ class Migration(migrations.Migration):
     # `run_before` is the edge that was missing. The copy has to happen while
     # both sides still speak `organization_id`; the scope migration re-keys what
     # this migration has already moved.
+    #
+    # Pinned at `0003`, not `0004`, even though `0004` is the one that re-keys.
+    # `0003` merely creates `BillingScope`, so ordering it after this migration
+    # is not needed going forwards -- but it is needed coming back. Left free to
+    # sort before this migration, `0003` is unapplied first on a reverse while
+    # the historical state handed to *this* migration still contains
+    # `BillingScope`; `grant_on_payments` then deletes a stale `ContentType`,
+    # Django's collector walks `BillingScope.content_type` (`on_delete=PROTECT`)
+    # to check for protected references, and queries a table that has already
+    # been dropped. Pinning the whole scope feature after the move makes the
+    # reverse unwind in the mirror order of the forward run, which is the only
+    # order in which both halves see a consistent state.
     run_before = [
-        ("vinta_billing", "0004_add_scope_columns"),
+        ("vinta_billing", "0003_billingscope"),
     ]
 
     operations = [

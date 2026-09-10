@@ -49,10 +49,16 @@ class DedupingPaymentService:
         self.calls: list[str] = []
         self._distinct_keys: set[str] = set()
 
-    def create_payment(self, *, idempotency_key: str = "", **kwargs) -> Payment:
+    def create_payment(self, *, scope, idempotency_key: str = "", **kwargs) -> Payment:
         self.calls.append(idempotency_key)
         self._distinct_keys.add(idempotency_key)
-        return baker.make(Payment, external_id=idempotency_key)
+        # `billing_profile__scope=scope` rather than letting baker invent the
+        # chain. `Payment` reaches `BillingScope` through `BillingProfile`, and
+        # an invented scope gets a random 255-character `object_id`, which
+        # `BillingScope.save()` then expands into a `scope_key` longer than its
+        # own 255-character column. Naming the real scope also keeps the payment
+        # attached to the subscription actually being closed.
+        return baker.make(Payment, external_id=idempotency_key, billing_profile__scope=scope)
 
     @property
     def settled_keys(self) -> set[str]:

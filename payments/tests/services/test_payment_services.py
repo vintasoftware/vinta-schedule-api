@@ -66,7 +66,7 @@ from audit_integration.constants import AuditAction, AuditActorType
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
-from payments.seams.scopes import scope_for
+from payments.seams.scopes import organization_for, scope_for
 from payments.tests.provider_settings import use_providers
 
 
@@ -254,7 +254,7 @@ def test_create_payment_raises_when_billing_profile_missing_contact_email(
     """`_serialize_billing_profile` must raise a clear error rather than silently
     send the payment gateway a null payer email."""
     billing_profile = BillingProfileModel.objects.create(
-        organization=organization,
+        scope=scope_for(organization),
         contact_first_name="Ada",
         contact_email="",
         document_type="CPF",
@@ -1430,7 +1430,9 @@ def test_set_payment_provider_records_actor_from_user(
     membership = grant_membership_groups(
         OrganizationMembership.objects.create(
             user=staff_user,
-            scope=billing_profile.scope,
+            # A membership belongs to an organization, not to a billing scope --
+            # the scope is only how billing addresses the payer.
+            organization=organization_for(billing_profile.scope),
         ),
         [GROUP_ORGANIZATION_ADMIN],
     )
@@ -1687,7 +1689,7 @@ def test_create_refund_does_not_mislabel_a_local_data_error_as_a_provider_declin
     provider-declined ``FAILED`` refund (the exact mislabelling the pre-fetch of
     the adapter was added to avoid)."""
     billing_profile = BillingProfileModel.objects.create(
-        organization=organization,
+        scope=scope_for(organization),
         contact_first_name="Ada",
         contact_email="",
         document_type="CPF",

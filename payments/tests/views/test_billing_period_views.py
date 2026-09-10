@@ -441,11 +441,21 @@ class TestDetailByOrganizationAttribution:
         # queries `TenantScopedViewMixin`/pool resolution already issue for
         # every request in this module, which this test must not conflate
         # with the fix's added query.
-        def organization_name_lookup_queries(captured):
+        def scope_label_lookup_queries(captured):
+            """The one query that resolves display names for the whole response.
+
+            0.8.0 moved that resolution off the organization table: the view now
+            reads ``BillingScope.label`` for the pooled scope ids
+            (``BillingPeriodViewSet.retrieve``), so the query to count is the
+            one selecting that column -- there is no ``AS "pk"``/``AS "name"``
+            aliasing any more.
+            """
+            # `"label" AS "label"` rather than just the column name: the view
+            # resolves labels with `values_list("pk", "label")`, and that alias
+            # is what distinguishes its one batched lookup from the full-row
+            # `SELECT`s on the same table that scope resolution issues.
             return [
-                query
-                for query in captured.captured_queries
-                if 'AS "pk"' in query["sql"] and 'AS "name"' in query["sql"]
+                query for query in captured.captured_queries if '"label" AS "label"' in query["sql"]
             ]
 
         summary = make_summary(
@@ -465,7 +475,7 @@ class TestDetailByOrganizationAttribution:
             small_response = auth_client.get(period_detail_url(summary.pk))
 
         assert small_response.status_code == status.HTTP_200_OK
-        small_queries = organization_name_lookup_queries(captured_one_row_one_org)
+        small_queries = scope_label_lookup_queries(captured_one_row_one_org)
         assert len(small_queries) == 1
 
         resource_keys = [
@@ -494,7 +504,7 @@ class TestDetailByOrganizationAttribution:
 
         assert large_response.status_code == status.HTTP_200_OK
         assert len(large_response.data["resources"]) == 1 + len(resource_keys)
-        large_queries = organization_name_lookup_queries(captured_eight_rows_two_orgs)
+        large_queries = scope_label_lookup_queries(captured_eight_rows_two_orgs)
         # Exactly one query resolves organization names for the whole
         # response, in both cases -- the batched `pk__in=...` lookup -- not
         # one per resource row (1 -> 8) and not one per organization

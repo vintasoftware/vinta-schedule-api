@@ -204,6 +204,9 @@ MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
+    # Before anything that can ask a billing question, so the scope-to-organization
+    # memo is live for the whole request. See the class docstring.
+    "payments.middlewares.BillingScopeTranslationCacheMiddleware",
     "public_api.middlewares.PublicApiSystemUserMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",

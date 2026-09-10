@@ -10,6 +10,12 @@ it the same way a host-owned viewset would. That part is inherited unchanged.
 
 **The override below is a workaround for a defect in vinta-django-billing
 0.8.0** and should be deleted the moment upstream fixes it.
+
+Nothing here may override ``dispatch``, ``initial`` or ``perform_authentication``:
+``vinta_orgs``' ``OrganizationScopedAPIViewMixin`` owns those as its
+tenancy-resolution seam, and ``common/tests/test_tenant_scoped_mro.py`` pins
+that every routed view resolves them to the package. Request-lifetime work goes
+in middleware instead -- see ``payments.middlewares``.
 """
 
 from __future__ import annotations
