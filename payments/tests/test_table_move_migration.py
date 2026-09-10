@@ -33,7 +33,7 @@ from django.db import connection
 import pytest
 from vinta_billing.models import BillingAddress, BillingPlan, PlanEntitlement, PlanLimit
 
-from common.testing.migration_replay import migration_replay, uninterruptible
+from common.testing.migration_replay import migration_replay, run_replay_step, uninterruptible
 from payments.seams.resource_keys import (
     ENTITLEMENT_KEYS,
     PARTNER_API,
@@ -292,7 +292,11 @@ class TestTheReversePath:
         assert before["planentitlement"] >= 1
 
         try:
-            call_command("migrate", "payments", "0022_capability_permissions", verbosity=0)
+            run_replay_step(
+                lambda: call_command(
+                    "migrate", "payments", "0022_capability_permissions", verbosity=0
+                )
+            )
 
             assert _table_names("vinta_billing_") == set(), (
                 "reversing past 0023 must take the package's tables with it, or "
@@ -362,9 +366,11 @@ class TestTheReversePath:
             # `uninterruptible`: see `common.testing.migration_replay`. This
             # restore is the reason the rest of the worker's session still has a
             # database; pytest.ini's hang guard fires by signal and would
-            # otherwise be free to land in the middle of it.
+            # otherwise be free to land in the middle of it. `run_replay_step`
+            # retries the one thing that can still fail it: an autovacuum
+            # deadlock (same module).
             with uninterruptible():
-                call_command("migrate", verbosity=0)
+                run_replay_step(lambda: call_command("migrate", verbosity=0))
 
         assert _table_names("payments_") == set()
         assert {table: _count(f"vinta_billing_{table}") for table in EXPECTED_TABLES} == before

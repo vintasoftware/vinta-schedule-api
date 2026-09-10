@@ -31,15 +31,53 @@ Two things close it, and both are needed:
 - :func:`uninterruptible` wraps the restore so the alarm cannot land in the
   middle of it. A replay that overruns then fails on its own and leaves the
   database consistent for everything after it.
+
+Autovacuum can deadlock a replay
+--------------------------------
+A replay runs on the test's one connection, so it cannot deadlock with itself.
+Autovacuum is a second session in the same database, and the suite feeds it:
+every ``transaction=True`` flush and every bulk insert pushes tables past the
+autoanalyze threshold, so an ``autovacuum: ANALYZE`` of a table the replay is
+about to alter is a matter of timing, not of anything the test did wrong.
+
+Postgres 15.9 / 16.5 / 17.1 changed how the two collide. Those releases fixed
+lost "in-place" catalog updates by making an in-place writer wait for any
+in-progress transaction that has already updated the same ``pg_class`` row.
+ANALYZE refreshes ``pg_class`` in place for the table and each of its indexes.
+A migration that renames an index and later adds a constraint on the same
+table, in one transaction, therefore produces this cycle: the rename updates
+the index's ``pg_class`` row; ANALYZE, already holding ``SHARE UPDATE
+EXCLUSIVE`` on the table, blocks on the migration's transaction; the ``ADD
+CONSTRAINT`` then blocks on ANALYZE's table lock. Postgres picks a victim and
+reports ``deadlock detected``. CI saw exactly this on shard 4 while
+``calendar_integration.0062`` was being re-applied inside a replay's
+``finally`` (the ``postgres:15`` service tag floats to the latest minor, which
+is why it appeared without a change on our side).
+
+The deadlock aborts only the current migration's transaction, and Django
+records a migration only after it completes, so re-running the same ``migrate``
+call resumes where it stopped. :func:`migrate_to` and :func:`restore_leaf_nodes`
+retry a step on ``DeadlockDetected`` -- and on nothing else -- a few times.
+The project's non-atomic migrations are written to be resumable (see the
+resumability guards in ``calendar_integration`` 0054 and 0057), so a retry
+after a partial non-atomic step is the recovery path they were designed for.
+Every replay test should go through these two helpers rather than build its
+own ``MigrationExecutor``.
 """
 
 from __future__ import annotations
 
 import signal
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.db.utils import OperationalError
+
 import pytest
+from psycopg.errors import DeadlockDetected
 
 
 #: Not a performance budget -- a hang guard, like the global one. A replay that
@@ -49,6 +87,13 @@ MIGRATION_REPLAY_TIMEOUT_SECONDS = 600
 #: Marks a test that replays migrations against the shared per-worker database.
 #: Apply to the class or the function; see the module docstring.
 migration_replay = pytest.mark.timeout(MIGRATION_REPLAY_TIMEOUT_SECONDS)
+
+#: How many times one replay step may hit ``deadlock detected`` before the
+#: failure is reported. The aborted transaction unblocks the ANALYZE that was
+#: waiting on it, so the second attempt almost always runs clear; three covers
+#: a second autovacuum worker arriving in between.
+DEADLOCK_ATTEMPTS = 3
+DEADLOCK_RETRY_PAUSE_SECONDS = 0.5
 
 
 @contextmanager
@@ -76,3 +121,68 @@ def uninterruptible() -> Iterator[None]:
     finally:
         if remaining:
             signal.alarm(remaining)
+
+
+def _is_deadlock(exc: OperationalError) -> bool:
+    # Django re-raises psycopg's error as its own ``OperationalError`` with the
+    # original as ``__cause__``; SQLSTATE 40P01 is ``DeadlockDetected`` there.
+    return isinstance(exc.__cause__, DeadlockDetected)
+
+
+def run_replay_step[T](step: Callable[[], T]) -> T:
+    """Run one ``migrate`` call, retrying it if autovacuum deadlocks it.
+
+    Only ``deadlock detected`` is retried -- with a single test connection the
+    other party can only be autovacuum, and the failed step left nothing
+    recorded. Any other error propagates on the first attempt. See the module
+    docstring's "Autovacuum can deadlock a replay".
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return step()
+        except OperationalError as exc:
+            if attempt >= DEADLOCK_ATTEMPTS or not _is_deadlock(exc):
+                raise
+            time.sleep(DEADLOCK_RETRY_PAUSE_SECONDS)
+
+
+def migrate_to(*targets: tuple[str, str]) -> MigrationExecutor:
+    """Step the worker's database to ``targets`` -- ``(app_label, migration_name)``
+    pairs -- and return the executor with its graph rebuilt, for callers that
+    need the historical ``project_state`` afterwards."""
+
+    def step() -> MigrationExecutor:
+        executor = MigrationExecutor(connection)
+        executor.migrate(list(targets))
+        executor.loader.build_graph()
+        return executor
+
+    return run_replay_step(step)
+
+
+def _leaf_step() -> None:
+    executor = MigrationExecutor(connection)
+    executor.migrate(executor.loader.graph.leaf_nodes())
+    executor.loader.build_graph()
+
+
+def migrate_to_leaf_nodes() -> None:
+    """Bring every app forward to its leaf migration as a step *of* a test.
+
+    Interruptible, like :func:`migrate_to`, so a stuck replay still times out.
+    The ``finally`` restore is :func:`restore_leaf_nodes`.
+    """
+    run_replay_step(_leaf_step)
+
+
+def restore_leaf_nodes() -> None:
+    """Put every app back at its leaf migration.
+
+    This is the half of a replay that must complete -- call it from the
+    ``finally`` -- so it runs under :func:`uninterruptible` and retries a
+    deadlock like :func:`migrate_to` does.
+    """
+    with uninterruptible():
+        migrate_to_leaf_nodes()

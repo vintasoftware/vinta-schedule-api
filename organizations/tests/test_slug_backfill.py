@@ -19,12 +19,11 @@ import importlib
 
 from django.apps import apps as global_apps
 from django.db import IntegrityError, connection, transaction
-from django.db.migrations.executor import MigrationExecutor
 
 import pytest
 from model_bakery import baker
 
-from common.testing.migration_replay import migration_replay, uninterruptible
+from common.testing.migration_replay import migrate_to, migration_replay, restore_leaf_nodes
 from organizations.exceptions import SlugDerivationError
 from organizations.models import Organization
 from organizations.slug_generation import (
@@ -178,10 +177,8 @@ class TestTheBackfillMigration:
         # Bound before the try so the finally can always clean up, even if the
         # inserts themselves are what failed.
         ids: list[int] = []
-        executor = MigrationExecutor(connection)
         try:
-            executor.migrate([(APP_LABEL, BEFORE_BACKFILL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, BEFORE_BACKFILL))
 
             ids += self._insert_unslugged(
                 [
@@ -200,9 +197,7 @@ class TestTheBackfillMigration:
                 ]
             )
 
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_CONSTRAINTS)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_CONSTRAINTS))
 
             acme, acme_2, reserved, unslugifiable, blank, pre_slugged = self._slugs_for(ids)
 
@@ -241,13 +236,9 @@ class TestTheBackfillMigration:
             # ``0027``-``0030`` unapplied for every later test sharing this
             # worker's database -- which since ``0030`` means a NOT NULL ``role``
             # column no live model writes.
-            # `uninterruptible`: see `common.testing.migration_replay`. The
-            # alarm landing inside this restore leaves the worker's database
-            # mid-graph and fails every test scheduled after it.
-            with uninterruptible():
-                executor = MigrationExecutor(connection)
-                executor.migrate(executor.loader.graph.leaf_nodes())
-                executor.loader.build_graph()
+            # `restore_leaf_nodes` cannot be interrupted by the timeout and retries an
+            # autovacuum deadlock -- see `common.testing.migration_replay`.
+            restore_leaf_nodes()
 
 
 @pytest.mark.django_db(transaction=True)

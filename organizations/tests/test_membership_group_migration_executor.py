@@ -41,13 +41,12 @@ import datetime
 import importlib
 
 from django.db import connection
-from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
 import pytest
 from model_bakery import baker
 
-from common.testing.migration_replay import migration_replay, uninterruptible
+from common.testing.migration_replay import migrate_to, migration_replay, restore_leaf_nodes
 from organizations.models import Organization
 from users.models import User
 
@@ -65,21 +64,8 @@ BACKFILL_MIGRATION = importlib.import_module(
 
 def _migrate_to(target: tuple[str, str]):
     """Step the database to ``target`` and hand back that state's historical apps."""
-    executor = MigrationExecutor(connection)
-    executor.migrate([target])
-    executor.loader.build_graph()
+    executor = migrate_to(target)
     return executor.loader.project_state([target]).apps
-
-
-def _restore_leaf_nodes() -> None:
-    # `uninterruptible`: this is the half that must complete. See
-    # `common.testing.migration_replay` -- pytest.ini's 10s hang guard fires by
-    # signal, and landing inside this restore leaves the whole worker's database
-    # mid-graph rather than failing one test.
-    with uninterruptible():
-        executor = MigrationExecutor(connection)
-        executor.migrate(executor.loader.graph.leaf_nodes())
-        executor.loader.build_graph()
 
 
 def _delete_rows(table: str, ids: list[int]) -> None:
@@ -197,7 +183,7 @@ class TestTheBackfillOverRealRows:
                     [membership_ids],
                 )
             _delete_rows("organizations_organizationmembership", membership_ids)
-            _restore_leaf_nodes()
+            restore_leaf_nodes()
 
 
 @migration_replay
@@ -272,4 +258,4 @@ class TestTheInvitationValueRemap:
             ]
         finally:
             _delete_rows("organizations_organizationinvitation", invitation_ids)
-            _restore_leaf_nodes()
+            restore_leaf_nodes()
