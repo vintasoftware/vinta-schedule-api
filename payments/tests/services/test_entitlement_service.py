@@ -43,6 +43,7 @@ from payments.seams.resource_keys import (
     WHITE_LABEL_BRANDING,
 )
 from payments.seams.resources import EXCLUDE_INVITATION_ID
+from payments.seams.scopes import organization_for, scope_for
 from payments.seams.seats import check_seat_limit_for_invitation_accept
 from webhooks.models import WebhookConfiguration
 
@@ -67,8 +68,8 @@ def subscription(organization):
     now = timezone.now()
     return baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -117,7 +118,7 @@ class TestGetEffectiveLimit:
         make_add_on(subscription, ORGANIZATION_MEMBERS, 3)
         make_add_on(subscription, ORGANIZATION_MEMBERS, 2)
 
-        result = service.get_effective_limit(organization, ORGANIZATION_MEMBERS)
+        result = service.get_effective_limit(scope_for(organization), ORGANIZATION_MEMBERS)
 
         assert result.limit_value == 10
 
@@ -125,7 +126,7 @@ class TestGetEffectiveLimit:
         make_limit(subscription, ORGANIZATION_MEMBERS, 5)
         make_add_on(subscription, RESOURCE_CALENDARS, 3)
 
-        result = service.get_effective_limit(organization, ORGANIZATION_MEMBERS)
+        result = service.get_effective_limit(scope_for(organization), ORGANIZATION_MEMBERS)
 
         assert result.limit_value == 5
 
@@ -140,7 +141,7 @@ class TestGetEffectiveLimit:
         make_add_on(subscription, ORGANIZATION_MEMBERS, 3)
 
         with CaptureQueriesContext(connection) as captured:
-            result = service.get_effective_limit(organization, ORGANIZATION_MEMBERS)
+            result = service.get_effective_limit(scope_for(organization), ORGANIZATION_MEMBERS)
 
         assert result.limit_value is None
         assert not [
@@ -161,7 +162,7 @@ class TestGetEffectiveLimit:
             overage_unit_price=Decimal("0.0500"),
         )
 
-        result = service.get_effective_limit(organization, EVENT_OCCURRENCES)
+        result = service.get_effective_limit(scope_for(organization), EVENT_OCCURRENCES)
 
         assert result.kind == LimitKind.POSTPAID
         assert result.overage_unit_price == Decimal("0.0500")
@@ -191,7 +192,7 @@ class TestUsageCounters:
             expires_at=timezone.now() + datetime.timedelta(days=7),
         )
 
-        usage = service.get_current_usage(organization, ORGANIZATION_MEMBERS)
+        usage = service.get_current_usage(scope_for(organization), ORGANIZATION_MEMBERS)
 
         assert usage == 3
 
@@ -213,7 +214,7 @@ class TestUsageCounters:
             expires_at=timezone.now() + datetime.timedelta(days=7),
         )
 
-        usage = service.get_current_usage(organization, ORGANIZATION_MEMBERS)
+        usage = service.get_current_usage(scope_for(organization), ORGANIZATION_MEMBERS)
 
         assert usage == 0
 
@@ -238,16 +239,16 @@ class TestUsageCounters:
                 external_id=f"external-{index}",
             )
 
-        assert service.get_current_usage(organization, RESOURCE_CALENDARS) == 2
-        assert service.get_current_usage(organization, BUNDLE_CALENDARS) == 1
+        assert service.get_current_usage(scope_for(organization), RESOURCE_CALENDARS) == 2
+        assert service.get_current_usage(scope_for(organization), BUNDLE_CALENDARS) == 1
 
     def test_appointment_type_and_webhook_counters(self, service, organization, subscription):
         baker.make(AppointmentType, organization=organization, _quantity=2)
         baker.make(WebhookConfiguration, organization=organization, deleted_at=None)
         baker.make(WebhookConfiguration, organization=organization, deleted_at=timezone.now())
 
-        assert service.get_current_usage(organization, APPOINTMENT_TYPES) == 2
-        assert service.get_current_usage(organization, WEBHOOK_SUBSCRIPTIONS) == 1
+        assert service.get_current_usage(scope_for(organization), APPOINTMENT_TYPES) == 2
+        assert service.get_current_usage(scope_for(organization), WEBHOOK_SUBSCRIPTIONS) == 1
 
     def test_usage_is_scoped_to_the_organization(self, service, organization, subscription):
         """A sibling organization's rows must never leak into this one's count."""
@@ -255,7 +256,7 @@ class TestUsageCounters:
         baker.make(AppointmentType, organization=other, _quantity=3)
         baker.make(AppointmentType, organization=organization)
 
-        assert service.get_current_usage(organization, APPOINTMENT_TYPES) == 1
+        assert service.get_current_usage(scope_for(organization), APPOINTMENT_TYPES) == 1
 
 
 @pytest.mark.django_db
@@ -275,7 +276,7 @@ class TestCheckLimit:
         the user at an add-on would be a dead end."""
         make_limit(subscription, EVENT_OCCURRENCES, 0, kind=LimitKind.POSTPAID)
 
-        result = service.check_limit(organization, EVENT_OCCURRENCES)
+        result = service.check_limit(scope_for(organization), EVENT_OCCURRENCES)
 
         assert result.allowed is False
         assert result.remedy == LimitRemedy.UPGRADE_PLAN
@@ -289,7 +290,7 @@ class TestCheckLimit:
         make_limit(subscription, APPOINTMENT_TYPES, 1)
         baker.make(AppointmentType, organization=organization)
 
-        result = service.check_limit(organization, APPOINTMENT_TYPES)
+        result = service.check_limit(scope_for(organization), APPOINTMENT_TYPES)
 
         assert result.allowed is False
         assert result.remedy == LimitRemedy.RESOLVE_BILLING
@@ -307,7 +308,7 @@ class TestCheckLimit:
         make_limit(subscription, APPOINTMENT_TYPES, 3)
 
         with transaction.atomic(), CaptureQueriesContext(connection) as captured:
-            result = service.check_limit(organization, APPOINTMENT_TYPES, lock=True)
+            result = service.check_limit(scope_for(organization), APPOINTMENT_TYPES, lock=True)
 
         assert result.allowed is True
         locking_queries = [
@@ -327,7 +328,7 @@ class TestCheckLimit:
         make_limit(subscription, APPOINTMENT_TYPES, 3)
 
         with transaction.atomic(), CaptureQueriesContext(connection) as captured:
-            service.check_limit(organization, APPOINTMENT_TYPES, lock=False)
+            service.check_limit(scope_for(organization), APPOINTMENT_TYPES, lock=False)
 
         assert not [query for query in captured.captured_queries if "FOR UPDATE" in query["sql"]]
 
@@ -344,7 +345,7 @@ class TestCheckLimit:
         baker.make(AppointmentType, organization=organization, _quantity=3)
 
         with CaptureQueriesContext(connection) as captured:
-            result = service.check_limit(organization, APPOINTMENT_TYPES)
+            result = service.check_limit(scope_for(organization), APPOINTMENT_TYPES)
 
         assert result.allowed is True
         assert result.ceiling is None
@@ -368,13 +369,13 @@ class TestCheckLimit:
         Pinned as an upper bound on subscription reads rather than an exact total,
         so unrelated query changes elsewhere do not make this test brittle.
         """
-        root = subscription.organization
+        root = organization_for(subscription.scope)
         mid = baker.make(Organization, parent=root, can_invite_organizations=False)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
         make_limit(subscription, APPOINTMENT_TYPES, 3)
 
         with CaptureQueriesContext(connection) as captured:
-            service.check_limit(leaf, APPOINTMENT_TYPES)
+            service.check_limit(scope_for(leaf), APPOINTMENT_TYPES)
 
         subscription_reads = [
             query
@@ -413,10 +414,10 @@ class TestSeatCountingOnTheAcceptPath:
         baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=4)
         invitation = self._make_pending_invitation(organization)
 
-        assert service.get_current_usage(organization, ORGANIZATION_MEMBERS) == 5
+        assert service.get_current_usage(scope_for(organization), ORGANIZATION_MEMBERS) == 5
         assert (
             service.get_current_usage(
-                organization,
+                scope_for(organization),
                 ORGANIZATION_MEMBERS,
                 usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
             )
@@ -433,12 +434,12 @@ class TestSeatCountingOnTheAcceptPath:
         baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=4)
         invitation = self._make_pending_invitation(organization)
 
-        assert not service.check_limit(organization, ORGANIZATION_MEMBERS).allowed, (
+        assert not service.check_limit(scope_for(organization), ORGANIZATION_MEMBERS).allowed, (
             "A sixth *new* invite must still be blocked."
         )
 
         result = service.check_limit(
-            organization,
+            scope_for(organization),
             ORGANIZATION_MEMBERS,
             usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
         )
@@ -498,14 +499,14 @@ class TestSeatCountingOnTheAcceptPath:
 
         with pytest.raises(InapplicableUsageExtraError):
             service.check_limit(
-                organization,
+                scope_for(organization),
                 RESOURCE_CALENDARS,
                 usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
             )
 
         with pytest.raises(InapplicableUsageExtraError):
             service.get_current_usage(
-                organization,
+                scope_for(organization),
                 RESOURCE_CALENDARS,
                 usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
             )
@@ -520,7 +521,7 @@ class TestSeatCountingOnTheAcceptPath:
         self._make_pending_invitation(organization)
 
         result = service.check_limit(
-            organization,
+            scope_for(organization),
             ORGANIZATION_MEMBERS,
             usage_extra={EXCLUDE_INVITATION_ID: accepted.pk},
         )
@@ -539,7 +540,7 @@ class TestHasEntitlement:
             is_enabled=True,
         )
 
-        assert service.has_entitlement(organization, PARTNER_API) is True
+        assert service.has_entitlement(scope_for(organization), PARTNER_API) is True
 
     def test_disabled_entitlement_is_denied(self, service, organization, subscription):
         baker.make(
@@ -549,7 +550,7 @@ class TestHasEntitlement:
             is_enabled=False,
         )
 
-        assert service.has_entitlement(organization, PARTNER_API) is False
+        assert service.has_entitlement(scope_for(organization), PARTNER_API) is False
 
     def test_missing_entitlement_row_is_denied(self, service, organization, subscription):
         """Deliberately the opposite of the limits fail-open rule.
@@ -559,7 +560,7 @@ class TestHasEntitlement:
         is represented. Failing open here would hand every paid feature to every
         organization whose plan omits it.
         """
-        assert service.has_entitlement(organization, WHITE_LABEL_BRANDING) is False
+        assert service.has_entitlement(scope_for(organization), WHITE_LABEL_BRANDING) is False
 
     def test_missing_subscription_denies(self, service, organization):
         """A missing subscription denies, and deliberately does **not** mirror
@@ -574,7 +575,7 @@ class TestHasEntitlement:
 
         Rollout safety does not depend on this branch either: migration
         ``0009_backfill_unlimited_subscriptions`` plus
-        ``is_default_for_new_organizations`` put every billing root on
+        ``is_default_for_new_scopes`` put every billing root on
         ``unlimited``, whose ``_sync_entitlements`` writes every entitlement
         enabled. This branch only fires once that invariant is already broken --
         e.g. ops deleting a ``Subscription`` to re-provision an organization -- and
@@ -582,4 +583,4 @@ class TestHasEntitlement:
         whose billing state is corrupt. A loud, recoverable 402 is the better
         failure.
         """
-        assert service.has_entitlement(organization, PARTNER_API) is False
+        assert service.has_entitlement(scope_for(organization), PARTNER_API) is False

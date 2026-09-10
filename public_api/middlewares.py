@@ -14,6 +14,7 @@ from vinta_billing.exceptions import OverLimitError
 from common.organization_context import organization_context
 from organizations.models import Organization
 from payments.seams.resource_keys import PARTNER_API
+from payments.seams.scopes import scope_for
 from public_api.exceptions import InvalidAuthorizationHeaderError, PublicAPIServiceUnavailableError
 from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService
@@ -111,7 +112,7 @@ class PublicApiSystemUserMiddleware:
         """
         if entitlement_service is None:
             return False
-        return has_entitlement_cached(entitlement_service, organization, PARTNER_API)
+        return has_entitlement_cached(entitlement_service, scope_for(organization), PARTNER_API)
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
         # ignore middleware if request is not the graphql endpoint

@@ -23,6 +23,7 @@ from calendar_integration.models import (
 from calendar_integration.services.calendar_service import CalendarService
 from common.organization_context import organization_context
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 from vinta_schedule_api.celery import app
 
 
@@ -53,7 +54,7 @@ def _restricted_or_skip(
     picked up, mirroring the existing early return for a missing organization
     just above each call site.
     """
-    if not entitlement_service.is_billing_root_restricted(organization):
+    if not entitlement_service.is_billing_root_restricted(scope_for(organization)):
         return False
     logger.info(
         "Skipping calendar sync for organization %s: organization is RESTRICTED.",

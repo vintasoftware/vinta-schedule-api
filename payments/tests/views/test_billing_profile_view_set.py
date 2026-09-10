@@ -8,6 +8,7 @@ from vinta_billing.models import BillingAddress, BillingProfile
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
+from payments.seams.scopes import organization_for, scope_for
 
 
 @pytest.fixture
@@ -54,7 +55,7 @@ class TestBillingProfileViewSet:
         )
         _billing_profile = baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             document_type="SSN",
             document_number="123456789",
             billing_address=billing_address,
@@ -64,7 +65,11 @@ class TestBillingProfileViewSet:
         response = auth_client.get(url)
 
         assert response.status_code == status.HTTP_200_OK
-        assert response.data["id"] == organization.pk
+        # The serializer sources `id` from `scope_id`, so this is the scope's
+        # pk, not the organization's. The two coincide on a freshly-created
+        # database and diverge once either sequence has moved -- comparing
+        # against the organization passes locally and fails in a long shard.
+        assert response.data["id"] == scope_for(organization).pk
         assert response.data["document_type"] == "SSN"
         assert response.data["document_number"] == "123456789"
         assert response.data["billing_address"]["street_name"] == "Main Street"
@@ -91,7 +96,7 @@ class TestBillingProfileViewSet:
             zip_code="10001",
         )
         billing_profile = BillingProfile.objects.create(
-            organization=organization,
+            scope=scope_for(organization),
             contact_first_name="Ada",
             contact_email="billing@example.com",
             document_type="LEGACY_TAX_ID",
@@ -142,7 +147,7 @@ class TestBillingProfileViewSet:
         org_a_address = baker.make(BillingAddress)
         baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             document_type="SSN",
             document_number="AAA",
             billing_address=org_a_address,
@@ -151,7 +156,7 @@ class TestBillingProfileViewSet:
         org_b_address = baker.make(BillingAddress)
         baker.make(
             BillingProfile,
-            organization=other_organization,
+            scope=scope_for(other_organization),
             document_type="SSN",
             document_number="BBB",
             billing_address=org_b_address,
@@ -186,7 +191,7 @@ class TestBillingProfileViewSet:
         org_a_address = baker.make(BillingAddress)
         baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             document_type="SSN",
             document_number="AAA",
             billing_address=org_a_address,
@@ -194,7 +199,7 @@ class TestBillingProfileViewSet:
         org_b_address = baker.make(BillingAddress)
         baker.make(
             BillingProfile,
-            organization=other_organization,
+            scope=scope_for(other_organization),
             document_type="SSN",
             document_number="BBB",
             billing_address=org_b_address,
@@ -247,13 +252,17 @@ class TestBillingProfileViewSet:
         response = auth_client.post(url, data, format="json")
 
         assert response.status_code == status.HTTP_201_CREATED
-        assert response.data["id"] == organization.pk
+        # The serializer sources `id` from `scope_id`, so this is the scope's
+        # pk, not the organization's. The two coincide on a freshly-created
+        # database and diverge once either sequence has moved -- comparing
+        # against the organization passes locally and fails in a long shard.
+        assert response.data["id"] == scope_for(organization).pk
         assert response.data["document_type"] == "SSN"
         assert response.data["document_number"] == "123456789"
         assert response.data["billing_address"]["street_name"] == "Main Street"
 
         # Verify the billing profile was created in the database
-        billing_profile = BillingProfile.objects.get(organization=organization)
+        billing_profile = BillingProfile.objects.get(scope=scope_for(organization))
         assert billing_profile.document_type == "SSN"
         assert billing_profile.document_number == "123456789"
         assert billing_profile.contact_email == "billing@example.com"
@@ -264,7 +273,7 @@ class TestBillingProfileViewSet:
     ):
         """A second POST for an organization that already has a billing profile
         returns 409 instead of hitting the PK unique violation as a 500."""
-        baker.make(BillingProfile, organization=organization)
+        baker.make(BillingProfile, scope=scope_for(organization))
 
         url = reverse("api:BillingProfile-create")
         data = {
@@ -285,7 +294,7 @@ class TestBillingProfileViewSet:
         response = auth_client.post(url, data, format="json")
 
         assert response.status_code == status.HTTP_409_CONFLICT
-        assert BillingProfile.objects.filter(organization=organization).count() == 1
+        assert BillingProfile.objects.filter(scope=scope_for(organization)).count() == 1
 
     def test_create_billing_profile_no_membership_forbidden(self, auth_client):
         """A user with no active organization membership cannot create a billing
@@ -377,7 +386,7 @@ class TestBillingProfileViewSet:
     ):
         """Same rejection on the update path -- writes are constrained
         regardless of whether the row is new or pre-existing."""
-        baker.make(BillingProfile, organization=organization, document_type="CPF")
+        baker.make(BillingProfile, scope=scope_for(organization), document_type="CPF")
 
         url = reverse("api:BillingProfile-update")
         data = {
@@ -432,7 +441,7 @@ class TestBillingProfileViewSet:
         )
         billing_profile = baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             document_type="DL",
             document_number="OLD123",
             billing_address=billing_address,
@@ -506,7 +515,7 @@ class TestBillingProfileViewSet:
     ):
         """A non-admin member may not update the organization's billing profile,
         even when one already exists."""
-        baker.make(BillingProfile, organization=organization)
+        baker.make(BillingProfile, scope=scope_for(organization))
 
         url = reverse("api:BillingProfile-update")
         data = {"document_type": "SSN", "document_number": "123456789"}
@@ -529,7 +538,7 @@ class TestBillingProfileViewSet:
         )
         billing_profile = baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             document_type="DL",
             document_number="OLD123",
             billing_address=billing_address,
@@ -572,7 +581,7 @@ class TestBillingProfileViewSet:
         )
         _billing_profile = baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             document_type="DL",
             document_number="OLD123",
             billing_address=billing_address,
@@ -620,7 +629,7 @@ class TestBillingProfileViewSet:
     ):
         """A non-admin member may not partially update the organization's billing
         profile, even when one already exists."""
-        baker.make(BillingProfile, organization=organization)
+        baker.make(BillingProfile, scope=scope_for(organization))
 
         url = reverse("api:BillingProfile-partial_update")
         data = {"document_number": "NEW123"}
@@ -659,19 +668,21 @@ class TestBillingProfileViewSet:
         )
         billing_profile = baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             document_type="SSN",
             document_number="123456789",
             billing_address=billing_address,
         )
 
         # Test that the billing profile is correctly linked
-        assert billing_profile.organization == organization
+        assert organization_for(billing_profile.scope) == organization
         assert billing_profile.billing_address == billing_address
         assert billing_address.billing_profile == billing_profile
 
-        # Test that we can access the billing profile through the organization
-        assert organization.billing_profile == billing_profile
+        # Reachable through the scope now, not the organization: 0.8.0 re-pointed
+        # `BillingProfile` at the payer's scope, so the reverse accessor hangs off
+        # there.
+        assert scope_for(organization).billing_profile == billing_profile
 
     def test_create_billing_profile_with_minimal_address_data(self, auth_client, membership):
         """Test creating billing profile with minimal required address data."""

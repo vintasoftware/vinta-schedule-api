@@ -11,6 +11,7 @@ from vinta_billing.constants import BillingInterval
 from vinta_billing.models import MeteredOccurrence, Subscription
 
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 
 
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)
@@ -24,7 +25,7 @@ def organization(db) -> Organization:
 
 @pytest.fixture
 def subscription(organization: Organization) -> Subscription:
-    subscription = Subscription.objects.get(organization=organization)
+    subscription = Subscription.objects.get(scope=scope_for(organization))
     subscription.current_period_start = PERIOD_START
     subscription.current_period_end = PERIOD_END
     subscription.save(update_fields=["current_period_start", "current_period_end", "modified"])
@@ -63,7 +64,7 @@ def test_reports_drift_and_the_overage_total(
     """Orphaned metered rows (no matching calendar expansion) surface as drift, and
     the overage owed is summed from the stamped unit prices."""
     MeteredOccurrence.objects.create(
-        organization=organization,
+        scope=scope_for(organization),
         subscription=subscription,
         event_id=1,
         occurrence_start=PERIOD_START + datetime.timedelta(days=1),
@@ -96,7 +97,7 @@ def test_annual_subscription_reconstructs_a_monthly_settlement_period(
     april_start = datetime.datetime(2025, 4, 1, 0, 0, tzinfo=datetime.UTC)
     may_start = datetime.datetime(2025, 5, 1, 0, 0, tzinfo=datetime.UTC)
     MeteredOccurrence.objects.create(
-        organization=organization,
+        scope=scope_for(organization),
         subscription=subscription,
         event_id=1,
         occurrence_start=april_start + datetime.timedelta(days=5),

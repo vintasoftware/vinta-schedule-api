@@ -101,6 +101,7 @@ from organizations.permissions import (
 from organizations.redirect_url_validation import validate_redirect_url
 from organizations.services import OrganizationService
 from organizations.slug_validation import validate_organization_slug
+from payments.seams.scopes import scope_for
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.extensions import raise_over_limit_graphql_error
@@ -1404,7 +1405,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         # parent-less or reseller child, this call is what stops it from ending up
         # plan-less rather than a second, disconnected invariant to keep in sync.
         deps = get_mutation_dependencies()
-        deps.subscription_service.create_subscription_for_organization(child_org)
+        deps.subscription_service.create_subscription_for_scope(scope_for(child_org))
 
         return CreateOrganizationResult(
             organization=OrganizationResult(id=child_org.id, name=child_org.name)

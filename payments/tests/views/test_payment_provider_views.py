@@ -26,6 +26,7 @@ from vinta_billing.models import BillingAddress, BillingProfile
 from organizations.models import Organization
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
+from payments.seams.scopes import scope_for
 from payments.tests.provider_settings import use_providers
 
 
@@ -59,7 +60,7 @@ def make_billing_profile(organization: Organization, payment_provider: str = "")
     billing_address: BillingAddress = baker.make(BillingAddress)
     return baker.make(
         BillingProfile,
-        organization=organization,
+        scope=scope_for(organization),
         contact_email="billing@example.com",
         document_type="CPF",
         document_number="12345678900",
@@ -164,7 +165,7 @@ class TestOrganizationPaymentProviderEndpoint:
             default_provider=PaymentProviders.STRIPE,
             STRIPE_PUBLISHABLE_KEY="pk_test_org",
         )
-        assert not BillingProfile.objects.filter(organization=organization).exists()
+        assert not BillingProfile.objects.filter(scope=scope_for(organization)).exists()
 
         response = auth_client.get(org_provider_url())
 

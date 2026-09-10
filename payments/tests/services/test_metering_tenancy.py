@@ -35,6 +35,11 @@ from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar
 from organizations.models import Organization
 from payments.seams.resource_keys import EVENT_OCCURRENCES
+from payments.seams.scopes import (
+    organization_ids_for_scope_ids,
+    scope_for,
+    sync_scope_for_organization,
+)
 
 
 # This module builds its own `Subscription` rows on specific organizations
@@ -49,7 +54,7 @@ FIRST_MONDAY = datetime.datetime(2025, 6, 2, 10, 0, tzinfo=datetime.UTC)
 
 @pytest.fixture
 def plan() -> BillingPlan:
-    return baker.make(BillingPlan, is_default_for_new_organizations=False)
+    return baker.make(BillingPlan, is_default_for_new_scopes=False)
 
 
 @pytest.fixture
@@ -64,7 +69,7 @@ def make_subscription(organization: Organization, plan: BillingPlan) -> Subscrip
     """A subscription pinned to June 2025 with an unlimited occurrence allowance."""
     subscription = baker.make(
         Subscription,
-        organization=organization,
+        scope=scope_for(organization),
         plan=plan,
         billing_state=BillingState.FREE,
         current_period_start=PERIOD_START,
@@ -106,11 +111,19 @@ def make_weekly_series(calendar: Calendar, suffix: str, count: int = 5):
 
 
 def metered_organization_ids(subscription: Subscription) -> set[int]:
-    return set(
+    """Which organizations the meter actually billed, for this subscription.
+
+    ``MeteredOccurrence`` is keyed by ``scope_id`` since 0.8.0, but every
+    assertion in this module is about *organizations* -- which tenant's events
+    landed on whose ledger -- so the ids are translated back here and the tests
+    below read unchanged.
+    """
+    scope_ids = set(
         MeteredOccurrence.objects.filter(subscription=subscription).values_list(
-            "organization_id", flat=True
+            "scope_id", flat=True
         )
     )
+    return set(organization_ids_for_scope_ids(scope_ids).values())
 
 
 @pytest.mark.django_db
@@ -165,7 +178,7 @@ class TestMeteringPoolBoundary:
 
         assert result.occurrences_recorded == 15
         assert metered_organization_ids(subscription) == {root.pk, child.pk, grandchild.pk}
-        assert not Subscription.objects.filter(organization=child).exists()
+        assert not Subscription.objects.filter(scope=scope_for(child)).exists()
 
     def test_the_pool_stops_at_a_nested_billing_root(self, metering_service, plan):
         """A nested reseller pays for its own subtree.
@@ -230,7 +243,7 @@ class TestMeteringPoolBoundary:
             billing_period_start=now - datetime.timedelta(days=1)
         )
 
-        usage = EntitlementService().get_current_usage(child, EVENT_OCCURRENCES)
+        usage = EntitlementService().get_current_usage(scope_for(child), EVENT_OCCURRENCES)
         assert usage == 10, "root + child, and specifically not the nested root's 5"
 
 
@@ -262,6 +275,10 @@ class TestSweepSkipsDemotedBillingRoots:
         # The admin edit: `demoted` is re-parented under `root` and is not itself a
         # reseller, so it now pools against `root`'s subscription.
         Organization.objects.filter(pk=demoted.pk).update(parent=root)
+        # `update()` sends no `post_save`, so the scope mirror does not learn
+        # about the re-parent on its own -- see `payments.seams.scopes`.
+        demoted.refresh_from_db()
+        sync_scope_for_organization(demoted)
 
         to_sweep = set(MeteringService.subscriptions_to_sweep())
         assert root_subscription.pk in to_sweep
@@ -279,6 +296,10 @@ class TestSweepSkipsDemotedBillingRoots:
         make_subscription(root, plan)
         demoted_subscription = make_subscription(demoted, plan)
         Organization.objects.filter(pk=demoted.pk).update(parent=root)
+        # `update()` sends no `post_save`, so the scope mirror does not learn
+        # about the re-parent on its own -- see `payments.seams.scopes`.
+        demoted.refresh_from_db()
+        sync_scope_for_organization(demoted)
 
         with caplog.at_level("WARNING", logger="vinta_billing.services.metering_service"):
             MeteringService.subscriptions_to_sweep()
@@ -331,8 +352,11 @@ class TestPreFilterMatchesTheUniqueConstraint:
         metering_service.meter_occurrences_for_period(own_subscription, PERIOD_START, PERIOD_END)
         assert MeteredOccurrence.objects.filter(subscription=own_subscription).count() == 5
 
-        # The demotion.
+        # The demotion. `update()` sends no `post_save`, so the scope mirror is
+        # told explicitly -- see `payments.seams.scopes`.
         Organization.objects.filter(pk=formerly_independent.pk).update(parent=root)
+        formerly_independent.refresh_from_db()
+        sync_scope_for_organization(formerly_independent)
 
         # The ancestor now sweeps the same occurrences. They are already recorded
         # under the constraint tuple, so nothing new is written.

@@ -38,6 +38,7 @@ from organizations.permission_catalog import (
     GROUP_ORGANIZATION_BILLING_OWNER,
 )
 from organizations.tests.helpers import make_membership
+from payments.seams.scopes import scope_for
 from users.factories import UserFactory
 
 
@@ -57,7 +58,7 @@ def make_occurrence(
 ) -> MeteredOccurrence:
     return baker.make(
         MeteredOccurrence,
-        organization=organization,
+        scope=scope_for(organization),
         subscription=subscription,
         event_id=event_id,
         occurrence_start=occurrence_start,
@@ -94,7 +95,7 @@ def child(root: Organization) -> Organization:
 
 @pytest.fixture
 def subscription(root: Organization):
-    return root.subscription
+    return scope_for(root).subscription
 
 
 @pytest.fixture
@@ -174,7 +175,7 @@ class TestPermissions:
 
         assert response.status_code == status.HTTP_200_OK
         assert response.data["count"] == 1
-        assert response.data["results"][0]["organization"]["id"] == child.pk
+        assert response.data["results"][0]["scope"]["id"] == scope_for(child).pk
 
 
 @pytest.mark.django_db
@@ -271,7 +272,7 @@ class TestOverageTiesToTheMoney:
 
         expected_overage_total = (
             MeteredOccurrence.objects.for_billing_period(subscription.pk, billing_period_start)
-            .for_organizations([root.pk])
+            .for_scopes([scope_for(root).pk])
             .overage_total()
         )
         assert expected_overage_total == Decimal("0.0400")
@@ -292,10 +293,10 @@ class TestOrganizationFilterValidatesPoolMembership:
     ):
         outside_organization = baker.make(Organization, parent=None, can_invite_organizations=True)
 
-        response = auth_client.get(occurrences_url(), {"organization": outside_organization.pk})
+        response = auth_client.get(occurrences_url(), {"scope": scope_for(outside_organization).pk})
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
-        assert "organization" in response.data
+        assert "scope" in response.data
 
     def test_organization_inside_the_pool_narrows_normally(
         self, auth_client, admin_membership, root, child, subscription
@@ -316,7 +317,7 @@ class TestOrganizationFilterValidatesPoolMembership:
             billing_period_start=billing_period_start,
         )
 
-        response = auth_client.get(occurrences_url(), {"organization": root.pk})
+        response = auth_client.get(occurrences_url(), {"scope": scope_for(root).pk})
 
         assert response.status_code == status.HTTP_200_OK
         returned_ids = [row["id"] for row in response.data["results"]]

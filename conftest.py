@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 import pytest
 from rest_framework.test import APIClient
 
+from payments.seams.scopes import scope_for
+
 
 # Repairs the one hazard the package's seeded-group pattern creates on its own:
 # a ``transaction=True`` test flushes ``auth_group`` / ``auth_group_permissions``
@@ -179,7 +181,7 @@ def provision_default_subscription(request):
     Production organizations are created through ``OrganizationService``, which calls
     ``SubscriptionService.create_subscription_for_organization`` — so the "no
     plan-less state" rule holds for every billing root, and every one of them lands
-    on the seeded ``unlimited`` plan (``is_default_for_new_organizations=True``), whose
+    on the seeded ``unlimited`` plan (``is_default_for_new_scopes=True``), whose
     ``_sync_entitlements`` writes every entitlement enabled. Tests that build an
     ``Organization`` with ``baker.make`` bypass that service and produce an organization
     in a state production cannot reach: no ``Subscription`` at all.
@@ -221,10 +223,10 @@ def provision_default_subscription(request):
         assert container is not None, "DI container is only assigned in DICoreConfig.ready()"
         subscription_service = container.subscription_service()
         try:
-            subscription_service.create_subscription_for_organization(instance)
+            subscription_service.create_subscription_for_scope(scope_for(instance))
         except NoDefaultBillingPlanError:
             _reseed_billing_plans()
-            subscription_service.create_subscription_for_organization(instance)
+            subscription_service.create_subscription_for_scope(scope_for(instance))
 
     post_save.connect(
         _provision, sender=Organization, dispatch_uid="conftest_provision_default_subscription"
@@ -321,7 +323,7 @@ def _seeded_billing_catalog_is_missing() -> bool:
     """
     from vinta_billing.models import BillingPlan
 
-    return not BillingPlan.objects.filter(is_default_for_new_organizations=True).exists()
+    return not BillingPlan.objects.filter(is_default_for_new_scopes=True).exists()
 
 
 @pytest.fixture(scope="session", autouse=True)

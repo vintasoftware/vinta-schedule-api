@@ -42,6 +42,7 @@ from payments.seams.resource_keys import (
     RESOURCE_CALENDARS,
     RESOURCE_KEYS,
 )
+from payments.seams.scopes import scope_for
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -61,7 +62,7 @@ def superuser():
 class TestSubscriptionAdminSaveFormsetLimits:
     def test_only_the_changed_row_is_marked_overridden(self, rf, superuser):
         org = baker.make(Organization, parent=None)
-        subscription = SubscriptionService().create_subscription_for_organization(org)
+        subscription = SubscriptionService().create_subscription_for_scope(scope_for(org))
         changed_row = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         unchanged_row = subscription.limits.exclude(pk=changed_row.pk).first()
         assert unchanged_row is not None
@@ -110,7 +111,7 @@ class TestSubscriptionAdminSaveFormsetLimits:
         field must leave the new (cleared) value in place.
         """
         org = baker.make(Organization, parent=None)
-        subscription = SubscriptionService().create_subscription_for_organization(org)
+        subscription = SubscriptionService().create_subscription_for_scope(scope_for(org))
         overridden_row = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         overridden_row.is_overridden = True
         overridden_row.save(update_fields=["is_overridden"])
@@ -160,7 +161,7 @@ class TestSubscriptionAdminSaveFormsetLimits:
 class TestSubscriptionAdminSaveFormsetEntitlements:
     def test_only_the_changed_row_is_marked_overridden(self, rf, superuser):
         org = baker.make(Organization, parent=None)
-        subscription = SubscriptionService().create_subscription_for_organization(org)
+        subscription = SubscriptionService().create_subscription_for_scope(scope_for(org))
         changed_row = subscription.entitlements.get(entitlement_key=EXTERNAL_CALENDAR_GOOGLE)
         unchanged_row = subscription.entitlements.exclude(pk=changed_row.pk).first()
         assert unchanged_row is not None
@@ -228,7 +229,7 @@ class TestBillingPlanAdminLimitCoverage:
         return inline.get_formset(request, plan)
 
     def test_a_formset_omitting_a_resource_is_rejected(self, rf, superuser):
-        plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+        plan = baker.make(BillingPlan, is_default_for_new_scopes=False)
         submitted = [key for key in RESOURCE_KEYS if key != RESOURCE_CALENDARS]
         formset_class = self._formset_class(rf, superuser, plan)
 
@@ -238,7 +239,7 @@ class TestBillingPlanAdminLimitCoverage:
         assert RESOURCE_CALENDARS in str(formset.non_form_errors())
 
     def test_a_formset_covering_every_resource_is_accepted(self, rf, superuser):
-        plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+        plan = baker.make(BillingPlan, is_default_for_new_scopes=False)
         formset_class = self._formset_class(rf, superuser, plan)
 
         formset = formset_class(
@@ -250,7 +251,7 @@ class TestBillingPlanAdminLimitCoverage:
     def test_deleting_a_row_that_would_leave_a_gap_is_rejected(self, rf, superuser):
         """The check runs against the rows the save is about to produce, so removing
         coverage is caught as surely as never adding it."""
-        plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+        plan = baker.make(BillingPlan, is_default_for_new_scopes=False)
         rows = [
             baker.make(
                 PlanLimit,
@@ -286,7 +287,7 @@ class TestBillingPlanAdminLimitCoverage:
         parent form — before the inline rows that complete it are saved — leaving no
         way to fix the plan through the admin at all. The admin form opts that one
         check out; the formset above is what enforces it."""
-        plan = baker.make(BillingPlan, is_default_for_new_organizations=False, slug="gappy")
+        plan = baker.make(BillingPlan, is_default_for_new_scopes=False, slug="gappy")
         assert plan.get_missing_limited_resource_keys()
 
         form = BillingPlanAdminForm(
@@ -306,7 +307,7 @@ class TestBillingPlanAdminLimitCoverage:
         """With `extra = 0`, fixing an incomplete plan required clicking "Add
         another" once per missing row before a single row could be saved. One blank
         row per gap should already be on the page."""
-        plan = baker.make(BillingPlan, is_default_for_new_organizations=False, slug="gappy-extra")
+        plan = baker.make(BillingPlan, is_default_for_new_scopes=False, slug="gappy-extra")
         baker.make(
             PlanLimit,
             plan=plan,
@@ -329,7 +330,7 @@ class TestBillingPlanAdminLimitCoverage:
         through the admin without first backfilling every missing row."""
         plan = baker.make(
             BillingPlan,
-            is_default_for_new_organizations=False,
+            is_default_for_new_scopes=False,
             is_active=True,
             slug="gappy-retire",
         )
@@ -365,7 +366,7 @@ class TestBillingPlanAdminLimitCoverage:
         the coverage check."""
         plan = baker.make(
             BillingPlan,
-            is_default_for_new_organizations=False,
+            is_default_for_new_scopes=False,
             is_active=False,
             slug="gappy-activate",
         )
@@ -419,7 +420,7 @@ class TestBillingProfileAdminSaveModel:
         billing_address = baker.make("vinta_billing.billingaddress")
         return baker.make(
             BillingProfile,
-            organization=organization,
+            scope=scope_for(organization),
             document_type="CPF",
             document_number="12345678900",
             billing_address=billing_address,
@@ -443,7 +444,7 @@ class TestBillingProfileAdminSaveModel:
 
         mock_set_payment_provider.assert_called_once()
         call_args = mock_set_payment_provider.call_args
-        assert call_args.args[1] == billing_profile.organization
+        assert call_args.args[1] == billing_profile.scope
         assert call_args.args[2] == PaymentProviders.STRIPE
         assert call_args.kwargs["actor"] == superuser
 
@@ -473,7 +474,7 @@ class TestBillingProfileAdminSaveModel:
         organization = baker.make(Organization, parent=None)
         billing_address = baker.make("vinta_billing.billingaddress")
         new_profile = BillingProfile(
-            organization=organization,
+            scope=scope_for(organization),
             contact_first_name="Ada",
             contact_email="ada@example.com",
             document_type="CPF",
@@ -492,7 +493,9 @@ class TestBillingProfileAdminSaveModel:
             admin_instance.save_model(request, new_profile, form, change=False)
 
         mock_set_payment_provider.assert_not_called()
-        persisted = BillingProfile.objects.get(pk=organization.pk)
+        # Surrogate pk since 0.8.0 -- look it up by the payer, not by an id
+        # that used to be the organization's.
+        persisted = BillingProfile.objects.get(scope=scope_for(organization))
         assert persisted.payment_provider == PaymentProviders.STRIPE
 
     def test_clearing_payment_provider_unpins_instead_of_500ing(

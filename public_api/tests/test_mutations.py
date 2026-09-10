@@ -51,6 +51,7 @@ from organizations.permission_catalog import (
 )
 from organizations.services import OrganizationService
 from payments.seams.resource_keys import PARTNER_API, WHITE_LABEL_BRANDING
+from payments.seams.scopes import scope_for
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.mutations import (
@@ -2649,8 +2650,8 @@ def _make_unentitled_organization(**org_kwargs) -> Organization:
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=org,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(org),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),

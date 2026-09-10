@@ -21,6 +21,7 @@ from vinta_billing.models import MeteredOccurrence, Subscription
 from vinta_billing.services.subscription_service import resolve_settlement_period
 
 from common.organization_context import organization_context
+from payments.seams.scopes import organization_for
 
 
 class Command(BaseCommand):
@@ -81,7 +82,7 @@ class Command(BaseCommand):
         # not the bound organization alone) -- see `payments/tasks.py`'s module
         # docstring for why that pooled read is deliberately out of scope for a
         # single-organization binding in this migration.
-        with organization_context(subscription.organization):
+        with organization_context(organization_for(subscription.scope)):
             period_start, period_end = resolve_settlement_period(subscription, moment)
             report = metering_service.reconcile_period(subscription, moment)
             overage_total = MeteredOccurrence.objects.for_billing_period(

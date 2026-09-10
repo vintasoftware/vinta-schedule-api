@@ -34,6 +34,7 @@ from vinta_billing.services.subscription_adapters.stripe_subscription_adapter im
 from vinta_billing.services.subscription_service import SubscriptionService
 
 from organizations.models import Organization
+from payments.seams.scopes import organization_for, scope_for
 from payments.tests.provider_settings import use_providers
 
 
@@ -159,7 +160,7 @@ def billing_address():
 def billing_profile(organization, billing_address):
     return baker.make(
         "vinta_billing.BillingProfile",
-        organization=organization,
+        scope=scope_for(organization),
         document_type="CPF",
         document_number="12345678900",
         billing_address=billing_address,
@@ -589,9 +590,7 @@ class TestSubscriptionPaymentUpdateWebhook:
         Opts out of conftest's autouse ``provision_default_subscription``: this
         test builds its own ``Subscription`` (``OneToOne`` with ``Organization``)
         via ``create_subscription_for_organization`` below."""
-        subscription = SubscriptionService().create_subscription_for_organization(
-            billing_profile.organization
-        )
+        subscription = SubscriptionService().create_subscription_for_scope(billing_profile.scope)
         assert subscription is not None
         subscription.external_id = "sub-123"
         subscription.payment_provider = PaymentProviders.MERCADOPAGO
@@ -635,10 +634,8 @@ class TestSubscriptionPaymentUpdateWebhook:
         ``create_subscription_for_organization`` below.
         """
         assert billing_profile.payment_provider == ""
-        billing_profile.organization.refresh_from_db()
-        subscription = SubscriptionService().create_subscription_for_organization(
-            billing_profile.organization
-        )
+        organization_for(billing_profile.scope).refresh_from_db()
+        subscription = SubscriptionService().create_subscription_for_scope(billing_profile.scope)
         assert subscription is not None
         subscription.payment_provider = PaymentProviders.MERCADOPAGO
         subscription.external_id = "sub-123"
@@ -674,14 +671,14 @@ class TestSubscriptionPaymentUpdateWebhook:
         ``create_subscription_for_organization`` below."""
         use_providers(settings, default_provider=PaymentProviders.STRIPE)
         assert billing_profile.payment_provider == ""
-        subscription = SubscriptionService().create_subscription_for_organization(
-            billing_profile.organization
-        )
+        subscription = SubscriptionService().create_subscription_for_scope(billing_profile.scope)
         assert subscription is not None
         assert subscription.payment_provider == PaymentProviders.STRIPE
 
         SubscriptionService().record_payment_method(
-            billing_profile.organization, subscription.payment_provider, "stripe-sub-ext-1"
+            billing_profile.scope,
+            subscription.payment_provider,
+            "stripe-sub-ext-1",
         )
 
         billing_profile.refresh_from_db()
@@ -751,9 +748,7 @@ class TestZeroAmountSubscriptionPaymentDoesNotResolveDunning:
         }
 
     def _grace_subscription(self, billing_profile):
-        subscription = SubscriptionService().create_subscription_for_organization(
-            billing_profile.organization
-        )
+        subscription = SubscriptionService().create_subscription_for_scope(billing_profile.scope)
         assert subscription is not None
         subscription.payment_provider = PaymentProviders.MERCADOPAGO
         subscription.external_id = "sub-123"
@@ -872,9 +867,7 @@ class TestStripeInvoicePaidResolvesOffTheEventsOwnInvoice:
     STRIPE_WEBHOOK_SECRET = "whsec_test_secret"
 
     def _grace_subscription(self, billing_profile, external_id: str = "sub_stripe_1"):
-        subscription = SubscriptionService().create_subscription_for_organization(
-            billing_profile.organization
-        )
+        subscription = SubscriptionService().create_subscription_for_scope(billing_profile.scope)
         assert subscription is not None
         subscription.payment_provider = PaymentProviders.STRIPE
         subscription.external_id = external_id

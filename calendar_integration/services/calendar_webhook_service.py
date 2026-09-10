@@ -84,6 +84,7 @@ from calendar_integration.services.type_guards import (
     is_authenticated_calendar_service,
     is_initialized_or_authenticated_calendar_service,
 )
+from payments.seams.scopes import scope_for
 
 
 if TYPE_CHECKING:
@@ -214,7 +215,7 @@ class CalendarWebhookService:
         if (
             entitlement_service is not None
             and not self._context.bypass_entitlement_limits
-            and entitlement_service.is_billing_root_restricted(narrowed.organization)
+            and entitlement_service.is_billing_root_restricted(scope_for(narrowed.organization))
         ):
             logger.info(
                 "Skipping webhook-triggered sync for organization %s: organization is RESTRICTED.",

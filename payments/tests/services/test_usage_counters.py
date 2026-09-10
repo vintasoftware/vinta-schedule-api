@@ -68,6 +68,7 @@ from payments.seams.resource_keys import (
     WEBHOOK_SUBSCRIPTIONS,
 )
 from payments.seams.resources import EXCLUDE_INVITATION_ID
+from payments.seams.scopes import scope_for
 from public_api.models import SystemUser
 from users.models import Profile, User
 from webhooks.models import WebhookConfiguration
@@ -152,7 +153,10 @@ class TestAvailabilityWindowCounter:
             timezone="UTC",
         )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 1
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 1
+        )
 
     def test_a_recurring_window_counts_once_regardless_of_its_occurrences(
         self, entitlement_service, availability_service, managed_calendar, organization
@@ -167,7 +171,10 @@ class TestAvailabilityWindowCounter:
             rrule_string="RRULE:FREQ=DAILY;COUNT=10",
         )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 1
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 1
+        )
 
     def test_editing_one_occurrence_does_not_add_a_window(
         self, entitlement_service, availability_service, managed_calendar, organization
@@ -201,7 +208,10 @@ class TestAvailabilityWindowCounter:
             "Expected the modified occurrence to have inserted a derived row."
         )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 1, (
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 1
+        ), (
             "A window whose occurrence was edited must still count as one window. "
             "The counter is counting recurrence-derived rows."
         )
@@ -223,7 +233,10 @@ class TestAvailabilityWindowCounter:
             is_cancelled=True,
         )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 1
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 1
+        )
 
     def test_splitting_a_series_does_not_add_a_window(
         self, entitlement_service, availability_service, managed_calendar, organization
@@ -248,7 +261,10 @@ class TestAvailabilityWindowCounter:
         assert AvailableTime.objects.filter_by_organization(organization.pk).count() > 1, (
             "Expected the bulk modification to have inserted a continuation row."
         )
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 1
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 1
+        )
 
     def test_two_independent_windows_count_twice(
         self, entitlement_service, availability_service, managed_calendar, organization
@@ -262,7 +278,10 @@ class TestAvailabilityWindowCounter:
                 timezone="UTC",
             )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 2
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 2
+        )
 
 
 @pytest.mark.django_db
@@ -285,7 +304,10 @@ class TestBlockedTimeCounter:
             timezone="UTC",
         )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 1
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 1
+        )
 
     def test_a_recurring_block_counts_once_regardless_of_its_occurrences(
         self, entitlement_service, availability_service, managed_calendar, organization
@@ -298,7 +320,10 @@ class TestBlockedTimeCounter:
             rrule_string="RRULE:FREQ=DAILY;COUNT=10",
         )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 1
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 1
+        )
 
     def test_editing_one_occurrence_does_not_inflate_the_block_count(
         self, entitlement_service, availability_service, managed_calendar, organization
@@ -328,7 +353,10 @@ class TestBlockedTimeCounter:
             "Expected the modified occurrence to have inserted a derived row."
         )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 1, (
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 1
+        ), (
             "A block whose occurrence was edited must still count as one block. "
             "The counter is counting recurrence-derived rows."
         )
@@ -350,7 +378,10 @@ class TestBlockedTimeCounter:
             is_cancelled=True,
         )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 1
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 1
+        )
 
     def test_splitting_a_series_does_not_inflate_the_block_count(
         self, entitlement_service, availability_service, managed_calendar, organization
@@ -375,7 +406,10 @@ class TestBlockedTimeCounter:
         assert BlockedTime.objects.filter_by_organization(organization.pk).count() > 1, (
             "Expected the bulk modification to have inserted a continuation row."
         )
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 1
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 1
+        )
 
     def test_two_independent_blocks_count_twice(
         self, entitlement_service, availability_service, managed_calendar, organization
@@ -388,7 +422,10 @@ class TestBlockedTimeCounter:
                 timezone="UTC",
             )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 2
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 2
+        )
 
     def test_appointment_type_scoped_blocks_count_alongside_base_blocks(
         self, entitlement_service, availability_service, managed_calendar, organization
@@ -416,7 +453,10 @@ class TestBlockedTimeCounter:
             appointment_type_slot=slot,
         )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 2
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 2
+        )
 
     def test_availability_windows_and_blocked_time_count_together(
         self, entitlement_service, availability_service, managed_calendar, organization
@@ -436,7 +476,10 @@ class TestBlockedTimeCounter:
             timezone="UTC",
         )
 
-        assert entitlement_service.get_current_usage(organization, AVAILABILITY_WINDOWS) == 2
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), AVAILABILITY_WINDOWS)
+            == 2
+        )
 
 
 @pytest.mark.django_db
@@ -457,7 +500,10 @@ class TestPublicApiSystemUserCounter:
         self._make_system_user(organization, "revoked", is_active=False, deleted_at=None)
         self._make_system_user(organization, "deleted", is_active=True, deleted_at=timezone.now())
 
-        assert entitlement_service.get_current_usage(organization, PUBLIC_API_SYSTEM_USERS) == 1
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), PUBLIC_API_SYSTEM_USERS)
+            == 1
+        )
 
     def test_another_organizations_system_users_do_not_leak_in(
         self, entitlement_service, organization: Organization
@@ -466,7 +512,10 @@ class TestPublicApiSystemUserCounter:
         self._make_system_user(organization, "mine")
         self._make_system_user(other, "theirs")
 
-        assert entitlement_service.get_current_usage(organization, PUBLIC_API_SYSTEM_USERS) == 1
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), PUBLIC_API_SYSTEM_USERS)
+            == 1
+        )
 
     def test_an_organizationless_system_user_is_invisible(
         self, entitlement_service, organization: Organization
@@ -477,7 +526,10 @@ class TestPublicApiSystemUserCounter:
         column non-nullable has to revisit this deliberately."""
         self._make_system_user(None, "orphan")
 
-        assert entitlement_service.get_current_usage(organization, PUBLIC_API_SYSTEM_USERS) == 0
+        assert (
+            entitlement_service.get_current_usage(scope_for(organization), PUBLIC_API_SYSTEM_USERS)
+            == 0
+        )
 
 
 @pytest.fixture
@@ -524,7 +576,7 @@ class TestUsageBreakdown:
         pooled_subtree: tuple[Organization, Organization, Organization],
     ):
         root, child_a, child_b = pooled_subtree
-        subscription = Subscription.objects.get(organization=root)
+        subscription = Subscription.objects.get(scope=scope_for(root))
 
         # organization_members: memberships on two organizations, a pending
         # invitation on the third. child_a already carries >1 row, so this
@@ -641,7 +693,7 @@ class TestUsageBreakdown:
         # constraint on (organization, event_id, occurrence_start).
         period_start = current_billing_period_start(subscription)
         MeteredOccurrence.objects.create(
-            organization=root,
+            scope=scope_for(root),
             subscription=subscription,
             event_id=1,
             occurrence_start=period_start + datetime.timedelta(hours=1),
@@ -650,7 +702,7 @@ class TestUsageBreakdown:
             unit_price=Decimal("0"),
         )
         MeteredOccurrence.objects.create(
-            organization=root,
+            scope=scope_for(root),
             subscription=subscription,
             event_id=2,
             occurrence_start=period_start + datetime.timedelta(hours=2),
@@ -659,7 +711,7 @@ class TestUsageBreakdown:
             unit_price=Decimal("0"),
         )
         MeteredOccurrence.objects.create(
-            organization=child_b,
+            scope=scope_for(child_b),
             subscription=subscription,
             event_id=3,
             occurrence_start=period_start + datetime.timedelta(hours=3),
@@ -673,21 +725,31 @@ class TestUsageBreakdown:
         # ``LimitedResource`` member must have an entry: the loop below fails
         # loudly (``KeyError``) for a newly added resource with no pinned
         # expectation yet, rather than silently skipping it.
+        # Keyed by *scope*, which is what `get_usage_breakdown` answers with
+        # since 0.8.0. Unlike `payments/tests/seams/test_resources.py`, which
+        # drives the counters through a helper that translates back to
+        # organization ids, this goes at the engine directly and gets the
+        # engine's own id space.
+        root_scope, a_scope, b_scope = (
+            scope_for(root).pk,
+            scope_for(child_a).pk,
+            scope_for(child_b).pk,
+        )
         expected_breakdowns: dict[str, dict[int, int]] = {
-            ORGANIZATION_MEMBERS: {root.pk: 1, child_a.pk: 2, child_b.pk: 1},
-            RESOURCE_CALENDARS: {root.pk: 2, child_a.pk: 2},
-            APPOINTMENT_TYPES: {root.pk: 1, child_b.pk: 2},
-            BUNDLE_CALENDARS: {child_b.pk: 1, root.pk: 2},
-            AVAILABILITY_WINDOWS: {child_a.pk: 3, root.pk: 1},
-            WEBHOOK_SUBSCRIPTIONS: {child_b.pk: 1, child_a.pk: 2},
-            PUBLIC_API_SYSTEM_USERS: {child_a.pk: 1, child_b.pk: 2},
-            EVENT_OCCURRENCES: {root.pk: 2, child_b.pk: 1},
+            ORGANIZATION_MEMBERS: {root_scope: 1, a_scope: 2, b_scope: 1},
+            RESOURCE_CALENDARS: {root_scope: 2, a_scope: 2},
+            APPOINTMENT_TYPES: {root_scope: 1, b_scope: 2},
+            BUNDLE_CALENDARS: {b_scope: 1, root_scope: 2},
+            AVAILABILITY_WINDOWS: {a_scope: 3, root_scope: 1},
+            WEBHOOK_SUBSCRIPTIONS: {b_scope: 1, a_scope: 2},
+            PUBLIC_API_SYSTEM_USERS: {a_scope: 1, b_scope: 2},
+            EVENT_OCCURRENCES: {root_scope: 2, b_scope: 1},
         }
 
         for resource_key in RESOURCE_KEYS:
             expected = expected_breakdowns[resource_key]
-            breakdown = entitlement_service.get_usage_breakdown(root, resource_key)
-            total = entitlement_service.get_current_usage(root, resource_key)
+            breakdown = entitlement_service.get_usage_breakdown(scope_for(root), resource_key)
+            total = entitlement_service.get_current_usage(scope_for(root), resource_key)
 
             assert breakdown == expected, (
                 f"{resource_key}: expected breakdown {expected}, got {breakdown}."
@@ -705,11 +767,11 @@ class TestUsageBreakdown:
         root, child_a, child_b = pooled_subtree
         baker.make(AppointmentType, organization=root)
 
-        breakdown = entitlement_service.get_usage_breakdown(root, APPOINTMENT_TYPES)
+        breakdown = entitlement_service.get_usage_breakdown(scope_for(root), APPOINTMENT_TYPES)
 
-        assert breakdown == {root.pk: 1}
-        assert child_a.pk not in breakdown
-        assert child_b.pk not in breakdown
+        assert breakdown == {scope_for(root).pk: 1}
+        assert scope_for(child_a).pk not in breakdown
+        assert scope_for(child_b).pk not in breakdown
 
     def test_exclude_invitation_id_seat_exclusion_still_applies_to_the_breakdown(
         self,
@@ -729,16 +791,16 @@ class TestUsageBreakdown:
         )
 
         breakdown_with_invitation = entitlement_service.get_usage_breakdown(
-            root, ORGANIZATION_MEMBERS
+            scope_for(root), ORGANIZATION_MEMBERS
         )
-        assert breakdown_with_invitation == {child_a.pk: 2}
+        assert breakdown_with_invitation == {scope_for(child_a).pk: 2}
 
         breakdown_excluding_invitation = entitlement_service.get_usage_breakdown(
-            root,
+            scope_for(root),
             ORGANIZATION_MEMBERS,
             usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
         )
-        assert breakdown_excluding_invitation == {child_a.pk: 1}
+        assert breakdown_excluding_invitation == {scope_for(child_a).pk: 1}
 
     def test_exclude_invitation_id_raises_for_any_other_resource_key(
         self,
@@ -755,7 +817,7 @@ class TestUsageBreakdown:
 
         with pytest.raises(InapplicableUsageExtraError):
             entitlement_service.get_usage_breakdown(
-                root,
+                scope_for(root),
                 APPOINTMENT_TYPES,
                 usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
             )

@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 from vinta_billing.services.entitlement_service import EntitlementService, LimitCheckResult
 
 from payments.seams.resource_keys import ORGANIZATION_MEMBERS
+from payments.seams.scopes import scope_for
 
 
 if TYPE_CHECKING:
@@ -68,7 +69,7 @@ def check_seat_limit_for_invitation_accept(
     invitation is already in hand, so there is no query to defer.
     """
     return entitlement_service.check_limit(
-        invitation.organization,
+        scope_for(invitation.organization),
         ORGANIZATION_MEMBERS,
         delta=1,
         lock=lock,
@@ -95,7 +96,7 @@ def check_seat_limit_for_invitation_send(
         return {EXCLUDE_INVITATION_ID: resolve_reused_invitation_id()}
 
     return entitlement_service.check_limit(
-        organization,
+        scope_for(organization),
         ORGANIZATION_MEMBERS,
         lock=lock,
         usage_extra_resolver=_usage_extra,

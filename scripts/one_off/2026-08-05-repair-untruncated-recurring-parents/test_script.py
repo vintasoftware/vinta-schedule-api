@@ -28,6 +28,7 @@ from calendar_integration.models import (
     RecurrenceRule,
 )
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 from users.models import Profile, User
 
 
@@ -106,7 +107,7 @@ def organization(db) -> Organization:
 
 @pytest.fixture
 def subscription(organization: Organization) -> Subscription:
-    subscription = Subscription.objects.get(organization=organization)
+    subscription = Subscription.objects.get(scope=scope_for(organization))
     subscription.current_period_start = PERIOD_START
     subscription.current_period_end = PERIOD_END
     subscription.save(update_fields=["current_period_start", "current_period_end", "modified"])
@@ -339,7 +340,7 @@ def test_the_earliest_split_wins_when_a_series_was_modified_twice(
 def _meter(subscription: Subscription, event_id: int, starts: list[datetime.datetime]) -> None:
     for start in starts:
         MeteredOccurrence.objects.create(
-            organization_id=subscription.organization_id,
+            scope_id=subscription.scope_id,
             subscription=subscription,
             event_id=event_id,
             occurrence_start=start,

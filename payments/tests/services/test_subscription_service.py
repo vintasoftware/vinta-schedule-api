@@ -35,6 +35,7 @@ from payments.seams.resource_keys import (
     RESOURCE_CALENDARS,
     RESOURCE_KEYS,
 )
+from payments.seams.scopes import scope_for
 from payments.tests.provider_settings import use_providers
 
 
@@ -71,7 +72,7 @@ def make_complete_plan(limit_values: dict[str, int | None] | None = None) -> Bil
     one by hand rather than through this helper.
     """
     limit_values = limit_values or {}
-    plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+    plan = baker.make(BillingPlan, is_default_for_new_scopes=False)
     for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
@@ -100,18 +101,18 @@ class TestResolveBillingRoot:
     def test_standalone_organization_resolves_to_itself(self):
         org = baker.make(Organization, parent=None, can_invite_organizations=False)
 
-        assert resolve_billing_root(org) == org
+        assert resolve_billing_root(scope_for(org)) == scope_for(org)
 
     def test_reseller_root_resolves_to_itself(self):
         org = baker.make(Organization, parent=None, can_invite_organizations=True)
 
-        assert resolve_billing_root(org) == org
+        assert resolve_billing_root(scope_for(org)) == scope_for(org)
 
     def test_direct_child_resolves_to_reseller_root(self):
         root = baker.make(Organization, can_invite_organizations=True)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
 
-        assert resolve_billing_root(child) == root
+        assert resolve_billing_root(scope_for(child)) == scope_for(root)
 
     def test_child_of_non_reseller_top_org_resolves_to_that_top_org(self):
         """A malformed tree (parent set, but no ancestor is ever flagged
@@ -120,7 +121,7 @@ class TestResolveBillingRoot:
         top = baker.make(Organization, parent=None, can_invite_organizations=False)
         child = baker.make(Organization, parent=top, can_invite_organizations=False)
 
-        assert resolve_billing_root(child) == top
+        assert resolve_billing_root(scope_for(child)) == scope_for(top)
 
     def test_cyclic_parent_chain_raises_billing_root_cycle_error(self):
         """A revisited organization means the ``parent`` chain is a cycle.
@@ -136,9 +137,11 @@ class TestResolveBillingRoot:
         org_a.save(update_fields=["parent"])
 
         with pytest.raises(BillingRootCycleError) as exc_info:
-            resolve_billing_root(org_a)
+            resolve_billing_root(scope_for(org_a))
 
-        assert {org_a.pk, org_b.pk} <= exc_info.value.visited_ids
+        # `visited_ids` are the *scope* ids the walk touched -- the chain
+        # `resolve_billing_root` follows is `BillingScope.parent`.
+        assert {scope_for(org_a).pk, scope_for(org_b).pk} <= exc_info.value.visited_ids
 
     def test_nested_reseller_is_its_own_billing_root(self):
         """A nested reseller (``can_invite_organizations=True`` with ``parent``
@@ -148,9 +151,9 @@ class TestResolveBillingRoot:
         mid = baker.make(Organization, parent=root, can_invite_organizations=True)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
 
-        assert is_billing_root(mid) is True
-        assert resolve_billing_root(mid) == mid
-        assert resolve_billing_root(leaf) == mid
+        assert is_billing_root(scope_for(mid)) is True
+        assert resolve_billing_root(scope_for(mid)) == scope_for(mid)
+        assert resolve_billing_root(scope_for(leaf)) == scope_for(mid)
 
 
 @pytest.mark.django_db
@@ -158,17 +161,17 @@ class TestCreateSubscriptionForOrganization:
     def test_creates_subscription_with_default_plan_when_none_given(self, service):
         org = baker.make(Organization, parent=None)
 
-        subscription = service.create_subscription_for_organization(org)
+        subscription = service.create_subscription_for_scope(scope_for(org))
 
         assert subscription is not None
-        assert subscription.organization == org
+        assert subscription.scope == scope_for(org)
         assert subscription.plan.slug == "unlimited"
         assert subscription.billing_state == BillingState.FREE
 
     def test_copies_plan_limits_and_entitlements(self, service, plan):
         org = baker.make(Organization, parent=None)
 
-        subscription = service.create_subscription_for_organization(org, plan=plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=plan)
 
         limit = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         assert limit.limit_value == 5
@@ -182,10 +185,10 @@ class TestCreateSubscriptionForOrganization:
         root = baker.make(Organization, can_invite_organizations=True)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
 
-        result = service.create_subscription_for_organization(child, plan=plan)
+        result = service.create_subscription_for_scope(scope_for(child), plan=plan)
 
         assert result is None
-        assert not Subscription.objects.filter(organization=child).exists()
+        assert not Subscription.objects.filter(scope=scope_for(child)).exists()
 
     def test_nested_reseller_gets_its_own_subscription(self, service, plan):
         """root(can_invite=True) -> mid(can_invite=True) -> leaf: mid is its own
@@ -194,14 +197,14 @@ class TestCreateSubscriptionForOrganization:
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         mid = baker.make(Organization, parent=root, can_invite_organizations=True)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
-        service.create_subscription_for_organization(root, plan=plan)
+        service.create_subscription_for_scope(scope_for(root), plan=plan)
 
-        result = service.create_subscription_for_organization(mid, plan=plan)
+        result = service.create_subscription_for_scope(scope_for(mid), plan=plan)
 
         assert result is not None
-        assert result.organization == mid
-        assert not Subscription.objects.filter(organization=leaf).exists()
-        assert resolve_billing_root(leaf) == mid
+        assert result.scope == scope_for(mid)
+        assert not Subscription.objects.filter(scope=scope_for(leaf)).exists()
+        assert resolve_billing_root(scope_for(leaf)) == scope_for(mid)
 
     def test_default_plan_lookup_ignores_inactive_default_plan(self, service):
         """A deactivated default plan must not 500 organization creation with an
@@ -210,7 +213,7 @@ class TestCreateSubscriptionForOrganization:
         org = baker.make(Organization, parent=None)
 
         with pytest.raises(NoDefaultBillingPlanError):
-            service.create_subscription_for_organization(org)
+            service.create_subscription_for_scope(scope_for(org))
 
     def test_syncs_limits_and_entitlements_for_an_existing_subscription_with_none(
         self, service, plan
@@ -222,14 +225,14 @@ class TestCreateSubscriptionForOrganization:
         org = baker.make(Organization, parent=None)
         subscription = baker.make(
             Subscription,
-            organization=org,
+            scope=scope_for(org),
             plan=plan,
             billing_state=BillingState.FREE,
         )
         assert not subscription.limits.exists()
         assert not subscription.entitlements.exists()
 
-        result = service.create_subscription_for_organization(org, plan=plan)
+        result = service.create_subscription_for_scope(scope_for(org), plan=plan)
 
         assert result is not None
         assert result.pk == subscription.pk
@@ -241,13 +244,13 @@ class TestCreateSubscriptionForOrganization:
     def test_idempotent_returns_existing_subscription(self, service, plan):
         org = baker.make(Organization, parent=None)
 
-        first = service.create_subscription_for_organization(org, plan=plan)
-        second = service.create_subscription_for_organization(org, plan=plan)
+        first = service.create_subscription_for_scope(scope_for(org), plan=plan)
+        second = service.create_subscription_for_scope(scope_for(org), plan=plan)
 
         assert first is not None
         assert second is not None
         assert first.pk == second.pk
-        assert Subscription.objects.filter(organization=org).count() == 1
+        assert Subscription.objects.filter(scope=scope_for(org)).count() == 1
 
 
 @pytest.mark.django_db
@@ -269,7 +272,7 @@ class TestCreateSubscriptionResolvesTheProvider:
     def _billing_profile_for(self, org: Organization, provider: str):
         return baker.make(
             "vinta_billing.BillingProfile",
-            organization=org,
+            scope=scope_for(org),
             contact_email="billing@example.com",
             document_type="CPF",
             document_number="12345678900",
@@ -289,7 +292,7 @@ class TestCreateSubscriptionResolvesTheProvider:
         org = baker.make(Organization, parent=None)
         self._billing_profile_for(org, PaymentProviders.STRIPE)
 
-        subscription = service.create_subscription_for_organization(org, plan=plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=plan)
 
         assert subscription is not None
         assert subscription.payment_provider == PaymentProviders.STRIPE
@@ -301,7 +304,7 @@ class TestCreateSubscriptionResolvesTheProvider:
         org = baker.make(Organization, parent=None)
         self._billing_profile_for(org, PaymentProviders.MERCADOPAGO)
 
-        subscription = service.create_subscription_for_organization(org, plan=plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=plan)
 
         assert subscription is not None
         assert subscription.payment_provider == PaymentProviders.MERCADOPAGO
@@ -311,7 +314,7 @@ class TestCreateSubscriptionResolvesTheProvider:
         org = baker.make(Organization, parent=None)
         self._billing_profile_for(org, "")
 
-        subscription = service.create_subscription_for_organization(org, plan=plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=plan)
 
         assert subscription is not None
         assert subscription.payment_provider == PaymentProviders.STRIPE
@@ -324,7 +327,7 @@ class TestCreateSubscriptionResolvesTheProvider:
         use_providers(settings, default_provider=PaymentProviders.STRIPE)
         org = baker.make(Organization, parent=None)
 
-        subscription = service.create_subscription_for_organization(org, plan=plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=plan)
 
         assert subscription is not None
         assert subscription.payment_provider == PaymentProviders.STRIPE
@@ -334,7 +337,7 @@ class TestCreateSubscriptionResolvesTheProvider:
 class TestChangePlan:
     def test_replans_non_overridden_limits_and_entitlements(self, service, plan):
         org = baker.make(Organization, parent=None)
-        subscription = service.create_subscription_for_organization(org, plan=plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=plan)
 
         new_plan = make_complete_plan({ORGANIZATION_MEMBERS: 20})
         baker.make(
@@ -356,7 +359,7 @@ class TestChangePlan:
 
     def test_overridden_limit_survives_plan_change_untouched(self, service, plan):
         org = baker.make(Organization, parent=None)
-        subscription = service.create_subscription_for_organization(org, plan=plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=plan)
 
         overridden = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         overridden.limit_value = 999
@@ -373,7 +376,7 @@ class TestChangePlan:
 
     def test_overridden_entitlement_survives_plan_change_untouched(self, service, plan):
         org = baker.make(Organization, parent=None)
-        subscription = service.create_subscription_for_organization(org, plan=plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=plan)
 
         overridden = subscription.entitlements.get(entitlement_key=PARTNER_API)
         overridden.is_enabled = False
@@ -399,7 +402,7 @@ class TestChangePlan:
         after a subscription already copied its rows must not change what the
         subscription enforces — an org keeps what it was sold."""
         org = baker.make(Organization, parent=None)
-        subscription = service.create_subscription_for_organization(org, plan=plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=plan)
 
         catalog_limit = plan.limits.get(resource_key=ORGANIZATION_MEMBERS)
         catalog_limit.limit_value = 1
@@ -425,7 +428,7 @@ class TestChangePlan:
             entitlement_key=PARTNER_API,
             is_enabled=True,
         )
-        subscription = service.create_subscription_for_organization(org, plan=old_plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=old_plan)
         assert subscription.entitlements.filter(entitlement_key=PARTNER_API).exists()
 
         # new_plan omits PARTNER_API entirely. Entitlement coverage is *not* an
@@ -445,7 +448,7 @@ class TestChangePlan:
         carried by the plan, so no live key can ever reach it."""
         org = baker.make(Organization, parent=None)
         plan = make_complete_plan()
-        subscription = service.create_subscription_for_organization(org, plan=plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=plan)
         baker.make(
             SubscriptionPlanLimit,
             subscription=subscription,
@@ -479,7 +482,7 @@ class TestChangePlan:
         not happen, with the subscription still coherently on `unlimited`.
         """
         org = baker.make(Organization, parent=None)
-        subscription = service.create_subscription_for_organization(org)
+        subscription = service.create_subscription_for_scope(scope_for(org))
         assert subscription is not None
         assert subscription.plan.slug == "unlimited"
         stale_row = subscription.limits.get(resource_key=RESOURCE_CALENDARS)
@@ -491,7 +494,7 @@ class TestChangePlan:
         # An incomplete plan: no PlanLimit row for RESOURCE_CALENDARS at all. The
         # catalog expresses "not included" with an explicit limit_value=0 row (as the
         # seeded `free` plan does for public_api_system_users), never by omission.
-        incomplete_plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+        incomplete_plan = baker.make(BillingPlan, is_default_for_new_scopes=False)
         for resource_key in RESOURCE_KEYS:
             if resource_key == RESOURCE_CALENDARS:
                 continue
@@ -515,7 +518,9 @@ class TestChangePlan:
         assert subscription.limits.filter(
             resource_key=ORGANIZATION_MEMBERS, limit_value=None
         ).exists()
-        assert entitlement_service.get_effective_limit(org, RESOURCE_CALENDARS).is_unlimited, (
+        assert entitlement_service.get_effective_limit(
+            scope_for(org), RESOURCE_CALENDARS
+        ).is_unlimited, (
             "Still on `unlimited`, so unlimited is the right answer here. The bug was "
             "reporting unlimited while the subscription claimed a restricted plan."
         )
@@ -532,10 +537,13 @@ class TestChangePlan:
         """
         org = baker.make(Organization, parent=None)
         old_plan = make_complete_plan({RESOURCE_CALENDARS: 3})
-        subscription = service.create_subscription_for_organization(org, plan=old_plan)
-        assert entitlement_service.get_effective_limit(org, RESOURCE_CALENDARS).limit_value == 3
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=old_plan)
+        assert (
+            entitlement_service.get_effective_limit(scope_for(org), RESOURCE_CALENDARS).limit_value
+            == 3
+        )
 
-        incomplete_plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+        incomplete_plan = baker.make(BillingPlan, is_default_for_new_scopes=False)
         baker.make(
             PlanLimit,
             plan=incomplete_plan,
@@ -550,19 +558,22 @@ class TestChangePlan:
         assert RESOURCE_CALENDARS in exc_info.value.missing_resource_keys
         subscription.refresh_from_db()
         assert subscription.plan == old_plan
-        assert entitlement_service.get_effective_limit(org, RESOURCE_CALENDARS).limit_value == 3
+        assert (
+            entitlement_service.get_effective_limit(scope_for(org), RESOURCE_CALENDARS).limit_value
+            == 3
+        )
 
     def test_creating_a_subscription_on_an_incomplete_plan_is_refused(self, service):
         """`change_plan` is not the only path that puts a subscription on a plan --
         the guard has to sit on creation too, or an organization is provisioned with
         a silent unlimited ceiling on whatever the plan forgot."""
         org = baker.make(Organization, parent=None)
-        incomplete_plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
+        incomplete_plan = baker.make(BillingPlan, is_default_for_new_scopes=False)
 
         with pytest.raises(IncompleteBillingPlanError):
-            service.create_subscription_for_organization(org, plan=incomplete_plan)
+            service.create_subscription_for_scope(scope_for(org), plan=incomplete_plan)
 
-        assert not Subscription.objects.filter(organization=org).exists()
+        assert not Subscription.objects.filter(scope=scope_for(org)).exists()
 
     def test_downgrade_keeps_an_overridden_row_the_new_plan_does_not_carry(self, service, plan):
         """A support override survives the prune even when its `resource_key` is not
@@ -572,7 +583,7 @@ class TestChangePlan:
         so the only way to reach the prune with a live override is a retired key.
         """
         org = baker.make(Organization, parent=None)
-        subscription = service.create_subscription_for_organization(org, plan=plan)
+        subscription = service.create_subscription_for_scope(scope_for(org), plan=plan)
         assert subscription is not None
         baker.make(
             SubscriptionPlanLimit,

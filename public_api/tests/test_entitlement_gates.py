@@ -51,6 +51,7 @@ from payments.seams.resource_keys import (
     EXTERNAL_CALENDAR_MICROSOFT,
     PARTNER_API,
 )
+from payments.seams.scopes import scope_for
 from public_api.models import ResourceAccess
 from users.factories import UserFactory
 
@@ -85,8 +86,8 @@ def _organization_with_entitlement(entitlement_key: str, is_enabled: bool) -> Or
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -106,7 +107,7 @@ def _unlimited_organization() -> Organization:
     in practice, and every enforcement point carries a test against it."""
     organization = baker.make(Organization, parent=None, can_invite_organizations=False)
     plan = BillingPlan.objects.get(slug="unlimited")
-    SubscriptionService().create_subscription_for_organization(organization, plan=plan)
+    SubscriptionService().create_subscription_for_scope(scope_for(organization), plan=plan)
     return organization
 
 
@@ -181,8 +182,8 @@ class TestPartnerApiGate:
         now = timezone.now()
         baker.make(
             Subscription,
-            organization=organization,
-            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            scope=scope_for(organization),
+            plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
             billing_state=BillingState.FREE,
             current_period_start=now,
             current_period_end=now + datetime.timedelta(days=30),
@@ -346,8 +347,8 @@ def _organization_with_entitlements(**grants: bool) -> Organization:
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),

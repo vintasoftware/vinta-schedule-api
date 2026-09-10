@@ -59,6 +59,7 @@ from payments.seams.resource_keys import (
     RESOURCE_CALENDARS,
     RESOURCE_KEYS,
 )
+from payments.seams.scopes import scope_for
 from payments.tests.views.test_payment_webhooks import sign as sign_webhook
 
 
@@ -81,7 +82,7 @@ def make_complete_plan(
     limit_values = limit_values or {}
     plan = baker.make(
         BillingPlan,
-        is_default_for_new_organizations=False,
+        is_default_for_new_scopes=False,
         monthly_price=monthly_price,
         annual_price=None,
     )
@@ -115,7 +116,7 @@ def billing_profile(organization):
     )
     return baker.make(
         "vinta_billing.BillingProfile",
-        organization=organization,
+        scope=scope_for(organization),
         contact_email="billing@example.com",
         document_type="CPF",
         document_number="12345678900",
@@ -183,7 +184,9 @@ def subscription(organization, free_plan, billing_profile):
     the payer identity real provider round trips (``process_subscription`` /
     ``create_payment``) need -- without it those calls raise
     ``MissingBillingProfileError``/``BillingProfileContactEmailMissingError``."""
-    return SubscriptionService().create_subscription_for_organization(organization, plan=free_plan)
+    return SubscriptionService().create_subscription_for_scope(
+        scope_for(organization), plan=free_plan
+    )
 
 
 @pytest.fixture
@@ -455,7 +458,9 @@ class TestPermissions:
         child = baker.make(Organization, parent=reseller_root, can_invite_organizations=False)
         # The root (the billing root the child pools against) has the subscription.
         root_plan = make_complete_plan({ORGANIZATION_MEMBERS: 1})
-        SubscriptionService().create_subscription_for_organization(reseller_root, plan=root_plan)
+        SubscriptionService().create_subscription_for_scope(
+            scope_for(reseller_root), plan=root_plan
+        )
         # The caller is an ADMIN of the child only -- the coarse check passes.
         make_membership(
             user=user,
@@ -485,7 +490,9 @@ class TestPermissions:
         reseller_root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=reseller_root, can_invite_organizations=False)
         root_plan = make_complete_plan({RESOURCE_CALENDARS: 3})
-        SubscriptionService().create_subscription_for_organization(reseller_root, plan=root_plan)
+        SubscriptionService().create_subscription_for_scope(
+            scope_for(reseller_root), plan=root_plan
+        )
         make_membership(
             user=user,
             organization=child,
@@ -526,7 +533,7 @@ class TestUpgradeGrantsNoCapacitySynchronously:
 
         assert response.status_code == status.HTTP_200_OK
         effective_limit = EntitlementService().get_effective_limit(
-            organization, ORGANIZATION_MEMBERS
+            scope_for(organization), ORGANIZATION_MEMBERS
         )
         # Still the free plan's ceiling -- the webhook never fired.
         assert effective_limit.limit_value == 1
@@ -580,7 +587,9 @@ class TestAddOnIdempotency:
 
         assert response.status_code == status.HTTP_201_CREATED
         assert response.data["is_active"] is False
-        effective_limit = EntitlementService().get_effective_limit(organization, RESOURCE_CALENDARS)
+        effective_limit = EntitlementService().get_effective_limit(
+            scope_for(organization), RESOURCE_CALENDARS
+        )
         assert effective_limit.limit_value == 3
 
     def test_cancel_add_on_stops_recurrence(
@@ -610,7 +619,7 @@ class TestAddOnIdempotency:
         other_plan = make_complete_plan({RESOURCE_CALENDARS: 3})
         other_subscription = baker.make(
             Subscription,
-            organization=other_organization,
+            scope=scope_for(other_organization),
             plan=other_plan,
             billing_interval=BillingInterval.MONTHLY,
             current_period_start=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
@@ -746,7 +755,7 @@ class TestAcceptanceScenario:
 
         subscription.refresh_from_db()
         assert subscription.billing_state == BillingState.ACTIVE
-        assert PaymentMethod.objects.filter(organization=organization, is_active=True).exists()
+        assert PaymentMethod.objects.filter(scope=scope_for(organization), is_active=True).exists()
 
 
 @pytest.mark.django_db

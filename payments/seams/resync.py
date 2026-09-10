@@ -11,8 +11,7 @@ reconcile the drift that accumulated while sync was off, and the host's
 of a calendar, let alone of a sync that was paused, so it publishes
 ``vinta_billing.signals.billing_restriction_lifted`` at the same point instead
 -- after the state write, inside the caller's transaction -- carrying the
-subscription and the pooled organization ids the inline call resolved for
-itself. Connecting a receiver here is what keeps the resync happening.
+subscription and the pooled scope ids the inline call resolved for itself. Connecting a receiver here is what keeps the resync happening.
 
 Without this seam the failure is silent and slow: the organization pays, its
 writes are unblocked, and its calendars quietly never catch up on anything that
@@ -30,12 +29,14 @@ from django.dispatch import receiver
 
 from vinta_billing.signals import billing_restriction_lifted
 
+from payments.seams.scopes import organization_ids_for_scope_ids
+
 
 @receiver(billing_restriction_lifted, dispatch_uid="payments.seams.resync.resume_calendar_sync")
 def resume_calendar_sync(
     sender: type[Model],
     subscription: Any,
-    organization_ids: Sequence[int],
+    scope_ids: Sequence[int],
     **kwargs: Any,
 ) -> None:
     """Queue a resync of every calendar the pooled subtree owns.
@@ -65,7 +66,11 @@ def resume_calendar_sync(
         resync_organization_calendars_task,
     )
 
-    ids = list(organization_ids)
+    # 0.8.0 re-keyed the signal payload onto scopes (`scope_ids`, the pooled
+    # subtree). `resync_organization_calendars_task` takes an organization id,
+    # so the pool is translated back here rather than teaching the calendar
+    # side about a billing concept it has no other use for.
+    ids = list(organization_ids_for_scope_ids(scope_ids).values())
     transaction.on_commit(
         lambda: [
             resync_organization_calendars_task.delay(organization_id=organization_id)

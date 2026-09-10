@@ -66,6 +66,7 @@ from vinta_billing.models import Subscription
 
 from common.organization_context import organization_context
 from organizations.models import Organization
+from payments.seams.scopes import organization_for
 from vinta_schedule_api.celery import app
 
 
@@ -79,7 +80,9 @@ def _bound_organization(subscription_id: int) -> "OrganizationContext[Organizati
     (the job function being called handles that race on its own -- see each
     task's docstring below -- so this only has to not raise)."""
     subscription = Subscription.objects.filter(pk=subscription_id).first()
-    return organization_context(subscription.organization if subscription is not None else None)
+    return organization_context(
+        organization_for(subscription.scope) if subscription is not None else None
+    )
 
 
 @app.task

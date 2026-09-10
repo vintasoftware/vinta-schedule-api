@@ -102,7 +102,7 @@ def seed_billing_plans() -> None:
         defaults={
             "name": "Unlimited",
             "is_active": True,
-            "is_default_for_new_organizations": True,
+            "is_default_for_new_scopes": True,
             "monthly_price": Decimal("0"),
             "annual_price": None,
             "currency": "USD",
@@ -133,7 +133,7 @@ def seed_billing_plans() -> None:
         defaults={
             "name": "Free",
             "is_active": True,
-            "is_default_for_new_organizations": False,
+            "is_default_for_new_scopes": False,
             "monthly_price": Decimal("0"),
             "annual_price": None,
             "currency": "USD",

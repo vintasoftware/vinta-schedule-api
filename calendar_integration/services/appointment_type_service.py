@@ -77,6 +77,7 @@ from calendar_integration.services.dataclasses import (
 from calendar_integration.signals import reconcile_pools
 from organizations.models import Organization
 from payments.seams.resource_keys import APPOINTMENT_TYPES, AVAILABILITY_WINDOWS
+from payments.seams.scopes import scope_for
 from users.models import User
 
 
@@ -241,7 +242,7 @@ class AppointmentTypeService:
             return
         if getattr(self.calendar_service, "_bypass_entitlement_limits", False):
             return
-        self.entitlement_service.check_not_restricted(self.bound_organization)
+        self.entitlement_service.check_not_restricted(scope_for(self.bound_organization))
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -461,7 +462,7 @@ class AppointmentTypeService:
 
         if not bypass_limits and self.entitlement_service is not None:
             result = self.entitlement_service.check_limit(
-                organization, APPOINTMENT_TYPES, lock=True
+                scope_for(organization), APPOINTMENT_TYPES, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
@@ -1616,7 +1617,7 @@ class AppointmentTypeService:
         # RESTRICTED must block the batch outright, including an update-only
         # or delete-only batch -- mirrors batch_modify_available_times.
         if self.entitlement_service is not None and operations:
-            self.entitlement_service.check_not_restricted(organization)
+            self.entitlement_service.check_not_restricted(scope_for(organization))
 
         # Lock the billing root BEFORE _find_matching_appointment_type_scoped_window's
         # idempotent-create content-match reads (and before the delete-credit
@@ -1629,7 +1630,7 @@ class AppointmentTypeService:
         # lock this early serializes them so the second sees the first's
         # committed windows and correctly no-ops.
         if self.entitlement_service is not None and operations:
-            self.entitlement_service.lock_billing_root(organization)
+            self.entitlement_service.lock_billing_root(scope_for(organization))
 
         # Resolve every touched row up front (read-only): a missing/foreign
         # window_id or a calendar not on this slot's roster fails the whole
@@ -1704,7 +1705,7 @@ class AppointmentTypeService:
 
         if delta and self.entitlement_service is not None:
             result = self.entitlement_service.check_limit(
-                organization, AVAILABILITY_WINDOWS, delta=delta, lock=True
+                scope_for(organization), AVAILABILITY_WINDOWS, delta=delta, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
@@ -2212,7 +2213,7 @@ class AppointmentTypeService:
         # limit/lock machinery that exists only to protect entitlement
         # counting, which blocks don't have yet.
         if self.entitlement_service is not None and operations:
-            self.entitlement_service.check_not_restricted(organization)
+            self.entitlement_service.check_not_restricted(scope_for(organization))
 
         # Resolve every touched row up front (read-only): a missing/foreign
         # block_id or a calendar not on this slot's roster fails the whole
@@ -2644,7 +2645,7 @@ class AppointmentTypeService:
         # minus the limit/lock machinery that exists only to protect
         # entitlement counting, which quota rules don't have (spec: unmetered).
         if self.entitlement_service is not None and operations:
-            self.entitlement_service.check_not_restricted(organization)
+            self.entitlement_service.check_not_restricted(scope_for(organization))
 
         # Resolve every touched row up front (read-only): a missing/foreign
         # rule_id or a calendar not on this slot's roster fails the whole

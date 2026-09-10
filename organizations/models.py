@@ -17,6 +17,7 @@ from organizations.managers import (
 from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER, INVITABLE_GROUPS
 from organizations.slug_generation import derive_organization_slug
 from payments.seams.resource_keys import WHITE_LABEL_BRANDING
+from payments.seams.scopes import scope_for
 from s3direct_overrides.model_fields import S3DirectImageField
 
 
@@ -579,7 +580,7 @@ def resolve_branding_for_display(org: Organization | None) -> OrganizationBrandi
     if container is None:
         return None
     if not has_entitlement_cached(
-        container.entitlement_service(), branding_root, WHITE_LABEL_BRANDING
+        container.entitlement_service(), scope_for(branding_root), WHITE_LABEL_BRANDING
     ):
         return None
     return getattr(branding_root, "branding", None)

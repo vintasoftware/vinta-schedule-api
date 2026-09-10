@@ -43,6 +43,7 @@ from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.services import OrganizationService
 from organizations.tests.helpers import make_membership
 from payments.seams.resource_keys import ORGANIZATION_MEMBERS, PARTNER_API
+from payments.seams.scopes import scope_for
 from payments.tests.billing_fixtures import reseed_billing_plans
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -54,7 +55,9 @@ pytestmark = pytest.mark.no_auto_subscription
 
 
 SHARED_OVER_LIMIT_BODY = {
-    "detail": "Organization is at its limit for organization members.",
+    # Reworded in vinta-django-billing 0.8.0: a scope may name something that is
+    # not an organization, so the message addresses the caller instead.
+    "detail": "You are at your limit for organization members.",
     "code": "limit_exceeded",
     "resource": "organization_members",
     "current_usage": 1,
@@ -90,8 +93,8 @@ def _organization_with_seat_limit(
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -506,7 +509,7 @@ class TestUnlimitedPlanIsNeverBlocked:
         organization = OrganizationService().create_organization(
             creator=creator, name="Unlimited Seat Org"
         )
-        assert Subscription.objects.get(organization=organization).plan.slug == "unlimited"
+        assert Subscription.objects.get(scope=scope_for(organization)).plan.slug == "unlimited"
 
         service = OrganizationService()
         for index in range(25):

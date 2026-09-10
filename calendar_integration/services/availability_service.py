@@ -85,6 +85,7 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from payments.seams.resource_keys import AVAILABILITY_WINDOWS
+from payments.seams.scopes import scope_for
 
 
 if TYPE_CHECKING:
@@ -506,7 +507,7 @@ class AvailabilityService:
         entitlement_service = self._context.entitlement_service
         if not bypass_limits and entitlement_service is not None and availability_windows:
             result = entitlement_service.check_limit(
-                context.organization,
+                scope_for(context.organization),
                 AVAILABILITY_WINDOWS,
                 delta=len(availability_windows),
                 lock=True,
@@ -597,7 +598,7 @@ class AvailabilityService:
         # existing windows. Checked unconditionally whenever the batch is
         # non-empty, ahead of any of the net-growth arithmetic.
         if not bypass_limits and entitlement_service is not None and operations:
-            entitlement_service.check_not_restricted(context.organization)
+            entitlement_service.check_not_restricted(scope_for(context.organization))
 
         # A credit is about to be granted (create_count and delete_ids), which means the
         # delete-credit read below can race a concurrent batch computing the same credit
@@ -607,7 +608,7 @@ class AvailabilityService:
         # delete id would otherwise both see it as live, both credit it, and both skip
         # ``check_limit`` entirely. See ``EntitlementService.lock_billing_root``.
         if not bypass_limits and entitlement_service is not None and create_count and delete_ids:
-            entitlement_service.lock_billing_root(context.organization)
+            entitlement_service.lock_billing_root(scope_for(context.organization))
 
         # Only deletions of rows the usage counter counts offset the creates -- see
         # ``AvailableTimeQuerySet.count_counted_windows_in_calendar``. Skipped entirely
@@ -625,7 +626,7 @@ class AvailabilityService:
 
         if not bypass_limits and entitlement_service is not None and delta:
             result = entitlement_service.check_limit(
-                context.organization,
+                scope_for(context.organization),
                 AVAILABILITY_WINDOWS,
                 delta=delta,
                 lock=True,

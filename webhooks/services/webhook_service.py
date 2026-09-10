@@ -11,6 +11,7 @@ from vinta_billing.exceptions import OverLimitError
 
 from organizations.models import Organization
 from payments.seams.resource_keys import WEBHOOK_SUBSCRIPTIONS
+from payments.seams.scopes import scope_for
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.services.payloads import WebhookEnvelope
@@ -91,7 +92,7 @@ class WebhookService:
         self._validate_config_fields(event_type, url)
         if not bypass_limits and self.entitlement_service is not None:
             result = self.entitlement_service.check_limit(
-                organization, WEBHOOK_SUBSCRIPTIONS, lock=True
+                scope_for(organization), WEBHOOK_SUBSCRIPTIONS, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
@@ -116,7 +117,7 @@ class WebhookService:
             restricted.
         """
         if not bypass_limits and self.entitlement_service is not None:
-            self.entitlement_service.check_not_restricted(configuration.organization)
+            self.entitlement_service.check_not_restricted(scope_for(configuration.organization))
         self._validate_config_fields(event_type, url)
         configuration.url = url
         configuration.event_type = event_type
@@ -136,7 +137,7 @@ class WebhookService:
             restricted.
         """
         if not bypass_limits and self.entitlement_service is not None:
-            self.entitlement_service.check_not_restricted(configuration.organization)
+            self.entitlement_service.check_not_restricted(scope_for(configuration.organization))
         configuration.deleted_at = datetime.datetime.now(tz=datetime.UTC)
         configuration.save()
         return True

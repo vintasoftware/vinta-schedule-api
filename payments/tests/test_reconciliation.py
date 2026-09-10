@@ -26,6 +26,7 @@ from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar, CalendarEvent
 from organizations.models import Organization
 from payments.seams.resource_keys import EVENT_OCCURRENCES
+from payments.seams.scopes import scope_for
 
 
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)
@@ -44,9 +45,13 @@ class DedupingPaymentService:
     def __init__(self) -> None:
         self.charges: list[dict] = []
 
-    def create_payment(self, *, idempotency_key: str = "", **kwargs) -> Payment:
-        self.charges.append({"idempotency_key": idempotency_key, **kwargs})
-        return baker.make(Payment, external_id=idempotency_key)
+    def create_payment(self, *, scope, idempotency_key: str = "", **kwargs) -> Payment:
+        self.charges.append({"idempotency_key": idempotency_key, "scope": scope, **kwargs})
+        # Name the real scope rather than letting baker invent the
+        # `BillingProfile` -> `BillingScope` chain: an invented scope gets a
+        # random 255-character `object_id`, which `BillingScope.save()` expands
+        # into a `scope_key` longer than its own 255-character column.
+        return baker.make(Payment, external_id=idempotency_key, billing_profile__scope=scope)
 
 
 @pytest.fixture
@@ -56,7 +61,7 @@ def organization(db) -> Organization:
 
 @pytest.fixture
 def subscription(organization: Organization) -> Subscription:
-    subscription = Subscription.objects.get(organization=organization)
+    subscription = Subscription.objects.get(scope=scope_for(organization))
     subscription.current_period_start = PERIOD_START
     subscription.current_period_end = PERIOD_END
     subscription.save(update_fields=["current_period_start", "current_period_end", "modified"])

@@ -85,10 +85,25 @@ def _count(table: str) -> int:
         return cursor.fetchone()[0]
 
 
+#: Tables ``vinta_billing`` added *after* ``0024``, which therefore exist at HEAD
+#: but are not part of what that migration moved. ``billingscope`` arrives in
+#: Empty. ``0003_billingscope`` (0.8.0) would add ``billingscope``, but it
+#: creates that model as swappable and this project points
+#: ``BILLING_SCOPE_MODEL`` at ``billing_integration.OrganizationBillingScope``
+#: -- so Django skips the table and the package's tables are exactly the twenty
+#: ``0024`` moved.
+#:
+#: Kept as its own name rather than folded away: it is the seam to add to if
+#: the package ever grows a table this project does not swap out, and
+#: ``EXPECTED_TABLES`` is the column-for-column contract ``0024`` is written
+#: against rather than a description of HEAD.
+TABLES_ADDED_AFTER_THE_MOVE: set[str] = set()
+
+
 @pytest.mark.django_db
 class TestTheTablesMoved:
-    def test_migrate_from_zero_lands_the_twenty_vinta_billing_tables(self):
-        assert _table_names("vinta_billing_") == EXPECTED_TABLES
+    def test_migrate_from_zero_lands_the_vinta_billing_tables(self):
+        assert _table_names("vinta_billing_") == EXPECTED_TABLES | TABLES_ADDED_AFTER_THE_MOVE
 
     def test_and_leaves_no_payments_table_behind(self):
         """Not "some are gone" -- none. A survivor would be a table nothing reads
@@ -104,7 +119,7 @@ class TestTheTablesMoved:
         plan = BillingPlan.objects.get(slug="unlimited")
 
         assert plan.is_active is True
-        assert plan.is_default_for_new_organizations is True
+        assert plan.is_default_for_new_scopes is True
         assert {limit.resource_key for limit in plan.limits.all()} == set(RESOURCE_KEYS)
         assert all(limit.limit_value is None for limit in plan.limits.all())
         assert {row.entitlement_key for row in plan.entitlements.all()} == set(ENTITLEMENT_KEYS)

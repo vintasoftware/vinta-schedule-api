@@ -5,7 +5,7 @@ and call ``record()`` inline. ``vinta_billing``'s copy cannot: a library has no
 way to know a project keeps an audit log, so it publishes
 ``vinta_billing.signals.payment_provider_repointed`` at the same point --
 after the write, inside the caller's transaction -- with the same facts the
-inline call used (the profile, the organization, the acting user, the old and
+inline call used (the profile, the paying scope, the acting user, the old and
 new provider slugs). Connecting a receiver here is how the trail stays intact.
 
 Only the repoint is connected. It is the one billing write the host audited
@@ -37,7 +37,7 @@ from audit_integration.constants import AuditAction
 def record_payment_provider_repoint(
     sender: type[Model],
     billing_profile: Any,
-    organization: Any,
+    scope: Any,
     actor: Any,
     from_provider: str,
     to_provider: str,
@@ -61,9 +61,15 @@ def record_payment_provider_repoint(
             "audit_service before di_core.apps.DICoreConfig.ready() runs."
         )
 
+    # 0.8.0 sends the paying *scope* rather than the organization. The audit log
+    # is organization-keyed (``audit_integration.OrganizationAuditScope``), and
+    # a billing scope holds its organization in a real foreign key, so this is
+    # the id column rather than a lookup.
+    organization_id = scope.organization_id
+
     audit_service = container.audit_service()
     actor_snapshot = (
-        audit_service.actor_from_user(actor, organization.pk)
+        audit_service.actor_from_user(actor, organization_id)
         if actor is not None
         else audit_service.system_actor()
     )
@@ -72,5 +78,5 @@ def record_payment_provider_repoint(
         actor=actor_snapshot,
         subject=audit_service.subject_from_instance(billing_profile),
         diff={"payment_provider": {"old": from_provider, "new": to_provider}},
-        scope=audit_service.scope_from_organization_id(organization.pk),
+        scope=audit_service.scope_from_organization_id(organization_id),
     )

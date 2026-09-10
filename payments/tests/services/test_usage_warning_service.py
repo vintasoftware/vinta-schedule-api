@@ -41,6 +41,7 @@ from payments.seams.resource_keys import (
     ORGANIZATION_MEMBERS,
     RESOURCE_CALENDARS,
 )
+from payments.seams.scopes import scope_for
 from users.models import User
 
 
@@ -77,8 +78,8 @@ def organization() -> Organization:
 def subscription(organization) -> Subscription:
     return baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         billing_interval="monthly",
         current_period_start=FREEZE_START,

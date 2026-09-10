@@ -468,8 +468,10 @@ def _content_type_and_permission(apps, db_alias, app_label: str):
     content_type, _ = ContentType.objects.using(db_alias).get_or_create(
         app_label=app_label, model="subscription"
     )
+    # `content_type_id=`, not `content_type=` -- see the note in
+    # `_move_manage_billing` on why the instance is not safe to pass here.
     permission, _ = Permission.objects.using(db_alias).get_or_create(
-        content_type=content_type,
+        content_type_id=content_type.pk,
         codename=MANAGE_BILLING_CODENAME,
         defaults={"name": MANAGE_BILLING_NAME},
     )
@@ -509,8 +511,28 @@ def _move_manage_billing(apps, schema_editor, *, to_app_label: str, from_app_lab
         .first()
     )
     if stale is not None:
-        Permission.objects.using(db_alias).filter(content_type=stale).delete()
-        stale.delete()
+        # `content_type_id=`, not `content_type=`. Django type-checks a model
+        # instance passed to a relation filter with `isinstance`, and the
+        # historical `Permission` and historical `ContentType` here are not
+        # guaranteed to come from the same rendered state -- when they do not,
+        # the instance is rejected as "Must be ContentType instance" even
+        # though it is one. Filtering on the id asks the same question without
+        # depending on class identity.
+        Permission.objects.using(db_alias).filter(content_type_id=stale.pk).delete()
+        # Raw DELETE rather than `stale.delete()`. Deleting through the ORM
+        # runs Django's cascade collector, which walks every model with a
+        # foreign key to `ContentType` -- including `vinta_billing.BillingScope`
+        # in the historical state -- and type-checks the instance it filters
+        # with. Those two models are not guaranteed to come from the same
+        # rendered state, and when they are not the collector rejects a
+        # perfectly good `ContentType` as "Must be ContentType instance".
+        #
+        # Nothing references this row by now: the permissions pointing at it
+        # were deleted on the line above, and a billing scope names an
+        # organization, never a subscription. So there is no cascade to run and
+        # no protection to honour -- only the collector's opinion to avoid.
+        with schema_editor.connection.cursor() as cursor:
+            cursor.execute("DELETE FROM django_content_type WHERE id = %s", [stale.pk])
 
 
 def grant_on_vinta_billing(apps, schema_editor):
@@ -537,6 +559,38 @@ class Migration(migrations.Migration):
         ("organizations", "0028_seed_permission_groups"),
         ("auth", "0012_alter_user_first_name_max_length"),
         ("contenttypes", "0002_remove_content_type_name"),
+    ]
+
+    # This migration copies `payments_*` rows into `vinta_billing_*` column for
+    # column, and `_assert_columns_match` refuses to run if either side's column
+    # list has moved -- deliberately, since a silent column mismatch here loses
+    # billing data.
+    #
+    # `dependencies` alone does not pin the order far enough. It names
+    # `vinta_billing.0002`, so the destination tables exist by the time this
+    # runs, but nothing stops the graph from running `0003`-`0006` first -- and
+    # on a database built from zero it does exactly that. Those three migrations
+    # are `vinta-django-billing` 0.8.0's move onto `BillingScope`: they add
+    # `scope_id` and drop `organization_id`, so this migration then finds a
+    # destination table it was not written against and raises.
+    #
+    # `run_before` is the edge that was missing. The copy has to happen while
+    # both sides still speak `organization_id`; the scope migration re-keys what
+    # this migration has already moved.
+    #
+    # Pinned at `0003`, not `0004`, even though `0004` is the one that re-keys.
+    # `0003` merely creates `BillingScope`, so ordering it after this migration
+    # is not needed going forwards -- but it is needed coming back. Left free to
+    # sort before this migration, `0003` is unapplied first on a reverse while
+    # the historical state handed to *this* migration still contains
+    # `BillingScope`; `grant_on_payments` then deletes a stale `ContentType`,
+    # Django's collector walks `BillingScope.content_type` (`on_delete=PROTECT`)
+    # to check for protected references, and queries a table that has already
+    # been dropped. Pinning the whole scope feature after the move makes the
+    # reverse unwind in the mirror order of the forward run, which is the only
+    # order in which both halves see a consistent state.
+    run_before = [
+        ("vinta_billing", "0003_billingscope"),
     ]
 
     operations = [

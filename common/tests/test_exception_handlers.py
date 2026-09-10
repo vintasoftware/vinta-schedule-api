@@ -47,7 +47,7 @@ class TestVintaExceptionHandlerStatusCodes:
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
         assert response.data == {
-            "detail": "Organization is at its limit for organization members.",
+            "detail": "You are at your limit for organization members.",
             "code": "limit_exceeded",
             "resource": "organization_members",
             "current_usage": 1,
@@ -74,7 +74,7 @@ class TestVintaExceptionHandlerStatusCodes:
         }
 
     def test_payment_token_required_error_is_400(self):
-        exc = PaymentTokenRequiredError(organization_id=42)
+        exc = PaymentTokenRequiredError(scope_id=42)
 
         response = vinta_exception_handler(exc, {})
 
@@ -90,7 +90,7 @@ class TestVintaExceptionHandlerStatusCodes:
         assert response.data["code"] == "add_on_not_purchasable"
 
     def test_unconfirmed_plan_change_error_is_409(self):
-        exc = UnconfirmedPlanChangeError(organization_id=42)
+        exc = UnconfirmedPlanChangeError(scope_id=42)
 
         response = vinta_exception_handler(exc, {})
 
@@ -98,7 +98,7 @@ class TestVintaExceptionHandlerStatusCodes:
         assert response.data["code"] == "unconfirmed_plan_change"
 
     def test_retry_payment_not_applicable_error_is_409(self):
-        exc = RetryPaymentNotApplicableError(organization_id=42)
+        exc = RetryPaymentNotApplicableError(scope_id=42)
 
         response = vinta_exception_handler(exc, {})
 
@@ -106,7 +106,7 @@ class TestVintaExceptionHandlerStatusCodes:
         assert response.data["code"] == "retry_payment_not_applicable"
 
     def test_subscription_not_attached_error_is_409(self):
-        exc = SubscriptionNotAttachedError(organization_id=42)
+        exc = SubscriptionNotAttachedError(scope_id=42)
 
         response = vinta_exception_handler(exc, {})
 

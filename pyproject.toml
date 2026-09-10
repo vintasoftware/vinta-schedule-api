@@ -75,7 +75,30 @@ dependencies = [
     # Development Status :: Alpha, and its migration onto the host is itself
     # a multi-phase plan (see ai-plans/). Widen only after re-reading the
     # upstream diff for the target minor.
-    "vinta-django-billing>=0.7,<0.8",
+    #
+    # The `orgs` extra carries the membership-backed policy functions that were
+    # the shipped defaults up to 0.7. 0.8.0 dropped `vinta-django-orgs` as a
+    # hard dependency and moved them to `vinta_billing.contrib.orgs`. This
+    # project no longer calls them -- they read `scope.object_id`, which the
+    # scope model in `billing_integration` does not have, so `payments/seams/
+    # policy.py` supplies its own. The extra stays because it declares nothing
+    # the direct `vinta-django-orgs` pin above does not already state, and
+    # dropping it would only make the two pins disagree about intent.
+    #
+    # Floor at 0.8.2. Two upstream fixes below it are load-bearing here:
+    #
+    #   0.8.1  `BillingProfileViewSet.get_billing_profile` looked a profile up
+    #          by the scope's pk, which 404s every billing-profile read and
+    #          write on a database upgraded from 0.7.
+    #   0.8.2  `vinta_billing.0005_backfill_scopes` reached for
+    #          `vinta_billing.BillingScope` by name. This project points
+    #          `BILLING_SCOPE_MODEL` at its own model, so that name has no
+    #          table behind it; 0.8.2 resolves the configured model instead.
+    #          Without it the billing backfill cannot run at all here.
+    #
+    # Both were carried as local overrides at one point and both are gone, so
+    # installing anything older reintroduces them silently.
+    "vinta-django-billing[orgs]>=0.8.2,<0.9",
     # The audit log, extracted from this project. Pinned to the minor for the
     # same reason as its two siblings above: it is pre-1.0, so a minor is where a
     # breaking change is allowed to live. `audit_integration` supplies the scope

@@ -41,6 +41,7 @@ from organizations.branding_logo import (
 from organizations.models import Organization, OrganizationBranding
 from organizations.slug_validation import validate_organization_slug
 from payments.seams.resource_keys import WHITE_LABEL_BRANDING
+from payments.seams.scopes import scope_for
 
 
 # This module builds its own Subscription rows (mirroring organizations/tests/
@@ -55,8 +56,8 @@ def _org_with_entitlement(entitlement_key: str, is_enabled: bool, **org_kwargs) 
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=org,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(org),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -452,8 +453,18 @@ class TestNoQueryCountOracleBetweenUnknownSlugAndExistingOrg:
     non-reseller organization's branding root was ``None`` at zero extra query
     cost, matching an unknown slug exactly. Now, that same organization is
     its own branding root, so ``resolve_branding_for_display`` must run the
-    ``white_label_branding`` entitlement check against it -- exactly one extra
-    query (the subscription/entitlement lookup) an unknown slug never reaches.
+    ``white_label_branding`` entitlement check against it -- two extra queries
+    (the scope lookup, then the subscription/entitlement lookup) an unknown slug
+    never reaches.
+
+    The scope lookup is the second of those and arrived with
+    ``vinta-django-billing`` 0.8.0: the entitlement check takes a
+    ``BillingScope``, and nothing joins an organization to its scope -- the
+    shipped scope model addresses its payer through a generic key, so there is
+    no foreign key to ``select_related`` and no way to fold the read into the
+    query beside it. ``payments.seams.scopes.scope_for`` memoizes per
+    organization instance, so a request that asks repeatedly still pays once;
+    this path asks once, on a freshly fetched organization, so it pays that one.
     This is an accepted, unavoidable trade-off of widening branding to every
     parentless organization: once a matching row exists, determining "is this
     organization entitled to apply its own branding" costs one DB round-trip,
@@ -461,12 +472,12 @@ class TestNoQueryCountOracleBetweenUnknownSlugAndExistingOrg:
     any more (e.g. a child organization instead pays a parent-chain-walk
     query). The response BODY and STATUS remain byte-identical regardless
     (covered by the other tests in this module) -- this test is narrowed to
-    pin the divergence at exactly the one expected extra query, not more, so a
-    regression that fans this out (e.g. an N+1 in the entitlement walk) is
-    still caught.
+    pin the divergence at exactly the two expected extra queries, not more, so a
+    regression that fans this out (e.g. an N+1 in the entitlement walk, or a
+    scope lookup that stops being memoized) is still caught.
     """
 
-    def test_unknown_slug_and_existing_unbranded_org_cost_at_most_one_extra_query(self, client):
+    def test_unknown_slug_and_existing_unbranded_org_cost_at_most_two_extra_queries(self, client):
         baker.make(Organization, parent=None, slug="normalized-no-branding-row")
 
         with CaptureQueriesContext(connection) as unknown_ctx:
@@ -479,10 +490,10 @@ class TestNoQueryCountOracleBetweenUnknownSlugAndExistingOrg:
 
         unknown_count = len(unknown_ctx.captured_queries)
         existing_count = len(existing_ctx.captured_queries)
-        assert existing_count - unknown_count == 1, (
-            f"Query count diverges by more than the one expected extra query "
-            f"(the white_label_branding entitlement check that runs "
-            f"against every parentless organization): unknown slug ran "
-            f"{unknown_count} quer(ies), existing unbranded org ran "
-            f"{existing_count} quer(ies)."
+        assert existing_count - unknown_count == 2, (
+            f"Query count diverges by more than the two expected extra queries "
+            f"(the billing-scope lookup, then the white_label_branding "
+            f"entitlement check, both of which run against every parentless "
+            f"organization): unknown slug ran {unknown_count} quer(ies), "
+            f"existing unbranded org ran {existing_count} quer(ies)."
         )

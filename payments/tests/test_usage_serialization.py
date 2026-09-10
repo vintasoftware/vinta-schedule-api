@@ -8,7 +8,7 @@
   resolve at the billing root, consistent with every other read/check in this
   domain (``EntitlementService``).
 
-Also covers additive fields: attribution (``by_organization``), the
+Also covers additive fields: attribution (``by_scope``), the
 plan snapshot, and the plan/add-on decomposition of ``limit_value``.
 """
 
@@ -39,6 +39,7 @@ from payments.seams.resource_keys import (
     RESOURCE_CALENDARS,
     RESOURCE_KEYS,
 )
+from payments.seams.scopes import scope_for
 from users.factories import UserFactory
 
 
@@ -51,7 +52,7 @@ def make_complete_plan(limit_values: dict[str, int | None] | None = None) -> Bil
     limit_values = limit_values or {}
     plan = baker.make(
         BillingPlan,
-        is_default_for_new_organizations=False,
+        is_default_for_new_scopes=False,
         monthly_price=Decimal("0"),
         annual_price=None,
     )
@@ -81,7 +82,7 @@ class TestUnlimitedResourceSerializesAsNull:
             is_active=True,
         )
         plan = make_complete_plan({RESOURCE_CALENDARS: None})
-        SubscriptionService().create_subscription_for_organization(organization, plan=plan)
+        SubscriptionService().create_subscription_for_scope(scope_for(organization), plan=plan)
 
         response = auth_client.get(usage_url())
 
@@ -101,8 +102,8 @@ class TestResellerChildReportsPooledRootFigures:
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
         root_plan = make_complete_plan({ORGANIZATION_MEMBERS: 20})
-        subscription = SubscriptionService().create_subscription_for_organization(
-            root, plan=root_plan
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(root), plan=root_plan
         )
         assert subscription is not None
 
@@ -137,7 +138,7 @@ class TestResellerChildReportsPooledRootFigures:
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
         root_plan = make_complete_plan({RESOURCE_CALENDARS: 5})
-        SubscriptionService().create_subscription_for_organization(root, plan=root_plan)
+        SubscriptionService().create_subscription_for_scope(scope_for(root), plan=root_plan)
 
         baker.make(
             Calendar,
@@ -193,8 +194,8 @@ class TestRestrictedOrganizationCanStillReadUsage:
             is_active=True,
         )
         plan = make_complete_plan({RESOURCE_CALENDARS: 5})
-        subscription = SubscriptionService().create_subscription_for_organization(
-            organization, plan=plan
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(organization), plan=plan
         )
         assert subscription is not None
         subscription.billing_state = BillingState.RESTRICTED
@@ -233,7 +234,7 @@ class TestEnrichedResponseSerialization:
         period_end = period_start + datetime.timedelta(days=30)
         data = {
             "billing_state": BillingState.ACTIVE,
-            "billing_root_organization_id": 12,
+            "billing_root_scope_id": 12,
             "plan": {"slug": "pro", "name": "Pro", "currency": "USD"},
             "billing_period": {"start": period_start, "end": period_end},
             "estimated_overage_total": Decimal("12.5"),
@@ -246,9 +247,9 @@ class TestEnrichedResponseSerialization:
                     "overage_unit_price": Decimal("0.01"),
                     "included_in_plan": 500,
                     "add_on_quantity": 500,
-                    "by_organization": [
-                        {"organization_id": 12, "name": "Acme", "usage": 900},
-                        {"organization_id": 31, "name": "Acme West", "usage": 350},
+                    "by_scope": [
+                        {"scope_id": 12, "name": "Acme", "usage": 900},
+                        {"scope_id": 31, "name": "Acme West", "usage": 350},
                     ],
                 }
             ],
@@ -256,7 +257,7 @@ class TestEnrichedResponseSerialization:
 
         payload = UsageResponseSerializer(data).data
 
-        assert payload["billing_root_organization_id"] == 12
+        assert payload["billing_root_scope_id"] == 12
         assert payload["plan"] == {"slug": "pro", "name": "Pro", "currency": "USD"}
         assert payload["billing_period"]["start"] is not None
         assert payload["billing_period"]["end"] is not None
@@ -267,9 +268,9 @@ class TestEnrichedResponseSerialization:
         # The decomposition invariant: the two new fields sum back to the
         # existing (unchanged) limit_value.
         assert row["included_in_plan"] + row["add_on_quantity"] == row["limit_value"]
-        assert row["by_organization"] == [
-            {"organization_id": 12, "name": "Acme", "usage": 900},
-            {"organization_id": 31, "name": "Acme West", "usage": 350},
+        assert row["by_scope"] == [
+            {"scope_id": 12, "name": "Acme", "usage": 900},
+            {"scope_id": 31, "name": "Acme West", "usage": 350},
         ]
 
     def test_null_plan_and_period_when_no_subscription(self):
@@ -277,7 +278,7 @@ class TestEnrichedResponseSerialization:
         estimated_overage_total renders "0.0000", never absent or "0"."""
         data = {
             "billing_state": BillingState.FREE,
-            "billing_root_organization_id": 7,
+            "billing_root_scope_id": 7,
             "plan": None,
             "billing_period": None,
             "estimated_overage_total": Decimal("0"),
@@ -290,7 +291,7 @@ class TestEnrichedResponseSerialization:
                     "overage_unit_price": None,
                     "included_in_plan": None,
                     "add_on_quantity": 0,
-                    "by_organization": [],
+                    "by_scope": [],
                 }
             ],
         }
@@ -303,7 +304,7 @@ class TestEnrichedResponseSerialization:
         row = payload["limits"][0]
         assert row["limit_value"] is None
         assert row["included_in_plan"] is None
-        assert row["by_organization"] == []
+        assert row["by_scope"] == []
 
 
 @pytest.mark.django_db
@@ -320,8 +321,8 @@ class TestPlanAddOnDecompositionInvariant:
             is_active=True,
         )
         plan = make_complete_plan({APPOINTMENT_TYPES: 5})
-        subscription = SubscriptionService().create_subscription_for_organization(
-            organization, plan=plan
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(organization), plan=plan
         )
         assert subscription is not None
         baker.make(
@@ -364,8 +365,8 @@ class TestAddOnPurchasedOnUnlimitedPlan:
             is_active=True,
         )
         plan = make_complete_plan({APPOINTMENT_TYPES: None})
-        subscription = SubscriptionService().create_subscription_for_organization(
-            organization, plan=plan
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(organization), plan=plan
         )
         assert subscription is not None
         baker.make(

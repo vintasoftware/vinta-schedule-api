@@ -77,6 +77,7 @@ from calendar_integration.services.type_guards import (
 )
 from organizations.models import OrganizationMembership
 from payments.seams.resource_keys import BUNDLE_CALENDARS
+from payments.seams.scopes import scope_for
 from users.models import User
 
 
@@ -253,7 +254,7 @@ class CalendarBundleService:
         entitlement_service = self._context.entitlement_service
         if not bypass_limits and entitlement_service is not None:
             result = entitlement_service.check_limit(
-                context.organization, BUNDLE_CALENDARS, lock=True
+                scope_for(context.organization), BUNDLE_CALENDARS, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
@@ -341,7 +342,7 @@ class CalendarBundleService:
 
         entitlement_service = self._context.entitlement_service
         if entitlement_service is not None and not self._context.bypass_entitlement_limits:
-            entitlement_service.check_not_restricted(context.organization)
+            entitlement_service.check_not_restricted(scope_for(context.organization))
 
         if bundle_calendar.calendar_type != CalendarType.BUNDLE:
             raise ValueError("Calendar is not a bundle.")
@@ -479,7 +480,7 @@ class CalendarBundleService:
         if entitlement_service is not None:
             billable_units = self._bundle_event_billable_units(primary_calendar.id, child_calendars)
             result = entitlement_service.check_postpaid_allowance(
-                context.organization, delta=billable_units, lock=True
+                scope_for(context.organization), delta=billable_units, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)

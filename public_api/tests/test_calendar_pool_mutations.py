@@ -32,6 +32,7 @@ from calendar_integration.models import (
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
 from organizations.tests.helpers import make_membership
+from payments.seams.scopes import scope_for
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -162,7 +163,7 @@ class TestCalendarPoolMutations:
         creation) that itself goes through a guarded, limit-checked path, so
         that setup is not blocked by the very state under test. Mirrors
         ``TestAppointmentTypeScopedQuotaRules._restrict_organization``."""
-        Subscription.objects.filter(organization=organization).update(
+        Subscription.objects.filter(scope=scope_for(organization)).update(
             billing_state=BillingState.RESTRICTED
         )
 

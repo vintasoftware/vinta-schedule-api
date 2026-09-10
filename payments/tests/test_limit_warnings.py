@@ -26,6 +26,7 @@ from payments.seams.resource_keys import (
     ORGANIZATION_MEMBERS,
     RESOURCE_KEYS,
 )
+from payments.seams.scopes import scope_for
 from payments.tasks import check_approaching_limits, check_approaching_limits_for_subscription
 from users.models import User
 
@@ -39,7 +40,7 @@ def make_complete_plan(limit_values: dict[str, int | None] | None = None) -> Bil
     limit_values = limit_values or {}
     plan = baker.make(
         BillingPlan,
-        is_default_for_new_organizations=False,
+        is_default_for_new_scopes=False,
         monthly_price=Decimal("0"),
         annual_price=None,
     )
@@ -57,8 +58,8 @@ def make_complete_plan(limit_values: dict[str, int | None] | None = None) -> Bil
 def _subscription_for(
     subscription_service, organization: Organization, plan: BillingPlan, *, billing_state: str
 ) -> Subscription:
-    subscription = subscription_service.create_subscription_for_organization(
-        organization, plan=plan
+    subscription = subscription_service.create_subscription_for_scope(
+        scope_for(organization), plan=plan
     )
     assert subscription is not None
     subscription.billing_state = billing_state

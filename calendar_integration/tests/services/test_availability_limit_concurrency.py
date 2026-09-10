@@ -46,6 +46,7 @@ from calendar_integration.querysets import AvailableTimeQuerySet
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization
 from payments.seams.resource_keys import AVAILABILITY_WINDOWS
+from payments.seams.scopes import scope_for
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -69,8 +70,8 @@ def _organization_at_the_ceiling_with_one_shared_row() -> tuple[
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),

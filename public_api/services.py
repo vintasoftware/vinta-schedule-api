@@ -14,6 +14,7 @@ from common.utils.authentication_utils import (
     verify_long_lived_token,
 )
 from payments.seams.resource_keys import PUBLIC_API_SYSTEM_USERS
+from payments.seams.scopes import scope_for
 from public_api.models import SystemUser
 
 
@@ -119,7 +120,7 @@ class PublicAPIAuthService:
             )
         elif not bypass_limits and self.entitlement_service is not None:
             result = self.entitlement_service.check_limit(
-                organization, PUBLIC_API_SYSTEM_USERS, lock=True
+                scope_for(organization), PUBLIC_API_SYSTEM_USERS, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)

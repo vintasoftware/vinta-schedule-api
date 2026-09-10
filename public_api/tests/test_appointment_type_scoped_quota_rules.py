@@ -37,6 +37,7 @@ from calendar_integration.models import (
     CalendarOwnership,
 )
 from organizations.models import Organization, OrganizationMembership
+from payments.seams.scopes import scope_for
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -168,7 +169,7 @@ class TestAppointmentTypeScopedQuotaRulesPublicAPI:
         RESTRICTED in place -- applied AFTER any setup (e.g. system-user-token
         creation) that itself goes through a guarded, limit-checked path, so
         that setup is not blocked by the very state under test."""
-        Subscription.objects.filter(organization=organization).update(
+        Subscription.objects.filter(scope=scope_for(organization)).update(
             billing_state=BillingState.RESTRICTED
         )
 

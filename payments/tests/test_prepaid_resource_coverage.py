@@ -44,6 +44,7 @@ from payments.seams.resource_keys import (
     RESOURCE_CALENDARS,
     WEBHOOK_SUBSCRIPTIONS,
 )
+from payments.seams.scopes import scope_for
 from public_api.models import SystemUser
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
@@ -80,8 +81,8 @@ def _organization_with_limit(resource_key: str, limit_value: int) -> Organizatio
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=organization,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),

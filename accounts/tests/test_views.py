@@ -18,6 +18,7 @@ from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlem
 from accounts.views import ProviderRedirectAPIView
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from payments.seams.resource_keys import WHITE_LABEL_BRANDING
+from payments.seams.scopes import scope_for
 from users.factories import UserFactory
 
 
@@ -200,8 +201,8 @@ class TestProviderCallbackDestinationResolution:
         now = timezone.now()
         subscription = baker.make(
             Subscription,
-            organization=org,
-            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            scope=scope_for(org),
+            plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
             billing_state=BillingState.FREE,
             current_period_start=now,
             current_period_end=now + datetime.timedelta(days=30),

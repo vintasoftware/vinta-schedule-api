@@ -29,6 +29,7 @@ import json
 import uuid
 from unittest.mock import patch
 
+from django.contrib.contenttypes.models import ContentType
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
@@ -394,6 +395,28 @@ class TestIsInCurrentRosterFlagRestQueryCount:
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
 class TestIsInCurrentRosterFlagGraphQLQueryCount:
+    """Both tests here compare a first request against a second one.
+
+    That comparison only means something if the two are measured in the same
+    state, and one thing is not. ``ContentType`` is cached per process, and
+    serializing a ``CalendarEvent`` reads its content type -- so the *first*
+    request to do so in a worker pays a ``django_content_type`` SELECT that
+    every later one does not. Measured across the two requests here, that is a
+    phantom "extra" query in the first, and the assertion fails by one.
+
+    Whether it bites depends purely on running order: after almost any other
+    test in the same worker the cache is already warm, which is why this passes
+    in a full shard and fails when either test runs early. Warming it here
+    makes both requests comparable, which is the only thing these tests are
+    actually about -- that the count does not scale with selections or slots.
+
+    Production never sees it: the cache warms once per worker and stays warm.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _warm_content_type_cache(self, db):
+        ContentType.objects.get_for_model(CalendarEvent)
+
     def test_constant_query_count_regardless_of_selection_count(
         self, mock_rate_limiter, django_assert_num_queries
     ):

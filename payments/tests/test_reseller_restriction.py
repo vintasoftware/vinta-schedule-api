@@ -27,6 +27,7 @@ from payments.seams.resource_keys import (
     EVENT_OCCURRENCES,
     RESOURCE_KEYS,
 )
+from payments.seams.scopes import scope_for
 from webhooks.constants import WebhookEventType
 from webhooks.services.webhook_service import WebhookService
 
@@ -43,8 +44,8 @@ def _reseller_tree(root_billing_state: str) -> tuple[Organization, Organization]
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=root,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(root),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=root_billing_state,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -154,8 +155,8 @@ class TestReservedCascadeBlocksTheWholeSubtree:
     def test_is_billing_root_restricted_resolves_the_child_against_the_root(self):
         root, child = _reseller_tree(BillingState.RESTRICTED)
 
-        assert EntitlementService().is_billing_root_restricted(child) is True
-        assert EntitlementService().is_billing_root_restricted(root) is True
+        assert EntitlementService().is_billing_root_restricted(scope_for(child)) is True
+        assert EntitlementService().is_billing_root_restricted(scope_for(root)) is True
 
     def test_a_grandchild_two_levels_below_the_root_is_also_restricted(self):
         """The cascade holds through more than one level of nesting -- a
@@ -165,7 +166,7 @@ class TestReservedCascadeBlocksTheWholeSubtree:
         _root, child = _reseller_tree(BillingState.RESTRICTED)
         grandchild = baker.make(Organization, parent=child, can_invite_organizations=False)
 
-        assert EntitlementService().is_billing_root_restricted(grandchild) is True
+        assert EntitlementService().is_billing_root_restricted(scope_for(grandchild)) is True
 
     def test_nested_reseller_root_pays_for_its_own_subtree_not_restricted_by_the_parent(self):
         """A nested reseller (``can_invite_organizations=True`` with a parent
@@ -177,8 +178,8 @@ class TestReservedCascadeBlocksTheWholeSubtree:
         now = timezone.now()
         nested_subscription = baker.make(
             Subscription,
-            organization=nested_root,
-            plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+            scope=scope_for(nested_root),
+            plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
             billing_state=BillingState.ACTIVE,
             current_period_start=now,
             current_period_end=now + datetime.timedelta(days=30),
@@ -194,8 +195,8 @@ class TestReservedCascadeBlocksTheWholeSubtree:
             )
         nested_child = baker.make(Organization, parent=nested_root, can_invite_organizations=False)
 
-        assert EntitlementService().is_billing_root_restricted(nested_root) is False
-        assert EntitlementService().is_billing_root_restricted(nested_child) is False
+        assert EntitlementService().is_billing_root_restricted(scope_for(nested_root)) is False
+        assert EntitlementService().is_billing_root_restricted(scope_for(nested_child)) is False
 
         service = CalendarService()
         service.initialize_without_provider(organization=nested_child)

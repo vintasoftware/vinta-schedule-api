@@ -26,6 +26,7 @@ from organizations.models import (
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from payments.seams.resource_keys import WHITE_LABEL_BRANDING
+from payments.seams.scopes import scope_for
 
 
 User = get_user_model()
@@ -41,8 +42,8 @@ def _make_unentitled_org(**org_kwargs) -> Organization:
     now = timezone.now()
     subscription = baker.make(
         Subscription,
-        organization=org,
-        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        scope=scope_for(org),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
         billing_state=BillingState.FREE,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),

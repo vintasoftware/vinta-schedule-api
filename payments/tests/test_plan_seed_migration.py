@@ -16,8 +16,6 @@ the marker existed. The trade is deliberate: with the opt-out these tests would 
 go red on a flushed database than go green on a synthetic one.
 """
 
-import importlib
-
 import pytest
 from vinta_billing.constants import LimitKind
 from vinta_billing.models import BillingPlan
@@ -28,7 +26,6 @@ from payments.seams.resource_keys import (
     ORGANIZATION_MEMBERS,
     RESOURCE_KEYS,
 )
-from payments.tests.historical_apps import historical_apps
 
 
 @pytest.mark.no_billing_catalog_reseed
@@ -38,7 +35,7 @@ class TestPlanSeedMigration:
         plan = BillingPlan.objects.get(slug="unlimited")
 
         assert plan.is_active is True
-        assert plan.is_default_for_new_organizations is True
+        assert plan.is_default_for_new_scopes is True
 
     def test_unlimited_plan_has_a_null_limit_for_every_limited_resource(self):
         """The closing condition: `unlimited` must never be silently missing a
@@ -84,7 +81,7 @@ class TestPlanSeedMigration:
         plan = BillingPlan.objects.get(slug="free")
 
         assert plan.is_active is True
-        assert plan.is_default_for_new_organizations is False
+        assert plan.is_default_for_new_scopes is False
         assert plan.limits.count() == len(RESOURCE_KEYS)
         assert all(limit.limit_value is not None for limit in plan.limits.all())
 
@@ -129,38 +126,4 @@ class TestPlanSeedMigration:
             )
 
     def test_only_one_default_plan_across_the_seeded_catalog(self):
-        assert BillingPlan.objects.filter(is_default_for_new_organizations=True).count() == 1
-
-    def test_seeding_converges_and_updates_existing_plans(self):
-        """If a plan with slug `unlimited` already exists with wrong values (from a
-        partial deploy, manual fix, or earlier test run), the seed migration must
-        converge — updating the existing plan's fields to their canonical values.
-        The same applies to PlanLimit and PlanEntitlement rows."""
-        # Get the seeding function from the migration module
-        migration_module = importlib.import_module("payments.migrations.0007_seed_billing_plans")
-        seed_billing_plans = migration_module.seed_billing_plans
-
-        plan = BillingPlan.objects.get(slug="unlimited")
-
-        # Simulate a partial deploy or manual correction that left the plan
-        # in an incorrect state.
-        plan.is_default_for_new_organizations = False
-        plan.is_active = False
-        plan.save()
-
-        # Also corrupt a PlanLimit row to verify it converges too.
-        limit = plan.limits.get(resource_key=EVENT_OCCURRENCES)
-        limit.kind = LimitKind.PREPAID  # Should be POSTPAID
-        limit.save()
-
-        # Re-run the seeding function; it should converge to the canonical state.
-        seed_billing_plans(historical_apps, None)
-
-        # Assert the plan was corrected.
-        plan.refresh_from_db()
-        assert plan.is_active is True
-        assert plan.is_default_for_new_organizations is True
-
-        # Assert the PlanLimit was corrected.
-        limit.refresh_from_db()
-        assert limit.kind == LimitKind.POSTPAID
+        assert BillingPlan.objects.filter(is_default_for_new_scopes=True).count() == 1

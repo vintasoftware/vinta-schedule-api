@@ -45,6 +45,7 @@ from payments.seams.resource_keys import (
     ORGANIZATION_MEMBERS,
     RESOURCE_KEYS,
 )
+from payments.seams.scopes import scope_for
 
 
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)
@@ -86,7 +87,7 @@ class FakePaymentService:
     def create_payment(
         self,
         *,
-        organization: Organization,
+        scope,
         currency: str,
         amount: Decimal,
         description: str,
@@ -96,7 +97,7 @@ class FakePaymentService:
     ) -> Payment:
         self.charges.append(
             {
-                "organization": organization,
+                "scope": scope,
                 "currency": currency,
                 "amount": amount,
                 "description": description,
@@ -105,9 +106,9 @@ class FakePaymentService:
             }
         )
         try:
-            billing_profile = organization.billing_profile
+            billing_profile = scope.billing_profile
         except BillingProfile.DoesNotExist:
-            billing_profile = baker.make(BillingProfile, organization=organization)
+            billing_profile = baker.make(BillingProfile, scope=scope)
         payment = baker.make(
             Payment,
             billing_profile=billing_profile,
@@ -133,7 +134,7 @@ def organization(db) -> Organization:
 def subscription(organization: Organization) -> Subscription:
     """The auto-provisioned subscription on the seeded ``unlimited`` plan, pinned to
     a known monthly cycle."""
-    subscription = Subscription.objects.get(organization=organization)
+    subscription = Subscription.objects.get(scope=scope_for(organization))
     subscription.current_period_start = PERIOD_START
     subscription.current_period_end = PERIOD_END
     subscription.save(update_fields=["current_period_start", "current_period_end", "modified"])
@@ -173,7 +174,7 @@ def _make_complete_plan(slug: str) -> BillingPlan:
     plan = baker.make(
         BillingPlan,
         slug=slug,
-        is_default_for_new_organizations=False,
+        is_default_for_new_scopes=False,
         monthly_price=Decimal("0"),
         annual_price=None,
         grace_period_days=None,
@@ -200,7 +201,7 @@ def _meter_row(
     period_start: datetime.datetime = PERIOD_START,
 ) -> MeteredOccurrence:
     return MeteredOccurrence.objects.create(
-        organization=organization,
+        scope=scope_for(organization),
         subscription=subscription,
         event_id=event_id,
         occurrence_start=period_start + datetime.timedelta(days=event_id),
@@ -589,7 +590,7 @@ class TestStatementPersistence:
         assert BillingPeriodSummary.objects.count() == 1
         summary = BillingPeriodSummary.objects.get()
         assert summary.subscription_id == subscription.pk
-        assert summary.organization_id == organization.pk
+        assert summary.scope_id == scope_for(organization).pk
         assert summary.billing_period_start == PERIOD_START
         assert summary.billing_period_end == PERIOD_END
         assert summary.overage_total == closed[0].overage_total == Decimal("0.2500")
@@ -601,7 +602,7 @@ class TestStatementPersistence:
         # T3: the linked payment must belong to the *same* organization the
         # statement is for, not a different tenant the payment fixture happened
         # to fabricate.
-        assert summary.payment.organization.pk == summary.organization_id
+        assert summary.payment.scope.pk == summary.scope_id
 
         resources = list(summary.resources.all())
         assert len(resources) == len(RESOURCE_KEYS)
@@ -684,14 +685,14 @@ class TestStatementPersistence:
         assert summary.plan_name == outgoing_plan.name
         assert summary.plan_slug != pending_plan.slug
 
-    def test_prepaid_by_organization_matches_get_usage_breakdown_for_pooled_subtree(
+    def test_prepaid_by_scope_matches_get_usage_breakdown_for_pooled_subtree(
         self,
         cycle_close_service: CycleCloseService,
         subscription: Subscription,
         organization: Organization,
     ):
         """A reseller root with two children contributing seats: the persisted
-        ``by_organization`` breakdown for a prepaid resource must equal what
+        ``by_scope`` breakdown for a prepaid resource must equal what
         ``EntitlementService.get_usage_breakdown`` reports for the same pool."""
         organization.can_invite_organizations = True
         organization.save(update_fields=["can_invite_organizations"])
@@ -706,7 +707,7 @@ class TestStatementPersistence:
 
         entitlement_service = EntitlementService()
         expected_breakdown = entitlement_service.get_usage_breakdown(
-            organization, ORGANIZATION_MEMBERS
+            scope_for(organization), ORGANIZATION_MEMBERS
         )
         assert expected_breakdown  # sanity: both children contributed
 
@@ -714,7 +715,7 @@ class TestStatementPersistence:
 
         summary = BillingPeriodSummary.objects.get()
         members_row = summary.resources.get(resource_key=ORGANIZATION_MEMBERS)
-        persisted_breakdown = {int(k): v for k, v in members_row.by_organization.items()}
+        persisted_breakdown = {int(k): v for k, v in members_row.by_scope.items()}
         assert persisted_breakdown == expected_breakdown
         assert members_row.total == sum(expected_breakdown.values())
 
@@ -757,9 +758,13 @@ class TestStatementPersistence:
 
         summary = BillingPeriodSummary.objects.get()
         event_row = summary.resources.get(resource_key=EVENT_OCCURRENCES)
-        assert sum(event_row.by_organization.values()) == charged_count
+        assert sum(event_row.by_scope.values()) == charged_count
         assert event_row.total == charged_count
-        assert set(event_row.by_organization.keys()) == {str(child_a.pk), str(child_b.pk)}
+        # 0.8.0 keys the persisted breakdown by scope id, not organization id.
+        assert set(event_row.by_scope.keys()) == {
+            str(scope_for(child_a).pk),
+            str(scope_for(child_b).pk),
+        }
 
     def test_persistence_failure_does_not_roll_back_the_charge_or_block_the_roll(
         self,

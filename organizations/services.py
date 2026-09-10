@@ -55,6 +55,7 @@ from organizations.permission_catalog import (
 )
 from organizations.slug_generation import derive_organization_slug
 from payments.seams.resource_keys import ORGANIZATION_MEMBERS
+from payments.seams.scopes import scope_for
 from payments.seams.seats import (
     check_seat_limit_for_invitation_accept,
     check_seat_limit_for_invitation_send,
@@ -243,7 +244,7 @@ class OrganizationService:
         # there is no plan-less state.
         # A no-op for a reseller child (parent set): it pools against its root's
         # subscription instead. See SubscriptionService.create_subscription_for_organization.
-        self.subscription_service.create_subscription_for_organization(self.organization)
+        self.subscription_service.create_subscription_for_scope(scope_for(self.organization))
         # The creator of the organization is its first admin — every org must
         # have at least one admin, and no one else exists yet to promote them.
         admin_membership = OrganizationMembership.objects.create(
@@ -834,7 +835,7 @@ class OrganizationService:
         try:
             invitation = OrganizationInvitation.objects.get(id=invitation_id)
             if not bypass_limits:
-                self.entitlement_service.check_not_restricted(invitation.organization)
+                self.entitlement_service.check_not_restricted(scope_for(invitation.organization))
             old_expires_at = invitation.expires_at
             now = datetime.datetime.now(tz=datetime.UTC)
             invitation.expires_at = now
@@ -889,7 +890,7 @@ class OrganizationService:
         if not membership.is_active:
             if not bypass_limits:
                 result = self.entitlement_service.check_limit(
-                    membership.organization, ORGANIZATION_MEMBERS, lock=True
+                    scope_for(membership.organization), ORGANIZATION_MEMBERS, lock=True
                 )
                 if not result.allowed:
                     raise OverLimitError.from_check_result(result)

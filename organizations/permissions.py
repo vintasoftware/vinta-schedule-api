@@ -26,6 +26,7 @@ from organizations.permission_catalog import (
     MANAGE_ORGANIZATION,
 )
 from payments.seams.resource_keys import WHITE_LABEL_BRANDING
+from payments.seams.scopes import scope_for, scopes_for
 from public_api.capabilities import is_target_in_subtree
 
 
@@ -56,7 +57,9 @@ def _organization_holds_white_label_branding(
     """
     if entitlement_service is None:
         return False
-    return has_entitlement_cached(entitlement_service, organization, WHITE_LABEL_BRANDING)
+    return has_entitlement_cached(
+        entitlement_service, scope_for(organization), WHITE_LABEL_BRANDING
+    )
 
 
 @inject
@@ -76,9 +79,18 @@ def _organizations_hold_white_label_branding(
     """
     if entitlement_service is None or not organizations:
         return {}
-    return entitlement_service.has_entitlement_for_organizations(
-        organizations, WHITE_LABEL_BRANDING
-    )
+    # 0.8.0 re-keyed this call onto scopes: it takes scopes and answers
+    # ``{scope_pk: bool}``. Every caller of this function is keyed by
+    # organization, so the answer is translated back here rather than leaking a
+    # scope id into ``is_branding_eligible_organizations``' contract.
+    scopes, scope_to_organization = scopes_for(organizations)
+    if not scopes:
+        return {}
+    entitled_by_scope = entitlement_service.has_entitlement_for_scopes(scopes, WHITE_LABEL_BRANDING)
+    return {
+        organization_pk: entitled_by_scope.get(scope_pk, False)
+        for scope_pk, organization_pk in scope_to_organization.items()
+    }
 
 
 def is_branding_eligible_organization(organization: Organization | None) -> bool:
@@ -113,7 +125,7 @@ def is_branding_eligible_organizations(organizations: Sequence[Organization]) ->
     belongs to. Organizations with a parent are excluded from the entitlement
     batch (same short-circuit as the single-organization function above) since
     their answer is always ``False`` without needing an entitlement lookup at
-    all. See ``EntitlementService.has_entitlement_for_organizations`` for what
+    all. See ``EntitlementService.has_entitlement_for_scopes`` for what
     the batching itself looks like.
 
     Returns ``{organization.pk: bool}`` for every organization passed in.

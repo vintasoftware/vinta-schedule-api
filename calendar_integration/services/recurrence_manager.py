@@ -42,6 +42,7 @@ from calendar_integration.recurrence_utils import OccurrenceValidator, Recurrenc
 from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
+from payments.seams.scopes import scope_for
 
 
 if TYPE_CHECKING:
@@ -102,7 +103,7 @@ class RecurrenceManager:
         if context is not None and not context.bypass_entitlement_limits:
             entitlement_service = context.entitlement_service
             if entitlement_service is not None and context.organization is not None:
-                entitlement_service.check_not_restricted(context.organization)
+                entitlement_service.check_not_restricted(scope_for(context.organization))
 
         if not parent_object.is_recurring:
             raise ValueError(f"Cannot create exception for non-recurring {object_type_name}")
@@ -233,7 +234,7 @@ class RecurrenceManager:
         if context is not None and not context.bypass_entitlement_limits:
             entitlement_service = context.entitlement_service
             if entitlement_service is not None and context.organization is not None:
-                entitlement_service.check_not_restricted(context.organization)
+                entitlement_service.check_not_restricted(scope_for(context.organization))
 
         if not parent_object.is_recurring:
             raise ValueError(

@@ -17,6 +17,7 @@ import pytest
 from model_bakery import baker
 
 from organizations.models import Organization
+from payments.seams.scopes import scope_for
 
 
 @pytest.mark.django_db
@@ -31,6 +32,6 @@ class TestProvisionDefaultSubscriptionFixtureUsesTheContainer:
         with container.subscription_service.override(mock_subscription_service):
             organization = baker.make(Organization, parent=None, can_invite_organizations=False)
 
-        mock_subscription_service.create_subscription_for_organization.assert_called_once_with(
-            organization
+        mock_subscription_service.create_subscription_for_scope.assert_called_once_with(
+            scope_for(organization)
         )

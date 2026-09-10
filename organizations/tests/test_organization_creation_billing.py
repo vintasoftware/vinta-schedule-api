@@ -32,6 +32,7 @@ from django.urls import reverse
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
+from vinta_billing.conf import get_scope_model
 from vinta_billing.exceptions import BillingRootCycleError
 from vinta_billing.models import Subscription
 from vinta_billing.services.subscription_service import (
@@ -44,6 +45,7 @@ from vinta_billing.services.subscription_service import (
 from organizations.models import Organization, OrganizationInvitation
 from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER
 from organizations.services import OrganizationService
+from payments.seams.scopes import scope_for
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
 
@@ -65,7 +67,7 @@ class TestRestOrganizationCreationGetsASubscription:
         assert response.status_code == 201
         organization = Organization.objects.get(name="REST Org")
 
-        subscription = Subscription.objects.get(organization=organization)
+        subscription = Subscription.objects.get(scope=scope_for(organization))
         assert subscription.plan.slug == "unlimited"
 
 
@@ -76,7 +78,7 @@ class TestProvisionTenantForUserGetsASubscription:
         membership = service.provision_tenant_for_user(user=user, organization_name="Signup Org")
 
         assert membership is not None
-        subscription = Subscription.objects.get(organization=membership.organization)
+        subscription = Subscription.objects.get(scope=scope_for(membership.organization))
         assert subscription.plan.slug == "unlimited"
 
     def test_invite_branch_does_not_touch_subscriptions(self, user):
@@ -87,7 +89,7 @@ class TestProvisionTenantForUserGetsASubscription:
         organization = OrganizationService().create_organization(
             creator=creator, name="Existing Org"
         )
-        existing_subscription = Subscription.objects.get(organization=organization)
+        existing_subscription = Subscription.objects.get(scope=scope_for(organization))
 
         baker.make(
             OrganizationInvitation,
@@ -102,8 +104,10 @@ class TestProvisionTenantForUserGetsASubscription:
         assert membership is not None
         assert membership.organization_id == organization.id
         # No second subscription was created for the org the user joined.
-        assert Subscription.objects.filter(organization=organization).count() == 1
-        assert Subscription.objects.get(organization=organization).pk == existing_subscription.pk
+        assert Subscription.objects.filter(scope=scope_for(organization)).count() == 1
+        assert (
+            Subscription.objects.get(scope=scope_for(organization)).pk == existing_subscription.pk
+        )
 
 
 @pytest.mark.django_db
@@ -153,15 +157,15 @@ class TestResellerGraphQLMutationOrganizationCreation:
 
         # The core rule here: a reseller child never gets its own
         # subscription — it pools against its root's.
-        assert not Subscription.objects.filter(organization=child_org).exists()
-        assert resolve_billing_root(child_org) == reseller_org
+        assert not Subscription.objects.filter(scope=scope_for(child_org)).exists()
+        assert resolve_billing_root(scope_for(child_org)) == scope_for(reseller_org)
 
 
 @pytest.mark.django_db
 class TestReseleverMutationSubscriptionHookIsDefenseInDepth:
     """``public_api.mutations.create_organization`` always creates its child with
     ``parent=acting_org`` and ``can_invite_organizations=False``, so its
-    ``create_subscription_for_organization(child_org)`` call is a no-op under
+    ``create_subscription_for_scope(child_org)`` call is a no-op under
     every input the mutation can currently produce (see the inline comment at
     the call site). This is not dead code, though: the exact same call would
     correctly place a subscription on a hypothetical future child that somehow
@@ -172,10 +176,12 @@ class TestReseleverMutationSubscriptionHookIsDefenseInDepth:
     def test_would_place_a_subscription_on_a_hypothetical_billing_root_child(self):
         would_be_child = baker.make(Organization, parent=None, can_invite_organizations=False)
 
-        subscription = SubscriptionService().create_subscription_for_organization(would_be_child)
+        subscription = SubscriptionService().create_subscription_for_scope(
+            scope_for(would_be_child)
+        )
 
         assert subscription is not None
-        assert subscription.organization == would_be_child
+        assert subscription.scope == scope_for(would_be_child)
 
 
 @pytest.mark.django_db
@@ -185,9 +191,9 @@ class TestResolveBillingRootTreeShapes:
         mid = baker.make(Organization, parent=root, can_invite_organizations=False)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
 
-        assert resolve_billing_root(leaf) == root
-        assert resolve_billing_root(mid) == root
-        assert resolve_billing_root(root) == root
+        assert resolve_billing_root(scope_for(leaf)) == scope_for(root)
+        assert resolve_billing_root(scope_for(mid)) == scope_for(root)
+        assert resolve_billing_root(scope_for(root)) == scope_for(root)
 
     def test_nested_reseller_is_its_own_billing_root(self):
         """A nested reseller (``can_invite_organizations=True`` with a ``parent``
@@ -197,16 +203,16 @@ class TestResolveBillingRootTreeShapes:
         mid = baker.make(Organization, parent=root, can_invite_organizations=True)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
 
-        assert is_billing_root(mid) is True
-        assert resolve_billing_root(mid) == mid
-        assert resolve_billing_root(leaf) == mid
+        assert is_billing_root(scope_for(mid)) is True
+        assert resolve_billing_root(scope_for(mid)) == scope_for(mid)
+        assert resolve_billing_root(scope_for(leaf)) == scope_for(mid)
 
-        SubscriptionService().create_subscription_for_organization(root)
-        mid_subscription = SubscriptionService().create_subscription_for_organization(mid)
+        SubscriptionService().create_subscription_for_scope(scope_for(root))
+        mid_subscription = SubscriptionService().create_subscription_for_scope(scope_for(mid))
 
         assert mid_subscription is not None
-        assert mid_subscription.organization == mid
-        assert not Subscription.objects.filter(organization=leaf).exists()
+        assert mid_subscription.scope == scope_for(mid)
+        assert not Subscription.objects.filter(scope=scope_for(leaf)).exists()
 
     def test_cyclic_parent_chain_raises_billing_root_cycle_error(self):
         org_a = baker.make(Organization, can_invite_organizations=False)
@@ -220,7 +226,7 @@ class TestResolveBillingRootTreeShapes:
         # broken: every organization on the cycle was left without a resolvable
         # billing root.
         with pytest.raises(BillingRootCycleError):
-            resolve_billing_root(org_a)
+            resolve_billing_root(scope_for(org_a))
 
 
 @pytest.mark.django_db
@@ -283,7 +289,15 @@ class TestNoPlanlessOrganization:
                 headers={"authorization": f"Bearer {system_user.id}:{token}"},
             )
 
+        # `billing_root_filter()` is a Q over *scopes* since 0.8.0, so it selects
+        # against the scope table rather than the organization one. Resolved
+        # through `get_scope_model()` rather than importing a model directly:
+        # this project swaps `BILLING_SCOPE_MODEL`, so the shipped
+        # `vinta_billing.BillingScope` has no manager to query. Same invariant
+        # either way: no billing root is left without a subscription.
         assert (
-            Organization.objects.filter(billing_root_filter(), subscription__isnull=True).count()
+            get_scope_model()
+            .objects.filter(billing_root_filter(), subscription__isnull=True)
+            .count()
             == 0
         )

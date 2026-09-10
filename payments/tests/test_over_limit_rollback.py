@@ -189,7 +189,7 @@ class TestOverLimitErrorRollsBackTheRequestTransaction:
         response = anonymous_client.post("/over-limit/")
 
         assert response.json() == {
-            "detail": "Organization is at its limit for appointment types.",
+            "detail": "You are at your limit for appointment types.",
             "code": "limit_exceeded",
             "resource": "appointment_types",
             "current_usage": 1,
