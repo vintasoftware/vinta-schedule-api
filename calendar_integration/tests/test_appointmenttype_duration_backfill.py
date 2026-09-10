@@ -41,7 +41,6 @@ from collections.abc import Iterator
 from typing import Any
 
 from django.db import connection
-from django.db.migrations.executor import MigrationExecutor
 
 import pytest
 from model_bakery import baker
@@ -50,7 +49,7 @@ from calendar_integration.migrations._0058_backfill_helpers import (
     BATCH_SIZE,
     backfill_calendargroup_duration,
 )
-from common.testing.migration_replay import migration_replay, uninterruptible
+from common.testing.migration_replay import migrate_to, migration_replay, restore_leaf_nodes
 from organizations.models import Organization
 
 
@@ -79,21 +78,15 @@ def at_pre_backfill_schema(transactional_db) -> Iterator[None]:  # noqa: ARG001
     land before pytest-django flushes, which uses the live models and so needs
     the leaf schema.
     """
-    executor = MigrationExecutor(connection)
-    executor.migrate([(APP_LABEL, BEFORE_BACKFILL)])
-    executor.loader.build_graph()
+    migrate_to((APP_LABEL, BEFORE_BACKFILL))
     try:
         yield
     finally:
         with connection.cursor() as cursor:
             cursor.execute(f"DELETE FROM {TABLE}")  # noqa: S608
-        # `uninterruptible`: see `common.testing.migration_replay`. The alarm
-        # landing inside this restore leaves the worker's database mid-graph
-        # and fails every test scheduled after it.
-        with uninterruptible():
-            executor = MigrationExecutor(connection)
-            executor.migrate(executor.loader.graph.leaf_nodes())
-            executor.loader.build_graph()
+        # `restore_leaf_nodes` cannot be interrupted by the timeout and retries an
+        # autovacuum deadlock -- see `common.testing.migration_replay`.
+        restore_leaf_nodes()
 
 
 def _insert(
@@ -292,10 +285,8 @@ class TestBackfillMigrationChain:
 
     def test_forward_reverse_reapply_round_trip(self, organization):
         ids: list[int] = []
-        executor = MigrationExecutor(connection)
         try:
-            executor.migrate([(APP_LABEL, BEFORE_BACKFILL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, BEFORE_BACKFILL))
 
             public_id = _insert(
                 organization.id,
@@ -315,9 +306,7 @@ class TestBackfillMigrationChain:
             # --- Forward through 0058: every pre-existing NULL-duration row,
             # public and private, must come out at 30 minutes. The row that
             # already had a duration must be untouched. ---
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_BACKFILL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_BACKFILL))
 
             first_pass = _durations_for(ids)
             assert first_pass[public_id] == THIRTY_MINUTES
@@ -326,9 +315,7 @@ class TestBackfillMigrationChain:
 
             # --- Reverse to 0057: RunPython.noop, and no schema operations
             # to undo -- data must be completely untouched. ---
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, BEFORE_BACKFILL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, BEFORE_BACKFILL))
 
             assert _durations_for(ids) == first_pass, (
                 "reversing 0058 must leave every duration value exactly as it was"
@@ -337,18 +324,12 @@ class TestBackfillMigrationChain:
             # --- Re-apply forward once more -- must apply cleanly a second
             # time, and (since every row is already non-NULL) leave data
             # exactly as it was. ---
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_BACKFILL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_BACKFILL))
 
             assert _durations_for(ids) == first_pass
         finally:
             with connection.cursor() as cursor:
                 cursor.execute(f"DELETE FROM {TABLE} WHERE id = ANY(%s)", [ids])  # noqa: S608
-            # `uninterruptible`: see `common.testing.migration_replay`. The
-            # alarm landing inside this restore leaves the worker's database
-            # mid-graph and fails every test scheduled after it.
-            with uninterruptible():
-                executor = MigrationExecutor(connection)
-                executor.migrate(executor.loader.graph.leaf_nodes())
-                executor.loader.build_graph()
+            # `restore_leaf_nodes` cannot be interrupted by the timeout and retries an
+            # autovacuum deadlock -- see `common.testing.migration_replay`.
+            restore_leaf_nodes()

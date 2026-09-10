@@ -19,13 +19,12 @@ from __future__ import annotations
 import importlib
 
 from django.db import connection
-from django.db.migrations.executor import MigrationExecutor
 
 import pytest
 from model_bakery import baker
 
 from calendar_integration.models import generate_public_booking_slug
-from common.testing.migration_replay import migration_replay, uninterruptible
+from common.testing.migration_replay import migrate_to, migration_replay, restore_leaf_nodes
 from organizations.models import Organization
 
 
@@ -123,12 +122,10 @@ class TestPublicBookingSlugBackfillMigrationChain:
 
     def test_backfill_is_distinct_idempotent_and_reverses_without_losing_data(self, organization):
         ids: list[int] = []
-        executor = MigrationExecutor(connection)
         try:
             # --- Step back to BEFORE the column exists, and insert rows the
             # way pre-Phase-3b production data would look: no slug at all. ---
-            executor.migrate([(APP_LABEL, BEFORE_ADD_FIELD)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, BEFORE_ADD_FIELD))
 
             ids += [
                 self._insert_appointment_type_without_slug(organization.id, f"AppointmentType {i}")
@@ -138,9 +135,7 @@ class TestPublicBookingSlugBackfillMigrationChain:
             # --- Forward through 0052 (nullable AddField) and 0053 (the
             # backfill) -- every pre-existing row must come out with a
             # distinct, non-NULL slug. ---
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_BACKFILL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_BACKFILL))
 
             first_pass = self._slugs_for(ids)
             assert all(first_pass[i] for i in ids)
@@ -179,9 +174,7 @@ class TestPublicBookingSlugBackfillMigrationChain:
             assert self._slugs_for(ids) == second_pass
 
             # --- 0054: NOT NULL + globally UNIQUE, built CONCURRENTLY. ---
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_UNIQUE)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_UNIQUE))
 
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -204,9 +197,7 @@ class TestPublicBookingSlugBackfillMigrationChain:
             # confirm the backfilled data is completely untouched: dropping
             # the unique constraint and NOT NULL must not touch row values,
             # only the schema around them. ---
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_BACKFILL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_BACKFILL))
 
             assert self._slugs_for(ids) == second_pass
 
@@ -229,10 +220,6 @@ class TestPublicBookingSlugBackfillMigrationChain:
         finally:
             with connection.cursor() as cursor:
                 cursor.execute(f"DELETE FROM {TABLE} WHERE id = ANY(%s)", [ids])
-            # `uninterruptible`: see `common.testing.migration_replay`. The
-            # alarm landing inside this restore leaves the worker's database
-            # mid-graph and fails every test scheduled after it.
-            with uninterruptible():
-                executor = MigrationExecutor(connection)
-                executor.migrate(executor.loader.graph.leaf_nodes())
-                executor.loader.build_graph()
+            # `restore_leaf_nodes` cannot be interrupted by the timeout and retries an
+            # autovacuum deadlock -- see `common.testing.migration_replay`.
+            restore_leaf_nodes()

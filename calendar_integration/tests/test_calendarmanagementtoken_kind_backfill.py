@@ -49,12 +49,16 @@ toy shape:
 from __future__ import annotations
 
 from django.db import connection
-from django.db.migrations.executor import MigrationExecutor
 
 import pytest
 from model_bakery import baker
 
-from common.testing.migration_replay import migration_replay, uninterruptible
+from common.testing.migration_replay import (
+    migrate_to,
+    migrate_to_leaf_nodes,
+    migration_replay,
+    restore_leaf_nodes,
+)
 from organizations.models import Organization, OrganizationMembership
 
 
@@ -143,12 +147,10 @@ class TestBackfillHelperClassification:
         external_attendee = baker.make(ExternalAttendee, organization=organization)
 
         row_ids: dict[str, int] = {}
-        executor = MigrationExecutor(connection)
         try:
             # --- Step back to BEFORE `kind` exists, and insert one row per
             # realistic create_*_token shape. ---
-            executor.migrate([(APP_LABEL, BEFORE_ADD_FIELD)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, BEFORE_ADD_FIELD))
 
             row_ids["owner"] = self._insert_row(
                 organization_id=organization.id,
@@ -182,9 +184,7 @@ class TestBackfillHelperClassification:
             # backfill) -- every pre-existing row must be classified exactly
             # as CalendarManagementTokenQuerySet.booking_codes()'s pre-Phase-7
             # heuristic would have. ---
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_BACKFILL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_BACKFILL))
 
             kinds = self._kinds_for(list(row_ids.values()))
             assert kinds[row_ids["owner"]] == "management_token"
@@ -226,9 +226,7 @@ class TestBackfillHelperClassification:
             assert self._kinds_for(list(row_ids.values())) == second_pass
 
             # --- 0057: NOT NULL + DB-level default. ---
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_NOT_NULL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_NOT_NULL))
 
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -244,9 +242,7 @@ class TestBackfillHelperClassification:
 
             # --- Reverse ONLY 0057 and confirm data is completely untouched:
             # dropping NOT NULL / the default must not touch row values. ---
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_BACKFILL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_BACKFILL))
 
             assert self._kinds_for(list(row_ids.values())) == second_pass
 
@@ -271,9 +267,7 @@ class TestBackfillHelperClassification:
 
             # --- Re-apply forward once more (0057 again) -- must apply
             # cleanly a second time. ---
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_NOT_NULL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_NOT_NULL))
             assert self._kinds_for(list(row_ids.values())) == second_pass
 
             # --- Full chain replay, reviewer FIX 6 (second half): the plan's
@@ -284,9 +278,7 @@ class TestBackfillHelperClassification:
             # ever added the column, then forward through the whole chain
             # again, twice, to prove the chain survives repeat round-trips
             # and not just a single reverse/reapply cycle. ---
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, BEFORE_ADD_FIELD)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, BEFORE_ADD_FIELD))
 
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -299,9 +291,7 @@ class TestBackfillHelperClassification:
                 )
 
             for _ in range(2):
-                executor = MigrationExecutor(connection)
-                executor.migrate([(APP_LABEL, AFTER_NOT_NULL)])
-                executor.loader.build_graph()
+                migrate_to((APP_LABEL, AFTER_NOT_NULL))
 
                 # Round-tripping through 0054 drops and recreates the `kind`
                 # column, but never touches the underlying actor columns
@@ -311,25 +301,17 @@ class TestBackfillHelperClassification:
                 # classification every time.
                 assert self._kinds_for(list(row_ids.values())) == second_pass
 
-                executor = MigrationExecutor(connection)
-                executor.migrate([(APP_LABEL, BEFORE_ADD_FIELD)])
-                executor.loader.build_graph()
+                migrate_to((APP_LABEL, BEFORE_ADD_FIELD))
 
             # Leave the chain forward again for the ``finally`` restore below.
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_NOT_NULL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_NOT_NULL))
             assert self._kinds_for(list(row_ids.values())) == second_pass
         finally:
             with connection.cursor() as cursor:
                 cursor.execute(f"DELETE FROM {TABLE} WHERE id = ANY(%s)", [list(row_ids.values())])  # noqa: S608
-            # `uninterruptible`: see `common.testing.migration_replay`. The
-            # alarm landing inside this restore leaves the worker's database
-            # mid-graph and fails every test scheduled after it.
-            with uninterruptible():
-                executor = MigrationExecutor(connection)
-                executor.migrate(executor.loader.graph.leaf_nodes())
-                executor.loader.build_graph()
+            # `restore_leaf_nodes` cannot be interrupted by the timeout and retries an
+            # autovacuum deadlock -- see `common.testing.migration_replay`.
+            restore_leaf_nodes()
 
     @migration_replay
     @pytest.mark.django_db(transaction=True)
@@ -354,12 +336,10 @@ class TestBackfillHelperClassification:
         memberships = [another_user_membership() for _ in range(6)]
         late_membership = memberships[5]
 
-        executor = MigrationExecutor(connection)
         row_ids: list[int] = []
         late_row_id: dict[str, int] = {}
         try:
-            executor.migrate([(APP_LABEL, BEFORE_ADD_FIELD)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, BEFORE_ADD_FIELD))
 
             for membership in memberships[:5]:
                 row_ids.append(
@@ -369,9 +349,7 @@ class TestBackfillHelperClassification:
                     )
                 )
 
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_ADD_FIELD)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_ADD_FIELD))
 
             real_cursor = connection.cursor
             call_count = {"n": 0}
@@ -423,10 +401,7 @@ class TestBackfillHelperClassification:
             cleanup_ids = [*row_ids, *late_row_id.values()]
             with connection.cursor() as cursor:
                 cursor.execute(f"DELETE FROM {TABLE} WHERE id = ANY(%s)", [cleanup_ids])  # noqa: S608
-            with uninterruptible():
-                executor = MigrationExecutor(connection)
-                executor.migrate(executor.loader.graph.leaf_nodes())
-                executor.loader.build_graph()
+            restore_leaf_nodes()
 
     @migration_replay
     @pytest.mark.django_db(transaction=True)
@@ -460,11 +435,9 @@ class TestBackfillHelperClassification:
 
         system_user = baker.make(SystemUser, organization=organization, is_active=True)
 
-        executor = MigrationExecutor(connection)
         row_id: int | None = None
         try:
-            executor.migrate([(APP_LABEL, AFTER_BACKFILL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_BACKFILL))
 
             row_id = self._insert_row(
                 organization_id=organization.id,
@@ -474,9 +447,7 @@ class TestBackfillHelperClassification:
             # going into 0057, carrying a real actor column.
             assert self._kinds_for([row_id])[row_id] is None
 
-            executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_NOT_NULL)])
-            executor.loader.build_graph()
+            migrate_to((APP_LABEL, AFTER_NOT_NULL))
 
             assert self._kinds_for([row_id])[row_id] == "booking_code"
 
@@ -487,9 +458,7 @@ class TestBackfillHelperClassification:
             # rename with its id, so revoking it here proves exactly what it
             # proved before: the straggler 0057 classified is genuinely
             # revokable, not merely labelled.
-            executor = MigrationExecutor(connection)
-            executor.migrate(executor.loader.graph.leaf_nodes())
-            executor.loader.build_graph()
+            migrate_to_leaf_nodes()
 
             result = CalendarPermissionService().revoke_token(
                 organization_id=organization.id, token_id=row_id
@@ -504,10 +473,7 @@ class TestBackfillHelperClassification:
             if row_id is not None:
                 with connection.cursor() as cursor:
                     cursor.execute(f"DELETE FROM {TABLE} WHERE id = %s", [row_id])  # noqa: S608
-            with uninterruptible():
-                executor = MigrationExecutor(connection)
-                executor.migrate(executor.loader.graph.leaf_nodes())
-                executor.loader.build_graph()
+            restore_leaf_nodes()
 
 
 @pytest.mark.django_db
