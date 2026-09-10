@@ -46,7 +46,7 @@ from payments.seams.resource_keys import (
     RESOURCE_KEYS,
     WEBHOOK_SUBSCRIPTIONS,
 )
-from payments.seams.scopes import scope_for, scope_ids_for_organization_ids
+from payments.seams.scopes import scope_for, scopes_for
 from public_api.models import SystemUser
 from webhooks.models import WebhookConfiguration
 
@@ -169,7 +169,7 @@ class TestCounterBreakdowns:
     @staticmethod
     def _breakdown(
         resource_key: str,
-        organization_ids: list[int],
+        organizations: list,
         extra: dict | None = None,
         subscription=None,
     ) -> dict[int, int]:
@@ -183,13 +183,10 @@ class TestCounterBreakdowns:
         (``payments.seams.counting``) makes on the production path, and keeping
         it here is what lets those assertions stay untouched.
         """
-        organization_to_scope = scope_ids_for_organization_ids(organization_ids)
-        scope_to_organization = {
-            scope_id: organization_id for organization_id, scope_id in organization_to_scope.items()
-        }
+        scopes, scope_to_organization = scopes_for(organizations)
         breakdown = resources.counter_for(resource_key)(
             UsageContext(
-                scope_ids=list(scope_to_organization),
+                scope_ids=[scope.pk for scope in scopes],
                 extra=extra,
                 subscription=subscription,
             )
@@ -212,9 +209,7 @@ class TestCounterBreakdowns:
             expires_at=timezone.now() + datetime.timedelta(days=7),
         )
 
-        breakdown = self._breakdown(
-            ORGANIZATION_MEMBERS, [organization_one.pk, organization_two.pk]
-        )
+        breakdown = self._breakdown(ORGANIZATION_MEMBERS, [organization_one, organization_two])
         assert breakdown == {organization_one.pk: 3, organization_two.pk: 1}
 
     def test_organization_members_excludes_the_named_invitation(
@@ -232,7 +227,7 @@ class TestCounterBreakdowns:
 
         breakdown = self._breakdown(
             ORGANIZATION_MEMBERS,
-            [organization_one.pk, organization_two.pk],
+            [organization_one, organization_two],
             extra={"exclude_invitation_id": invitation.pk},
         )
         assert breakdown == {}
@@ -252,11 +247,9 @@ class TestCounterBreakdowns:
         )
 
         resource_breakdown = self._breakdown(
-            RESOURCE_CALENDARS, [organization_one.pk, organization_two.pk]
+            RESOURCE_CALENDARS, [organization_one, organization_two]
         )
-        bundle_breakdown = self._breakdown(
-            BUNDLE_CALENDARS, [organization_one.pk, organization_two.pk]
-        )
+        bundle_breakdown = self._breakdown(BUNDLE_CALENDARS, [organization_one, organization_two])
         assert resource_breakdown == {organization_one.pk: 1}
         assert bundle_breakdown == {organization_two.pk: 1}
 
@@ -264,7 +257,7 @@ class TestCounterBreakdowns:
         baker.make(AppointmentType, organization=organization_one, _quantity=2)
         baker.make(AppointmentType, organization=organization_two)
 
-        breakdown = self._breakdown(APPOINTMENT_TYPES, [organization_one.pk, organization_two.pk])
+        breakdown = self._breakdown(APPOINTMENT_TYPES, [organization_one, organization_two])
         assert breakdown == {organization_one.pk: 2, organization_two.pk: 1}
 
     def test_availability_windows_merges_available_and_blocked_time(
@@ -274,9 +267,7 @@ class TestCounterBreakdowns:
         baker.make(BlockedTime, organization=organization_one, timezone="UTC")
         baker.make(AvailableTime, organization=organization_two, timezone="UTC")
 
-        breakdown = self._breakdown(
-            AVAILABILITY_WINDOWS, [organization_one.pk, organization_two.pk]
-        )
+        breakdown = self._breakdown(AVAILABILITY_WINDOWS, [organization_one, organization_two])
         assert breakdown == {organization_one.pk: 3, organization_two.pk: 1}
 
     def test_webhook_subscriptions_excludes_soft_deleted(self, organization_one, organization_two):
@@ -286,18 +277,14 @@ class TestCounterBreakdowns:
             WebhookConfiguration, organization=organization_two, deleted_at=None, _quantity=2
         )
 
-        breakdown = self._breakdown(
-            WEBHOOK_SUBSCRIPTIONS, [organization_one.pk, organization_two.pk]
-        )
+        breakdown = self._breakdown(WEBHOOK_SUBSCRIPTIONS, [organization_one, organization_two])
         assert breakdown == {organization_one.pk: 1, organization_two.pk: 2}
 
     def test_public_api_system_users(self, organization_one, organization_two):
         baker.make(SystemUser, organization=organization_one, is_active=True)
         baker.make(SystemUser, organization=organization_two, is_active=True, _quantity=2)
 
-        breakdown = self._breakdown(
-            PUBLIC_API_SYSTEM_USERS, [organization_one.pk, organization_two.pk]
-        )
+        breakdown = self._breakdown(PUBLIC_API_SYSTEM_USERS, [organization_one, organization_two])
         assert breakdown == {organization_one.pk: 1, organization_two.pk: 2}
 
     def test_event_occurrences(self, organization_one, organization_two):
@@ -348,7 +335,7 @@ class TestCounterBreakdowns:
             )
 
             breakdown = self._breakdown(
-                EVENT_OCCURRENCES, [organization_one.pk], subscription=subscription_one
+                EVENT_OCCURRENCES, [organization_one], subscription=subscription_one
             )
             assert breakdown == {organization_one.pk: 2}
 

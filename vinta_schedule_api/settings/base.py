@@ -988,11 +988,17 @@ VINTA_BILLING = {
     # Mixed in front of every tenant-scoped viewset `vinta_billing.routing
     # .get_routes()` / `get_extra_patterns()` mount, so `X-Organization-Id`
     # resolution (this project's own, not the package's) applies to them too.
-    # `payments.seams.view_mixins.BillingViewMixin`, not `TenantScopedViewMixin`
-    # directly: it *is* that mixin, plus a workaround for a 0.8.0 defect in the
-    # package's own billing-profile lookup. See that class for the detail and
-    # for when to drop back to naming the base mixin here.
-    "VIEW_MIXIN": "payments.seams.view_mixins.BillingViewMixin",
+    # The base mixin directly. A project subclass lived here briefly, carrying a
+    # workaround for 0.8.0's billing-profile lookup; 0.8.1 fixes that upstream,
+    # which left the subclass an empty shell, so it is gone.
+    #
+    # Whatever this names must not override `dispatch`, `initial` or
+    # `perform_authentication`: `vinta_orgs`' `OrganizationScopedAPIViewMixin`
+    # owns those as its tenancy-resolution seam, and
+    # `common/tests/test_tenant_scoped_mro.py` pins that every routed view
+    # resolves them to the package. Request-lifetime work belongs in middleware
+    # -- see `payments.middlewares`.
+    "VIEW_MIXIN": "common.utils.view_utils.TenantScopedViewMixin",
     # Where the shipped views and the admin build their services from.
     # Resolved lazily per view construction (`vinta_billing.services.container
     # .get_service_container`), so `di_container.<provider>.override(...)` in

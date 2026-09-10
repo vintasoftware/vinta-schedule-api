@@ -2352,7 +2352,7 @@ wheels = [
 
 [[package]]
 name = "vinta-django-billing"
-version = "0.8.0"
+version = "0.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django" },
@@ -2362,9 +2362,9 @@ dependencies = [
     { name = "djangorestframework" },
     { name = "python-dateutil" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6f/1b/5dae3429f04086825bafe4ec170224ac2dc140797697393a272fa6f0c70b/vinta_django_billing-0.8.0.tar.gz", hash = "sha256:0b8db50a8bead1cc137cf72a1d28bfcd2af5b54b74f19ea03192215bf2b8b2b7", size = 260782, upload-time = "2026-09-09T17:36:28.578Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ff/fc/a677c4a8bfc3be5b950a856f6629a94b8c717fea19eee4651e63b3d4ce4e/vinta_django_billing-0.8.1.tar.gz", hash = "sha256:49b5c2a4a49348be55a104c28aa9ee64a304a8f58f2bf75abc9fab4501071088", size = 262014, upload-time = "2026-09-10T04:55:51.832Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e6/c5/d8fccf34cd21f3f08c8417d7a8db59c6fbe40bf64f512a444ad54b2ab006/vinta_django_billing-0.8.0-py3-none-any.whl", hash = "sha256:9ca5744898b5648022ebe3491852ac821f185292ec63ed7f06b18b1bf57f7f58", size = 280557, upload-time = "2026-09-09T17:36:27.112Z" },
+    { url = "https://files.pythonhosted.org/packages/89/f6/74c749dc166065cb6c8de212b710cb596914816efba9cddf9e09af7af214/vinta_django_billing-0.8.1-py3-none-any.whl", hash = "sha256:39fe0ff3b8ea98d755911bee4c0b7dca987c34d77f9265a23aef2257313a5410", size = 280934, upload-time = "2026-09-10T04:55:50.539Z" },
 ]
 
 [package.optional-dependencies]
@@ -2520,7 +2520,7 @@ requires-dist = [
     { name = "stripe", specifier = ">=15.3.1,<16" },
     { name = "twilio", specifier = ">=9.6.5,<10" },
     { name = "vinta-django-audit-logs", specifier = ">=0.1.2,<0.2" },
-    { name = "vinta-django-billing", extras = ["orgs"], specifier = ">=0.8,<0.9" },
+    { name = "vinta-django-billing", extras = ["orgs"], specifier = ">=0.8.1,<0.9" },
     { name = "vinta-django-orgs", specifier = ">=0.5,<0.6" },
     { name = "vintasend", specifier = ">=1.2.0,<2" },
     { name = "vintasend-celery", specifier = ">=1.2.0,<2" },

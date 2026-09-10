@@ -82,7 +82,13 @@ dependencies = [
     # project's payers *are* organizations, so it needs them. The extra only
     # declares the `vinta-django-orgs` dependency the direct pin above already
     # states -- it is listed for intent, not to pull anything new in.
-    "vinta-django-billing[orgs]>=0.8,<0.9",
+    #
+    # Floor at 0.8.1, not 0.8: 0.8.0's `BillingProfileViewSet.get_billing_profile`
+    # looked a profile up by the scope's pk, which 404s every billing-profile
+    # read and write on a database upgraded from 0.7. This project carried a
+    # local override for it; 0.8.1 fixes it upstream and the override is gone,
+    # so installing 0.8.0 would silently reintroduce the bug.
+    "vinta-django-billing[orgs]>=0.8.1,<0.9",
     # The audit log, extracted from this project. Pinned to the minor for the
     # same reason as its two siblings above: it is pre-1.0, so a minor is where a
     # breaking change is allowed to live. `audit_integration` supplies the scope

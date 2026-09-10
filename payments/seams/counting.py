@@ -22,16 +22,28 @@ once per counter call and both directions reuse the one mapping.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import wraps
 from typing import Any
 
 from django.db.models import Count, QuerySet
 
-from vinta_billing.counting import UsageContext
+from vinta_billing.counting import UsageContext, merge_breakdowns
 
 from payments.seams.scopes import organization_ids_for_scope_ids
+
+
+#: Re-exported unchanged from the package. It sums ``{id: count}`` maps key-wise
+#: and never looks at what the id *means*, so the scope-keyed version works
+#: verbatim on the organization-keyed breakdowns the counters here build -- no
+#: reason to keep a copy of it in this repo.
+__all__ = [
+    "OrganizationUsageContext",
+    "count_by_organization",
+    "counts_by_organization",
+    "merge_breakdowns",
+]
 
 
 @dataclass(frozen=True)
@@ -76,20 +88,6 @@ def count_by_organization(queryset: QuerySet[Any]) -> dict[int, int]:
         row["organization_id"]: row["usage_count"]
         for row in queryset.order_by().values("organization_id").annotate(usage_count=Count("pk"))
     }
-
-
-def merge_breakdowns(*breakdowns: Mapping[int, int]) -> dict[int, int]:
-    """Sum any number of ``{id: count}`` maps key-wise into one.
-
-    For a counter whose "one unit of usage" spans more than one table -- seats
-    are memberships *plus* pending invitations -- so that an organization
-    holding both kinds is summed rather than double-keyed.
-    """
-    merged: dict[int, int] = {}
-    for breakdown in breakdowns:
-        for key, count in breakdown.items():
-            merged[key] = merged.get(key, 0) + count
-    return merged
 
 
 def counts_by_organization(

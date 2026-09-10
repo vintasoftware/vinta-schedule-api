@@ -14,10 +14,11 @@ Three jobs, in the order they matter:
 2. :func:`sync_scope_for_organization` -- provisioning, wired to ``post_save``
    so all four organization-creation paths are covered by construction rather
    than by remembering.
-3. :func:`organization_ids_for_scope_ids` / :func:`scope_ids_for_organization_ids`
-   -- the id-space translation the usage counters in ``payments.seams.resources``
-   need, because the engine speaks scope ids and this project's own tables are
-   keyed by organization id.
+3. :func:`organization_ids_for_scope_ids` -- the id-space translation the usage
+   counters in ``payments.seams.resources`` need, because the engine speaks
+   scope ids and this project's own tables are keyed by organization id.
+   :func:`scopes_for` is its bulk counterpart in the other direction, for the
+   batch entitlement reads.
 
 **The one gap: ``QuerySet.update()`` sends no signal.** A bulk update of
 ``Organization.parent`` or ``can_invite_organizations`` leaves the scope mirror
@@ -44,7 +45,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from django.db.models.signals import post_save
@@ -81,10 +82,68 @@ def _organization_content_type():
     return ContentType.objects.get_for_model(_organization_model(), for_concrete_model=False)
 
 
-#: Where :func:`scope_for` memoizes its answer on the organization instance.
-#: Underscore-prefixed and not a model field: it lives for as long as the
-#: instance does, which for a request-scoped organization is the request.
+#: Request-scoped memo for :func:`organization_ids_for_scope_ids`
+#: (``{scope_id: organization_id}``).
+#:
+#: A contextvar rather than a module-level dict for the reason
+#: ``vinta_billing.entitlement_cache`` gives for its own: a module-level cache
+#: would leak between concurrently-handled requests, and -- worse here -- across
+#: tests, where a rolled-back transaction hands the next test the same primary
+#: keys pointing at different organizations.
+_scope_translation_cache: contextvars.ContextVar[dict[int, int] | None] = contextvars.ContextVar(
+    "scope_translation_cache", default=None
+)
+
+#: Where :func:`scope_for` memoizes its answer, on the organization instance.
+#:
+#: A second memo next to the contextvar above, and deliberately so -- they key
+#: on different things. This one needs an ``Organization`` in hand and answers
+#: "which scope bills it"; the contextvar has only a scope *id* and answers the
+#: reverse, so there is nothing to hang it on. Merging them was tried and
+#: reverted: the contextvar is only entered by
+#: ``payments.middlewares.BillingScopeTranslationCacheMiddleware``, so dropping
+#: this one costs two extra queries per service operation in every non-request
+#: caller -- Celery tasks, management commands -- and three query-count gates
+#: caught it.
+#:
+#: **Its lifetime is the instance's, which is not the transaction's.** An
+#: ``Organization`` held across a rollback -- a broadly-scoped test fixture, a
+#: worker reusing a model between tasks -- keeps a scope whose row is gone. The
+#: instances this sees are per-request or per-task and do not outlive their
+#: transaction, which is what makes it safe here; a caller that stashes an
+#: organization somewhere longer-lived should re-fetch it rather than trust
+#: this.
 _SCOPE_CACHE_ATTR = "_billing_scope_cache"
+
+
+@contextlib.contextmanager
+def scope_translation_cache():
+    """Memoize scope/organization translation for the duration of the block.
+
+    Worth having because the engine asks each registered resource's counter for
+    its own breakdown, and every one of them translates the *same* pooled scope
+    ids back into organization ids. Unmemoized that is one query per resource --
+    eight on ``GET /billing/usage/`` -- which is exactly the fan-out
+    ``payments/tests/views/test_usage_view.py``'s query-count oracle exists to
+    catch.
+
+    Safe to memoize because the mapping cannot change inside a request: a
+    scope's ``content_type`` and ``object_id`` are set when it is created and
+    nothing updates them, so a scope cannot come to name a different
+    organization.
+
+    Re-entrant, so a nested block reuses the outer cache rather than shadowing
+    it. Outside any block the translation still runs, just once per call -- the
+    memo is an optimization, never a correctness requirement.
+    """
+    if _scope_translation_cache.get() is not None:
+        yield
+        return
+    token = _scope_translation_cache.set({})
+    try:
+        yield
+    finally:
+        _scope_translation_cache.reset(token)
 
 
 def scope_for(organization: Organization):
@@ -103,10 +162,9 @@ def scope_for(organization: Organization):
     call, turning one billing question into several queries. Keeping the mirror
     current is ``post_save``'s job, and it has already run.
 
-    Memoized on the instance because the scope that bills an organization never
-    changes identity, and a service that asks twice in one request should pay
-    for one query. Not a module-level or process-level cache: those would
-    outlive the transaction and hand a rolled-back scope to the next caller.
+    Memoized on the instance -- see :data:`_SCOPE_CACHE_ATTR` for why that is a
+    separate memo from the contextvar the counters use, and for the lifetime
+    constraint that comes with it.
 
     Creates on miss rather than returning ``None``. A caller reaching this has
     an organization in hand and is about to ask a billing question about it, and
@@ -131,7 +189,7 @@ def scope_for(organization: Organization):
     return scope
 
 
-def sync_scope_for_organization(organization: Organization, _seen: set[int] | None = None):
+def sync_scope_for_organization(organization: Organization):
     """Create the organization's scope, and bring ``parent`` and the flag up to date.
 
     Idempotent, and safe to call on every save: it writes only when something it
@@ -142,7 +200,7 @@ def sync_scope_for_organization(organization: Organization, _seen: set[int] | No
     ancestors have scopes still gets a correctly linked chain, because reaching
     for the parent's scope provisions that one too.
 
-    ``_seen`` guards that recursion against a parent cycle. ``Organization.parent``
+    ``_provision`` below guards that recursion against a parent cycle. ``Organization.parent``
     is user-mutable through the Django admin, so ``a -> b -> a`` is reachable in
     practice, and this runs from ``post_save`` -- the save that *closes* the
     cycle is what would trigger it. Unguarded that is a ``RecursionError`` from
@@ -151,15 +209,22 @@ def sync_scope_for_organization(organization: Organization, _seen: set[int] | No
     the walk leaves the scope chain mirroring the organization chain, cycle
     included, which is what lets ``resolve_billing_root`` detect and report it.
     """
+    return _provision(organization, set())
+
+
+def _provision(organization: "Organization", seen: set[int]):
+    """One link of the chain, with its ancestors provisioned first.
+
+    Split out so the cycle-tracking set stays an implementation detail rather
+    than a private parameter on a function five other modules call.
+    """
     scope_model = get_scope_model()
 
-    if _seen is None:
-        _seen = set()
-    if organization.pk in _seen:
+    if organization.pk in seen:
         # Already provisioned on this walk. Return its scope without recursing
         # again -- the parent link was set when it was first visited.
         return scope_model.objects.scope_for(organization)
-    _seen.add(organization.pk)
+    seen.add(organization.pk)
 
     parent_scope = None
     # ``organization.parent`` rather than a filter on the id: the recursion is
@@ -168,7 +233,7 @@ def sync_scope_for_organization(organization: Organization, _seen: set[int] | No
     # does not narrow the descriptor's type for the checker.
     parent = organization.parent
     if parent is not None:
-        parent_scope = sync_scope_for_organization(parent, _seen)
+        parent_scope = _provision(parent, seen)
 
     scope, created = scope_model.objects.get_or_create_for(
         organization,
@@ -280,67 +345,6 @@ def scopes_for(organizations: Iterable["Organization"]) -> tuple[list[Any], dict
     return scopes, scope_to_organization
 
 
-def scope_ids_for_organization_ids(organization_ids: Iterable[int]) -> dict[int, int]:
-    """``{organization_id: scope_id}`` for the organizations named.
-
-    Organizations with no scope are absent rather than mapped to ``None`` --
-    same contract as the counters' own breakdowns, so a caller never has to
-    strip empties.
-    """
-    scope_model = get_scope_model()
-    ids = [str(pk) for pk in organization_ids]
-    if not ids:
-        return {}
-    content_type = _organization_content_type()
-    return {
-        int(object_id): scope_id
-        for object_id, scope_id in scope_model.objects.filter(
-            content_type=content_type, object_id__in=ids
-        ).values_list("object_id", "pk")
-    }
-
-
-#: Request-scoped memo for :func:`organization_ids_for_scope_ids`.
-#:
-#: A contextvar rather than a module-level dict for the reason
-#: ``vinta_billing.entitlement_cache`` gives for its own: a module-level cache
-#: would leak between concurrently-handled requests, and -- worse here -- across
-#: tests, where a rolled-back transaction hands the next test the same primary
-#: keys pointing at different organizations.
-_scope_translation_cache: contextvars.ContextVar[dict[int, int] | None] = contextvars.ContextVar(
-    "scope_translation_cache", default=None
-)
-
-
-@contextlib.contextmanager
-def scope_translation_cache():
-    """Memoize scope-to-organization translation for the duration of the block.
-
-    Worth having because the engine asks each registered resource's counter for
-    its own breakdown, and every one of them translates the *same* pooled scope
-    ids back into organization ids. Unmemoized that is one query per resource --
-    eight on ``GET /billing/usage/`` -- which is exactly the fan-out
-    ``payments/tests/views/test_usage_view.py``'s query-count oracle exists to
-    catch.
-
-    Safe to memoize because the mapping is immutable: a scope's ``content_type``
-    and ``object_id`` are set when it is created and nothing updates them, so
-    within one request a scope cannot come to name a different organization.
-
-    Re-entrant, so a nested block reuses the outer cache rather than shadowing
-    it. Outside any block the translation still runs, just once per call -- the
-    memo is an optimization, never a correctness requirement.
-    """
-    if _scope_translation_cache.get() is not None:
-        yield
-        return
-    token = _scope_translation_cache.set({})
-    try:
-        yield
-    finally:
-        _scope_translation_cache.reset(token)
-
-
 def organization_ids_for_scope_ids(scope_ids: Iterable[int]) -> dict[int, int]:
     """``{scope_id: organization_id}`` -- the inverse, for counter input.
 
@@ -377,21 +381,3 @@ def organization_ids_for_scope_ids(scope_ids: Iterable[int]) -> dict[int, int]:
         if memo is not None:
             memo[scope_id] = organization_id
     return mapping
-
-
-def rekey_breakdown_to_scopes(
-    breakdown: Mapping[int, int], organization_to_scope: Mapping[int, int]
-) -> dict[int, int]:
-    """Turn a ``{organization_id: count}`` breakdown into ``{scope_id: count}``.
-
-    What every counter in ``payments.seams.resources`` returns through. The
-    engine indexes usage by scope; this project's tables group by organization.
-    An organization with no scope drops out of the result -- it has no ceiling
-    to count against, so attributing its rows to anything would be a guess.
-    """
-    rekeyed: dict[int, int] = {}
-    for organization_id, count in breakdown.items():
-        scope_id = organization_to_scope.get(organization_id)
-        if scope_id is not None:
-            rekeyed[scope_id] = rekeyed.get(scope_id, 0) + count
-    return rekeyed

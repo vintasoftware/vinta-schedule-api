@@ -566,8 +566,9 @@ class TestRootResolutionAndSubtreeWalkHappenOnce:
         #    the counters, which read this project's own organization-keyed
         #    tables. Once for the whole response, not once per resource --
         #    `payments.seams.scopes.scope_translation_cache`, activated by
-        #    `BillingViewMixin.dispatch`, is what collapses that fan-out. Take
-        #    that memo away and this number goes to 30.
+        #    `payments.middlewares.BillingScopeTranslationCacheMiddleware`, is
+        #    what collapses that fan-out. Take that memo away and this number
+        #    goes to 30.
         #
         # Every other scope query here replaced an organization one rather than
         # adding to it: the parent-chain walk, the subtree BFS and the display
