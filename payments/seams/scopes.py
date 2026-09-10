@@ -67,11 +67,32 @@ def _organization_content_type():
     return ContentType.objects.get_for_model(_organization_model(), for_concrete_model=False)
 
 
+#: Where :func:`scope_for` memoizes its answer on the organization instance.
+#: Underscore-prefixed and not a model field: it lives for as long as the
+#: instance does, which for a request-scoped organization is the request.
+_SCOPE_CACHE_ATTR = "_billing_scope_cache"
+
+
 def scope_for(organization: Organization):
     """The scope that bills ``organization``, creating it if it is not there yet.
 
     The workhorse of the 0.8 upgrade: everywhere a billing service used to be
     handed an organization it is handed ``scope_for(organization)`` instead.
+
+    **A plain lookup, not a reconcile.** This is on the hot path -- every limit
+    check, every entitlement gate, every restriction guard goes through it, some
+    of them per row -- so it does the cheapest thing that can be correct: read
+    the cached answer, else one indexed ``SELECT``, and only fall through to
+    :func:`sync_scope_for_organization` when there is genuinely no scope yet.
+    Calling the full sync here instead (as the first cut of this module did)
+    would walk the whole parent chain and re-check the mirrored fields on every
+    call, turning one billing question into several queries. Keeping the mirror
+    current is ``post_save``'s job, and it has already run.
+
+    Memoized on the instance because the scope that bills an organization never
+    changes identity, and a service that asks twice in one request should pay
+    for one query. Not a module-level or process-level cache: those would
+    outlive the transaction and hand a rolled-back scope to the next caller.
 
     Creates on miss rather than returning ``None``. A caller reaching this has
     an organization in hand and is about to ask a billing question about it, and
@@ -84,10 +105,19 @@ def scope_for(organization: Organization):
     Not used to resolve a *request* -- that is ``SCOPE_RESOLVER``'s job, and it
     deliberately never writes. See ``vinta_billing.contrib.orgs.resolve_scope_from_organization``.
     """
-    return sync_scope_for_organization(organization)
+    cached = getattr(organization, _SCOPE_CACHE_ATTR, None)
+    if cached is not None:
+        return cached
+
+    scope = get_scope_model().objects.scope_for(organization)
+    if scope is None:
+        scope = sync_scope_for_organization(organization)
+
+    setattr(organization, _SCOPE_CACHE_ATTR, scope)
+    return scope
 
 
-def sync_scope_for_organization(organization: Organization):
+def sync_scope_for_organization(organization: Organization, _seen: set[int] | None = None):
     """Create the organization's scope, and bring ``parent`` and the flag up to date.
 
     Idempotent, and safe to call on every save: it writes only when something it
@@ -97,14 +127,34 @@ def sync_scope_for_organization(organization: Organization):
     The parent is resolved recursively -- an organization saved before its
     ancestors have scopes still gets a correctly linked chain, because reaching
     for the parent's scope provisions that one too.
+
+    ``_seen`` guards that recursion against a parent cycle. ``Organization.parent``
+    is user-mutable through the Django admin, so ``a -> b -> a`` is reachable in
+    practice, and this runs from ``post_save`` -- the save that *closes* the
+    cycle is what would trigger it. Unguarded that is a ``RecursionError`` from
+    inside a signal handler, which surfaces as a failed save rather than as the
+    ``BillingRootCycleError`` the hierarchy raises for the same shape. Stopping
+    the walk leaves the scope chain mirroring the organization chain, cycle
+    included, which is what lets ``resolve_billing_root`` detect and report it.
     """
     scope_model = get_scope_model()
 
+    if _seen is None:
+        _seen = set()
+    if organization.pk in _seen:
+        # Already provisioned on this walk. Return its scope without recursing
+        # again -- the parent link was set when it was first visited.
+        return scope_model.objects.scope_for(organization)
+    _seen.add(organization.pk)
+
     parent_scope = None
-    if organization.parent_id is not None:
-        # ``organization.parent`` rather than a filter on the id: the recursion
-        # is what guarantees the whole chain exists, not just this one link.
-        parent_scope = sync_scope_for_organization(organization.parent)
+    # ``organization.parent`` rather than a filter on the id: the recursion is
+    # what guarantees the whole chain exists, not just this one link. Read into
+    # a local first -- the FK is nullable, so ``parent_id is not None`` alone
+    # does not narrow the descriptor's type for the checker.
+    parent = organization.parent
+    if parent is not None:
+        parent_scope = sync_scope_for_organization(parent, _seen)
 
     scope, created = scope_model.objects.get_or_create_for(
         organization,
@@ -120,7 +170,13 @@ def sync_scope_for_organization(organization: Organization):
     updates: dict[str, object] = {}
     if scope.parent_id != (parent_scope.pk if parent_scope else None):
         updates["parent"] = parent_scope
-    if bool((scope.meta or {}).get(RESELLER_ROOT_META_KEY)) != desired_meta:
+    # Compared against the stored key rather than its truthiness, so a scope
+    # whose `meta` never carried the key at all (everything `get_or_create_for`
+    # and `vinta_billing`'s 0005 backfill create) gets it stamped on first sync
+    # rather than being left implicit. `ResellerHierarchy.billing_root_q` no
+    # longer depends on that -- see its `has_key` conjunct -- but an explicit
+    # `false` is what makes the row readable in a shell.
+    if (scope.meta or {}).get(RESELLER_ROOT_META_KEY) != desired_meta:
         meta = dict(scope.meta or {})
         meta[RESELLER_ROOT_META_KEY] = desired_meta
         updates["meta"] = meta
@@ -132,6 +188,8 @@ def sync_scope_for_organization(organization: Organization):
             setattr(scope, field, value)
         scope.save(update_fields=[*updates, "modified"])
 
+    # Refresh rather than leave `scope_for`'s memo pointing at a pre-update copy.
+    setattr(organization, _SCOPE_CACHE_ATTR, scope)
     return scope
 
 

@@ -77,7 +77,7 @@ def _seed_metered_occurrences(organization: Organization, subscription: Subscrip
     MeteredOccurrence.objects.bulk_create(
         [
             MeteredOccurrence(
-                organization=organization,
+                scope=scope_for(organization),
                 subscription=subscription,
                 event_id=900000 + i,
                 occurrence_start=subscription.current_period_start + datetime.timedelta(hours=i),
@@ -236,7 +236,7 @@ class TestCheckPostpaidAllowance:
         organization, _subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
         service = EntitlementService()
 
-        result = service.check_postpaid_allowance(organization, delta=1000)
+        result = service.check_postpaid_allowance(scope_for(organization), delta=1000)
 
         assert result.allowed is True
         assert result.current_usage is None
@@ -246,7 +246,7 @@ class TestCheckPostpaidAllowance:
         organization, subscription = _organization_with_postpaid_limit(5, BillingState.FREE)
         _seed_metered_occurrences(organization, subscription, 3)
 
-        result = EntitlementService().check_postpaid_allowance(organization, delta=1)
+        result = EntitlementService().check_postpaid_allowance(scope_for(organization), delta=1)
 
         assert result.allowed is True
         assert result.current_usage == 3
@@ -257,7 +257,7 @@ class TestCheckPostpaidAllowance:
         _attach_payment_method(organization)
         _seed_metered_occurrences(organization, subscription, 5)
 
-        result = EntitlementService().check_postpaid_allowance(organization, delta=1)
+        result = EntitlementService().check_postpaid_allowance(scope_for(organization), delta=1)
 
         assert result.allowed is True
 
@@ -265,7 +265,7 @@ class TestCheckPostpaidAllowance:
         organization, subscription = _organization_with_postpaid_limit(5, BillingState.FREE)
         _seed_metered_occurrences(organization, subscription, 5)
 
-        result = EntitlementService().check_postpaid_allowance(organization, delta=1)
+        result = EntitlementService().check_postpaid_allowance(scope_for(organization), delta=1)
 
         assert result.allowed is False
         assert result.current_usage == 5
@@ -290,7 +290,7 @@ class TestCheckPostpaidAllowance:
         _attach_payment_method(organization)
         _seed_metered_occurrences(organization, subscription, 5)
 
-        result = EntitlementService().check_postpaid_allowance(organization, delta=1)
+        result = EntitlementService().check_postpaid_allowance(scope_for(organization), delta=1)
 
         assert result.allowed is True
 
@@ -303,7 +303,7 @@ class TestCheckPostpaidAllowance:
         _attach_payment_method(organization)
         _seed_metered_occurrences(organization, subscription, 5)
 
-        result = EntitlementService().check_postpaid_allowance(organization, delta=1)
+        result = EntitlementService().check_postpaid_allowance(scope_for(organization), delta=1)
 
         assert result.allowed is False
         assert result.remedy == LimitRemedy.RESOLVE_BILLING
@@ -317,7 +317,7 @@ class TestCheckPostpaidAllowance:
         organization, subscription = _organization_with_postpaid_limit(5, billing_state)
         _seed_metered_occurrences(organization, subscription, 5)
 
-        result = EntitlementService().check_postpaid_allowance(organization, delta=1)
+        result = EntitlementService().check_postpaid_allowance(scope_for(organization), delta=1)
 
         assert result.allowed is False
 
@@ -328,7 +328,7 @@ class TestCheckPostpaidAllowance:
         organization, subscription = _organization_with_postpaid_limit(5, BillingState.FREE)
         _seed_metered_occurrences(organization, subscription, 3)
 
-        result = EntitlementService().check_postpaid_allowance(organization, delta=3)
+        result = EntitlementService().check_postpaid_allowance(scope_for(organization), delta=3)
 
         assert result.allowed is False
 

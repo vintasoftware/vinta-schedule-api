@@ -985,7 +985,11 @@ VINTA_BILLING = {
     # Mixed in front of every tenant-scoped viewset `vinta_billing.routing
     # .get_routes()` / `get_extra_patterns()` mount, so `X-Organization-Id`
     # resolution (this project's own, not the package's) applies to them too.
-    "VIEW_MIXIN": "common.utils.view_utils.TenantScopedViewMixin",
+    # `payments.seams.view_mixins.BillingViewMixin`, not `TenantScopedViewMixin`
+    # directly: it *is* that mixin, plus a workaround for a 0.8.0 defect in the
+    # package's own billing-profile lookup. See that class for the detail and
+    # for when to drop back to naming the base mixin here.
+    "VIEW_MIXIN": "payments.seams.view_mixins.BillingViewMixin",
     # Where the shipped views and the admin build their services from.
     # Resolved lazily per view construction (`vinta_billing.services.container
     # .get_service_container`), so `di_container.<provider>.override(...)` in

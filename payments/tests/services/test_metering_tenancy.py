@@ -231,7 +231,7 @@ class TestMeteringPoolBoundary:
             billing_period_start=now - datetime.timedelta(days=1)
         )
 
-        usage = EntitlementService().get_current_usage(child, EVENT_OCCURRENCES)
+        usage = EntitlementService().get_current_usage(scope_for(child), EVENT_OCCURRENCES)
         assert usage == 10, "root + child, and specifically not the nested root's 5"
 
 

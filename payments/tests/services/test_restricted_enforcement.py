@@ -875,7 +875,7 @@ class TestRestrictedOrganizationReadsStayOpen:
         service = EntitlementService()
 
         # Must not raise for a restricted organization -- only writes are guarded.
-        service.get_current_usage(organization, RESOURCE_CALENDARS)
+        service.get_current_usage(scope_for(organization), RESOURCE_CALENDARS)
         service.get_effective_limit(scope_for(organization), RESOURCE_CALENDARS)
 
     def test_calendar_reads_are_open(self):

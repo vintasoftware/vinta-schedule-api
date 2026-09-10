@@ -137,7 +137,7 @@ class TestInviteAtTheSeatLimit:
             )
 
         assert exc_info.value.as_error_body() == {
-            "detail": "Organization is at its limit for organization members.",
+            "detail": "You are at your limit for organization members.",
             "code": "limit_exceeded",
             "resource": "organization_members",
             "current_usage": 1,

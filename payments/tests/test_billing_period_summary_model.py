@@ -6,7 +6,7 @@ the two unique constraints that make cycle-close idempotent (the same pattern
 `MeteredOccurrence` and `ProviderWebhookEvent` already use), the two-nulls distinction
 on `BillingPeriodResourceUsage` (`total=None` means "not recorded", `limit_value=None`
 means "unlimited" -- collapsing either into `0` is the bug a reviewer should catch), and
-the `for_organizations` pool scope.
+the `for_scopes` pool scope.
 
 There is deliberately **no `MigrationExecutor` test** for `0020_billing_period_summary`.
 It is a pure `CreateModel` with no data step, so both directions are DDL Django
@@ -46,7 +46,7 @@ def subscription(organization: Organization) -> Subscription:
     # `provision_default_subscription` (root conftest, autouse) already gave this
     # organization a `Subscription` on creation -- reuse it rather than trying to
     # create a second one, which would raise on the `OneToOneField`.
-    return organization.subscription
+    return scope_for(organization).subscription
 
 
 @pytest.fixture
@@ -208,13 +208,13 @@ class TestBillingPeriodResourceUsageTwoNulls:
 
 @pytest.mark.django_db
 class TestBillingPeriodSummaryQuerySetForOrganizations:
-    def test_for_organizations_restricts_to_the_given_pool(self):
+    def test_for_scopes_restricts_to_the_given_pool(self):
         in_pool_org = baker.make(Organization)
         outside_pool_org = baker.make(Organization)
 
         in_pool_summary = baker.make(
             BillingPeriodSummary,
-            subscription=in_pool_org.subscription,
+            subscription=scope_for(in_pool_org).subscription,
             scope=scope_for(in_pool_org),
             billing_period_start=PERIOD_START,
             billing_period_end=PERIOD_END,
@@ -226,7 +226,7 @@ class TestBillingPeriodSummaryQuerySetForOrganizations:
         )
         baker.make(
             BillingPeriodSummary,
-            subscription=outside_pool_org.subscription,
+            subscription=scope_for(outside_pool_org).subscription,
             scope=scope_for(outside_pool_org),
             billing_period_start=PERIOD_START,
             billing_period_end=PERIOD_END,
@@ -237,9 +237,9 @@ class TestBillingPeriodSummaryQuerySetForOrganizations:
             closed_at=datetime.datetime.now(tz=datetime.UTC),
         )
 
-        result = BillingPeriodSummary.objects.for_organizations([in_pool_org.pk])
+        result = BillingPeriodSummary.objects.for_scopes([scope_for(in_pool_org).pk])
 
         assert list(result) == [in_pool_summary]
 
-    def test_for_organizations_empty_pool_returns_nothing(self, summary: BillingPeriodSummary):
-        assert not BillingPeriodSummary.objects.for_organizations([]).exists()
+    def test_for_scopes_empty_pool_returns_nothing(self, summary: BillingPeriodSummary):
+        assert not BillingPeriodSummary.objects.for_scopes([]).exists()

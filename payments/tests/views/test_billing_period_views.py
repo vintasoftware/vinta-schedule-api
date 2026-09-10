@@ -85,7 +85,7 @@ def child(root: Organization) -> Organization:
 
 @pytest.fixture
 def subscription(root: Organization):
-    return root.subscription
+    return scope_for(root).subscription
 
 
 @pytest.fixture
@@ -125,7 +125,7 @@ class TestListReturnsCallersPooledStatements:
         other_root = baker.make(Organization, parent=None, can_invite_organizations=True)
         make_summary(
             organization=other_root,
-            subscription=other_root.subscription,
+            subscription=scope_for(other_root).subscription,
             billing_period_start=datetime.datetime(2026, 8, 1, tzinfo=datetime.UTC),
         )
 
@@ -331,7 +331,7 @@ class TestStatementOutsideThePoolReturns404NotForbidden:
         other_root = baker.make(Organization, parent=None, can_invite_organizations=True)
         other_summary = make_summary(
             organization=other_root,
-            subscription=other_root.subscription,
+            subscription=scope_for(other_root).subscription,
             billing_period_start=datetime.datetime(2026, 8, 1, tzinfo=datetime.UTC),
         )
 

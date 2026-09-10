@@ -43,7 +43,7 @@ class TestResolveBillingRoot:
     def test_a_parentless_organization_resolves_to_itself(self, hierarchy):
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
 
-        assert hierarchy.resolve_billing_root(scope_for(organization)) == organization
+        assert hierarchy.resolve_billing_root(scope_for(organization)) == scope_for(organization)
 
     def test_a_reseller_child_resolves_to_itself(self, hierarchy):
         """A reseller pays for its own subtree, not its parent's -- it must not
@@ -51,13 +51,15 @@ class TestResolveBillingRoot:
         parent = baker.make(Organization, parent=None, can_invite_organizations=False)
         reseller_child = baker.make(Organization, parent=parent, can_invite_organizations=True)
 
-        assert hierarchy.resolve_billing_root(scope_for(reseller_child)) == reseller_child
+        assert hierarchy.resolve_billing_root(scope_for(reseller_child)) == scope_for(
+            reseller_child
+        )
 
     def test_a_plain_child_resolves_to_its_reseller(self, hierarchy):
         reseller = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=reseller, can_invite_organizations=False)
 
-        assert hierarchy.resolve_billing_root(scope_for(child)) == reseller
+        assert hierarchy.resolve_billing_root(scope_for(child)) == scope_for(reseller)
 
     def test_a_grandchild_resolves_to_the_nearest_reseller_ancestor(self, hierarchy):
         """The nearest ancestor wins, not the top of the whole chain -- a nested
@@ -68,7 +70,7 @@ class TestResolveBillingRoot:
             Organization, parent=nested_reseller, can_invite_organizations=False
         )
 
-        assert hierarchy.resolve_billing_root(scope_for(grandchild)) == nested_reseller
+        assert hierarchy.resolve_billing_root(scope_for(grandchild)) == scope_for(nested_reseller)
 
     def test_a_parent_cycle_raises_instead_of_hanging(self, hierarchy):
         """``parent`` is user-mutable (Django admin), so a cycle is reachable in
@@ -87,15 +89,15 @@ class TestResolveBillingRoot:
 
 
 @pytest.mark.django_db
-class TestPooledOrganizationIds:
+class TestPooledScopeIds:
     def test_includes_the_root_and_its_descendants(self, hierarchy):
         root = baker.make(Organization, parent=None, can_invite_organizations=False)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
         grandchild = baker.make(Organization, parent=child, can_invite_organizations=False)
 
-        pooled = set(hierarchy.pooled_organization_ids(root))
+        pooled = set(hierarchy.pooled_scope_ids(scope_for(root)))
 
-        assert pooled == {root.pk, child.pk, grandchild.pk}
+        assert pooled == {scope_for(root).pk, scope_for(child).pk, scope_for(grandchild).pk}
 
     def test_stops_at_a_nested_billing_root(self, hierarchy):
         """A nested reseller -- and its own descendants -- pays for its own
@@ -103,7 +105,7 @@ class TestPooledOrganizationIds:
         entirely (not merely from further descent): folding it, or its
         children, into the ancestor's ceiling would double-charge them.
         Matches ``payments.services.subscription_service
-        ._get_pooled_organization_ids``'s identical ``continue`` on a nested
+        ._get_pooled_scope_ids``'s identical ``continue`` on a nested
         root, which this seam replaces.
         """
         root = baker.make(Organization, parent=None, can_invite_organizations=False)
@@ -112,8 +114,8 @@ class TestPooledOrganizationIds:
             Organization, parent=nested_reseller, can_invite_organizations=False
         )
 
-        pooled = set(hierarchy.pooled_organization_ids(root))
+        pooled = set(hierarchy.pooled_scope_ids(scope_for(root)))
 
-        assert pooled == {root.pk}
-        assert nested_reseller.pk not in pooled
-        assert nested_grandchild.pk not in pooled
+        assert pooled == {scope_for(root).pk}
+        assert scope_for(nested_reseller).pk not in pooled
+        assert scope_for(nested_grandchild).pk not in pooled

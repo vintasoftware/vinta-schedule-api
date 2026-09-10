@@ -124,7 +124,7 @@ def seed_billing_plans(apps, schema_editor):
         defaults={
             "name": "Unlimited",
             "is_active": True,
-            "is_default_for_new_scopes": True,
+            "is_default_for_new_organizations": True,
             "monthly_price": Decimal("0"),
             "annual_price": None,
             "currency": "USD",
@@ -157,7 +157,7 @@ def seed_billing_plans(apps, schema_editor):
         defaults={
             "name": "Free",
             "is_active": True,
-            "is_default_for_new_scopes": False,
+            "is_default_for_new_organizations": False,
             "monthly_price": Decimal("0"),
             "annual_price": None,
             "currency": "USD",

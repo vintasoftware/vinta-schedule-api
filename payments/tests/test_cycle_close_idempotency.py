@@ -99,7 +99,7 @@ def cycle_close_service(payment_service: DedupingPaymentService) -> CycleCloseSe
 def _overage_rows(subscription: Subscription, organization: Organization, count: int) -> None:
     MeteredOccurrence.objects.bulk_create(
         MeteredOccurrence(
-            organization=organization,
+            scope=scope_for(organization),
             subscription=subscription,
             event_id=i,
             occurrence_start=PERIOD_START + datetime.timedelta(days=i),

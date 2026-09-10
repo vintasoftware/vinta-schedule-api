@@ -108,7 +108,7 @@ def billing_profile(organization):
     )
     return baker.make(
         "vinta_billing.BillingProfile",
-        organization=organization,
+        scope=scope_for(organization),
         contact_email="billing@example.com",
         document_type="CPF",
         document_number="12345678900",
@@ -195,7 +195,7 @@ class FakePaymentService:
     def create_payment(
         self,
         *,
-        organization: Organization,
+        scope,
         currency: str,
         amount: Decimal,
         description: str,
@@ -207,7 +207,7 @@ class FakePaymentService:
         self.idempotency_keys.append(idempotency_key)
         return baker.make(
             "vinta_billing.Payment",
-            billing_profile=organization.billing_profile,
+            billing_profile=scope.billing_profile,
             currency=currency,
             value=amount,
             description=description,
@@ -845,7 +845,7 @@ class TestPurchaseAddOn:
 class TestRecordPaymentMethod:
     def test_records_a_new_payment_method(self, service, organization):
         payment_method = service.record_payment_method(
-            organization, PaymentProviders.MERCADOPAGO, "card-123"
+            scope_for(organization), PaymentProviders.MERCADOPAGO, "card-123"
         )
 
         assert payment_method is not None
@@ -865,13 +865,17 @@ class TestRecordPaymentMethod:
             is_active=False,
         )
 
-        service.record_payment_method(organization, PaymentProviders.MERCADOPAGO, "card-123")
+        service.record_payment_method(
+            scope_for(organization), PaymentProviders.MERCADOPAGO, "card-123"
+        )
 
         existing.refresh_from_db()
         assert existing.is_active is True
 
     def test_blank_external_id_records_nothing(self, service, organization):
-        result = service.record_payment_method(organization, PaymentProviders.MERCADOPAGO, "")
+        result = service.record_payment_method(
+            scope_for(organization), PaymentProviders.MERCADOPAGO, ""
+        )
 
         assert result is None
         assert not PaymentMethod.objects.filter(scope=scope_for(organization)).exists()

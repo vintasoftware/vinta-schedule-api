@@ -85,7 +85,7 @@ class Migration(migrations.Migration):
                 ("slug", models.SlugField(max_length=100, unique=True)),
                 ("name", models.CharField(max_length=255)),
                 ("is_active", models.BooleanField(db_index=True, default=True)),
-                ("is_default_for_new_scopes", models.BooleanField(default=False)),
+                ("is_default_for_new_organizations", models.BooleanField(default=False)),
                 ("monthly_price", models.DecimalField(decimal_places=2, max_digits=10)),
                 (
                     "annual_price",
@@ -97,8 +97,8 @@ class Migration(migrations.Migration):
             options={
                 "constraints": [
                     models.UniqueConstraint(
-                        condition=models.Q(("is_default_for_new_scopes", True)),
-                        fields=("is_default_for_new_scopes",),
+                        condition=models.Q(("is_default_for_new_organizations", True)),
+                        fields=("is_default_for_new_organizations",),
                         name="uniq_default_billing_plan",
                     )
                 ],

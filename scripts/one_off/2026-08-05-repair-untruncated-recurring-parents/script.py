@@ -28,6 +28,7 @@ from calendar_integration.models import (
     EventBulkModification,
     RecurrenceRule,
 )
+from payments.seams.scopes import scope_for
 from scripts.one_off._base import BaseOneOffScript, ScriptConfig
 
 
@@ -328,8 +329,12 @@ class RepairUntruncatedRecurringParents(BaseOneOffScript[RepairTarget]):
         """
         root_id = self._series_root_id(parent)
         rows = list(
+            # `scope_id`, not `organization_id`: `MeteredOccurrence` is
+            # `vinta_billing`'s table and moved onto `BillingScope` in 0.8.0.
+            # `parent` is a `CalendarEvent`, which is still organization-keyed,
+            # so the two id spaces are bridged here.
             MeteredOccurrence.objects.filter(
-                organization_id=parent.organization_id,
+                scope_id=scope_for(parent.organization).pk,
                 event_id=root_id,
                 occurrence_start__gt=item.expected_until,
             )
@@ -343,7 +348,7 @@ class RepairUntruncatedRecurringParents(BaseOneOffScript[RepairTarget]):
             if expected is None:
                 continue
             identity = OccurrenceIdentity(
-                organization_id=row.organization_id,
+                scope_id=row.scope_id,
                 event_id=row.event_id,
                 occurrence_start=row.occurrence_start,
             )
@@ -449,7 +454,7 @@ class RepairUntruncatedRecurringParents(BaseOneOffScript[RepairTarget]):
             MeteredOccurrence.objects.update_or_create(
                 pk=int(row["id"]),
                 defaults={
-                    "organization_id": int(row["organization_id"]),
+                    "scope_id": int(row["scope_id"]),
                     "subscription_id": int(row["subscription_id"]),
                     "event_id": int(row["event_id"]),
                     "occurrence_start": datetime.datetime.fromisoformat(row["occurrence_start"]),
@@ -486,7 +491,11 @@ class RepairUntruncatedRecurringParents(BaseOneOffScript[RepairTarget]):
 def _metered_row_to_dict(row: MeteredOccurrence) -> dict[str, Any]:
     return {
         "id": row.pk,
-        "organization_id": row.organization_id,
+        # Renamed with the column in 0.8.0. A backup written by an earlier run of
+        # this script carries `organization_id` instead and cannot be restored by
+        # this version -- the ids are not interchangeable, so translating them
+        # silently would re-point billing rows at the wrong payer.
+        "scope_id": row.scope_id,
         "subscription_id": row.subscription_id,
         "event_id": row.event_id,
         "occurrence_start": row.occurrence_start.isoformat(),

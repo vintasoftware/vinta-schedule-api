@@ -340,7 +340,7 @@ def test_the_earliest_split_wins_when_a_series_was_modified_twice(
 def _meter(subscription: Subscription, event_id: int, starts: list[datetime.datetime]) -> None:
     for start in starts:
         MeteredOccurrence.objects.create(
-            organization_id=subscription.organization_id,
+            scope_id=subscription.scope_id,
             subscription=subscription,
             event_id=event_id,
             occurrence_start=start,

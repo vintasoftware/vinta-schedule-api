@@ -47,7 +47,7 @@ class TestVintaExceptionHandlerStatusCodes:
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
         assert response.data == {
-            "detail": "Organization is at its limit for organization members.",
+            "detail": "You are at your limit for organization members.",
             "code": "limit_exceeded",
             "resource": "organization_members",
             "current_usage": 1,

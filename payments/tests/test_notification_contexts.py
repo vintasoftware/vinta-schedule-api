@@ -25,7 +25,7 @@ from payments.seams.resource_keys import ORGANIZATION_MEMBERS
 class TestApproachingLimitContext:
     def test_resolves_the_registered_resource_label(self):
         context = approaching_limit_context(
-            organization_name="Acme",
+            scope_name="Acme",
             resource_key=ORGANIZATION_MEMBERS,
             current_usage=4,
             limit_value=5,
@@ -38,7 +38,7 @@ class TestApproachingLimitContext:
         retired enum's ``ValueError``."""
         with pytest.raises(ImproperlyConfigured):
             approaching_limit_context(
-                organization_name="Acme",
+                scope_name="Acme",
                 resource_key="not_a_real_resource",
                 current_usage=4,
                 limit_value=5,
@@ -48,7 +48,7 @@ class TestApproachingLimitContext:
 class TestLimitReachedContext:
     def test_resolves_the_registered_resource_label(self):
         context = limit_reached_context(
-            organization_name="Acme",
+            scope_name="Acme",
             resource_key=ORGANIZATION_MEMBERS,
             current_usage=5,
             limit_value=5,
@@ -59,7 +59,7 @@ class TestLimitReachedContext:
     def test_an_unregistered_resource_key_raises_improperly_configured(self):
         with pytest.raises(ImproperlyConfigured):
             limit_reached_context(
-                organization_name="Acme",
+                scope_name="Acme",
                 resource_key="not_a_real_resource",
                 current_usage=5,
                 limit_value=5,

@@ -101,18 +101,18 @@ class TestResolveBillingRoot:
     def test_standalone_organization_resolves_to_itself(self):
         org = baker.make(Organization, parent=None, can_invite_organizations=False)
 
-        assert resolve_billing_root(scope_for(org)) == org
+        assert resolve_billing_root(scope_for(org)) == scope_for(org)
 
     def test_reseller_root_resolves_to_itself(self):
         org = baker.make(Organization, parent=None, can_invite_organizations=True)
 
-        assert resolve_billing_root(scope_for(org)) == org
+        assert resolve_billing_root(scope_for(org)) == scope_for(org)
 
     def test_direct_child_resolves_to_reseller_root(self):
         root = baker.make(Organization, can_invite_organizations=True)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
 
-        assert resolve_billing_root(scope_for(child)) == root
+        assert resolve_billing_root(scope_for(child)) == scope_for(root)
 
     def test_child_of_non_reseller_top_org_resolves_to_that_top_org(self):
         """A malformed tree (parent set, but no ancestor is ever flagged
@@ -121,7 +121,7 @@ class TestResolveBillingRoot:
         top = baker.make(Organization, parent=None, can_invite_organizations=False)
         child = baker.make(Organization, parent=top, can_invite_organizations=False)
 
-        assert resolve_billing_root(scope_for(child)) == top
+        assert resolve_billing_root(scope_for(child)) == scope_for(top)
 
     def test_cyclic_parent_chain_raises_billing_root_cycle_error(self):
         """A revisited organization means the ``parent`` chain is a cycle.
@@ -150,8 +150,8 @@ class TestResolveBillingRoot:
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
 
         assert is_billing_root(scope_for(mid)) is True
-        assert resolve_billing_root(scope_for(mid)) == mid
-        assert resolve_billing_root(scope_for(leaf)) == mid
+        assert resolve_billing_root(scope_for(mid)) == scope_for(mid)
+        assert resolve_billing_root(scope_for(leaf)) == scope_for(mid)
 
 
 @pytest.mark.django_db
@@ -162,7 +162,7 @@ class TestCreateSubscriptionForOrganization:
         subscription = service.create_subscription_for_scope(scope_for(org))
 
         assert subscription is not None
-        assert subscription.organization == org
+        assert subscription.scope == scope_for(org)
         assert subscription.plan.slug == "unlimited"
         assert subscription.billing_state == BillingState.FREE
 
@@ -200,9 +200,9 @@ class TestCreateSubscriptionForOrganization:
         result = service.create_subscription_for_scope(scope_for(mid), plan=plan)
 
         assert result is not None
-        assert result.organization == mid
+        assert result.scope == scope_for(mid)
         assert not Subscription.objects.filter(scope=scope_for(leaf)).exists()
-        assert resolve_billing_root(scope_for(leaf)) == mid
+        assert resolve_billing_root(scope_for(leaf)) == scope_for(mid)
 
     def test_default_plan_lookup_ignores_inactive_default_plan(self, service):
         """A deactivated default plan must not 500 organization creation with an
@@ -270,7 +270,7 @@ class TestCreateSubscriptionResolvesTheProvider:
     def _billing_profile_for(self, org: Organization, provider: str):
         return baker.make(
             "vinta_billing.BillingProfile",
-            organization=org,
+            scope=scope_for(org),
             contact_email="billing@example.com",
             document_type="CPF",
             document_number="12345678900",

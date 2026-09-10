@@ -116,7 +116,7 @@ def billing_profile(organization):
     )
     return baker.make(
         "vinta_billing.BillingProfile",
-        organization=organization,
+        scope=scope_for(organization),
         contact_email="billing@example.com",
         document_type="CPF",
         document_number="12345678900",

@@ -913,7 +913,7 @@ class CalendarSyncService:
             entitlement_service = self._context.entitlement_service
             if entitlement_service is not None:
                 result = entitlement_service.check_postpaid_allowance(
-                    context.organization, delta=new_master_count, lock=True
+                    scope_for(context.organization), delta=new_master_count, lock=True
                 )
                 if not result.allowed:
                     logger.warning(

@@ -70,7 +70,7 @@ class TestResolvePublicCredentials:
 
 
 class TestPaymentProviderResolver:
-    def test_resolve_for_organization_returns_the_pin_when_set(self):
+    def test_resolve_for_scope_returns_the_pin_when_set(self):
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
         billing_address = baker.make("vinta_billing.BillingAddress")
         baker.make(
@@ -85,9 +85,9 @@ class TestPaymentProviderResolver:
 
         resolver = PaymentProviderResolver()
 
-        assert resolver.resolve_for_organization(organization) == PaymentProviders.MERCADOPAGO
+        assert resolver.resolve_for_scope(scope_for(organization)) == PaymentProviders.MERCADOPAGO
 
-    def test_resolve_for_organization_returns_the_default_when_unpinned(self, settings):
+    def test_resolve_for_scope_returns_the_default_when_unpinned(self, settings):
         use_providers(settings, default_provider=PaymentProviders.STRIPE)
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
         billing_address = baker.make("vinta_billing.BillingAddress")
@@ -103,15 +103,15 @@ class TestPaymentProviderResolver:
 
         resolver = PaymentProviderResolver()
 
-        assert resolver.resolve_for_organization(organization) == PaymentProviders.STRIPE
+        assert resolver.resolve_for_scope(scope_for(organization)) == PaymentProviders.STRIPE
 
-    def test_resolve_for_organization_returns_the_default_with_no_billing_profile(self, settings):
+    def test_resolve_for_scope_returns_the_default_with_no_billing_profile(self, settings):
         use_providers(settings, default_provider=PaymentProviders.STRIPE)
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
 
         resolver = PaymentProviderResolver()
 
-        assert resolver.resolve_for_organization(organization) == PaymentProviders.STRIPE
+        assert resolver.resolve_for_scope(scope_for(organization)) == PaymentProviders.STRIPE
 
     def test_resolve_default_reads_settings(self, settings):
         use_providers(settings, default_provider=PaymentProviders.MERCADOPAGO)

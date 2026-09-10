@@ -444,7 +444,7 @@ class TestBillingProfileAdminSaveModel:
 
         mock_set_payment_provider.assert_called_once()
         call_args = mock_set_payment_provider.call_args
-        assert call_args.args[1] == billing_profile.organization
+        assert call_args.args[1] == billing_profile.scope
         assert call_args.args[2] == PaymentProviders.STRIPE
         assert call_args.kwargs["actor"] == superuser
 
@@ -474,7 +474,7 @@ class TestBillingProfileAdminSaveModel:
         organization = baker.make(Organization, parent=None)
         billing_address = baker.make("vinta_billing.billingaddress")
         new_profile = BillingProfile(
-            organization=organization,
+            scope=scope_for(organization),
             contact_first_name="Ada",
             contact_email="ada@example.com",
             document_type="CPF",

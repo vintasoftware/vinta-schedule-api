@@ -44,9 +44,7 @@ from typing import cast
 from django.utils.translation import gettext as _
 
 from vinta_billing.constants import LimitKind, LimitRemedy
-from vinta_billing.counting import (
-    UsageContext,  # noqa: F401  (re-exported for counters' type hints)
-)
+from vinta_billing.counting import UsageContext, count_by_scope
 from vinta_billing.models import MeteredOccurrence, Subscription
 from vinta_billing.registry import entitlements, resources
 from vinta_billing.services.subscription_service import current_billing_period_start
@@ -241,8 +239,7 @@ def _count_public_api_system_users(context: OrganizationUsageContext) -> dict[in
     )
 
 
-@counts_by_organization
-def _count_event_occurrences(context: OrganizationUsageContext) -> dict[int, int]:
+def _count_event_occurrences(context: UsageContext) -> dict[int, int]:
     """Metered event occurrences in the subscription's current billing period, per
     organization.
 
@@ -267,10 +264,17 @@ def _count_event_occurrences(context: OrganizationUsageContext) -> dict[int, int
     an earlier one and got zero permanently. Both sides now go through
     ``resolve_billing_period_start``.
 
-    Grouped over the **existing** ``for_billing_period(...).for_organizations(...)``
+    Grouped over the **existing** ``for_billing_period(...).for_scopes(...)``
     queryset -- never a second, independently filtered query -- so the period and
     pool this counter groups by are provably the same ones the scalar count used to
     read.
+
+    **The one counter here that is scope-native**, and so the one without
+    ``@counts_by_organization``. Every other counter reads a table of this
+    project's own, keyed by ``organization_id``; ``MeteredOccurrence`` is
+    ``vinta_billing``'s own table and has carried ``scope_id`` since 0.8.0.
+    Translating ids down to organizations and back would be two pointless
+    queries around a table that already speaks the id the engine wants.
 
     ``context.subscription`` is typed against ``vinta_billing.models.Subscription``
     by the generic ``UsageContext`` dataclass, and at every call site that actually
@@ -281,10 +285,10 @@ def _count_event_occurrences(context: OrganizationUsageContext) -> dict[int, int
     subscription = cast("Subscription | None", context.subscription)
     if subscription is None:
         return {}
-    return count_by_organization(
+    return count_by_scope(
         MeteredOccurrence.objects.for_billing_period(
             subscription.pk, current_billing_period_start(subscription)
-        ).for_organizations(context.organization_ids)
+        ).for_scopes(context.scope_ids)
     )
 
 

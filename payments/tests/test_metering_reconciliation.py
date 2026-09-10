@@ -60,6 +60,20 @@ _with_google_credentials = override_settings(
 )
 
 
+def subscription_organization(subscription) -> Organization:
+    """The organization a subscription bills, asserted non-``None``.
+
+    ``organization_for`` is ``Optional`` because nothing in the shipped scope
+    model constrains a scope to name an organization. Every scope in this module
+    does -- they are all built by the fixtures below from real organizations --
+    so the ``None`` branch is a fixture bug, and failing on it here beats
+    threading an ``Optional`` through every ``filter_by_organization`` call.
+    """
+    organization = organization_for(subscription.scope)
+    assert organization is not None, "fixture built a subscription with no organization scope"
+    return organization
+
+
 @pytest.fixture
 def mock_google_adapter():
     with patch(
@@ -372,7 +386,7 @@ class TestRecurrenceExceptionCountedOnce:
         assert exception_event is not None
         assert (
             CalendarEvent.objects.filter_by_organization(
-                organization_for(subscription.scope)
+                subscription_organization(subscription)
             ).count()
             == 2
         )
@@ -639,7 +653,7 @@ class TestFirstOccurrenceSplitIsNotDeduplicated:
             modified_title="First one moved",
         )
         replacement = (
-            CalendarEvent.objects.filter_by_organization(organization_for(subscription.scope))
+            CalendarEvent.objects.filter_by_organization(subscription_organization(subscription))
             .exclude(pk=weekly_series.pk)
             .filter(recurrence_rule__isnull=False)
             .first()
@@ -943,7 +957,7 @@ class TestBulkModificationWithOffsetTilesTheTimeline:
         assert continuation is not None
 
         parent = CalendarEvent.objects.filter_by_organization(
-            organization_for(subscription.scope)
+            subscription_organization(subscription)
         ).get(pk=weekly_series.pk)
 
         assert parent.recurrence_rule_fk_id == original_rule_id, (
@@ -953,7 +967,7 @@ class TestBulkModificationWithOffsetTilesTheTimeline:
             "the continuation gets a fresh rule row, built from an rrule string"
         )
         parent_rule = RecurrenceRule.objects.filter_by_organization(
-            organization_for(subscription.scope)
+            subscription_organization(subscription)
         ).get(pk=original_rule_id)
         assert (parent_rule.count, parent_rule.until) == (None, ALL_MONDAYS[0]), (
             "the parent's rule row holds the truncation, bounded at the last "
@@ -999,7 +1013,7 @@ class TestBulkModificationWithOffsetTilesTheTimeline:
         )
 
         parent = CalendarEvent.objects.filter_by_organization(
-            organization_for(subscription.scope)
+            subscription_organization(subscription)
         ).get(pk=series.pk)
         assert (parent.recurrence_rule.count, parent.recurrence_rule.until) == (
             None,

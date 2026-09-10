@@ -226,7 +226,9 @@ class TestUsageMatchesEnforcement:
     ):
         entitlement_service = EntitlementService()
         if resource_key == EVENT_OCCURRENCES:
-            enforcement_result = entitlement_service.check_postpaid_allowance(organization, delta=0)
+            enforcement_result = entitlement_service.check_postpaid_allowance(
+                scope_for(organization), delta=0
+            )
         else:
             enforcement_result = entitlement_service.check_limit(
                 scope_for(organization), resource_key, delta=0
@@ -304,7 +306,7 @@ class TestBackwardsCompatibility:
             )
             if resource_key == EVENT_OCCURRENCES:
                 enforcement_result = entitlement_service.check_postpaid_allowance(
-                    organization, delta=0
+                    scope_for(organization), delta=0
                 )
             else:
                 enforcement_result = entitlement_service.check_limit(
@@ -385,7 +387,7 @@ class TestEstimatedOverageTotal:
         assert response.status_code == status.HTTP_200_OK
         expected = (
             MeteredOccurrence.objects.for_billing_period(subscription.pk, billing_period_start)
-            .for_organizations([organization.pk])
+            .for_scopes([scope_for(organization).pk])
             .overage_total()
         )
         assert expected == Decimal("0.15")
@@ -397,7 +399,7 @@ class TestEstimatedOverageTotal:
         """Mirrors ``TestPooledAttributionOmitsNonContributors``'s tree shape:
         overage metered against a child in the caller's own pooled subtree
         contributes to the root's ``estimated_overage_total`` (the
-        ``.for_organizations(pool)`` scope), but overage metered against an
+        ``.for_scopes(pool)`` scope), but overage metered against an
         unrelated, sibling billing root's own subtree does not leak in."""
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         contributing_child = baker.make(Organization, parent=root, can_invite_organizations=False)

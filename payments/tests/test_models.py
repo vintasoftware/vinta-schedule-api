@@ -21,7 +21,7 @@ from vinta_billing.services.payment_adapters.mercadopago_payment_adapter import 
 )
 
 from organizations.models import Organization
-from payments.seams.scopes import scope_for
+from payments.seams.scopes import organization_for, scope_for
 from payments.tests.historical_apps import historical_apps
 
 
@@ -78,14 +78,22 @@ class TestBillingPlan:
 
 @pytest.mark.django_db
 class TestBillingProfile:
-    def test_billing_profile_reachable_from_organization(self, organization, billing_profile):
-        """The organization is the primary key: `organization.billing_profile` round-trips."""
-        assert organization.billing_profile == billing_profile
-        assert billing_profile.organization == organization
-        assert billing_profile.pk == organization.pk
+    def test_billing_profile_reachable_from_the_scope(self, organization, billing_profile):
+        """`scope.billing_profile` round-trips, and the scope names the organization.
 
-    def test_billing_address_organization_property(self, billing_profile):
-        assert billing_profile.billing_address.organization == billing_profile.organization
+        0.8.0 re-pointed `BillingProfile` at the payer's scope and gave it a
+        surrogate primary key. Both halves of that matter here: the reverse
+        accessor moved off the organization, and the profile's `pk` is no longer
+        anybody else's id -- which is the point, since re-pointing a profile at a
+        different payer used to rewrite its pk and every `Payment` hanging off it.
+        """
+        scope = scope_for(organization)
+        assert scope.billing_profile == billing_profile
+        assert organization_for(billing_profile.scope) == organization
+        assert billing_profile.scope_id == scope.pk
+
+    def test_billing_address_scope_property(self, billing_profile):
+        assert billing_profile.billing_address.scope == billing_profile.scope
 
     def test_document_types_and_mercadopago_mapping_agree(self):
         """`DOCUMENT_TYPES_MAPPING` must translate every member the API accepts --
@@ -219,15 +227,15 @@ class TestSubscription:
             payment_provider=PaymentProviders.MERCADOPAGO,
         )
 
-        assert organization.subscription == subscription
+        assert scope_for(organization).subscription == subscription
 
 
 @pytest.mark.django_db
 class TestPayment:
-    def test_organization_property(self, billing_profile):
+    def test_scope_property(self, billing_profile):
         payment = baker.make(Payment, billing_profile=billing_profile)
 
-        assert payment.organization == billing_profile.organization
+        assert payment.scope == billing_profile.scope
 
 
 @pytest.mark.django_db

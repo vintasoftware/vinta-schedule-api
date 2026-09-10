@@ -8,7 +8,7 @@ from vinta_billing.models import BillingAddress, BillingProfile
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.seams.scopes import scope_for
+from payments.seams.scopes import organization_for, scope_for
 
 
 @pytest.fixture
@@ -667,12 +667,14 @@ class TestBillingProfileViewSet:
         )
 
         # Test that the billing profile is correctly linked
-        assert billing_profile.organization == organization
+        assert organization_for(billing_profile.scope) == organization
         assert billing_profile.billing_address == billing_address
         assert billing_address.billing_profile == billing_profile
 
-        # Test that we can access the billing profile through the organization
-        assert organization.billing_profile == billing_profile
+        # Reachable through the scope now, not the organization: 0.8.0 re-pointed
+        # `BillingProfile` at the payer's scope, so the reverse accessor hangs off
+        # there.
+        assert scope_for(organization).billing_profile == billing_profile
 
     def test_create_billing_profile_with_minimal_address_data(self, auth_client, membership):
         """Test creating billing profile with minimal required address data."""

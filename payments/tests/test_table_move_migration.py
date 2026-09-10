@@ -85,10 +85,21 @@ def _count(table: str) -> int:
         return cursor.fetchone()[0]
 
 
+#: Tables ``vinta_billing`` added *after* ``0024``, which therefore exist at HEAD
+#: but are not part of what that migration moved. ``billingscope`` arrives in
+#: ``0003_billingscope`` (0.8.0) -- the row naming whoever pays.
+#:
+#: Kept separate from ``EXPECTED_TABLES`` rather than folded into it: that set is
+#: the column-for-column contract ``0024`` is written against, and widening it to
+#: keep a HEAD-state assertion green would quietly weaken the migration's own
+#: checks.
+TABLES_ADDED_AFTER_THE_MOVE = {"billingscope"}
+
+
 @pytest.mark.django_db
 class TestTheTablesMoved:
-    def test_migrate_from_zero_lands_the_twenty_vinta_billing_tables(self):
-        assert _table_names("vinta_billing_") == EXPECTED_TABLES
+    def test_migrate_from_zero_lands_the_vinta_billing_tables(self):
+        assert _table_names("vinta_billing_") == EXPECTED_TABLES | TABLES_ADDED_AFTER_THE_MOVE
 
     def test_and_leaves_no_payments_table_behind(self):
         """Not "some are gone" -- none. A survivor would be a table nothing reads

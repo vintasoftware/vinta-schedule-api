@@ -66,6 +66,7 @@ from audit_integration.constants import AuditAction, AuditActorType
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
+from payments.seams.scopes import scope_for
 from payments.tests.provider_settings import use_providers
 
 
@@ -116,7 +117,7 @@ def billing_profile(organization, billing_address):
     Stripe adapter."""
     return baker.make(
         "vinta_billing.billingprofile",
-        organization=organization,
+        scope=scope_for(organization),
         document_type="CPF",
         document_number="12345678900",
         billing_address=billing_address,
@@ -227,7 +228,7 @@ def test_success_create_payment(
     payment_adapter.process.return_value = "payment_12345"
 
     created_payment = payment_service.create_payment(
-        organization=billing_profile.organization,
+        scope=billing_profile.scope,
         currency="BRL",
         amount=Decimal("100"),
         description="Test Payment",
@@ -263,7 +264,7 @@ def test_create_payment_raises_when_billing_profile_missing_contact_email(
 
     with pytest.raises(BillingProfileContactEmailMissingError):
         payment_service.create_payment(
-            organization=billing_profile.organization,
+            scope=billing_profile.scope,
             currency="BRL",
             amount=Decimal("100"),
             description="Test Payment",
@@ -614,7 +615,7 @@ def test_success_create_subscription(
 
     # Create subscription
     created_subscription = payment_service.create_subscription(
-        organization=billing_profile.organization,
+        scope=billing_profile.scope,
         plan=billing_plan,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -633,7 +634,7 @@ def test_success_process_subscription(
     now = datetime.datetime.now(tz=datetime.UTC)
 
     created_subscription = payment_service.create_subscription(
-        organization=billing_profile.organization,
+        scope=billing_profile.scope,
         plan=billing_plan,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -667,7 +668,7 @@ def test_success_cancel_subscription(
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
         "vinta_billing.subscription",
-        organization=billing_profile.organization,
+        scope=billing_profile.scope,
         plan=billing_plan,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -697,7 +698,7 @@ def test_success_receive_subscription_payment_update(
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
         "vinta_billing.subscription",
-        organization=billing_profile.organization,
+        scope=billing_profile.scope,
         plan=billing_plan,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -778,7 +779,7 @@ def test_receive_subscription_payment_update_without_billing_profile_returns_non
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
         "vinta_billing.subscription",
-        organization=organization,
+        scope=scope_for(organization),
         plan=billing_plan,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -918,7 +919,7 @@ def test_create_payment_for_stripe_pinned_org_stamps_and_drives_stripe(
     stripe_payment_adapter.process.return_value = "stripe_payment_1"
 
     created_payment = payment_service.create_payment(
-        organization=billing_profile.organization,
+        scope=billing_profile.scope,
         currency="USD",
         amount=Decimal("100"),
         description="Test Payment",
@@ -945,7 +946,7 @@ def test_create_payment_for_unpinned_org_drives_default_payment_provider(
     stripe_payment_adapter.process.return_value = "stripe_payment_default"
 
     created_payment = payment_service.create_payment(
-        organization=billing_profile.organization,
+        scope=billing_profile.scope,
         currency="USD",
         amount=Decimal("50"),
         description="Default Provider Payment",
@@ -991,7 +992,7 @@ def test_create_payment_for_org_pinned_to_unconfigured_provider_raises_and_creat
 
         with pytest.raises(PaymentProviderNotConfiguredError):
             payment_service.create_payment(
-                organization=billing_profile.organization,
+                scope=billing_profile.scope,
                 currency="USD",
                 amount=Decimal("10"),
                 description="Should not be created",
@@ -1016,7 +1017,7 @@ def test_configured_check_reads_the_outbound_credential_not_the_publishable_key(
     stripe_payment_adapter.process.return_value = "stripe_payment_no_pubkey"
 
     created_payment = payment_service.create_payment(
-        organization=billing_profile.organization,
+        scope=billing_profile.scope,
         currency="USD",
         amount=Decimal("10"),
         description="Charged with no publishable key",
@@ -1041,7 +1042,7 @@ def test_create_payment_for_org_pinned_to_slug_that_is_not_a_real_provider_raise
 
     with pytest.raises(UnknownPaymentProviderError):
         payment_service.create_payment(
-            organization=billing_profile.organization,
+            scope=billing_profile.scope,
             currency="USD",
             amount=Decimal("10"),
             description="Should not be created either",
@@ -1101,7 +1102,7 @@ def test_handle_subscription_payment_webhook_is_idempotent(
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
         "vinta_billing.subscription",
-        organization=billing_profile.organization,
+        scope=billing_profile.scope,
         plan=billing_plan,
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
@@ -1258,7 +1259,7 @@ def test_record_payment_method_sets_pin_on_first_call(subscription_service, bill
     assert billing_profile.payment_provider == ""
 
     subscription_service.record_payment_method(
-        billing_profile.organization, PaymentProviders.MERCADOPAGO, "instrument_1"
+        billing_profile.scope, PaymentProviders.MERCADOPAGO, "instrument_1"
     )
 
     billing_profile.refresh_from_db()
@@ -1274,14 +1275,14 @@ def test_record_payment_method_second_call_different_provider_leaves_pin_unchang
     rather than silently moving future charges onto a provider the org never
     explicitly settled on."""
     subscription_service.record_payment_method(
-        billing_profile.organization, PaymentProviders.MERCADOPAGO, "instrument_1"
+        billing_profile.scope, PaymentProviders.MERCADOPAGO, "instrument_1"
     )
     billing_profile.refresh_from_db()
     assert billing_profile.payment_provider == PaymentProviders.MERCADOPAGO
 
     with caplog.at_level("WARNING", logger="vinta_billing.services.subscription_service"):
         subscription_service.record_payment_method(
-            billing_profile.organization, PaymentProviders.STRIPE, "instrument_2"
+            billing_profile.scope, PaymentProviders.STRIPE, "instrument_2"
         )
 
     billing_profile.refresh_from_db()
@@ -1326,7 +1327,7 @@ def test_record_payment_method_pin_write_is_a_conditional_update_not_read_then_w
     with patch.object(QuerySet, "update", spying_update):
         with caplog.at_level("WARNING", logger="vinta_billing.services.subscription_service"):
             subscription_service.record_payment_method(
-                billing_profile.organization, PaymentProviders.STRIPE, "instrument_2"
+                billing_profile.scope, PaymentProviders.STRIPE, "instrument_2"
             )
 
     assert calls, "record_payment_method must pin via a QuerySet.update() call, not save()"
@@ -1341,13 +1342,13 @@ def test_record_payment_method_pin_write_is_a_conditional_update_not_read_then_w
 @pytest.mark.django_db
 def test_set_payment_provider_rejects_unknown_slug(subscription_service, organization):
     with pytest.raises(UnknownPaymentProviderError):
-        subscription_service.set_payment_provider(organization, "not_a_real_provider")
+        subscription_service.set_payment_provider(scope_for(organization), "not_a_real_provider")
 
 
 @pytest.mark.django_db
 def test_set_payment_provider_requires_billing_profile(subscription_service, organization):
     with pytest.raises(MissingBillingProfileError):
-        subscription_service.set_payment_provider(organization, PaymentProviders.STRIPE)
+        subscription_service.set_payment_provider(scope_for(organization), PaymentProviders.STRIPE)
 
 
 @pytest.mark.django_db
@@ -1360,7 +1361,7 @@ def test_set_payment_provider_writes_audit_entry_naming_previous_provider(
     with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             subscription_service.set_payment_provider(
-                billing_profile.organization, PaymentProviders.STRIPE
+                billing_profile.scope, PaymentProviders.STRIPE
             )
 
     billing_profile.refresh_from_db()
@@ -1368,7 +1369,9 @@ def test_set_payment_provider_writes_audit_entry_naming_previous_provider(
 
     assert mock_task.delay.call_count == 1
     payload = mock_task.delay.call_args_list[0].args[0]
-    assert payload["scope"]["scope_key"] == str(billing_profile.organization_id)
+    # The audit scope key is the organization pk as a string, which is exactly
+    # what the billing scope's generic key already holds.
+    assert payload["scope"]["scope_key"] == str(billing_profile.scope.object_id)
     assert payload["action_key"] == AuditAction.UPDATE
     assert payload["subject"]["subject_type"] == "vinta_billing.billingprofile"
     assert payload["subject"]["subject_id"] == str(billing_profile.pk)
@@ -1398,7 +1401,7 @@ def test_set_payment_provider_succeeds_with_active_subscription_at_old_provider(
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
         SubscriptionModel,
-        organization=billing_profile.organization,
+        scope=billing_profile.scope,
         plan=billing_plan,
         billing_state=BillingState.ACTIVE,
         payment_provider=PaymentProviders.MERCADOPAGO,
@@ -1408,7 +1411,7 @@ def test_set_payment_provider_succeeds_with_active_subscription_at_old_provider(
     assert subscription.billing_state == BillingState.ACTIVE
 
     result = subscription_service.set_payment_provider(
-        billing_profile.organization, PaymentProviders.STRIPE
+        billing_profile.scope, PaymentProviders.STRIPE
     )
 
     assert result.payment_provider == PaymentProviders.STRIPE
@@ -1427,7 +1430,7 @@ def test_set_payment_provider_records_actor_from_user(
     membership = grant_membership_groups(
         OrganizationMembership.objects.create(
             user=staff_user,
-            organization=billing_profile.organization,
+            scope=billing_profile.scope,
         ),
         [GROUP_ORGANIZATION_ADMIN],
     )
@@ -1435,7 +1438,7 @@ def test_set_payment_provider_records_actor_from_user(
     with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             subscription_service.set_payment_provider(
-                billing_profile.organization, PaymentProviders.STRIPE, actor=staff_user
+                billing_profile.scope, PaymentProviders.STRIPE, actor=staff_user
             )
 
     assert mock_task.delay.call_count == 1
@@ -1456,7 +1459,7 @@ def test_set_payment_provider_empty_string_unpins_without_raising(
     billing_profile.payment_provider = PaymentProviders.MERCADOPAGO
     billing_profile.save(update_fields=["payment_provider"])
 
-    result = subscription_service.set_payment_provider(billing_profile.organization, "")
+    result = subscription_service.set_payment_provider(billing_profile.scope, "")
 
     assert result.payment_provider == ""
     billing_profile.refresh_from_db()
@@ -1490,7 +1493,7 @@ def _mercadopago_subscription_for(billing_profile, billing_plan) -> Subscription
     the test's own choice, not whatever the service resolved."""
     return baker.make(
         SubscriptionModel,
-        organization=billing_profile.organization,
+        scope=billing_profile.scope,
         plan=billing_plan,
         status=SubscriptionStatuses.ACTIVE,
         external_id="mp-sub-1",

@@ -153,7 +153,7 @@ def billing_profile(organization):
     )
     return baker.make(
         "vinta_billing.BillingProfile",
-        organization=organization,
+        scope=scope_for(organization),
         contact_email="billing@example.com",
         document_type="CPF",
         document_number="12345678900",
@@ -243,7 +243,7 @@ class TestProcessDunningFanOut:
         org2 = baker.make(Organization, parent=None, can_invite_organizations=False)
         baker.make(
             "vinta_billing.BillingProfile",
-            organization=org2,
+            scope=scope_for(org2),
             contact_email="billing2@example.com",
             document_type="CPF",
             document_number="98765432100",
@@ -264,7 +264,7 @@ class TestProcessDunningFanOut:
         org3 = baker.make(Organization, parent=None, can_invite_organizations=False)
         baker.make(
             "vinta_billing.BillingProfile",
-            organization=org3,
+            scope=scope_for(org3),
             contact_email="billing3@example.com",
             document_type="CPF",
             document_number="11122233300",

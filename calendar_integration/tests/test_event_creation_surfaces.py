@@ -183,7 +183,7 @@ def _seed_metered_occurrences(organization: Organization, subscription: Subscrip
     MeteredOccurrence.objects.bulk_create(
         [
             MeteredOccurrence(
-                organization=organization,
+                scope=scope_for(organization),
                 subscription=subscription,
                 event_id=event.pk,
                 occurrence_start=period_start + datetime.timedelta(hours=i),

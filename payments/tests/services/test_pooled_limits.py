@@ -84,7 +84,7 @@ class TestPooledUsage:
         add_members(grandchild, 4)
 
         for organization in (root, child, grandchild):
-            assert service.get_current_usage(organization, ORGANIZATION_MEMBERS) == 7, (
+            assert service.get_current_usage(scope_for(organization), ORGANIZATION_MEMBERS) == 7, (
                 f"usage seen from {organization.pk} should be the whole pool"
             )
 
@@ -131,8 +131,8 @@ class TestPooledUsage:
         add_members(nested_reseller, 1)
         add_members(nested_child, 1)
 
-        assert service.get_current_usage(root, ORGANIZATION_MEMBERS) == 2
-        assert service.get_current_usage(nested_reseller, ORGANIZATION_MEMBERS) == 2
+        assert service.get_current_usage(scope_for(root), ORGANIZATION_MEMBERS) == 2
+        assert service.get_current_usage(scope_for(nested_reseller), ORGANIZATION_MEMBERS) == 2
         assert (
             service.get_effective_limit(scope_for(nested_child), ORGANIZATION_MEMBERS).limit_value
             == 2
@@ -150,8 +150,8 @@ class TestPooledUsage:
         add_members(child_a, 2)
         add_members(child_b, 4)
 
-        assert service.get_current_usage(child_a, ORGANIZATION_MEMBERS) == 2
-        assert service.get_current_usage(child_b, ORGANIZATION_MEMBERS) == 4
+        assert service.get_current_usage(scope_for(child_a), ORGANIZATION_MEMBERS) == 2
+        assert service.get_current_usage(scope_for(child_b), ORGANIZATION_MEMBERS) == 4
 
     def test_add_on_on_the_root_lifts_the_whole_subtree(self, service, plan):
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
@@ -211,4 +211,4 @@ class TestCyclicParentChain:
         add_members(root, 1)
         add_members(child, 2)
 
-        assert service.get_current_usage(root, ORGANIZATION_MEMBERS) == 3
+        assert service.get_current_usage(scope_for(root), ORGANIZATION_MEMBERS) == 3

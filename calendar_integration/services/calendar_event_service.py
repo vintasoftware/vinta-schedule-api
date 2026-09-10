@@ -525,7 +525,7 @@ class CalendarEventService:
             return max(1, sum(1 for start in starts if now <= start < period_end))
 
         result = entitlement_service.check_postpaid_allowance(
-            event.organization, lock=True, delta_resolver=resolve_delta
+            scope_for(event.organization), lock=True, delta_resolver=resolve_delta
         )
         if not result.allowed:
             raise OverLimitError.from_check_result(result)
@@ -649,7 +649,9 @@ class CalendarEventService:
         guard_applies = _check_postpaid_allowance and event_data.parent_event_id is None
         entitlement_service = self._postpaid_entitlement_service(bypass_limits=bypass_limits)
         if guard_applies and entitlement_service is not None:
-            result = entitlement_service.check_postpaid_allowance(context.organization, lock=True)
+            result = entitlement_service.check_postpaid_allowance(
+                scope_for(context.organization), lock=True
+            )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
 

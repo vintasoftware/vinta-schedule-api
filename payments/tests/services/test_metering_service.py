@@ -298,7 +298,7 @@ class TestIdempotence:
 
         def _row() -> MeteredOccurrence:
             return MeteredOccurrence(
-                organization=organization,
+                scope=scope_for(organization),
                 subscription=subscription,
                 event_id=4242,
                 occurrence_start=FIRST_MONDAY,
@@ -475,11 +475,17 @@ class TestUsageCounterReadsTheMeter:
     ):
         entitlement_service = EntitlementService()
         with freeze_time(INSIDE_PERIOD):
-            assert entitlement_service.get_current_usage(organization, EVENT_OCCURRENCES) == 0
+            assert (
+                entitlement_service.get_current_usage(scope_for(organization), EVENT_OCCURRENCES)
+                == 0
+            )
 
             metering_service.meter_occurrences_for_period(subscription, PERIOD_START, PERIOD_END)
 
-            assert entitlement_service.get_current_usage(organization, EVENT_OCCURRENCES) == 5
+            assert (
+                entitlement_service.get_current_usage(scope_for(organization), EVENT_OCCURRENCES)
+                == 5
+            )
 
     def test_the_counter_still_reads_the_meter_when_the_stored_period_is_stale(
         self,
@@ -535,7 +541,10 @@ class TestUsageCounterReadsTheMeter:
         )
 
         with freeze_time(occurrence_moment):
-            assert EntitlementService().get_current_usage(organization, EVENT_OCCURRENCES) == 1
+            assert (
+                EntitlementService().get_current_usage(scope_for(organization), EVENT_OCCURRENCES)
+                == 1
+            )
 
     def test_usage_is_scoped_to_the_current_billing_period(
         self,
@@ -571,7 +580,10 @@ class TestUsageCounterReadsTheMeter:
             < PERIOD_START
         )
         with freeze_time(INSIDE_PERIOD):
-            assert EntitlementService().get_current_usage(organization, EVENT_OCCURRENCES) == 0
+            assert (
+                EntitlementService().get_current_usage(scope_for(organization), EVENT_OCCURRENCES)
+                == 0
+            )
 
 
 @pytest.mark.django_db

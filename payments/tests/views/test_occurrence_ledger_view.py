@@ -95,7 +95,7 @@ def child(root: Organization) -> Organization:
 
 @pytest.fixture
 def subscription(root: Organization):
-    return root.subscription
+    return scope_for(root).subscription
 
 
 @pytest.fixture
@@ -272,7 +272,7 @@ class TestOverageTiesToTheMoney:
 
         expected_overage_total = (
             MeteredOccurrence.objects.for_billing_period(subscription.pk, billing_period_start)
-            .for_organizations([root.pk])
+            .for_scopes([scope_for(root).pk])
             .overage_total()
         )
         assert expected_overage_total == Decimal("0.0400")

@@ -192,7 +192,7 @@ class TestUsageCounters:
             expires_at=timezone.now() + datetime.timedelta(days=7),
         )
 
-        usage = service.get_current_usage(organization, ORGANIZATION_MEMBERS)
+        usage = service.get_current_usage(scope_for(organization), ORGANIZATION_MEMBERS)
 
         assert usage == 3
 
@@ -214,7 +214,7 @@ class TestUsageCounters:
             expires_at=timezone.now() + datetime.timedelta(days=7),
         )
 
-        usage = service.get_current_usage(organization, ORGANIZATION_MEMBERS)
+        usage = service.get_current_usage(scope_for(organization), ORGANIZATION_MEMBERS)
 
         assert usage == 0
 
@@ -239,16 +239,16 @@ class TestUsageCounters:
                 external_id=f"external-{index}",
             )
 
-        assert service.get_current_usage(organization, RESOURCE_CALENDARS) == 2
-        assert service.get_current_usage(organization, BUNDLE_CALENDARS) == 1
+        assert service.get_current_usage(scope_for(organization), RESOURCE_CALENDARS) == 2
+        assert service.get_current_usage(scope_for(organization), BUNDLE_CALENDARS) == 1
 
     def test_appointment_type_and_webhook_counters(self, service, organization, subscription):
         baker.make(AppointmentType, organization=organization, _quantity=2)
         baker.make(WebhookConfiguration, organization=organization, deleted_at=None)
         baker.make(WebhookConfiguration, organization=organization, deleted_at=timezone.now())
 
-        assert service.get_current_usage(organization, APPOINTMENT_TYPES) == 2
-        assert service.get_current_usage(organization, WEBHOOK_SUBSCRIPTIONS) == 1
+        assert service.get_current_usage(scope_for(organization), APPOINTMENT_TYPES) == 2
+        assert service.get_current_usage(scope_for(organization), WEBHOOK_SUBSCRIPTIONS) == 1
 
     def test_usage_is_scoped_to_the_organization(self, service, organization, subscription):
         """A sibling organization's rows must never leak into this one's count."""
@@ -256,7 +256,7 @@ class TestUsageCounters:
         baker.make(AppointmentType, organization=other, _quantity=3)
         baker.make(AppointmentType, organization=organization)
 
-        assert service.get_current_usage(organization, APPOINTMENT_TYPES) == 1
+        assert service.get_current_usage(scope_for(organization), APPOINTMENT_TYPES) == 1
 
 
 @pytest.mark.django_db
@@ -414,10 +414,10 @@ class TestSeatCountingOnTheAcceptPath:
         baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=4)
         invitation = self._make_pending_invitation(organization)
 
-        assert service.get_current_usage(organization, ORGANIZATION_MEMBERS) == 5
+        assert service.get_current_usage(scope_for(organization), ORGANIZATION_MEMBERS) == 5
         assert (
             service.get_current_usage(
-                organization,
+                scope_for(organization),
                 ORGANIZATION_MEMBERS,
                 usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
             )
@@ -506,7 +506,7 @@ class TestSeatCountingOnTheAcceptPath:
 
         with pytest.raises(InapplicableUsageExtraError):
             service.get_current_usage(
-                organization,
+                scope_for(organization),
                 RESOURCE_CALENDARS,
                 usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
             )

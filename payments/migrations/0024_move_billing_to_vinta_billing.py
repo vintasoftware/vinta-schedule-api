@@ -82,7 +82,7 @@ TABLES: list[tuple[str, tuple[str, ...]]] = [
             "slug",
             "name",
             "is_active",
-            "is_default_for_new_scopes",
+            "is_default_for_new_organizations",
             "monthly_price",
             "annual_price",
             "currency",
@@ -537,6 +537,26 @@ class Migration(migrations.Migration):
         ("organizations", "0028_seed_permission_groups"),
         ("auth", "0012_alter_user_first_name_max_length"),
         ("contenttypes", "0002_remove_content_type_name"),
+    ]
+
+    # This migration copies `payments_*` rows into `vinta_billing_*` column for
+    # column, and `_assert_columns_match` refuses to run if either side's column
+    # list has moved -- deliberately, since a silent column mismatch here loses
+    # billing data.
+    #
+    # `dependencies` alone does not pin the order far enough. It names
+    # `vinta_billing.0002`, so the destination tables exist by the time this
+    # runs, but nothing stops the graph from running `0003`-`0006` first -- and
+    # on a database built from zero it does exactly that. Those three migrations
+    # are `vinta-django-billing` 0.8.0's move onto `BillingScope`: they add
+    # `scope_id` and drop `organization_id`, so this migration then finds a
+    # destination table it was not written against and raises.
+    #
+    # `run_before` is the edge that was missing. The copy has to happen while
+    # both sides still speak `organization_id`; the scope migration re-keys what
+    # this migration has already moved.
+    run_before = [
+        ("vinta_billing", "0004_add_scope_columns"),
     ]
 
     operations = [

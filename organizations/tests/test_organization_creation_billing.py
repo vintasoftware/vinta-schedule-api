@@ -33,7 +33,7 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 from vinta_billing.exceptions import BillingRootCycleError
-from vinta_billing.models import Subscription
+from vinta_billing.models import BillingScope, Subscription
 from vinta_billing.services.subscription_service import (
     SubscriptionService,
     billing_root_filter,
@@ -157,7 +157,7 @@ class TestResellerGraphQLMutationOrganizationCreation:
         # The core rule here: a reseller child never gets its own
         # subscription — it pools against its root's.
         assert not Subscription.objects.filter(scope=scope_for(child_org)).exists()
-        assert resolve_billing_root(scope_for(child_org)) == reseller_org
+        assert resolve_billing_root(scope_for(child_org)) == scope_for(reseller_org)
 
 
 @pytest.mark.django_db
@@ -180,7 +180,7 @@ class TestReseleverMutationSubscriptionHookIsDefenseInDepth:
         )
 
         assert subscription is not None
-        assert subscription.organization == would_be_child
+        assert subscription.scope == scope_for(would_be_child)
 
 
 @pytest.mark.django_db
@@ -190,9 +190,9 @@ class TestResolveBillingRootTreeShapes:
         mid = baker.make(Organization, parent=root, can_invite_organizations=False)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
 
-        assert resolve_billing_root(scope_for(leaf)) == root
-        assert resolve_billing_root(scope_for(mid)) == root
-        assert resolve_billing_root(scope_for(root)) == root
+        assert resolve_billing_root(scope_for(leaf)) == scope_for(root)
+        assert resolve_billing_root(scope_for(mid)) == scope_for(root)
+        assert resolve_billing_root(scope_for(root)) == scope_for(root)
 
     def test_nested_reseller_is_its_own_billing_root(self):
         """A nested reseller (``can_invite_organizations=True`` with a ``parent``
@@ -203,14 +203,14 @@ class TestResolveBillingRootTreeShapes:
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
 
         assert is_billing_root(scope_for(mid)) is True
-        assert resolve_billing_root(scope_for(mid)) == mid
-        assert resolve_billing_root(scope_for(leaf)) == mid
+        assert resolve_billing_root(scope_for(mid)) == scope_for(mid)
+        assert resolve_billing_root(scope_for(leaf)) == scope_for(mid)
 
         SubscriptionService().create_subscription_for_scope(scope_for(root))
         mid_subscription = SubscriptionService().create_subscription_for_scope(scope_for(mid))
 
         assert mid_subscription is not None
-        assert mid_subscription.organization == mid
+        assert mid_subscription.scope == scope_for(mid)
         assert not Subscription.objects.filter(scope=scope_for(leaf)).exists()
 
     def test_cyclic_parent_chain_raises_billing_root_cycle_error(self):
@@ -288,7 +288,10 @@ class TestNoPlanlessOrganization:
                 headers={"authorization": f"Bearer {system_user.id}:{token}"},
             )
 
+        # `billing_root_filter()` is a Q over *scopes* since 0.8.0, so it selects
+        # against the scope table rather than the organization one. Same
+        # invariant either way: no billing root is left without a subscription.
         assert (
-            Organization.objects.filter(billing_root_filter(), subscription__isnull=True).count()
+            BillingScope.objects.filter(billing_root_filter(), subscription__isnull=True).count()
             == 0
         )

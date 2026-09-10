@@ -3,7 +3,7 @@
 - **Date:** 2026-09-09
 - **Scope:** `vinta-django-billing` 0.7.0 → 0.8.0 upgrade, vs `main` (`ee8d2615`)
 - **Audience:** Web SPA (React), Partner integrations
-- **Breaking changes:** yes — one query parameter and three response fields are renamed across four billing endpoints
+- **Breaking changes:** yes — one query parameter and three response fields are renamed across four billing endpoints, and the over-limit error message is reworded across every limit-enforcing endpoint
 
 ## Summary
 
@@ -13,9 +13,9 @@ The billing engine stopped keying its data on the **organization** and started k
 
 Scope ids are **not** organization ids. They are a different sequence over a different table. An organization id passed where a scope id is expected will either 400 or silently match the wrong payer, so this is not a change you can absorb by renaming a field and passing the same value.
 
-Four endpoints are affected, all under `/billing/usage/`. No URL changed, no status code changed, and no authentication or permission behaviour changed. There is **no deprecation window** — the old names are gone in the same release.
+Four endpoints are affected by the renames, all under `/billing/usage/`. A fifth change — the over-limit error wording — reaches every endpoint that enforces a plan limit, REST and GraphQL alike. No URL changed, no status code changed, and no authentication or permission behaviour changed. There is **no deprecation window** — the old names are gone in the same release.
 
-If your integration does not read `/billing/usage/`, you are unaffected.
+If your integration neither reads `/billing/usage/` nor matches on over-limit `detail` strings, you are unaffected.
 
 ---
 
@@ -97,6 +97,23 @@ The id of the payer holding the subscription this usage is charged against — t
 
 If you compared this value against an organization id you hold (to decide "am I the billing root?"), that comparison is now always false. Compare it against a `by_scope[].scope_id` instead, or drive the decision off something else — the API does not currently expose an organization-id-to-scope-id mapping.
 
+### 4. The over-limit error message is reworded
+
+Any endpoint that can refuse a write for exceeding a plan limit returns `402` with a body whose `detail` reads differently:
+
+| Before | After |
+| --- | --- |
+| `"Organization is at its limit for organization members."` | `"You are at your limit for organization members."` |
+| `"Organization is at its limit for appointment types."` | `"You are at your limit for appointment types."` |
+
+The pattern is `Organization is at its limit for {resource}.` → `You are at your limit for {resource}.` The `{resource}` label is unchanged, and so is every machine-readable field in the body — `code` is still `limit_exceeded`, and `resource`, `current_usage`, `limit` and `remedy` are untouched.
+
+Reworded upstream because a scope may name something that is not an organization, so the message now addresses the caller instead of the tenant.
+
+**Branch on `code`, not on `detail`.** If you match this string anywhere — to localize it, to pick an upsell prompt, to decide whether to show the add-on dialog — that match now fails. `detail` is display text and has never been a stable contract; `code: "limit_exceeded"` plus `resource` is.
+
+This reaches the same GraphQL surface too: the shared over-limit body is what the public API returns in its error extensions.
+
 ---
 
 ## Not changed
@@ -115,4 +132,5 @@ Called out because they are the things most likely to be assumed broken:
 2. Search for `by_organization`, `organization_id` **inside billing usage payloads**, and `billing_root_organization_id`. Rename to `by_scope`, `scope_id`, `billing_root_scope_id`.
 3. Search for `?organization=` on `/billing/usage/occurrences/`. This is the silent one — an un-migrated call returns a wider result set rather than an error.
 4. Delete any code that compares a billing id against an organization id. Those comparisons are now always false.
-5. If you cached or persisted `organization_id` values read out of a billing payload, they are stale — they were organization ids and their replacements are scope ids over a different table.
+5. Search for any match on an over-limit `detail` string and move it to `code: "limit_exceeded"` plus `resource`.
+6. If you cached or persisted `organization_id` values read out of a billing payload, they are stale — they were organization ids and their replacements are scope ids over a different table.

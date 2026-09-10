@@ -480,7 +480,7 @@ class CalendarBundleService:
         if entitlement_service is not None:
             billable_units = self._bundle_event_billable_units(primary_calendar.id, child_calendars)
             result = entitlement_service.check_postpaid_allowance(
-                context.organization, delta=billable_units, lock=True
+                scope_for(context.organization), delta=billable_units, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)

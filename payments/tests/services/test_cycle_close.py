@@ -87,7 +87,7 @@ class FakePaymentService:
     def create_payment(
         self,
         *,
-        organization: Organization,
+        scope,
         currency: str,
         amount: Decimal,
         description: str,
@@ -97,7 +97,7 @@ class FakePaymentService:
     ) -> Payment:
         self.charges.append(
             {
-                "organization": organization,
+                "scope": scope,
                 "currency": currency,
                 "amount": amount,
                 "description": description,
@@ -106,9 +106,9 @@ class FakePaymentService:
             }
         )
         try:
-            billing_profile = organization.billing_profile
+            billing_profile = scope.billing_profile
         except BillingProfile.DoesNotExist:
-            billing_profile = baker.make(BillingProfile, scope=scope_for(organization))
+            billing_profile = baker.make(BillingProfile, scope=scope)
         payment = baker.make(
             Payment,
             billing_profile=billing_profile,
@@ -590,7 +590,7 @@ class TestStatementPersistence:
         assert BillingPeriodSummary.objects.count() == 1
         summary = BillingPeriodSummary.objects.get()
         assert summary.subscription_id == subscription.pk
-        assert summary.organization_id == organization.pk
+        assert summary.scope_id == scope_for(organization).pk
         assert summary.billing_period_start == PERIOD_START
         assert summary.billing_period_end == PERIOD_END
         assert summary.overage_total == closed[0].overage_total == Decimal("0.2500")
@@ -707,7 +707,7 @@ class TestStatementPersistence:
 
         entitlement_service = EntitlementService()
         expected_breakdown = entitlement_service.get_usage_breakdown(
-            organization, ORGANIZATION_MEMBERS
+            scope_for(organization), ORGANIZATION_MEMBERS
         )
         assert expected_breakdown  # sanity: both children contributed
 

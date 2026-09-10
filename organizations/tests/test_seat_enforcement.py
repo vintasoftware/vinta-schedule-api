@@ -55,7 +55,9 @@ pytestmark = pytest.mark.no_auto_subscription
 
 
 SHARED_OVER_LIMIT_BODY = {
-    "detail": "Organization is at its limit for organization members.",
+    # Reworded in vinta-django-billing 0.8.0: a scope may name something that is
+    # not an organization, so the message addresses the caller instead.
+    "detail": "You are at your limit for organization members.",
     "code": "limit_exceeded",
     "resource": "organization_members",
     "current_usage": 1,

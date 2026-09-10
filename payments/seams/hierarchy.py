@@ -61,15 +61,21 @@ RESELLER_ROOT_META_KEY = "is_reseller_root"
 class ResellerHierarchy(ParentFieldHierarchy):
     """The scope parent chain, with the mirrored reseller flag marking new roots.
 
-    ``parent_field`` stays the inherited ``"parent"`` -- the scope's own. Only
-    the flag needs overriding, and it needs overriding in both directions:
-    ``is_billing_root`` for a scope already in hand, and ``billing_root_q`` for
-    the queries that select roots across many scopes at once.
+        ``parent_field`` stays the inherited ``"parent"`` -- the scope's own. Only
+        the flag needs overriding, and it needs overriding in both directions:
+        ``is_billing_root`` for a scope already in hand, and ``billing_root_q`` for
+        the queries that select roots across many scopes at once.
 
-    ``root_flag_field`` is deliberately left ``None``. The base class would
-    otherwise build ``Q(is_reseller_root=True)`` against a column that does not
-    exist, and ``getattr(scope, "is_reseller_root")`` would raise -- both
-    methods below replace that behaviour rather than extend it.
+    ``scope`` stays typed as ``Model`` to match the supertype, and both fields are
+        read through ``getattr`` -- the same idiom ``ParentFieldHierarchy`` uses for
+        its own configurable field names, and the reason it can: the scope model is
+        resolved at runtime through ``get_scope_model()``, so there is no concrete
+        class to annotate against here.
+
+        ``root_flag_field`` is deliberately left ``None``. The base class would
+        otherwise build ``Q(is_reseller_root=True)`` against a column that does not
+        exist, and ``getattr(scope, "is_reseller_root")`` would raise -- both
+        methods below replace that behaviour rather than extend it.
     """
 
     def is_billing_root(self, scope: Model) -> bool:
@@ -79,9 +85,9 @@ class ResellerHierarchy(ParentFieldHierarchy):
         historical model in a migration can still hold SQL NULL, so the
         ``or {}`` is not redundant.
         """
-        if scope.parent_id is None:
+        if getattr(scope, f"{self.parent_field}_id") is None:
             return True
-        return bool((scope.meta or {}).get(RESELLER_ROOT_META_KEY))
+        return bool((getattr(scope, "meta", None) or {}).get(RESELLER_ROOT_META_KEY))
 
     def billing_root_q(self) -> Q:
         """The queryset equivalent of :meth:`is_billing_root`.
@@ -89,5 +95,23 @@ class ResellerHierarchy(ParentFieldHierarchy):
         Must agree with it exactly. A scope this selects but that method
         rejects (or the reverse) puts a subscription and the usage pooling into
         it on two different roots.
+
+        The ``has_key`` conjunct is load-bearing, not defensive. ``ParentFieldHierarchy
+        .pooled_scope_ids`` uses this through ``.exclude(...)``, and a bare
+        ``meta__is_reseller_root=True`` against a row whose ``meta`` does not
+        carry the key at all evaluates to SQL NULL rather than FALSE -- so
+        ``NOT (parent IS NULL OR NULL)`` is NULL, and Postgres drops the row.
+        Every plain child would silently fall out of its root's pool: no error,
+        just usage that stops counting against the ceiling it is charged to.
+
+        Rows without the key are real. ``get_or_create_for`` writes ``meta`` as
+        ``{}``, and ``vinta_billing``'s own ``0005`` backfill does the same, so
+        this cannot rely on :func:`payments.seams.scopes.sync_scope_for_organization`
+        having stamped every row first. ``has_key`` is the ``?`` operator and
+        answers a real boolean, which makes the conjunction FALSE instead of
+        NULL and the exclusion correct.
         """
-        return Q(parent__isnull=True) | Q(**{f"meta__{RESELLER_ROOT_META_KEY}": True})
+        return Q(parent__isnull=True) | (
+            Q(**{"meta__has_key": RESELLER_ROOT_META_KEY})
+            & Q(**{f"meta__{RESELLER_ROOT_META_KEY}": True})
+        )
