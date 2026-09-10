@@ -65,7 +65,11 @@ class TestBillingProfileViewSet:
         response = auth_client.get(url)
 
         assert response.status_code == status.HTTP_200_OK
-        assert response.data["id"] == organization.pk
+        # The serializer sources `id` from `scope_id`, so this is the scope's
+        # pk, not the organization's. The two coincide on a freshly-created
+        # database and diverge once either sequence has moved -- comparing
+        # against the organization passes locally and fails in a long shard.
+        assert response.data["id"] == scope_for(organization).pk
         assert response.data["document_type"] == "SSN"
         assert response.data["document_number"] == "123456789"
         assert response.data["billing_address"]["street_name"] == "Main Street"
@@ -248,7 +252,11 @@ class TestBillingProfileViewSet:
         response = auth_client.post(url, data, format="json")
 
         assert response.status_code == status.HTTP_201_CREATED
-        assert response.data["id"] == organization.pk
+        # The serializer sources `id` from `scope_id`, so this is the scope's
+        # pk, not the organization's. The two coincide on a freshly-created
+        # database and diverge once either sequence has moved -- comparing
+        # against the organization passes locally and fails in a long shard.
+        assert response.data["id"] == scope_for(organization).pk
         assert response.data["document_type"] == "SSN"
         assert response.data["document_number"] == "123456789"
         assert response.data["billing_address"]["street_name"] == "Main Street"

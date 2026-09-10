@@ -2352,7 +2352,7 @@ wheels = [
 
 [[package]]
 name = "vinta-django-billing"
-version = "0.8.1"
+version = "0.8.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django" },
@@ -2362,9 +2362,9 @@ dependencies = [
     { name = "djangorestframework" },
     { name = "python-dateutil" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ff/fc/a677c4a8bfc3be5b950a856f6629a94b8c717fea19eee4651e63b3d4ce4e/vinta_django_billing-0.8.1.tar.gz", hash = "sha256:49b5c2a4a49348be55a104c28aa9ee64a304a8f58f2bf75abc9fab4501071088", size = 262014, upload-time = "2026-09-10T04:55:51.832Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/6c/96034f988439901dcc25c227e7159df09eb84ecfa7bfe56c1931e0610f75/vinta_django_billing-0.8.2.tar.gz", hash = "sha256:c9e606c883eae88aa55297372228bd4999033af71fac46f21bf56f6d1a78c216", size = 263578, upload-time = "2026-09-10T13:06:47.748Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/89/f6/74c749dc166065cb6c8de212b710cb596914816efba9cddf9e09af7af214/vinta_django_billing-0.8.1-py3-none-any.whl", hash = "sha256:39fe0ff3b8ea98d755911bee4c0b7dca987c34d77f9265a23aef2257313a5410", size = 280934, upload-time = "2026-09-10T04:55:50.539Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/04/b648e7f21212e10599f9e28c8fd733daab0d730440c2ae2f0faeacf9cf77/vinta_django_billing-0.8.2-py3-none-any.whl", hash = "sha256:2a989659c74c52676e27bd2b4238dfc5e7eb564a53d45be8e0826f9df890a600", size = 281899, upload-time = "2026-09-10T13:06:46.494Z" },
 ]
 
 [package.optional-dependencies]
