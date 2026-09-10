@@ -43,7 +43,7 @@ from payments.seams.resource_keys import (
     WHITE_LABEL_BRANDING,
 )
 from payments.seams.resources import EXCLUDE_INVITATION_ID
-from payments.seams.scopes import scope_for
+from payments.seams.scopes import organization_for, scope_for
 from payments.seams.seats import check_seat_limit_for_invitation_accept
 from webhooks.models import WebhookConfiguration
 
@@ -369,7 +369,7 @@ class TestCheckLimit:
         Pinned as an upper bound on subscription reads rather than an exact total,
         so unrelated query changes elsewhere do not make this test brittle.
         """
-        root = subscription.organization
+        root = organization_for(subscription.scope)
         mid = baker.make(Organization, parent=root, can_invite_organizations=False)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
         make_limit(subscription, APPOINTMENT_TYPES, 3)

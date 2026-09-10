@@ -19,6 +19,18 @@ Three jobs, in the order they matter:
    need, because the engine speaks scope ids and this project's own tables are
    keyed by organization id.
 
+**The one gap: ``QuerySet.update()`` sends no signal.** A bulk update of
+``Organization.parent`` or ``can_invite_organizations`` leaves the scope mirror
+stale, and the hierarchy then answers against the old tree -- silently, since
+nothing raises. No production path does that today (organizations are saved one
+at a time, through the service, the admin, or the reseller mutation), and this
+is documented rather than defended against because the alternatives are worse:
+a periodic reconcile would hide the drift it papers over, and a database trigger
+would put the mirror somewhere no reader of this module would think to look. If
+a bulk update of either field is ever added, call
+:func:`sync_scope_for_organization` for each affected row in the same
+transaction.
+
 Why a signal rather than a call in ``OrganizationService.create_organization``:
 there are four organization-creation paths (see
 ``organizations/tests/test_organization_creation_billing.py`` for the list --

@@ -493,7 +493,9 @@ class TestBillingProfileAdminSaveModel:
             admin_instance.save_model(request, new_profile, form, change=False)
 
         mock_set_payment_provider.assert_not_called()
-        persisted = BillingProfile.objects.get(pk=organization.pk)
+        # Surrogate pk since 0.8.0 -- look it up by the payer, not by an id
+        # that used to be the organization's.
+        persisted = BillingProfile.objects.get(scope=scope_for(organization))
         assert persisted.payment_provider == PaymentProviders.STRIPE
 
     def test_clearing_payment_provider_unpins_instead_of_500ing(

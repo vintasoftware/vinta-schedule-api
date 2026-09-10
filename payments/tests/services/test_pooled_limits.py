@@ -187,8 +187,12 @@ class TestCyclicParentChain:
         """
         org_a = baker.make(Organization, parent=None, can_invite_organizations=False)
         org_b = baker.make(Organization, parent=org_a, can_invite_organizations=False)
-        Organization.objects.filter(pk=org_a.pk).update(parent=org_b)
-        org_a.refresh_from_db()
+        # `save()`, not `QuerySet.update()`. The cycle has to reach the *scope*
+        # tree for `resolve_billing_root` to walk into it, and
+        # `payments.seams.scopes` mirrors the organization tree from `post_save`
+        # -- which `update()` does not send. See that module's note on the gap.
+        org_a.parent = org_b
+        org_a.save(update_fields=["parent"])
 
         with pytest.raises(BillingRootCycleError):
             service.check_limit(scope_for(org_a), ORGANIZATION_MEMBERS)
