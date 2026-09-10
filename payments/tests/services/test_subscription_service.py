@@ -139,7 +139,9 @@ class TestResolveBillingRoot:
         with pytest.raises(BillingRootCycleError) as exc_info:
             resolve_billing_root(scope_for(org_a))
 
-        assert {org_a.pk, org_b.pk} <= exc_info.value.visited_ids
+        # `visited_ids` are the *scope* ids the walk touched -- the chain
+        # `resolve_billing_root` follows is `BillingScope.parent`.
+        assert {scope_for(org_a).pk, scope_for(org_b).pk} <= exc_info.value.visited_ids
 
     def test_nested_reseller_is_its_own_billing_root(self):
         """A nested reseller (``can_invite_organizations=True`` with ``parent``

@@ -725,15 +725,25 @@ class TestUsageBreakdown:
         # ``LimitedResource`` member must have an entry: the loop below fails
         # loudly (``KeyError``) for a newly added resource with no pinned
         # expectation yet, rather than silently skipping it.
+        # Keyed by *scope*, which is what `get_usage_breakdown` answers with
+        # since 0.8.0. Unlike `payments/tests/seams/test_resources.py`, which
+        # drives the counters through a helper that translates back to
+        # organization ids, this goes at the engine directly and gets the
+        # engine's own id space.
+        root_scope, a_scope, b_scope = (
+            scope_for(root).pk,
+            scope_for(child_a).pk,
+            scope_for(child_b).pk,
+        )
         expected_breakdowns: dict[str, dict[int, int]] = {
-            ORGANIZATION_MEMBERS: {root.pk: 1, child_a.pk: 2, child_b.pk: 1},
-            RESOURCE_CALENDARS: {root.pk: 2, child_a.pk: 2},
-            APPOINTMENT_TYPES: {root.pk: 1, child_b.pk: 2},
-            BUNDLE_CALENDARS: {child_b.pk: 1, root.pk: 2},
-            AVAILABILITY_WINDOWS: {child_a.pk: 3, root.pk: 1},
-            WEBHOOK_SUBSCRIPTIONS: {child_b.pk: 1, child_a.pk: 2},
-            PUBLIC_API_SYSTEM_USERS: {child_a.pk: 1, child_b.pk: 2},
-            EVENT_OCCURRENCES: {root.pk: 2, child_b.pk: 1},
+            ORGANIZATION_MEMBERS: {root_scope: 1, a_scope: 2, b_scope: 1},
+            RESOURCE_CALENDARS: {root_scope: 2, a_scope: 2},
+            APPOINTMENT_TYPES: {root_scope: 1, b_scope: 2},
+            BUNDLE_CALENDARS: {b_scope: 1, root_scope: 2},
+            AVAILABILITY_WINDOWS: {a_scope: 3, root_scope: 1},
+            WEBHOOK_SUBSCRIPTIONS: {b_scope: 1, a_scope: 2},
+            PUBLIC_API_SYSTEM_USERS: {a_scope: 1, b_scope: 2},
+            EVENT_OCCURRENCES: {root_scope: 2, b_scope: 1},
         }
 
         for resource_key in RESOURCE_KEYS:
@@ -783,14 +793,14 @@ class TestUsageBreakdown:
         breakdown_with_invitation = entitlement_service.get_usage_breakdown(
             scope_for(root), ORGANIZATION_MEMBERS
         )
-        assert breakdown_with_invitation == {child_a.pk: 2}
+        assert breakdown_with_invitation == {scope_for(child_a).pk: 2}
 
         breakdown_excluding_invitation = entitlement_service.get_usage_breakdown(
             scope_for(root),
             ORGANIZATION_MEMBERS,
             usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
         )
-        assert breakdown_excluding_invitation == {child_a.pk: 1}
+        assert breakdown_excluding_invitation == {scope_for(child_a).pk: 1}
 
     def test_exclude_invitation_id_raises_for_any_other_resource_key(
         self,
