@@ -29,7 +29,13 @@ from django.db.migrations.recorder import MigrationRecorder
 
 import pytest
 
-from common.testing.migration_replay import migration_replay, uninterruptible
+from common.testing.migration_replay import (
+    migrate_to,
+    migrate_to_leaf_nodes,
+    migration_replay,
+    run_replay_step,
+    uninterruptible,
+)
 
 
 #: Well clear of anything a fixture or another test allocates, so the rows this
@@ -125,7 +131,11 @@ def _seed_pre_scope_rows(plan_id: int) -> None:
 
 
 def _run_the_documented_deploy() -> None:
-    """The three commands from ``billing_integration/README.md``, verbatim.
+    """The three commands from ``billing_integration/README.md``.
+
+    Through ``common.testing.migration_replay`` rather than bare
+    ``call_command``, so each step retries an autovacuum deadlock instead of
+    failing the test and leaving the worker's database mid-graph.
 
     Step 2 is conditional for the reason the README gives: ``migrate
     vinta_billing 0005 --fake`` means "migrate *to* 0005", so on a database
@@ -133,10 +143,15 @@ def _run_the_documented_deploy() -> None:
     dropped, Django records them as present, and the next ``migrate`` fails
     trying to drop them again.
     """
-    call_command("migrate", "billing_integration", "0002", verbosity=0)
+    migrate_to(("billing_integration", "0002_backfill_scopes_from_organizations"))
     if not _package_backfill_is_recorded():
-        call_command("migrate", "vinta_billing", "0005_backfill_scopes", fake=True, verbosity=0)
-    call_command("migrate", verbosity=0)
+        run_replay_step(_fake_the_package_backfill)
+    migrate_to_leaf_nodes()
+
+
+def _fake_the_package_backfill() -> None:
+    """``MigrationExecutor`` has no ``--fake``, so this one step stays a command."""
+    call_command("migrate", "vinta_billing", "0005_backfill_scopes", fake=True, verbosity=0)
 
 
 def _package_backfill_is_recorded() -> bool:
@@ -161,7 +176,7 @@ class TestUpgradingADatabaseThatAlreadyHasBillingRows:
         )
 
         try:
-            call_command("migrate", "vinta_billing", PRE_SCOPE_TARGET, verbosity=0)
+            migrate_to(("vinta_billing", PRE_SCOPE_TARGET))
             _seed_pre_scope_rows(plan.pk)
 
             _run_the_documented_deploy()
