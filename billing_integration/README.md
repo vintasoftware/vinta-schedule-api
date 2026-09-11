@@ -1,82 +1,109 @@
-# Deploying the billing-scope model swap
+# Deploying the billing-scope swap
 
-This app exists because `BILLING_SCOPE_MODEL` now points at
-`billing_integration.OrganizationBillingScope` instead of `vinta-django-billing`'s
-shipped `BillingScope`. On a **new** database that is unremarkable: Django skips
-the shipped model's table and every scope relation is built against this one.
+This app exists because `BILLING_SCOPE_MODEL` points at
+`billing_integration.OrganizationBillingScope` instead of
+`vinta-django-billing`'s shipped `BillingScope`. The shipped scope addresses its
+payer through a generic key (`content_type` + `object_id`); this one uses a real
+foreign key, because every payer here is an organization. See the model
+docstring for why that is worth an app of its own.
 
-On a database that already ran `vinta_billing` 0.8.x it is not unremarkable, and
-this file is the reason why. **Read it before deploying this change.**
+On a **new** database that costs nothing: Django skips the shipped model's
+table, `vinta_billing.0004` builds every `scope_id` foreign key against this
+app's table directly, and an ordinary `migrate` is all there is to it.
 
-## Why a normal `migrate` is not enough
+On a database that carries 0.7 billing data it costs one extra command, and
+**this file is the reason why. Read it before deploying.**
 
-Every scope relation in `vinta_billing` is declared
-`to=settings.BILLING_SCOPE_MODEL`. Changing that setting therefore changes what
-those *already-applied* migrations mean. Two consequences, both silent:
+## Why a plain `migrate` stops
 
-**1. Django emits no DDL.** The migration state now says the five `scope_id`
-columns always pointed at this app's model, so the autodetector sees nothing to
-do. `makemigrations --check` stays clean. The database still has its foreign
-keys on `vinta_billing_billingscope`. Nothing in the ordinary migration
-machinery ever reconciles the two — `0002_adopt_shipped_scopes` does it by hand.
-
-**2. `migrate` refuses to start.** `vinta_billing.0004_add_scope_columns`
-carries `swappable_dependency(settings.BILLING_SCOPE_MODEL)`, which now resolves
-to this app. On an upgraded database `0004` is already applied and
-`billing_integration.0001_initial` is not, so Django raises:
+`vinta_billing.0005_backfill_scopes` is the package's own 0.7-to-0.8 backfill:
+one scope per organization, every billing row re-pointed at it. It creates those
+scopes through the generic key, which this project's scope does not have, so it
+refuses rather than guessing:
 
 ```
-InconsistentMigrationHistory: Migration vinta_billing.0004_add_scope_columns
-is applied before its dependency billing_integration.0001_initial
+RuntimeError: vinta_billing has 4 organization(s) to migrate onto scopes, but
+BILLING_SCOPE_MODEL points at a scope model with no generic key, so this
+migration cannot name their payers. Backfill those scopes in your own data
+migration and point the billing rows at them, then re-run with this one faked.
 ```
 
-History cannot be reordered, so `0001` has to be in place *before* `migrate`
-runs. This is the same difficulty Django documents for changing
-`AUTH_USER_MODEL` mid-project, and it has the same shape of answer.
+`0002_backfill_scopes_from_organizations` is that data migration, and it is
+ordered `run_before` `0005` so the rows are already scoped by the time the
+package looks. What it cannot do is stop `0005` from counting
+`BillingProfile.organization_id` — that column is the table's primary key until
+`vinta_billing.0006` renames it, so unlike the other four it cannot be cleared.
+`0005` therefore still sees organizations to migrate, and still refuses. Faking
+it is the documented answer and is what the error message itself asks for.
 
 ## The deploy
 
-Three steps, in this order, in one maintenance window. Steps 1 and 2 are the
-manual part; everything after is an ordinary deploy.
+Three commands, in this order, in one maintenance window.
 
 ```bash
-# 1. Create this app's table, without recording anything yet.
-python manage.py sqlmigrate billing_integration 0001 > /tmp/scope.sql
-psql "$DATABASE_URL" -f /tmp/scope.sql
+# 1. Everything up to and including this project's backfill. Pulls in
+#    vinta_billing 0003 and 0004 as real dependencies along the way.
+python manage.py migrate billing_integration 0002
 
-# 2. Tell Django the table is there.
-psql "$DATABASE_URL" -c "INSERT INTO django_migrations (app, name, applied) \
-    VALUES ('billing_integration', '0001_initial', now());"
+# 2. Mark the package's backfill done. Step 1 did its work.
+#    ONLY IF `showmigrations vinta_billing` lists `[ ] 0005_backfill_scopes`.
+python manage.py migrate vinta_billing 0005_backfill_scopes --fake
 
-# 3. Deploy and migrate normally. This runs 0002, which copies the shipped
-#    scopes across and re-aims the foreign keys.
+# 3. Deploy and migrate normally.
 python manage.py migrate
 ```
 
-Step 3 is where the real work happens, and it is written to be dull: the copy
-**preserves primary keys**, so the five `scope_id` columns and
-`BillingPeriodResourceUsage.by_scope`'s JSON keys are already correct once the
-rows exist. There is no mass `UPDATE` of live billing foreign keys.
+**Step 2 is conditional, and running it at the wrong time is worse than not
+running it.** `migrate <app> <migration> --fake` means "migrate *to* this
+migration", not "mark this migration applied" — so on a database where `0006`
+is already applied it fake-*unapplies* it. The columns stay dropped, Django
+records them as present, and the next deploy fails trying to drop them again.
+Check first:
+
+```bash
+python manage.py showmigrations vinta_billing | grep 0005_backfill_scopes
+```
+
+Run step 2 only for `[ ]`. Steps 1 and 3 are safe to re-run at any time.
+
+**Do not shorten this to `migrate vinta_billing 0005 --fake` followed by
+`migrate`** either. On a database where `0004` is not applied yet, that fakes
+`0004` too — a schema migration — and the `scope_id` columns are never created.
 
 ## Rolling back
 
-`migrate billing_integration 0001` reverses `0002`: it aims the foreign keys
-back at `vinta_billing_billingscope` and empties this app's table. The shipped
-rows were never deleted and the ids on the far side of each foreign key never
-changed, so the old table is authoritative again the moment its constraints are
-back. Verified by round-tripping forward → back → forward on a seeded copy.
+```bash
+python manage.py migrate vinta_billing 0005_backfill_scopes       # real: undoes 0006
+python manage.py migrate vinta_billing 0004_add_scope_columns --fake  # 0005 never ran
+python manage.py migrate billing_integration 0001                 # our reverse
+```
 
-Going back further means undoing steps 1 and 2 by hand, in reverse: revert the
-setting, `DELETE FROM django_migrations WHERE app = 'billing_integration'`, then
-`DROP TABLE billing_integration_organizationbillingscope`.
+The middle command is the mirror image of the deploy's step 2 and carries the
+same warning: it is only correct once the first command has left `0005` as the
+last applied `vinta_billing` migration.
 
-## What is deliberately left behind
+The last step reads the organization back off each scope, restores the
+`organization_id` columns and the `by_organization` breakdowns, and empties this
+app's table. Verified by round-tripping forward → back → forward on a database
+seeded with a reseller tree and its billing rows.
 
-`vinta_billing_billingscope` keeps its rows. Dropping it would make the reverse
-above a lie, it belongs to `vinta_billing`'s `0003` rather than to this project,
-and it costs one unreferenced table until the package squashes its migrations
-past the swap. Drop it in a later, separate change once the rollback window has
-closed.
+## When the fake steps go away
+
+Both are there because `0005` treats "this row has an organization" as "this row
+needs migrating", without checking whether it already has a scope. A release
+that skips already-scoped rows — and that no-ops rather than raising in reverse
+when the scope model has no generic key — makes both directions an ordinary
+unattended `migrate`. Delete the fake steps from this file when that ships, and
+raise the floor in `pyproject.toml`.
+
+## What this does not cover
+
+No environment has ever run 0.8 with the *shipped* scope model, so there is no
+path here for adopting rows out of `vinta_billing_billingscope`. If one ever
+does, it needs a different migration: copy the rows preserving primary keys, and
+re-point the five `scope_id` foreign key constraints by hand — Django emits no
+DDL for a swappable-model change, so nothing in the ordinary migration machinery
+will do it.
 
 ## One behaviour change
 
