@@ -7,7 +7,7 @@
     "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#1-goals",
     "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#2-guiding-decisions"
   ],
-  "base_branch": "main",
+  "base_branch": "feat/graphql-aggregations",
   "project": {
     "migrate_cmd": "docker compose run --rm api python manage.py migrate",
     "databases": {
