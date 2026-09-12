@@ -64,7 +64,7 @@ For a typical var `MY_NEW_VAR` that's both local + production:
 
    For secrets that must be real in CI (e.g. an integration test that hits a sandbox), wire from `${{ secrets.MY_NEW_VAR }}` and add the secret in the repo settings.
 
-6. **`ai-tools/AGENTS.md`** — append the var name to the **Environment Variables** section's listing. No value, just the name. Production-only vars go to the production-vars sentence below the main code fence.
+6. **`AGENTS.md`** — append the var name to the **Environment Variables** section's listing. No value, just the name. Production-only vars go to the production-vars sentence below the main code fence.
 
 7. **Consumer code** — import settings (`from django.conf import settings`) and read `settings.MY_NEW_VAR`. Never `os.environ` / `os.getenv` outside `vinta_schedule_api/settings/`.
 
@@ -82,7 +82,7 @@ For a typical var `MY_NEW_VAR` that's both local + production:
 
 ## Verification
 
-Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
+Run the [outer gate](../../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
 
 ```bash
 # Settings module loads with the new var
@@ -101,5 +101,5 @@ Check each of these in the diff:
 - [ ] `vinta_schedule_api/settings/base.py` (or specific file) reads via `decouple.config`.
 - [ ] `render.yaml` envVarGroups updated (or `sync: false` for secrets).
 - [ ] `.github/workflows/main.yml` workflow-level `env:` block includes the new var (once — no job- or step-level copies).
-- [ ] `ai-tools/AGENTS.md` Environment Variables section lists the var.
+- [ ] `AGENTS.md` Environment Variables section lists the var.
 - [ ] Consumer code reads `settings.MY_NEW_VAR`, not `os.environ`.

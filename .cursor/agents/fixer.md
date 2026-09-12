@@ -23,7 +23,7 @@ way.
 
 1. **Read** the surrounding code — the file the finding cites, plus any imports /
    callers / managers that the change might touch.
-2. **Read** the relevant section of `ai-tools/AGENTS.md` if the finding is a convention
+2. **Read** the relevant section of `AGENTS.md` if the finding is a convention
    violation (multi-tenancy, DI, services, managers, raw-SQL framework, ATOMIC_REQUESTS
    + `transaction.on_commit`, etc.).
 3. **Apply** the smallest correct change. Do not rename neighbours, reformat
@@ -49,10 +49,10 @@ way.
 
 ## Multi-tenancy fixes (most common BLOCKER class)
 
-- Missing org filter on an `OrganizationModel` queryset → add the filter at the call
+- Missing org filter on an `SingleOrganizationModelMixin` queryset → add the filter at the call
   site **and** verify the manager method exists; if not, add it to
   `<app>/managers.py` / `<app>/querysets.py` (do not inline-chain on the call site).
-- Stock `ForeignKey` between tenant-scoped models → change to `OrganizationForeignKey`
+- Stock `ForeignKey` between tenant-scoped models → change to `OrganizationSafeForeignKey`
   (from `common/`). This will generate a new migration; do not edit the auto-generated
   one to skip the `_fk` column.
 - Celery task missing org context → add the organization id to the task signature;

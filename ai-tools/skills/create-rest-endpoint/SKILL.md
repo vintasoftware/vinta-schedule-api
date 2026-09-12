@@ -5,7 +5,7 @@ description: Add a REST endpoint to the Vinta Schedule API using DRF ViewSets, t
 
 # Create REST Endpoint
 
-Background — load-bearing rules live in [AGENTS.md](../../AGENTS.md): [Multi-Tenancy](../../AGENTS.md#multi-tenancy) (every tenant-scoped queryset goes through `filter_by_organization`), [Dependency Injection](../../AGENTS.md#dependency-injection-di_core) (services via DI, never direct import), [Django Virtual Models](../../AGENTS.md#django-virtual-models) (serializer → virtual model when N+1 risk), [Custom Managers and Querysets](../../AGENTS.md#custom-managers-and-querysets) (no complex querysets inline).
+Background — load-bearing rules live in [AGENTS.md](../../../AGENTS.md): [Multi-Tenancy](../../../AGENTS.md#multi-tenancy) (every tenant-scoped queryset goes through `filter_by_organization`), [Dependency Injection](../../../AGENTS.md#dependency-injection-di_core) (services via DI, never direct import), [Django Virtual Models](../../../AGENTS.md#django-virtual-models-appvirtual_modelspy) (serializer → virtual model when N+1 risk), [Custom Managers and Querysets](../../../AGENTS.md#custom-managers-and-querysets) (no complex querysets inline).
 
 This skill covers the DRF wire-up: viewset in `<app>/views.py`, serializer in `<app>/serializers.py`, permission in `<app>/permissions.py`, filterset in `<app>/filtersets.py`, route registration in `<app>/routes.py`. All routes are gathered by `DefaultRouter` in `vinta_schedule_api/urls.py`.
 
@@ -191,7 +191,7 @@ For a new endpoint `calendar-summaries` in `calendar_integration`:
 
 ## Pitfalls
 
-(Multi-tenancy bypass + DI bypass + complex-inline-queryset are covered upstream — see [AGENTS.md → Multi-Tenancy](../../AGENTS.md#multi-tenancy) and the `reviewer` agent's BLOCKER classes. Skill-specific pitfalls below.)
+(Multi-tenancy bypass + DI bypass + complex-inline-queryset are covered upstream — see [AGENTS.md → Multi-Tenancy](../../../AGENTS.md#multi-tenancy) and the `reviewer` agent's BLOCKER classes. Skill-specific pitfalls below.)
 
 - **Skipping `@extend_schema` on a `@action`.** drf-spectacular generates a generic / wrong schema for the custom endpoint; clients break on regen.
 - **Forgetting `virtual_model = ...` on the serializer.** Reads still N+1 against the underlying queryset.
@@ -203,7 +203,7 @@ For a new endpoint `calendar-summaries` in `calendar_integration`:
 
 ## Verification
 
-Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
+Run the [outer gate](../../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
 
 ```bash
 # Schema regenerated + diff is exactly the new endpoint

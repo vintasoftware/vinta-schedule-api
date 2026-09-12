@@ -5,7 +5,7 @@ description: Add a query or mutation to the public GraphQL API at `public_api/` 
 
 # Create GraphQL Public Query
 
-Background — load-bearing rules in [AGENTS.md](../../AGENTS.md): [Public API — GraphQL](../../AGENTS.md#public-api--graphql) (resolver shape, registration, auth via `PublicAPIAuthService`), [Multi-Tenancy](../../AGENTS.md#multi-tenancy) (every tenant query goes through `filter_by_organization`), [Dependency Injection](../../AGENTS.md#dependency-injection-di_core) (mutation services injected via DI).
+Background — load-bearing rules in [AGENTS.md](../../../AGENTS.md): [Public API — GraphQL](../../../AGENTS.md#public-api-graphql-public_api) (resolver shape, registration, auth via `PublicAPIAuthService`), [Multi-Tenancy](../../../AGENTS.md#multi-tenancy) (every tenant query goes through `filter_by_organization`), [Dependency Injection](../../../AGENTS.md#dependency-injection-di_core) (mutation services injected via DI).
 
 This skill covers the per-field wiring: type in `<app>/graphql.py`, resolver in `public_api/queries.py` or `public_api/mutations.py` (or per-app classes registered there), permission classes, `FIELD_TO_RESOURCE_MAPPING` registration.
 
@@ -159,7 +159,7 @@ Mutations follow the same shape, on `Mutation` in `public_api/mutations.py` (or 
        return appointment_type
    ```
 
-3. **Register the service in `di_core/containers.py`** if it's new. See [AGENTS.md](../../AGENTS.md) → Dependency Injection.
+3. **Register the service in `di_core/containers.py`** if it's new. See [AGENTS.md](../../../AGENTS.md) → Dependency Injection.
 
 4. **Per-app mutation classes** — `<app>/mutations.py` defines a `@strawberry.type` class (e.g. `AppointmentTypeMutations`), then `Mutation(AppointmentTypeMutations, ...)` inherits it in `public_api/mutations.py`. Match the existing pattern.
 
@@ -167,7 +167,7 @@ Mutations follow the same shape, on `Mutation` in `public_api/mutations.py` (or 
 
 ## Pitfalls
 
-(Multi-tenancy bypass, DI bypass, timezone-unaware filters are covered upstream — see [AGENTS.md → Multi-Tenancy](../../AGENTS.md#multi-tenancy), [Dependency Injection](../../AGENTS.md#dependency-injection-di_core), [Calendar Integration → Timezones](../../AGENTS.md#timezones), and the `reviewer` agent's BLOCKER classes. Skill-specific below.)
+(Multi-tenancy bypass, DI bypass, timezone-unaware filters are covered upstream — see [AGENTS.md → Multi-Tenancy](../../../AGENTS.md#multi-tenancy), [Dependency Injection](../../../AGENTS.md#dependency-injection-di_core), [Calendar Integration → Timezones](../../../AGENTS.md#timezones), and the `reviewer` agent's BLOCKER classes. Skill-specific below.)
 
 - **Missing `OrganizationResourceAccess` permission class.** Field becomes reachable without org-scoped auth. Tenant leak.
 - **Field not registered in `FIELD_TO_RESOURCE_MAPPING`.** Either the permission class crashes (KeyError) or falls open (depending on implementation — read it first). Always register.
@@ -178,7 +178,7 @@ Mutations follow the same shape, on `Mutation` in `public_api/mutations.py` (or 
 
 ## Verification
 
-Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
+Run the [outer gate](../../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
 
 ```bash
 # Schema introspects cleanly + shows the new field

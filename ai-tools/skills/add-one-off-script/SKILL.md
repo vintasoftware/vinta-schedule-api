@@ -169,9 +169,12 @@ After answers stabilize, read back the plan in 5–10 lines and confirm with one
 
 ### Step 2 — Pick the language template
 
-The skill ships this `BaseOneOffScript` template under [resources/](resources/):
+The skill ships these `BaseOneOffScript` templates under [resources/](resources/):
 
-- [resources/one_off_script_base.py](resources/one_off_script_base.py) — Python (Django, plain SQLAlchemy, raw psycopg). Used here because the project is Django.
+- [resources/one_off_script_base.py](resources/one_off_script_base.py) — Python (Django, plain SQLAlchemy, raw psycopg). Pick this for any Django / Python repo.
+- [resources/one_off_script_base.ts](resources/one_off_script_base.ts) — TypeScript (Node 20+, works with Prisma, Drizzle, Knex, raw `pg`). Pick this for TS / Node repos.
+
+Use the project's actual language. If both apply (polyglot monorepo), pick the one that owns the target table.
 
 The base class is staged once per project at `<scripts_dir>/_base.py` (or `.ts`) — default `<scripts_dir>` is `scripts/one_off/`. The skill checks for it and prompts to copy if missing. Re-copy is allowed (and idempotent) when the base class has been updated by a `vinta-sync-ai-tools` run.
 

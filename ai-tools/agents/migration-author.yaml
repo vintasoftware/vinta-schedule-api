@@ -20,7 +20,7 @@ body: |
 
   ## Before writing
 
-  1. Read `ai-tools/AGENTS.md` — Multi-Tenancy, Architecture → Raw SQL, Opinionated
+  1. Read `AGENTS.md` — Multi-Tenancy, Architecture → Raw SQL, Opinionated
      Settings (`ATOMIC_REQUESTS = True`).
   2. Read `common/raw_sql_migration_managers.py` in full if the migration touches any
      DB-defined structure (function, view, materialized view, procedure, trigger).

@@ -5,14 +5,14 @@ description: Internal execution step of [implement-plan] / [amend-plan] — NOT 
 
 # Implement one phase
 
-Execution unit invoked by [implement-plan](../implement-plan/SKILL.md) (and by [amend-plan](../amend-plan/SKILL.md) for `amend-existing` rewrites). One phase in → one implementer report out. This skill does **not** review, branch, push, or open PRs — those are [review-phase](../review-phase/SKILL.md) and the resolved integrate-phase variant ([integrate-phase-stacked](../integrate-phase-stacked/SKILL.md) / [integrate-phase-modular](../integrate-phase-modular/SKILL.md)). It also does **not** decide whether a phase runs — the conductor already filtered cross-repo / flag-removal phases.
+Execution unit invoked by [implement-plan](../implement-plan/SKILL.md) (and by [amend-plan](../amend-plan/SKILL.md) for `amend-existing` rewrites). One phase in → one implementer report out. This skill does **not** review, branch, push, or open PRs — those are [review-phase](../review-phase/SKILL.md) and [integrate-phase](../integrate-phase/SKILL.md). It also does **not** decide whether a phase runs — the conductor already filtered cross-repo / flag-removal phases.
 
 ## Inputs (passed by the conductor as data — this skill re-derives none of them)
 
-- `phase` record: `{ id, title, goal, body, spec_use_case, suggested_model_tier, reusable_skills, acceptance }`.
+- `phase` record: `{ id, title, goal, body, spec_use_case, depends_on, wave, base_branch, crew_member, crew_tier, suggested_model_tier, reusable_skills, has_e2e, acceptance }`. `crew_member` / `crew_tier` come from the phase's `**Assigned to**:` line and the plan's **Crew** table; `suggested_model_tier` is the legacy path and is set only on a plan with no roster. Exactly one of the two is populated.
 - Plan-level decisions: **Goals + Non-goals**, **Guiding Decisions**, the relevant **Data Model Changes** subsection.
-- Prior-phase summaries (the tracking file's "Completed Phases" section).
-- `WORKROOT`, `BASE_BRANCH`, `SANDBOX_TIER` — resolved once by the conductor ([Resolve WORKROOT step](../implement-plan/SKILL.md#step-05--resolve-workroot)).
+- **Dependency-closure summaries** — the `phase-{id}.md` tracking entries for this phase's transitive dependencies, and only those. Not "everything finished so far": under parallel execution a sibling lane's work is not in this phase's base branch, and describing it as done makes the implementer code against files it cannot see.
+- `WORKROOT`, `SANDBOX_TIER` — **this lane's**, resolved by the conductor ([Resolve WORKROOT step](../implement-plan/SKILL.md#step-05--resolve-workroot)). `phase.base_branch` — the branch the conductor already created this phase's branch from, derived from `depends_on`.
 - `run_options.full_test_suite` — resolves the outer gate's test scope in the composed prompt's `{If run_options.full_test_suite = true:}` marker (false = scoped suite only; true = full repo suite).
 
 ## 1. Compose the agent prompt (token-efficient)
@@ -32,11 +32,18 @@ every lint / test / build / migrate call runs there.
   `<WORKROOT>` is an isolated git worktree — do NOT touch the main checkout; its DB,
   env, and compose stack are intentionally separated. See `<WORKROOT>/WORKTREE.md` for
   what's forked vs shared (deps, dev DB, test DB, compose project name, env file).
-  {If run_options.sandbox_tier = enforced:} Writes to the main checkout are OS-blocked —
-  if you see `Operation not permitted` / `EROFS` on a write, you used a main-checkout
-  path by mistake; redo it against this worktree path.
-Branch base for this phase: `<phase-specific base>` — the orchestrator already created
-your phase branch there; commit straight to it.
+  {If run_options.sandbox_tier = enforced:} Writes outside this worktree are OS-blocked —
+  if you see `Operation not permitted` / `EROFS` on a write, you used a path outside
+  `<WORKROOT>` by mistake; redo it against this worktree path.
+{If run_options.parallel_phases = true:}
+  Other phases of this plan are being implemented **right now**, in sibling worktrees
+  next to yours. Never read or write any path outside `<WORKROOT>` — a sibling's tree is
+  mid-edit and mid-test, and a write there corrupts someone else's phase. Anything you
+  need from another phase is either already in your base branch or is a dependency the
+  plan failed to declare — say so in your report rather than reaching for it.
+Branch base for this phase: `<phase.base_branch>` — derived from this phase's
+**Depends on** set, not from plan order. The orchestrator already created your phase
+branch there; commit straight to it.
 
 ## Read first
 1. AGENTS.md — repo conventions.
@@ -50,8 +57,11 @@ your phase branch there; commit straight to it.
   Feature flag: `{flag-key}` — scope `{per-tenant|per-request}`, default `{false|true}`.
   Wire reads + writes per the plan's **Guiding Decisions** entry. Off-flag path = byte-for-byte pre-feature behavior.
 
-## What was already implemented in prior phases
-{Tracking file "Completed Phases" section. First executed phase: "Nothing yet — this is the first phase."}
+## What your phase builds on
+{The `phase-{id}.md` tracking summaries for this phase's transitive dependencies, in
+wave order. No dependencies: "Nothing yet — this phase starts from `<BASE_BRANCH>`."
+Sibling phases running in parallel are deliberately NOT listed: their work is not in
+your base branch and you must not code against it.}
 
 ## Your tasks (Phase {id} only)
 {phase.body verbatim, including Goal / Spec use-case / Feature flag / Changes / Tests / Acceptance lines}
@@ -59,11 +69,11 @@ your phase branch there; commit straight to it.
 ## Reusable skills you SHOULD invoke
 {phase.reusable_skills — for each, instruct the agent to first read ai-tools/skills/{name}/SKILL.md, then follow that pattern.}
 
-Project skills available: plan-feature, create-spec, open-pr-from-context, prepare-worktree, implement-plan, implement-phase, review-phase, integrate-phase-stacked, integrate-phase-modular, amend-plan, systematic-debugging, deslop-comments, handoff, handoff-to-client, thermo-nuclear-code-quality-review, add-env-var, add-one-off-script, add-model, add-migration, create-graphql-public-query, create-postgres-function, create-postgres-view, create-rest-endpoint, run-one-off-script-django
+Project skills available: plan-feature, create-spec, open-pr-from-context, prepare-worktree, implement-plan, implement-phase, review-phase, integrate-phase-stacked, integrate-phase-modular, amend-plan, systematic-debugging, write-unit-test, deslop-comments, handoff, handoff-to-client, thermo-nuclear-code-quality-review, add-env-var, add-one-off-script, add-model, add-migration, create-graphql-public-query, create-postgres-function, create-postgres-view, create-rest-endpoint, run-one-off-script-django
 
 ## Adding new third-party dependencies
 
-Before running any install command (`npm add`, `pnpm add`, `yarn add`, `pip install`, `poetry add`, `uv add`, `cargo add`, `go get`, `gem install`, equivalents), check the package's SPDX license against the project's forbidden list — see the **Dependency licenses** section in [AGENTS.md](AGENTS.md) for the full list, the per-package overrides, and any project-specific notes.
+Before running any install command (`npm add`, `pnpm add`, `yarn add`, `pip install`, `poetry add`, `uv add`, `cargo add`, `go get`, `gem install`, equivalents), check the package's SPDX license against the project's forbidden list — see the **Dependency licenses** section in [AGENTS.md](../../../AGENTS.md) for the full list, the per-package overrides, and any project-specific notes.
 
 Quick lookup:
 
@@ -94,15 +104,15 @@ Transitive deps follow the same rule, but checking every transitive license at i
 2. Implement using Read/Edit/Write. Match existing patterns.
 3. **Inner loop — fast iteration.** Scoped to files/apps you touched:
    a. `docker compose run --rm api uv run ruff check ./` until clean.
-   b. `docker compose run --rm api uv run pytest <new-test-path> -vs` for new tests individually.
-   c. Scoped suite: `docker compose run --rm api uv run pytest <app>/tests/ -n auto`.
+   b. docker compose run --rm api uv run pytest <new-test-path> -vs for new tests individually.
+   c. Scoped suite: docker compose run --rm api uv run pytest <app>/tests/ -n auto.
 4. Iterate 2–3 until **new tests pass individually** and the scoped suite is green. Do **not** advance to step 5 with red scoped tests.
 5. **Outer gate — local verification, only after step 4 is green.** All MUST pass before staging:
    a. **Type / build:** `docker compose run --rm api uv run python manage.py check --deploy` — repo-wide, always.
    b. **Tests:** by default run only the **scoped suite** `docker compose run --rm api uv run pytest <app>/tests/ -n auto` for the apps/files you touched — the new tests already passed individually in step 4b, so this re-confirms the touched surface without paying for the whole repo.
       {If run_options.full_test_suite = true:} run the **full test suite** `docker compose run --rm api uv run pytest -n auto` instead of the scoped suite — this phase guards against regressions in untouched code too.
-6. Outer gate fails → return step 2 (fix regression), re-run inner loop, then 5a/5b. **Never** commit, push, or proceed while any gate is red.
-
+   
+6. Outer gate fails → return step 2 (fix regression), re-run inner loop, then 5a/5b/5c. **Never** commit, push, or proceed while any gate is red.
 **If `run_options.commit_strategy_resolved = "modular-commits"`:**
 
 7. **Plan commit units before staging.** List the logical units this phase produces (e.g. `3 services + 1 use case update + 1 init export`). Each unit = **one** commit. Tests for that unit travel **in the same commit** as the code they test — never a separate commit.
@@ -162,14 +172,6 @@ chore(record-copy): expose new services in init file
 refactor(record-copy): apply shared batch size to copy services
 ```
 
-#### Bad
-
-```
-WIP
-add stuff
-Implement full record copy feature   ← too broad, should be split
-```
-
 #### Red Flags — Split the Commit
 
 - Commit message needs "and" to cover everything in it.
@@ -196,28 +198,45 @@ Implement full record copy feature   ← too broad, should be split
 - Status: SUCCESS or FAILURE (and why).
 - Files created/modified (paths only).
 - 5–15 line summary of what you implemented and key decisions.
+
 - Deviations from the plan body and reasoning.
 - Anything you couldn't do (with explanation).
 ```
 
-**Don't** dump the full plan into every prompt. Tracking summaries replace prior phases as context. Always include the **Goals + Non-goals** and **Guiding Decisions** sections plus the relevant **Data Model Changes** subsection — load-bearing decisions; phases reach back frequently.
+**Don't** dump the full plan into every prompt. Dependency-closure tracking summaries replace prior phases as context. Always include the **Goals + Non-goals** and **Guiding Decisions** sections plus the relevant **Data Model Changes** subsection — load-bearing decisions; phases reach back frequently.
 
-## Pick the model from the plan's per-phase suggestion
+## Pick the model from the phase's crew assignment
 
-**The plan owns the *implementer* model — this skill does not re-derive tiers and doesn't assume a vendor.** Each phase carries a `**Suggested AI model**:` line listing one model per vendor. (The reviewer / fixer models default to `.vinta-ai-workflows.yaml`'s `agent_models` section, though a phase's optional `**Review models**:` line can override them for that phase; the mechanical-step models are `agent_models`-only. All of that is handled by `review-phase` / the conductor, not this implementer step.)
+**The plan owns the *implementer* model — this skill does not re-derive tiers and doesn't assume a vendor.** It owns it as a **roster**: the plan's **Crew** table names the agents it is staffed with and the tier each is staffed at, and every phase carries an `**Assigned to**:` line naming one of them.
 
 Pick:
 
-1. Read the line, parse out **all** vendor suggestions.
-2. **Filter to what's actually available in the runtime.** Different harnesses expose different sets.
-3. From the surviving suggestions, **pick the cheapest / fastest** the runner can use.
-4. Translate the chosen model to whatever form the runner's spawning tool expects.
-5. Phase suggestion straddles tiers → pick the higher-tier suggestion.
-6. Line missing / malformed → **ask the user**. Don't silently re-derive tier.
+1. Read the phase's `**Assigned to**:` line for the crew id, then that id's row in the plan's **Crew** table for the tier.
+2. Open the tier in [`ai-tools/skills/plan-feature/resources/ai-models.yaml`](../plan-feature/resources/ai-models.yaml) and take its models.
+3. **Filter to what's actually available in the runtime.** Different harnesses expose different sets.
+4. From the survivors, **pick the cheapest / fastest** the runner can use, and translate it to whatever form the runner's spawning tool expects.
+5. Tier with no runtime-available vendor → step one tier up and say so once. Never hard-fail a phase over a model-selection miss.
+6. `**Assigned to**:` missing or naming an agent the **Crew** table does not list → **ask the user**. Don't silently re-derive a tier from the phase body; the roster is the plan's arithmetic about how many agents this feature needs, and inventing a member changes it.
+
+**A legacy plan carries `**Suggested AI model**:` and no Crew table.** Read the tier straight off that line and continue — same resolution, one less indirection. Don't invent a roster for it.
+
+### Reuse the agent the plan staffed
+
+**A crew member is an agent, and it is still alive.** If this member has already taken a phase on this run, continue that sub-agent rather than spawning a new one: it is standing in the same worktree — a member keeps one for the whole run — and it already knows where this codebase keeps things, how its suite is run and what its conventions are. Rediscovering that is most of what a cold agent's first turn costs.
+
+Because it is new work, the continuation gets the phase's **full brief**, not a delta. Precede it with the re-orientation described in [Re-orienting a member after the reset](../implement-plan/SKILL.md#re-orienting-a-member-after-the-reset): same agent and same directory, whether the previous phase's work is in this tree, and which files differ from what it last saw.
+
+Start cold instead when any of these hold:
+
+- the member has taken no phase yet on this run;
+- **their previous phase failed** — that session is the context that failed with it;
+- the runtime cannot continue a finished sub-agent at all.
+
+Record which of those applied, so a phase that was unexpectedly slow can be read later without guessing.
 
 **Retry escalation (no user prompt):** the picked model fails on a clear capability gap → step **one tier up** and retry once. After Tier 4 fails, STOP. Update tracking with `❌`, post the agent's report to the user, ask how to proceed.
 
-Record the **model actually used** + the **plan's suggested tier** in tracking.
+Record the **model actually used**, the **crew member** it came from, and **whether that member is the one the plan assigned** — a phase run by a covering peer is the difference between a run that cost what the plan said and one that did not.
 
 ## 3. Spawn the subagent
 
@@ -233,6 +252,7 @@ Use whatever agent-spawning primitive the runtime exposes. Pass:
 ```bash
 ai-tools/skills/prepare-worktree/scripts/sandbox-run.sh \
   --deny  <main_checkout> \
+  --deny  <pool_root> \
   --allow <WORKROOT> \
   --allow <main_checkout>/.vinta-ai-workflows \
   --allow <main_checkout>/.git \
@@ -240,6 +260,8 @@ ai-tools/skills/prepare-worktree/scripts/sandbox-run.sh \
 ```
 
 `<main_checkout>` is the repo root the skill was invoked from (never `WORKROOT` when a worktree is in use). A stray write then fails with `Operation not permitted` / `EROFS`; the subagent retries against the worktree. `<main_checkout>/.git` must be allowed because git worktrees write commits into the main repo's `.git` (shared objects/refs, `.git/worktrees/<name>/index.lock`); omitting it makes the subagent's own `git commit` fail.
+
+`<pool_root>` is the directory that holds the lane worktrees (the worktree root prepare-worktree provisioned into). Denying it and allowing back only this lane's `WORKROOT` blocks writes into **sibling lanes** — under parallel execution the more dangerous stray write, because a sibling's tree is being edited and tested at that moment. Omit the `--deny <pool_root>` line only when the run has a single lane and no pool exists.
 
 - **In-process subagent runtimes** (orchestrator and subagent share one OS process — e.g. claude-code's Task tool) can't wrap a single spawn. Two options: (a) install a runtime pre-write guard hook scoped to `WORKROOT` (prepare-worktree ships `scripts/claude-worktree-write-guard.py` + `scripts/gen-claude-sandbox-settings.sh` for claude-code); or (b) run the **entire** invocation under `sandbox-run.sh` with the same `--deny` / `--allow` set. Pick whichever the runtime supports.
 - **`SANDBOX_TIER = none`** (no sandbox tool, or `use_worktree = false`) → skip wrapping; prevention falls back entirely to the review-phase stray-write check. Surface this once to the user when a worktree run is unsandboxed so the weaker guarantee is explicit.
@@ -256,6 +278,8 @@ ai-tools/skills/prepare-worktree/scripts/sandbox-run.sh \
 A phase that combines shapes → the agent type stays `implementer`, and the prompt lists every relevant SKILL.md. The agent type changes only when a stack-specialist's risk is the primary one.
 
 **Avoid bouncing the same phase between multiple agents.** Wanting to "hand off" mid-phase → the plan should have split into sub-phases instead.
+
+**Concurrent invocations are expected.** The conductor may have several lanes in flight, each running its own copy of this skill against a different phase. Nothing here is shared: the prompt, the model pick, the spawn, and the returned report all belong to one phase in one `WORKROOT`. Never read another lane's worktree, branch, or tracking entry — if this phase needs something from another phase, that is a dependency edge the plan should have declared.
 
 ## Output
 

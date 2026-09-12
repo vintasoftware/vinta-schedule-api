@@ -5,7 +5,7 @@ description: Add a new Django model in the Vinta Schedule API, following the pro
 
 # Add Model
 
-See [AGENTS.md → Multi-Tenancy](../../AGENTS.md#multi-tenancy), [AGENTS.md → Custom Managers and Querysets](../../AGENTS.md#custom-managers-and-querysets), and [AGENTS.md → Django Virtual Models](../../AGENTS.md#django-virtual-models) for the load-bearing rules. This skill covers the model-shape mechanics around those rules.
+See [AGENTS.md → Multi-Tenancy](../../../AGENTS.md#multi-tenancy), [AGENTS.md → Custom Managers and Querysets](../../../AGENTS.md#custom-managers-and-querysets), and [AGENTS.md → Django Virtual Models](../../../AGENTS.md#django-virtual-models-appvirtual_modelspy) for the load-bearing rules. This skill covers the model-shape mechanics around those rules.
 
 ## Decision questions
 
@@ -172,7 +172,7 @@ For a tenant-scoped model `Foo` in app `bars`:
 
 ## Verification
 
-Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
+Run the [outer gate](../../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
 
 ```bash
 # Migration applies cleanly + rolls back

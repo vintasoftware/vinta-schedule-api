@@ -1,14 +1,14 @@
 # yaml-language-server: $schema=./node_modules/vinta-ai-workflows/schemas/vinta-ai-workflows-config.v1.schema.json
 
 schema_version: 1
-vinta_ai_workflows_version: "0.3.0"
-last_synced_at: "2026-07-18T00:00:00Z"
+vinta_ai_workflows_version: "0.7.0-alpha1"
+last_synced_at: "2026-09-11T00:00:00Z"
 
 project:
   name: vinta_schedule_api
   default_branch: main
   code_host: github
-  stack_summary: "Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (OrganizationModel), Postgres, deployed to Render"
+  stack_summary: "Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (SingleOrganizationModelMixin), Postgres, deployed to Render"
   ai_plans_dir: ai-plans
   pr_template_paths: []
 
@@ -43,6 +43,7 @@ vendors:
   - claude
   - cursor
   - copilot
+  - codex
 
 foundation_skills:
   plan-feature: enabled
@@ -60,6 +61,7 @@ foundation_skills:
   handoff: enabled
   thermo-nuclear-code-quality-review: enabled
   handoff-to-client: enabled
+  write-unit-test: enabled
 
 foundation_agents:
   implementer: enabled
@@ -86,8 +88,12 @@ run_options:
     generate_inline_comments: false
     use_worktree: true
     full_test_suite: false
+    parallel_phases: true
+    max_parallel_lanes: 3
   amend-plan:
     blast_radius_signal_threshold: 2
+  systematic-debugging:
+    allow_local_only_debug: true
 
 skills:
   add-one-off-script:
@@ -107,6 +113,12 @@ skills:
     api_style: "REST + GraphQL"
     api_spec_path: "schema.yml (regenerate: make update_schema)"
     output_dir: .vinta-ai-workflows/client-handoffs
+  write-unit-test:
+    test_style: classes
+    data_setup: fixtures
+    assertion_style: plain-assert
+    db_isolation: transaction-rollback
+    additional_conventions: []
   prepare-worktree:
     worktree_root: .claude/worktrees
     deps_strategy: symlink

@@ -89,11 +89,8 @@ def main():
 
     try:
         event = json.load(sys.stdin)
-    except Exception:  # noqa: BLE001 - deliberate: this guard must fail open
-        # Never wedge a run on a malformed event. Narrowing this to
-        # JSONDecodeError would let a UnicodeDecodeError or a stdin OSError
-        # crash the guard, which is the exact failure this catch prevents.
-        return 0
+    except Exception:  # noqa BLE0001
+        return 0  # fail open — never wedge a run on a parse error
 
     if event.get("tool_name") not in GUARDED_TOOLS:
         return 0

@@ -15,7 +15,7 @@ tenancy filters, or skipped tests.
 
 1. The phase body (what the implementer was supposed to do).
 2. The plan's **Goals + Non-goals** and **Guiding Decisions** sections.
-3. `ai-tools/AGENTS.md` (canonical conventions).
+3. `AGENTS.md` (canonical conventions).
 4. The relevant project skill under `ai-tools/skills/` if the phase invoked one
    (e.g. `add-env-var`, `add-one-off-script`).
 5. The full diff (`git diff <base>...HEAD` against the plan's base branch).
@@ -30,12 +30,12 @@ tenancy filters, or skipped tests.
 - Acceptance criteria from the phase are not actually exercised by the new tests.
 
 ### Multi-tenancy violations (BLOCKER)
-- `OrganizationModel` subclass queried without an organization filter — directly on the
+- `SingleOrganizationModelMixin` subclass queried without an organization filter — directly on the
   queryset or via the default manager.
 - New code touches a tenant-scoped model via `Model._meta.default_manager` /
   `Model.objects.raw(...)` / `cursor.execute` that bypasses the manager's safety check.
 - New FK between tenant-scoped models uses a stock `ForeignKey` / `OneToOneField`
-  instead of `OrganizationForeignKey` / `OrganizationOneToOneField`.
+  instead of `OrganizationSafeForeignKey` / `OrganizationSafeOneToOneField`.
 - Celery task that operates on tenant data does not receive / propagate the organization
   context from its arguments.
 - GraphQL resolver returns tenant data without going through `PublicAPIAuthService`
@@ -77,7 +77,7 @@ tenancy filters, or skipped tests.
 - Tests touch real network / Twilio / Google / S3 instead of using factories / mocks /
   Floci.
 - `pytest.mark.skip` / `xfail` added without an in-phase justification.
-- Test setup creates `OrganizationModel` instances without an organization (would crash
+- Test setup creates `SingleOrganizationModelMixin` instances without an organization (would crash
   in real flow; tests pass via factory side effects).
 
 ### Deploy + schema risks

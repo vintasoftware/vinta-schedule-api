@@ -5,7 +5,7 @@ description: Create or version a Postgres VIEW or MATERIALIZED VIEW in the Vinta
 
 # Create Postgres View
 
-Framework contract: [AGENTS.md → Architecture → Raw SQL](../../AGENTS.md#raw-sql-functions-procedures-triggers-views-materialized-views). Multi-tenancy rule for projections that touch tenant-scoped tables: [AGENTS.md → Multi-Tenancy](../../AGENTS.md#multi-tenancy).
+Framework contract: [AGENTS.md → Architecture → Raw SQL](../../../AGENTS.md#raw-sql-functions-procedures-triggers-views-materialized-views). Multi-tenancy rule for projections that touch tenant-scoped tables: [AGENTS.md → Multi-Tenancy](../../../AGENTS.md#multi-tenancy).
 
 This skill covers the view-specific shape — `vw_*` / `mv_*` naming, `WITH NO DATA` + UNIQUE INDEX for `REFRESH CONCURRENTLY`, `CREATE OR REPLACE VIEW` limits, consumer wiring.
 
@@ -194,7 +194,7 @@ Either way: the view's `organization_id` column flows through to queries; consum
 
 ## Verification
 
-Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
+Run the [outer gate](../../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
 
 ```bash
 # Forward apply

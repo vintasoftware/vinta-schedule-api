@@ -5,7 +5,7 @@ description: Create or version a Postgres FUNCTION (or PROCEDURE, or TRIGGER) in
 
 # Create Postgres Function
 
-Framework contract: [AGENTS.md → Architecture → Raw SQL](../../AGENTS.md#raw-sql-functions-procedures-triggers-views-materialized-views). Timezone-aware comparison rule: [AGENTS.md → Calendar Integration → Timezones](../../AGENTS.md#timezones).
+Framework contract: [AGENTS.md → Architecture → Raw SQL](../../../AGENTS.md#raw-sql-functions-procedures-triggers-views-materialized-views). Timezone-aware comparison rule: [AGENTS.md → Calendar Integration → Timezones](../../../AGENTS.md#timezones).
 
 This skill covers function-specific shape: volatility class (`IMMUTABLE` / `STABLE` / `VOLATILE`), language (`plpgsql` / `sql`), ORM wiring at `<app>/database_functions.py`, signature-change cascades, trigger pair. Examples to study: `convert_naive_utc_to_timezone`, `calculate_recurring_events`, `get_event_occurrences_json` under `calendar_integration/migrations/sql/functions/`.
 
@@ -184,7 +184,7 @@ A trigger needs **two** managers — a function returning `TRIGGER`, and the tri
 
 ## Verification
 
-Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
+Run the [outer gate](../../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
 
 ```bash
 # Migration runs forward, reverse, forward

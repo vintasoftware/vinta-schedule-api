@@ -19,10 +19,11 @@
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "setup:ai-tools": "node ai-tools/scripts/setup-ai-tools.mjs --only claude,cursor,copilot"
+    "setup:ai-tools": "node ai-tools/scripts/setup-ai-tools.mjs --only claude,cursor,copilot,codex"
   },
   "dependencies": {
-    "vinta-ai-workflows": "^0.3.0"
+    "vinta-ai-maestro": "^0.7.0-alpha3",
+    "vinta-ai-workflows": "^0.7.0-alpha3"
   },
   "devDependencies": {
     "yaml": "^2.9.0"

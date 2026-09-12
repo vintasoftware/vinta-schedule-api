@@ -1,6 +1,6 @@
 ---
 name: amend-plan
-description: Adjust an existing implementation plan in `ai-plans/` after implementation has started or finished. Updates the plan file (revising existing phases or appending new ones), then for each affected phase that was already implemented adjusts its commits (`git commit --amend` or new commits) on the phase branch, force-pushes the rewritten branch, rebases every downstream stacked phase branch, force-pushes each, and refreshes the PR-context files. Use when the user says "amend the plan", "update phase N", "add a phase to plan X", "the spec changed, fix the plan", or "rewrite the implementation for phase N". NOT for one-off changes to a single file unrelated to a plan; use the regular implement skill for that. Agents push branches and open PRs via `open-pr-from-context` after review passes.
+description: Adjust an existing implementation plan in `ai-plans/` after implementation has started or finished. Updates the plan file (revising existing phases or appending new ones), then for each affected phase that was already implemented adjusts its commits (`git commit --amend` or new commits) on the phase branch, force-pushes the rewritten branch, rebases every phase branch in the rewritten phase's dependency closure, force-pushes each, and refreshes the PR-context files. Use when the user says "amend the plan", "update phase N", "add a phase to plan X", "the spec changed, fix the plan", or "rewrite the implementation for phase N". NOT for one-off changes to a single file unrelated to a plan; use the regular implement skill for that. Agents push branches and open PRs via `open-pr-from-context` after review passes.
 ---
 
 # Amend Plan
@@ -9,35 +9,21 @@ Revise a plan in [`ai-plans/`](ai-plans/) after work has begun. Companion conduc
 
 The flow is destructive (force-push). Every modification is gated on user confirmation. Default disposition for any ambiguous case is "stop and ask" — never force-push without an explicit per-branch `Confirm` from the user.
 
-## Unsupported commit strategy
-
-**This skill does not yet support `commit_strategy = modular-commits`.** Detected from `.vinta-ai-workflows.yaml` `policies.commit_strategy` (or `TRACKING_{plan-id}.md` `run_options.commit_strategy_resolved` when the project policy is `ask` and a run is already in flight).
-
-This project's `policies.commit_strategy` is `ask` — at amend time, read `TRACKING_{plan-id}.md` `run_options.commit_strategy_resolved` first. When it resolves to `stacked-branches`, the full amend flow below runs unchanged. When it resolves to `modular-commits`, refuse with the guidance in this section.
-
-Amending under modular commits requires rewriting an arbitrary number of inline atomic commits across a shared `plan/{plan-id-kebab}` branch. The git topology is fundamentally different from the per-phase stacked branches this skill is designed around — the rewrite plan, force-push targets, and downstream rebase fan-out all differ. Full support is tracked as a follow-up.
-
-**Resolve the amendment one of three ways:**
-
-1. **Append a new phase** — extend the plan with the change as a new `Phase N+1`, then run [implement-plan](../implement-plan/SKILL.md). Cleanest path; preserves the existing commit log.
-2. **Hand-craft the amendment** — `git rebase -i plan/{plan-id-kebab}` (or `git commit --fixup` + `git rebase --autosquash`) on the plan branch, force-push, and re-run review manually. Skip this skill entirely.
-3. **Re-run the plan from scratch on a new branch** — abandon the in-flight commits (leave them for audit), regenerate the plan with [plan-feature](../plan-feature/SKILL.md), implement forward.
-
-Refuse with this guidance; do not proceed.
-
 ## Working assumptions
 
-- Repo: vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (SingleOrganizationModelMixin), Postgres, deployed to Render). Conventions: [AGENTS.md](AGENTS.md).
+- Repo: vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (SingleOrganizationModelMixin), Postgres, deployed to Render). Conventions: [AGENTS.md](../../../AGENTS.md).
 - Plan files: [`ai-plans/YYYY-MM-DD-FEATURE_NAME_PLAN.md`](ai-plans/).
 - Lint: `docker compose run --rm api uv run ruff check ./`. Format: `docker compose run --rm api uv run ruff format ./`.
 - Type / build gate: `docker compose run --rm api uv run python manage.py check --deploy` plus full mypy via `docker compose run --rm api uv run mypy .`.
 - Unit / integration tests: `docker compose run --rm api uv run pytest -n auto`; per-app via `docker compose run --rm api uv run pytest <app>/tests/ -n auto`.
+
 - Migrations: `docker compose run --rm api uv run python manage.py makemigrations --check` (gate) + `docker compose run --rm api uv run python manage.py migrate` (apply). Raw-SQL DB code (functions, views, materialized views, triggers, procedures) routes through `common/raw_sql_migration_managers.py` — see [add-migration](../add-migration/SKILL.md). Deploy target: Render — long-running migrations run via the Render dashboard's job runner; Celery workers + beat are separate services on Render and must be restarted alongside web after a deploy.
 - Code host: **GitHub**. PR creation policy: **agents create PRs** — every phase opens a PR via the bundled prs-context file + [open-pr.sh](../open-pr-from-context/scripts/open-pr.sh).
 - Co-author trailer policy: **forbidden**. Commits must not include `Co-Authored-By:` AI trailers.
 - Default branch: `main`.
 - Branch naming convention (set by [implement-plan](../implement-plan/SKILL.md)): `plan/{plan-id-kebab}/phase-{phase.id}`.
-- **`WORKROOT`.** Resolve once, same as the [implement-plan Resolve WORKROOT step](../implement-plan/SKILL.md#step-05--resolve-workroot): the main checkout by default, or the plan's worktree when `run_options.use_worktree = true` in the tracking file. Every `git` call below runs with `git -C <WORKROOT>`; when no worktree is in play, `WORKROOT` is the main checkout and the commands read exactly as in-place git.
+- **`WORKROOT`.** Resolve once, same as the [implement-plan Resolve WORKROOT step](../implement-plan/SKILL.md#step-05--resolve-workroot): the main checkout by default, or the plan's worktree when `run_options.use_worktree = true` in `run.md`. When the run used a **lane pool**, amend in the **integration worktree** — lanes are sized for forward implementation and may still hold state from their last phase. Every `git` call below runs with `git -C <WORKROOT>`; when no worktree is in play, `WORKROOT` is the main checkout and the commands read exactly as in-place git.
+- **Amend only when no implementation is in flight.** A rewrite force-pushes branches other lanes may be based on. If `run.md` shows any phase `running`, stop and tell the user to let the run finish (or stop it) first.
 
 ## When to use
 
@@ -64,7 +50,7 @@ Refuse with this guidance; do not proceed.
 
 3. **Parse the plan.** Same structured fields as [implement-plan's "Extract structured fields" step](../implement-plan/SKILL.md#step-0--locate--parse-plan): plan id, **Goals + Non-goals** / **Guiding Decisions** / **Data Model Changes** / phase records from **Phased Rollout** / **Risk & Rollout Notes** through **Touch List**.
 
-4. **Read the tracking file** `ai-plans/TRACKING_{plan-id}.md` if present. Its `Completed Phases` section tells you which phase branches were pushed, which model + base were used, and the `run_options` (including worktree state → `WORKROOT`). If absent → `git -C <WORKROOT> branch -a | grep plan/{plan-id-kebab}` to enumerate pushed phase branches.
+4. **Read the tracking directory** `ai-plans/TRACKING_{plan-id}/` if present: `run.md` carries the `run_options` (including worktree state → `WORKROOT`, and the resolved dependency graph), each `phase-{id}.md` carries that phase's branch, base, and model, and `waves/wave-{N}.md` records which lane branches were merged where. A plan run before the directory layout has a single `TRACKING_{plan-id}.md` — read it the same way. If neither exists → `git -C <WORKROOT> branch -a | grep plan/{plan-id-kebab}` to enumerate pushed phase, `integ-`, and `wave-` branches.
 
 5. **Build a per-phase state map.** For every phase in the plan, record:
 
@@ -73,7 +59,8 @@ Refuse with this guidance; do not proceed.
    | `phase.id`, `phase.title` | plan's **Phased Rollout** section |
    | `state` | one of `not-started` / `in-progress` / `implemented-not-merged` / `merged-to-default` |
    | `branch` | tracking file or git, pattern `plan/{plan-id-kebab}/phase-{id}` |
-   | `base` | tracking file or `git -C <WORKROOT> merge-base origin/<branch> <prev-branch>`; root phase bases on `main` |
+   | `base` | `phase-{id}.md`, or `git -C <WORKROOT> merge-base origin/<branch> <base-branch>`. **The base is the phase's dependency-derived branch, not the previous phase in plan order** — read `**Depends on**:` from the plan and resolve it per [Lane branch topology](../implement-plan/SKILL.md#lane-branch-topology). A phase with no dependencies bases on `main`. |
+   | `dependents` | every phase whose `**Depends on**:` set contains this one, transitively. This — not "every phase with a higher number" — is the set a rewrite cascades into. |
    | `pr_status` | `.vinta-ai-workflows/prs-context/{feature-kebab}/phase-{id}.md` frontmatter (`pending` / `published`) when the file exists |
    | `merged_to_default` | `git -C <WORKROOT> branch --merged origin/main | grep` against the branch |
 
@@ -81,9 +68,10 @@ Refuse with this guidance; do not proceed.
 
 6. **Classify the requested change** by phase impact, in priority order:
 
-   - **`body-rewrite`** — existing phase keeps its id; body changes. Cascades downstream because rewritten commits get new SHAs.
-   - **`insert-new`** — new phase between existing ones. Cascades downstream because every later phase rebases onto the new branch.
-   - **`append-new`** — new phase tacked on after the last one. No downstream cascade. Implementation runs forward via [implement-plan](../implement-plan/SKILL.md) — this skill hands off after editing the plan file.
+   - **`body-rewrite`** — existing phase keeps its id; body changes. Cascades into its `dependents` closure because rewritten commits get new SHAs. Phases outside that closure are untouched — under a parallel plan that is often most of them.
+   - **`insert-new`** — new phase slotted in. Cascades into whichever existing phases the user makes depend on it (and their closure). A new phase nobody depends on cascades into nothing.
+   - **`append-new`** — new phase with no existing dependents. No cascade. Implementation runs forward via [implement-plan](../implement-plan/SKILL.md) — this skill hands off after editing the plan file.
+   - **`dependency-change`** — the change is to a phase's `**Depends on**:` line rather than its body. Adding an edge to an already-implemented phase means its branch has the wrong base: it must be rebased onto the new base and its own closure re-cascaded. Removing an edge is safe to leave as-is (the branch simply carries more history than it needs) — say so and let the user decide whether a re-cut is worth it.
    - **`guiding-decisions-change`** — change inside the plan's **Guiding Decisions** section. Cascades into every phase that referenced the decision.
 
 7. **Evaluate amendment blast radius — recommend restart when too big.** Amending in place stops being a good deal once the rewrite work approaches re-implementation. Compute these signals from the per-phase state map + the requested change:
@@ -115,7 +103,7 @@ Refuse with this guidance; do not proceed.
    1. Help the user draft a new `YYYY-MM-DD-FEATURE_NAME_PLAN.md` with today's date (paired with the spec, same `FEATURE_NAME`). This skill does not write the new plan body — point at [plan-feature](../plan-feature/SKILL.md) (or [create-spec](../create-spec/SKILL.md) first if the spec also changed).
    2. Annotate the **old** plan: at the top, add `**Superseded YYYY-MM-DD by ../YYYY-MM-DD-FEATURE_NAME_PLAN.md** — reason: <one line>`. Append the same line under `## Amendments`.
    3. Leave the old phase branches alone — useful audit trail, no force-push needed.
-   4. Update `TRACKING_{plan-id}.md` to mark the plan superseded; preserve all completed-phase entries.
+   4. Update `TRACKING_{plan-id}/run.md` to mark the plan superseded; preserve every `phase-{id}.md` entry.
    5. Hand off to [plan-feature](../plan-feature/SKILL.md). This skill exits.
 
    On `Amend in place`: proceed to step 8 (the original confirmation gate, renumbered). On `Stop`: exit cleanly; nothing written.
@@ -141,7 +129,7 @@ Always the first write. Plan file is durable; commits get rewritten next.
    - Letter: `1b` between `1` (relabeled `1a`) and `2`. Requires renaming `1` → `1a` inside **Phased Rollout** + updating downstream references.
    Ask the user. Default: decimal — no rename of existing ids.
 
-3. **Appends** — new `## Phase N+1` block at end of **Phased Rollout**. Same shape as siblings: Goal, Suggested AI model, optional Review models, reusable_skills, Changes, Tests, Acceptance.
+3. **Appends** — new `## Phase N+1` block at end of **Phased Rollout**. Same shape as siblings: Goal, **Assigned to**, optional Review models, reusable_skills, Changes, Tests, Acceptance. An appended phase is staffed off the existing **Crew** table; adding a member is a change to the plan's staffing arithmetic and needs the same `Takes`-column update as any other.
 
 4. **Guiding Decisions changes** — rewrite the affected row. Add a one-line note at the top of **Guiding Decisions** ("**Amended YYYY-MM-DD**: replaced storage shape from X to Y; affects phases 2, 3, 4.") so reviewers see what shifted. Reference the changed row by its **Decision** column name, not by a `§N.M` shorthand.
 
@@ -157,7 +145,9 @@ Always the first write. Plan file is durable; commits get rewritten next.
 
 ## Step 2 — Build the rewrite queue
 
-For each phase classified as needing commit rewrites (`body-rewrite` for already-implemented phases, downstream phases for `insert-new` / `body-rewrite` / `guiding-decisions-change`), build a queue ordered by branch stack depth: parent first, children after.
+For each phase classified as needing commit rewrites (`body-rewrite` for already-implemented phases, plus each rewritten phase's `dependents` closure for `insert-new` / `body-rewrite` / `dependency-change` / `guiding-decisions-change`), build a queue in **topological order of the dependency graph**: a phase is rebased only after every phase it depends on has been. Phases outside the closure are never touched — leave their branches and PRs alone.
+
+A phase with several dependencies rebases onto a **rebuilt** `integ-{id}` branch: re-merge its dependency branches in plan order first, then rebase the phase onto that. Rebasing it onto only one dependency silently drops the others.
 
 For each entry record:
 
@@ -232,7 +222,7 @@ Use `git commit --amend` ONLY when:
 
 ## Adding new third-party dependencies
 
-Before running any install command (`npm add`, `pnpm add`, `yarn add`, `pip install`, `poetry add`, `uv add`, `cargo add`, `go get`, `gem install`, equivalents), check the package's SPDX license against the project's forbidden list — see the **Dependency licenses** section in [AGENTS.md](AGENTS.md) for the full list, the per-package overrides, and any project-specific notes.
+Before running any install command (`npm add`, `pnpm add`, `yarn add`, `pip install`, `poetry add`, `uv add`, `cargo add`, `go get`, `gem install`, equivalents), check the package's SPDX license against the project's forbidden list — see the **Dependency licenses** section in [AGENTS.md](../../../AGENTS.md) for the full list, the per-package overrides, and any project-specific notes.
 
 Quick lookup:
 
@@ -266,14 +256,15 @@ Then splice in the shared inner/outer verification loop verbatim:
 2. Implement using Read/Edit/Write. Match existing patterns.
 3. **Inner loop — fast iteration.** Scoped to files/apps you touched:
    a. `docker compose run --rm api uv run ruff check ./` until clean.
-   b. `docker compose run --rm api uv run pytest <new-test-path> -vs` for new tests individually.
-   c. Scoped suite: `docker compose run --rm api uv run pytest <app>/tests/ -n auto`.
+   b. docker compose run --rm api uv run pytest <new-test-path> -vs for new tests individually.
+   c. Scoped suite: docker compose run --rm api uv run pytest <app>/tests/ -n auto.
 4. Iterate 2–3 until **new tests pass individually** and the scoped suite is green. Do **not** advance to step 5 with red scoped tests.
 5. **Outer gate — local verification, only after step 4 is green.** All MUST pass before staging:
    a. **Type / build:** `docker compose run --rm api uv run python manage.py check --deploy` — repo-wide, always.
    b. **Tests:** by default run only the **scoped suite** `docker compose run --rm api uv run pytest <app>/tests/ -n auto` for the apps/files you touched — the new tests already passed individually in step 4b, so this re-confirms the touched surface without paying for the whole repo.
       {If run_options.full_test_suite = true:} run the **full test suite** `docker compose run --rm api uv run pytest -n auto` instead of the scoped suite — this phase guards against regressions in untouched code too.
-6. Outer gate fails → return step 2 (fix regression), re-run inner loop, then 5a/5b. **Never** commit, push, or proceed while any gate is red.
+   
+6. Outer gate fails → return step 2 (fix regression), re-run inner loop, then 5a/5b/5c. **Never** commit, push, or proceed while any gate is red.
 
 …and close the prompt with the amend-specific staging tail:
 
@@ -342,6 +333,8 @@ For the rewritten branch, look for `.vinta-ai-workflows/prs-context/{feature-keb
   - Inline comments may now reference SHAs that no longer exist. They'll appear as "outdated" in the PR UI.
   - If the new diff has materially different comment-worthy spots, regenerate the `# Comments` block, set `status: pending`, and re-run [open-pr.sh](../open-pr-from-context/scripts/open-pr.sh) on the file. The script reuses the existing PR, posts new comments. Old "outdated" comments stay visible in the PR for audit; that's the platform's behavior.
 
+Whenever you rewrite any of `# Title`, `# Description`, or `# Comments`, finish by running the `deslop-comments` skill ([deslop-comments](../deslop-comments/SKILL.md)) over the file with the file path as the explicit scope, so the rewritten text stays in Simple English same as [integrate-phase](../integrate-phase-stacked/SKILL.md) does when it first writes the file. Structure, frontmatter, and comment line targets stay untouched.
+
 When rewriting the `# Description` body, **honor `project.pr_template_paths`** from `.vinta-ai-workflows.yaml` — same rule as [integrate-phase](../integrate-phase-stacked/SKILL.md)'s **Open PR via context file** step: follow the project's PR template structure, fill new sections with phase-specific content from the rewritten body, leave un-fillable placeholders untouched. If the prior file used a different template than the project now declares, prefer the current `pr_template_paths` choice — surface the change to the user when the body shape shifts visibly.
 
 Always include in the publish-log block at the bottom of the file:
@@ -350,9 +343,9 @@ Always include in the publish-log block at the bottom of the file:
 - YYYY-MM-DDThh:mm:ssZ — branch force-pushed (amend-plan); old SHA <x>, new SHA <y>
 ```
 
-### 4g. Update tracking file
+### 4g. Update tracking
 
-Update `ai-plans/TRACKING_{plan-id}.md` for the rewritten phase:
+Update `ai-plans/TRACKING_{plan-id}/phase-{id}.md` for the rewritten phase (and `run.md` when the graph itself changed):
 - Append to its `Completed Phases` entry: `Amended YYYY-MM-DD: <summary>; new SHA <x>; force-pushed`.
 - Don't remove the original summary — keep history.
 
@@ -384,8 +377,8 @@ After every queue entry processes:
 - **`WORKROOT` is resolved once, used everywhere.** Every `git` call takes `git -C <WORKROOT>`; no per-step worktree branching.
 - **Three-layer review on every rewritten branch.** Same standard as [implement-plan](../implement-plan/SKILL.md) — via [review-phase](../review-phase/SKILL.md). The amendment isn't done until Layer 3 passes.
 - **PR-context file is a derived artifact.** Refresh it after the rewrite; never edit the file as a substitute for fixing the diff.
-- **Subagents commit but never push.** Orchestrator owns force-push. Subagents never open PRs either — PRs go through the PR-context file + `open-pr.sh`.
-- **No AI co-author trailers in commits.** The project forbids them; treat any AI trailer as a BLOCKER.
+- **Subagents commit but never push.** Orchestrator owns force-push. or open PRs.
+- **No AI co-author trailers.** Commits must not include `Co-Authored-By: Claude` (or any other AI) trailer — the project forbids them.
 - **License check before any new dep.** Refuse `npm add` / `pnpm add` / `pip install` / `poetry add` / `uv add` / `cargo add` / `go get` when the package's SPDX license is in the forbidden list — see AGENTS.md **Dependency licenses**. User can grant a one-off override after acknowledging the violation; record the override in `policies.dependency_licenses.allowed_overrides` before re-running.
 - **Stop on Tier-4 failure** (model escalation, same rules as [implement-phase](../implement-phase/SKILL.md#pick-the-model-from-the-plans-per-phase-suggestion)).
 - **Stop on rebase failure** the fixer can't resolve in one retry. Don't ship half-rebased branches.

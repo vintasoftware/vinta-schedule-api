@@ -1,0 +1,290 @@
+{
+  "$schema": "https://github.com/vintasoftware/vinta-ai-workflows/schemas/workflow.v1.schema.json",
+  "schema_version": 1,
+  "id": "graphql-aggregations",
+  "plan_ref": "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md",
+  "plan_context_refs": [
+    "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#1-goals",
+    "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#2-guiding-decisions"
+  ],
+  "base_branch": "main",
+  "project": {
+    "migrate_cmd": "docker compose run --rm api python manage.py migrate",
+    "databases": {
+      "dev": {
+        "engine": "postgres",
+        "delivery": "compose",
+        "name": "vinta_schedule_api",
+        "server_url": "postgres://db:5432",
+        "connection_url_var": "DATABASE_URL"
+      },
+      "test": {
+        "engine": "postgres",
+        "delivery": "compose",
+        "name": "test_vinta_schedule_api",
+        "server_url": "postgres://db:5432",
+        "connection_url_var": "TEST_DATABASE_URL"
+      }
+    }
+  },
+  "crew": {
+    "senior": {
+      "role": "implementer",
+      "tier": 4,
+      "model": "claude-opus-4-8",
+      "description": "The entity-agnostic aggregate engine, the window-over-subquery construction, and the batched nested GROUP BY. No precedent in this repo."
+    },
+    "mid": {
+      "role": "implementer",
+      "tier": 3,
+      "model": "claude-sonnet-5",
+      "description": "Temporal bucketing, six root fields with permissions and guards, and the HAVING/ordering layer over an engine that already exists."
+    },
+    "junior": {
+      "role": "implementer",
+      "tier": 2,
+      "model": "claude-haiku-4-5",
+      "description": "Filter input types mirroring existing filter arguments, and an audit hook consuming a plan object against a service that already exists."
+    },
+    "reviewer": {
+      "role": "reviewer",
+      "tier": 4,
+      "model": "claude-opus-4-8",
+      "description": "Reads every phase. Must sit at or above Phase 7, the hardest work on the plan."
+    }
+  },
+  "defaults": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "pipeline": "standard-phase"
+  },
+  "resources": {
+    "lane": {
+      "capacity": 3,
+      "kind": "worktree",
+      "description": "One desk per implementer, kept for the whole run."
+    },
+    "test-suite": {
+      "capacity": 1,
+      "kind": "semaphore",
+      "description": "The suite runs against a forked compose Postgres; two at once contend for the machine."
+    }
+  },
+  "gates": {
+    "lint": {
+      "cmd": "docker compose run --rm api uv run ruff check ./",
+      "timeout_s": 300
+    },
+    "types": {
+      "cmd": "docker compose run --rm api uv run python manage.py check --deploy",
+      "timeout_s": 600
+    },
+    "unit": {
+      "cmd": "docker compose run --rm api uv run pytest public_api/tests -n auto",
+      "requires": [
+        "test-suite"
+      ],
+      "timeout_s": 2400
+    }
+  },
+  "nodes": [
+    {
+      "id": "p0",
+      "name": "Aggregate engine: metric + dimension primitives",
+      "depends_on": [],
+      "prompt_ref": "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#phase-0",
+      "touches": [
+        "public_api/aggregations/__init__.py",
+        "public_api/aggregations/plan.py",
+        "public_api/aggregations/types.py",
+        "public_api/aggregations/registry.py",
+        "public_api/aggregations/executor.py",
+        "public_api/aggregations/errors.py",
+        "public_api/tests/aggregations/__init__.py",
+        "public_api/tests/aggregations/test_registry.py",
+        "public_api/tests/aggregations/test_plan.py",
+        "public_api/tests/aggregations/test_executor.py"
+      ],
+      "gates": [
+        "lint",
+        "types",
+        "unit"
+      ],
+      "crew": "senior"
+    },
+    {
+      "id": "p1",
+      "name": "Per-entity aggregate filter inputs",
+      "depends_on": [],
+      "prompt_ref": "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#phase-1",
+      "touches": [
+        "public_api/aggregations/filters.py",
+        "public_api/constants.py",
+        "public_api/aggregations/__init__.py",
+        "public_api/tests/aggregations/test_filters.py",
+        "public_api/tests/aggregations/test_filter_scoping.py"
+      ],
+      "gates": [
+        "lint",
+        "types",
+        "unit"
+      ],
+      "crew": "junior"
+    },
+    {
+      "id": "p2",
+      "name": "Group-by dimensions and temporal bucketing",
+      "depends_on": [
+        {
+          "node": "p0",
+          "artifact": "the `DimensionSpec` dataclass and the executor's `.values(...)` construction this extends"
+        },
+        {
+          "node": "p1",
+          "artifact": "the filter inputs that bound the queryset a grouped query runs over"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#phase-2",
+      "touches": [
+        "public_api/aggregations/dimensions.py",
+        "public_api/aggregations/timezone.py",
+        "public_api/aggregations/executor.py",
+        "public_api/tests/aggregations/test_dimensions.py",
+        "public_api/tests/aggregations/test_bucketing.py",
+        "public_api/tests/aggregations/test_multi_dimension.py"
+      ],
+      "gates": [
+        "lint",
+        "types",
+        "unit"
+      ],
+      "crew": "mid"
+    },
+    {
+      "id": "p3",
+      "name": "Aggregate root fields, permissions, and cost guards",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "the group-by dimensions, `*GroupKey` types and temporal bucketing every field exposes"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#phase-3",
+      "touches": [
+        "public_api/aggregations/fields.py",
+        "public_api/queries.py",
+        "public_api/permissions.py",
+        "public_api/tests/aggregations/test_field_registration.py",
+        "public_api/tests/aggregations/test_aggregate_permissions.py",
+        "public_api/tests/aggregations/test_cost_guards.py",
+        "public_api/tests/aggregations/test_aggregate_queries.py"
+      ],
+      "gates": [
+        "lint",
+        "types",
+        "unit"
+      ],
+      "crew": "mid"
+    },
+    {
+      "id": "p4",
+      "name": "HAVING, metric ordering, and top-N",
+      "depends_on": [
+        {
+          "node": "p3",
+          "artifact": "the six registered aggregate fields and their `*AggregateRow` types this adds `having` and `orderBy` arguments to"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#phase-4",
+      "touches": [
+        "public_api/aggregations/having.py",
+        "public_api/aggregations/ordering.py",
+        "public_api/aggregations/executor.py",
+        "public_api/aggregations/fields.py",
+        "public_api/tests/aggregations/test_having.py",
+        "public_api/tests/aggregations/test_having_execution.py",
+        "public_api/tests/aggregations/test_metric_ordering.py",
+        "public_api/tests/aggregations/test_aggregate_queries.py"
+      ],
+      "gates": [
+        "lint",
+        "types",
+        "unit"
+      ],
+      "crew": "mid"
+    },
+    {
+      "id": "p5",
+      "name": "Audit logging for aggregate queries",
+      "depends_on": [
+        {
+          "node": "p3",
+          "artifact": "the registered aggregate fields whose resolver entry point this hooks, and the `AggregateQueryPlan` those resolvers build"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#phase-5",
+      "touches": [
+        "audit_integration/constants.py",
+        "public_api/aggregations/audit.py",
+        "public_api/aggregations/fields.py",
+        "public_api/tests/aggregations/test_audit_payload.py",
+        "public_api/tests/aggregations/test_audit_integration.py"
+      ],
+      "gates": [
+        "lint",
+        "types",
+        "unit"
+      ],
+      "crew": "junior"
+    },
+    {
+      "id": "p6",
+      "name": "SQL window functions over grouped results",
+      "depends_on": [
+        {
+          "node": "p4",
+          "artifact": "the HAVING and metric-ordering construction this wraps, since a window is applied over the grouped, filtered, ordered result"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#phase-6",
+      "touches": [
+        "public_api/aggregations/windows.py",
+        "public_api/aggregations/executor.py",
+        "public_api/aggregations/fields.py",
+        "public_api/tests/aggregations/test_window_validation.py",
+        "public_api/tests/aggregations/test_window_execution.py"
+      ],
+      "gates": [
+        "lint",
+        "types",
+        "unit"
+      ],
+      "crew": "senior"
+    },
+    {
+      "id": "p7",
+      "name": "Nested aggregates with batched GROUP BY",
+      "depends_on": [
+        {
+          "node": "p6",
+          "artifact": "the final executor shape including the window subquery wrapping, which batching folds a parent key into"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md#phase-7",
+      "touches": [
+        "public_api/aggregations/nested.py",
+        "calendar_integration/graphql.py",
+        "public_api/aggregations/fields.py",
+        "public_api/tests/aggregations/test_nested_collection.py",
+        "public_api/tests/aggregations/test_nested_batching.py",
+        "public_api/tests/aggregations/test_nested_permissions.py"
+      ],
+      "gates": [
+        "lint",
+        "types",
+        "unit"
+      ],
+      "crew": "senior"
+    }
+  ]
+}
