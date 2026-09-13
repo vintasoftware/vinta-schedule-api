@@ -1,0 +1,50 @@
+# Build context for Dockerfile.development.
+#
+# BuildKit uses `<dockerfile>.dockerignore` INSTEAD of the root `.dockerignore`
+# when it exists, so this file is the dev build's complete list -- it does not
+# layer on top of `.dockerignore`. The two are near-copies on purpose: the only
+# difference is `.devcontainer`, which the root file excludes (nothing in the
+# production image reads it, and `Dockerfile`'s `COPY . /home/user/app/` would
+# otherwise ship shell dotfiles to ECS) but this build needs, because
+# Dockerfile.development copies `setup.sh` + `config-files/` and runs them to
+# build the zsh/oh-my-posh shell `make bash` drops you into.
+#
+# Keep the rest in sync with `.dockerignore` when you edit either one.
+
+.db
+node_modules
+npm-debug.log
+.venv
+.git
+.github
+.claude
+.mailpit-data
+ai-plans
+ai-tools
+docs
+infrastructure
+junit
+staticfiles
+mediafiles
+**/__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.env
+.env.docker
+
+# Local AI-tooling state: worktrees, caches and PR-context staging. Untracked,
+# hundreds of megabytes, and read by nothing inside either image.
+.vinta-ai-maestro
+.vinta-ai-workflows
+
+# Test support. Excluded here only to keep the context small -- the development
+# image gets all of it back through the compose bind mount
+# (`./:/home/user/app/`), which is what `make test` runs against. See the longer
+# note in `.dockerignore` for why the production image must not ship these.
+**/tests
+**/testing
+**/factories.py
+**/fixtures.py
+conftest.py
