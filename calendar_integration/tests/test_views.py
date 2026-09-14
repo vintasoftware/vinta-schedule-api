@@ -462,6 +462,55 @@ class TestCalendarEventViewSet:
         mock_calendar_service.authenticate.assert_called_once()
         mock_calendar_service.create_event.assert_called_once()
 
+    def test_create_calendar_event_internal_calendar_without_social_account(
+        self, auth_client, organization, user
+    ):
+        """Creating events on internal calendars must not require OAuth tokens."""
+        from di_core.containers import container
+
+        calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
+
+        mock_calendar_service = Mock()
+        start_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        end_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+        created_event = CalendarIntegrationTestFactory.create_calendar_event(
+            calendar=calendar,
+            title="Internal Event",
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
+            timezone="UTC",
+            external_id="internal-event-1",
+        )
+        mock_calendar_service.create_event.return_value = created_event
+
+        url = reverse("api:CalendarEvents-list")
+        data = {
+            "organization": organization.id,
+            "calendar": calendar.id,
+            "title": "Internal Event",
+            "start_time": start_time.isoformat(),
+            "end_time": end_time.isoformat(),
+            "timezone": "UTC",
+            "resource_allocations": [],
+            "attendances": [],
+            "external_attendances": [],
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        mock_calendar_service.initialize_without_provider.assert_called_once_with(
+            user_or_token=user,
+            organization=organization,
+        )
+        mock_calendar_service.authenticate.assert_not_called()
+        mock_calendar_service.create_event.assert_called_once()
+
     def test_create_event_localizes_input_to_request_timezone(
         self, auth_client, calendar, user, social_account
     ):
@@ -650,6 +699,32 @@ class TestCalendarEventViewSet:
         response = anonymous_client.delete(url)
 
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
+
+    def test_delete_internal_calendar_event_without_social_account(
+        self, auth_client, user, organization
+    ):
+        """Internal calendar delete must not require a linked SocialAccount."""
+        from di_core.containers import container
+
+        calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        event = CalendarIntegrationTestFactory.create_calendar_event(calendar=calendar)
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.initialize_without_provider.return_value = None
+        mock_calendar_service.delete_event.return_value = None
+
+        url = reverse("api:CalendarEvents-detail", kwargs={"pk": event.id})
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.delete(url)
+
+        assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
+        mock_calendar_service.initialize_without_provider.assert_called_once()
+        mock_calendar_service.authenticate.assert_not_called()
+        mock_calendar_service.delete_event.assert_called_once()
 
     # --- Transfer action tests ---
 
@@ -1908,6 +1983,38 @@ class TestCalendarViewSet:
         # Verify the mock was called
         mock_calendar_service.get_availability_windows_in_range.assert_called_once()
 
+    def test_internal_calendar_available_windows_without_social_account(
+        self, auth_client, organization, user
+    ):
+        """Internal calendars must not require a linked Google/Microsoft account."""
+        from di_core.containers import container
+
+        calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.get_availability_windows_in_range.return_value = []
+
+        now = datetime.datetime.now(datetime.UTC)
+        url = reverse("api:Calendars-available-windows", kwargs={"pk": calendar.id})
+        params = {
+            "start_datetime": (now + datetime.timedelta(hours=1)).isoformat(),
+            "end_datetime": (now + datetime.timedelta(hours=5)).isoformat(),
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.get(url, params)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        mock_calendar_service.initialize_without_provider.assert_called_once_with(
+            user_or_token=user,
+            organization=organization,
+        )
+        mock_calendar_service.authenticate.assert_not_called()
+
     def test_get_available_windows_missing_params(self, auth_client, calendar):
         """Test getting available windows without required parameters"""
         url = reverse("api:Calendars-available-windows", kwargs={"pk": calendar.id})
@@ -1978,6 +2085,38 @@ class TestCalendarViewSet:
 
         # Verify the mock was called
         mock_calendar_service.get_unavailable_time_windows_in_range.assert_called_once()
+
+    def test_internal_calendar_unavailable_windows_without_social_account(
+        self, auth_client, organization, user
+    ):
+        """Internal calendars must not require a linked Google/Microsoft account."""
+        from di_core.containers import container
+
+        calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.get_unavailable_time_windows_in_range.return_value = []
+
+        now = datetime.datetime.now(datetime.UTC)
+        url = reverse("api:Calendars-unavailable-windows", kwargs={"pk": calendar.id})
+        params = {
+            "start_datetime": (now + datetime.timedelta(hours=1)).isoformat(),
+            "end_datetime": (now + datetime.timedelta(hours=5)).isoformat(),
+        }
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.get(url, params)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        mock_calendar_service.initialize_without_provider.assert_called_once_with(
+            user_or_token=user,
+            organization=organization,
+        )
+        mock_calendar_service.authenticate.assert_not_called()
 
     def test_get_unavailable_windows_unauthenticated(self, anonymous_client, calendar):
         """Test getting unavailable windows as unauthenticated user"""

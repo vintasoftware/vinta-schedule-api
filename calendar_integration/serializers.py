@@ -1324,6 +1324,11 @@ class CalendarEventSerializer(VirtualModelSerializer):
                     account=account,
                     organization=calendar.organization,
                 )
+            elif calendar.provider == CalendarProvider.INTERNAL:
+                self.calendar_service.initialize_without_provider(
+                    user_or_token=user,
+                    organization=calendar.organization,
+                )
             else:
                 self.calendar_service.authenticate(
                     account=user,
@@ -1423,6 +1428,11 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 ]
                 self.calendar_service.authenticate(
                     account=account,
+                    organization=calendar.organization,
+                )
+            elif calendar.provider == CalendarProvider.INTERNAL:
+                self.calendar_service.initialize_without_provider(
+                    user_or_token=user,
                     organization=calendar.organization,
                 )
             else:
