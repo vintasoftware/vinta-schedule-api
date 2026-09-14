@@ -51,9 +51,13 @@ tmp_email/
 
 # vinta-ai-workflows local state (PR context staging, MCP preflight cache)
 .vinta-ai-workflows/
+.vinta-ai-maestro/
 
 # Vinta AI workflows PR context (durable, not committed)
 .vinta-ai-workflows/prs-context/
+
+# vinta-ai-maestro lane worktrees (machine-local, never committed)
+.vinta-ai-workflows/worktrees/
 
 # Terraform / Terragrunt
 .terragrunt-cache/

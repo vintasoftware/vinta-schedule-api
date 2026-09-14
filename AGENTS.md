@@ -102,6 +102,19 @@ Two trees are excluded in `[tool.mypy] exclude` and cannot be type-checked: vend
 
 Skill-specific Verification blocks add commands on top (schema regenerate, migration apply + reverse, view introspection, etc.) — the outer gate stays constant.
 
+### Maestro lanes
+
+`vinta-ai-maestro` runs each plan phase in its own git worktree ("lane") with its own Compose stack. What a lane needs is declared in the `project` block of the active `ai-plans/*.workflow.json`, and every value there is read out of this repo, not invented. The facts that block encodes, so a new workflow file can copy them:
+
+- **Everything runs inside Compose.** `commands` and gate `cmd`s are the container-surface commands (`docker compose run --rm api ...`); tests reach `db`, `result` and `floci` by container DNS, so `compose.publish` stays `[]` and every fixed host port in `docker-compose.yml` is stripped from the lane's generated override.
+- **`env_files` is `.env` and `.env.docker`.** Both are ignored, both must exist in the main checkout, and both are copied (never symlinked) into the lane. There is no `.envrc`.
+- **No volume is shared.** `dbdata`, `floci_data` and `virtualenv` are all `external: true` in `docker-compose.yml`; Maestro re-pins each one per lane. `virtualenv` is writable (`uv sync` writes into it) so it is not a read-only cache and must not go in `compose.shared_volumes`.
+- **Databases are `delivery: compose`.** The lane's own Postgres serves both the dev database and the `test_*` database pytest-django derives from `DATABASE_URL`; the project reads no `TEST_DATABASE_URL`, so only the `dev` role is declared. Compose-delivered lanes have no reset and are re-provisioned between phases.
+- **No `project.services`.** Redis (`result`), Floci and Postgres are per-lane Compose services, not shared machine-wide servers, so nothing needs a namespace.
+- **`setup_cmd` mirrors `make setup` minus the fixed-name volume creates** (Maestro owns the volumes): build the `api` image, `uv sync --frozen --no-install-project`, `migrate`, `scripts/init_floci.py`. Each step is idempotent; it re-runs on every lane recycle.
+- **Semaphores:** `test-suite` (capacity 1) guards every `pytest -n auto` run, since one run already saturates the machine's cores. Gates name it in `requires`; agents wrap inner-loop runs as `vinta-ai-maestro with test-suite -- <command>`. Never lease `lane` from an agent.
+- Machine-local state lives under `.vinta-ai-maestro/` and `.vinta-ai-workflows/worktrees/`; both are ignored.
+
 ## Code Style
 
 - **Ruff is the source of truth.** Config in `pyproject.toml#[tool.ruff]`. Line length 100, indent 4. The interpreter is **3.14** (`requires-python`), but ruff's `target-version` is deliberately held at `py313` — see the comment at that setting: 3.14's two syntax additions (PEP 758 `except A, B:`, and UP037 stripping quotes from forward references) are both unwanted here, the second because it breaks DI at runtime. Selected rule sets: `E`, `F`, `N`, `UP`, `B`, `S`, `BLE`, `A`, `DJ`, `I`, `G`, `INP`, `RUF`. Migrations + tests + settings + `__init__.py` have rule-set carveouts (see `[tool.ruff.lint.per-file-ignores]`).

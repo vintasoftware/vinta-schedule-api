@@ -17,15 +17,25 @@
         "name": "vinta_schedule_api",
         "server_url": "postgres://db:5432",
         "connection_url_var": "DATABASE_URL"
-      },
-      "test": {
-        "engine": "postgres",
-        "delivery": "compose",
-        "name": "test_vinta_schedule_api",
-        "server_url": "postgres://db:5432",
-        "connection_url_var": "TEST_DATABASE_URL"
       }
-    }
+    },
+    "env_files": [
+      ".env",
+      ".env.docker"
+    ],
+    "commands": {
+      "lint": "docker compose run --rm api uv run ruff check ./",
+      "typecheck": "docker compose run --rm api uv run mypy .",
+      "test": "docker compose run --rm api uv run pytest -n auto",
+      "test_one": "docker compose run --rm api uv run pytest -vs",
+      "migrate": "docker compose run --rm api python manage.py migrate"
+    },
+    "compose": {
+      "enabled": true,
+      "publish": [],
+      "shared_volumes": []
+    },
+    "setup_cmd": "docker compose build api && docker compose run --rm api uv sync --frozen --no-install-project && docker compose run --rm api python manage.py migrate && docker compose run --rm api python scripts/init_floci.py"
   },
   "crew": {
     "senior": {

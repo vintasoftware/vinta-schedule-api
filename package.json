@@ -22,8 +22,8 @@
     "setup:ai-tools": "node ai-tools/scripts/setup-ai-tools.mjs --only claude,cursor,copilot,codex"
   },
   "dependencies": {
-    "vinta-ai-maestro": "^0.7.0-alpha3",
-    "vinta-ai-workflows": "^0.7.0-alpha3"
+    "vinta-ai-maestro": "^0.7.0-alpha9",
+    "vinta-ai-workflows": "^0.7.0-alpha9"
   },
   "devDependencies": {
     "yaml": "^2.9.0"
