@@ -124,11 +124,18 @@ class TestWebhookService:
         )
 
         assert len(webhook_events) == 2
+        urls = {event.url for event in webhook_events}
+        assert urls == {
+            "https://example.com/webhook",
+            "https://example2.com/webhook",
+        }
         for event in webhook_events:
             assert event.organization == organization
             assert event.event_type == WebhookEventType.CALENDAR_EVENT_CREATED
             assert event.payload == payload
             assert event.status == WebhookStatus.PENDING
+            assert event.url == event.configuration.url
+            assert event.headers == event.configuration.headers
 
         # Verify that tasks were scheduled
         assert mock_task.call_count == 2
