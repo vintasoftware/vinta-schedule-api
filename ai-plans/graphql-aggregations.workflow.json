@@ -21,7 +21,8 @@
     },
     "env_files": [
       ".env",
-      ".env.docker"
+      ".env.docker",
+      "vinta_schedule_api/settings/local.py"
     ],
     "commands": {
       "lint": "docker compose run --rm api uv run ruff check ./",
