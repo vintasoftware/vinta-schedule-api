@@ -45,7 +45,10 @@ from vinta_billing.services.subscription_service import resolve_billing_period
 
 from audit_integration.constants import AuditAction, AuditActorType
 from calendar_integration.constants import CalendarType
-from calendar_integration.exceptions import NoAvailableTimeWindowsError
+from calendar_integration.exceptions import (
+    EventManagementError,
+    NoAvailableTimeWindowsError,
+)
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
@@ -670,7 +673,9 @@ class CalendarEventService:
         input_attendances = event_data.attendances or []
         input_external_attendances = event_data.external_attendances or []
 
-        external_id = ""
+        # ``None``, not "": the column is unique, and NULL is what lets any number
+        # of provider-less events coexist. See ``CalendarEvent.external_id``.
+        external_id: str | None = None
         original_payload: dict = {}
         if calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE] and (
             write_adapter := self._host._get_write_adapter_for_calendar(calendar)
@@ -720,7 +725,7 @@ class CalendarEventService:
                     is_recurring_instance=event_data.is_recurring_exception,
                 )
             )
-            external_id = created_event.external_id
+            external_id = created_event.external_id or None
             original_payload = created_event.original_payload or {}
 
         # Handle parent event for exceptions/instances
@@ -1800,7 +1805,9 @@ class CalendarEventService:
         # Mirror create_event's external-sync behavior for an exception event: on
         # PERSONAL/RESOURCE calendars with a write adapter, create_event syncs the
         # modified occurrence as a recurring-instance event in the external provider.
-        external_id = ""
+        # ``None``, not "": the column is unique, and NULL is what lets any number
+        # of provider-less events coexist. See ``CalendarEvent.external_id``.
+        external_id: str | None = None
         original_payload: dict[str, Any] = {}
         if master.calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE] and (
             write_adapter := self._host._get_write_adapter_for_calendar(master.calendar)
@@ -1819,7 +1826,7 @@ class CalendarEventService:
                     is_recurring_instance=True,
                 )
             )
-            external_id = created_external.external_id
+            external_id = created_external.external_id or None
             original_payload = created_external.original_payload or {}
 
         # Build the modified-occurrence event directly (mirroring create_event's field
@@ -2293,6 +2300,13 @@ class CalendarEventService:
         if not is_authenticated_calendar_service(context):
             raise
         self._check_not_restricted()
+
+        if event.external_id is None:
+            # Never written to a provider, so there is nothing to fetch. Transferring it
+            # is a purely local move; asking the adapter would send a null id upstream.
+            raise EventManagementError(
+                "Cannot transfer an event that was never written to a calendar provider."
+            )
 
         event_data = context.calendar_adapter.get_event(
             event.calendar.external_id, event.external_id

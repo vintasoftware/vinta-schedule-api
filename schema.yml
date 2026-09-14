@@ -19769,6 +19769,7 @@ components:
         external_id:
           type: string
           readOnly: true
+          nullable: true
         external_attendances:
           type: array
           items:
@@ -19954,6 +19955,7 @@ components:
         external_id:
           type: string
           readOnly: true
+          nullable: true
         external_attendances:
           type: array
           items:
@@ -21775,6 +21777,7 @@ components:
         external_id:
           type: string
           readOnly: true
+          nullable: true
         start_time:
           type: string
           format: date-time
@@ -22220,6 +22223,7 @@ components:
         external_id:
           type: string
           readOnly: true
+          nullable: true
         external_attendances:
           type: array
           items:

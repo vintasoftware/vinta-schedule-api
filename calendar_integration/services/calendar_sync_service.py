@@ -1042,6 +1042,10 @@ class CalendarSyncService:
         update_events: bool,
     ):
         """Process an existing calendar event."""
+        # ``existing_event`` got here by matching ``event.external_id`` from the
+        # provider response, so it always carries one. Only provider-less local rows
+        # hold NULL, and those match nothing coming back from a provider.
+        existing_external_id = cast("str", existing_event.external_id)
         if not update_events:
             return
 
@@ -1091,7 +1095,7 @@ class CalendarSyncService:
                     payload=event.original_payload or {},
                     provider=provider,
                 )
-                changes.matched_event_ids.add(existing_event.external_id)
+                changes.matched_event_ids.add(existing_external_id)
                 return
 
             if policy == ExternalEventUpdatePolicy.FORBIDDEN:
@@ -1132,12 +1136,12 @@ class CalendarSyncService:
                     provider=provider,
                     write_adapter=context.calendar_adapter,
                 )
-                changes.matched_event_ids.add(existing_event.external_id)
+                changes.matched_event_ids.add(existing_external_id)
                 return
 
             # ALLOW: delete the local event as today.
-            changes.events_to_delete.append(existing_event.external_id)
-            changes.matched_event_ids.add(existing_event.external_id)
+            changes.events_to_delete.append(existing_external_id)
+            changes.matched_event_ids.add(existing_external_id)
             return
 
         # Determine the organization's inbound-update policy.
@@ -1195,7 +1199,7 @@ class CalendarSyncService:
                 payload=event.original_payload or {},
                 provider=provider,
             )
-            changes.matched_event_ids.add(existing_event.external_id)
+            changes.matched_event_ids.add(existing_external_id)
             return
 
         if policy == ExternalEventUpdatePolicy.FORBIDDEN:
@@ -1241,7 +1245,7 @@ class CalendarSyncService:
                 provider=provider,
                 write_adapter=context.calendar_adapter,
             )
-            changes.matched_event_ids.add(existing_event.external_id)
+            changes.matched_event_ids.add(existing_external_id)
             return
 
         # ALLOW (default): apply the incoming changes directly to the local event.
@@ -1251,7 +1255,7 @@ class CalendarSyncService:
         existing_event.end_time = event.end_time
         existing_event.meta["latest_original_payload"] = event.original_payload or {}
         changes.events_to_update.append(existing_event)
-        changes.matched_event_ids.add(existing_event.external_id)
+        changes.matched_event_ids.add(existing_external_id)
 
         # Process attendees
         self._process_event_attendees(event, existing_event, changes)

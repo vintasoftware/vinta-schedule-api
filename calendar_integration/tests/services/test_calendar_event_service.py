@@ -2072,3 +2072,45 @@ def test_reschedule_and_cancel_occurrence_expansion(write_allowance_setup):
     assert 24 not in days_present
     assert 10 in days_present
     assert 31 in days_present
+
+
+@pytest.mark.django_db
+def test_provider_less_events_store_null_external_id(scoped_event_setup):
+    """Two events written without a provider coexist, both with a NULL external_id.
+
+    ``external_id`` is unique. The empty string the old code stored is an ordinary
+    value to that index, so the second insert collided; NULL is exempt from it.
+    ``scoped_event_setup``'s calendar resolves no write adapter, so both writes take
+    the provider-less path that leaves the id unset.
+    """
+    org = scoped_event_setup["organization"]
+    calendar = scoped_event_setup["calendar"]
+    membership = scoped_event_setup["membership"]
+
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="null_external_id_svc",
+        organization=org,
+        scoped_to_membership=membership,
+    )
+    facade = _facade_for_system_user(system_user, org)
+
+    def _input(title, hour):
+        return CalendarEventInputData(
+            title=title,
+            description="",
+            start_time=datetime.datetime(2026, 7, 1, hour, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2026, 7, 1, hour + 1, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            attendances=[],
+            external_attendances=[],
+            resource_allocations=[],
+        )
+
+    first = facade.create_event(calendar.id, _input("First", 10))
+    second = facade.create_event(calendar.id, _input("Second", 12))
+
+    assert first.pk != second.pk
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert first.external_id is None
+    assert second.external_id is None

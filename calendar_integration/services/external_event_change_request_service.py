@@ -42,7 +42,7 @@ from __future__ import annotations
 import datetime
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from django.db import transaction
 from django.utils import timezone
@@ -716,7 +716,9 @@ class ExternalEventChangeRequestService:
             # approved state. The external id is preserved.
             write_adapter.update_event(
                 adapter_input.calendar_external_id,
-                event.external_id,
+                # A change request only exists because the provider reported a change to
+                # this event, so it is by construction a provider-backed row with an id.
+                cast("str", event.external_id),
                 adapter_input,
             )
             return None

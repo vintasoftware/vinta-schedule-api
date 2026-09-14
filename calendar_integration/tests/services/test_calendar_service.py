@@ -8962,7 +8962,9 @@ def test_create_event_falls_back_to_self_adapter_when_write_adapter_is_none(
         # Verify the event was created in the database
         assert result.title == sample_event_input_data.title
         assert result.calendar == owned_calendar
-        assert result.external_id == ""  # No external ID when no adapter is used
+        # NULL, not "": the column is unique, so the empty string could only ever be
+        # held by one row. See ``CalendarEvent.external_id``.
+        assert result.external_id is None
 
 
 @pytest.mark.django_db
