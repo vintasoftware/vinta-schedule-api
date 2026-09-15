@@ -169,6 +169,8 @@ class WebhookService:
                 organization=organization,
                 configuration=configuration,
                 event_type=event_type,
+                url=configuration.url,
+                headers=configuration.headers,
                 payload=payload,
             )
             webhook_event.save()
