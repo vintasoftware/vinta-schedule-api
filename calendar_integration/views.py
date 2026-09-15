@@ -149,6 +149,31 @@ def _parse_bool(value, *, default: bool = True) -> bool:
     return bool(value)
 
 
+def _initialize_calendar_service_for_calendar(
+    calendar_service: CalendarService,
+    *,
+    user: "User",
+    calendar: Calendar,
+) -> None:
+    """Bind ``calendar_service`` for operations against ``calendar``.
+
+    Internal calendars are Postgres-only, so there is no social account to
+    authenticate with.
+    """
+    if calendar.provider == CalendarProvider.INTERNAL:
+        calendar_service.initialize_without_provider(
+            user_or_token=user,
+            organization=calendar.organization,
+        )
+        return
+
+    social_account = SocialAccount.objects.filter(user=user, provider=calendar.provider).first()
+    calendar_service.authenticate(
+        account=social_account,
+        organization=calendar.organization,
+    )
+
+
 _CALENDAR_UPDATE_DESCRIPTION = (
     "Updates a calendar's editable fields.\n\n"
     "**Authorization rules (enforced after org-scoping):**\n"
@@ -847,15 +872,11 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         except (ValueError, CalendarIntegrationError) as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
 
-        # Get social account for authentication
-        social_account = SocialAccount.objects.filter(
-            user=request.user, provider=calendar.provider
-        ).first()
-
         try:
-            calendar_service.authenticate(
-                account=social_account,
-                organization=calendar.organization,
+            _initialize_calendar_service_for_calendar(
+                calendar_service,
+                user=request.user,
+                calendar=calendar,
             )
 
             available_windows = calendar_service.get_availability_windows_in_range(
@@ -932,14 +953,10 @@ class CalendarViewSet(VintaScheduleModelViewSet):
             ) from e
 
         try:
-            # Get social account for authentication
-            social_account = SocialAccount.objects.filter(
-                user=request.user, provider=calendar.provider
-            ).first()
-
-            calendar_service.authenticate(
-                account=social_account,
-                organization=calendar.organization,
+            _initialize_calendar_service_for_calendar(
+                calendar_service,
+                user=request.user,
+                calendar=calendar,
             )
 
             unavailable_windows = calendar_service.get_unavailable_time_windows_in_range(
@@ -1011,11 +1028,10 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
         instance = self.get_object()
 
         try:
-            calendar_service.authenticate(
-                account=SocialAccount.objects.get(
-                    user=request.user, provider=instance.calendar.provider
-                ),
-                organization=instance.organization,
+            _initialize_calendar_service_for_calendar(
+                calendar_service,
+                user=request.user,
+                calendar=instance.calendar,
             )
             calendar_service.delete_event(
                 calendar_id=instance.calendar.id,
