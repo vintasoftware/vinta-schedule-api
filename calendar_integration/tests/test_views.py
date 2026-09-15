@@ -37,6 +37,7 @@ from calendar_integration.models import (
     EventExternalAttendance,
     ExternalAttendee,
     RecurrenceRule,
+    ResourceAllocation,
 )
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
@@ -668,6 +669,55 @@ class TestCalendarEventViewSet:
         # Verify the mock was called
         mock_calendar_service.authenticate.assert_called_once()
         mock_calendar_service.update_event.assert_called_once()
+
+    def test_partial_update_reconstructs_attendances_and_resource_allocations(
+        self, auth_client, calendar_event, user, social_account
+    ):
+        """PATCH omitting nested lists must not 500 when the event already has rows."""
+        from di_core.containers import container
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar_event.calendar)
+
+        attendee_user = baker.make(User, email="attendee@example.com")
+        attendee_membership = baker.make(
+            OrganizationMembership,
+            user=attendee_user,
+            organization=calendar_event.organization,
+        )
+        baker.make(
+            EventAttendance,
+            event=calendar_event,
+            membership=attendee_membership,
+            organization=calendar_event.organization,
+        )
+
+        resource_calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=calendar_event.organization,
+            calendar_type=CalendarType.RESOURCE,
+        )
+        baker.make(
+            ResourceAllocation,
+            event=calendar_event,
+            calendar=resource_calendar,
+            organization=calendar_event.organization,
+        )
+
+        mock_calendar_service = Mock()
+        mock_calendar_service.authenticate.return_value = None
+        calendar_event.title = "Patched Title"
+        mock_calendar_service.update_event.return_value = calendar_event
+
+        url = reverse("api:CalendarEvents-detail", kwargs={"pk": calendar_event.id})
+
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.patch(url, {"title": "Patched Title"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        mock_calendar_service.update_event.assert_called_once()
+        event_data = mock_calendar_service.update_event.call_args.kwargs["event_data"]
+        assert [att.user_id for att in event_data.attendances] == [attendee_user.id]
+        assert [ra.resource_id for ra in event_data.resource_allocations] == [resource_calendar.id]
 
     def test_delete_calendar_event(self, auth_client, calendar_event, social_account, user):
         """Test deleting a calendar event"""

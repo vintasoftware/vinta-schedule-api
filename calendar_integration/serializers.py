@@ -715,6 +715,22 @@ def _map_external_client_identifiers(
     ]
 
 
+def _attendance_user_id_from_payload(att: dict) -> int:
+    """Resolve attendee user id from nested-serializer or instance-reconstruction payloads."""
+    user = att.get("user")
+    if user is not None:
+        return user.id
+    return att["user_id"]
+
+
+def _resource_allocation_id_from_payload(allocation: dict) -> int:
+    """Resolve resource calendar id from nested-serializer or instance-reconstruction payloads."""
+    calendar = allocation.get("calendar")
+    if calendar is not None:
+        return calendar.id
+    return allocation["resource_id"]
+
+
 class ExternalAttendeeSerializer(VirtualModelSerializer):
     id = serializers.IntegerField(  # noqa: A003
         allow_null=True, required=False, help_text="ID of the external attendee."
@@ -1511,11 +1527,14 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 end_time=validated_data.get("end_time", instance.end_time),
                 timezone=validated_data.get("timezone", instance.timezone),
                 resource_allocations=[
-                    ResourceAllocationInputData(resource_id=ra["calendar"].id)
+                    ResourceAllocationInputData(
+                        resource_id=_resource_allocation_id_from_payload(ra)
+                    )
                     for ra in resource_allocations
                 ],
                 attendances=[
-                    EventAttendanceInputData(user_id=att["user"].id) for att in attendances
+                    EventAttendanceInputData(user_id=_attendance_user_id_from_payload(att))
+                    for att in attendances
                 ],
                 external_attendances=[
                     EventExternalAttendanceInputData(
