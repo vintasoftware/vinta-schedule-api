@@ -1485,7 +1485,12 @@ class CalendarEvent(RecurringMixin):
     )
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-    external_id = models.CharField(max_length=255, unique=True, blank=True)
+    # ``null=True`` alongside ``unique=True``: an event written without a calendar
+    # provider has no external id, and Postgres exempts NULL from a unique index, so
+    # any number of provider-less events coexist. The empty string would not -- only
+    # one row could hold it. This is the documented exception to Django's "avoid null
+    # on string fields" rule.
+    external_id = models.CharField(max_length=255, unique=True, blank=True, null=True)
 
     # Bundle calendar fields
     bundle_calendar = OrganizationSafeForeignKey(

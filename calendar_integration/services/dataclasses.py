@@ -273,7 +273,9 @@ class CalendarEventData:
     timezone: str  # IANA timezone string (required)
     title: str
     description: str
-    external_id: str
+    # ``None`` for an event that exists only locally: one created without a calendar
+    # provider has nothing to name it by. Adapter-built instances always carry one.
+    external_id: str | None
     calendar_settings: CalendarSettingsData | None
     status: Literal["confirmed", "cancelled"]
     attendees: list[EventInternalAttendeeData]
