@@ -37,16 +37,12 @@ class TestFilterScopeSecurity:
     @pytest.fixture
     def membership1(self, org1, user1):
         """Create membership for user1 in org1."""
-        return baker.make(
-            OrganizationMembership, user=user1, organization=org1, is_active=True
-        )
+        return baker.make(OrganizationMembership, user=user1, organization=org1, is_active=True)
 
     @pytest.fixture
     def membership2(self, org2, user2):
         """Create membership for user2 in org2."""
-        return baker.make(
-            OrganizationMembership, user=user2, organization=org2, is_active=True
-        )
+        return baker.make(OrganizationMembership, user=user2, organization=org2, is_active=True)
 
     @pytest.fixture
     def calendar1(self, org1, membership1):
@@ -80,7 +76,10 @@ class TestFilterScopeSecurity:
     def calendar1_unowned(self, org1, membership1):
         """Create second calendar in org1 not owned by user1."""
         calendar = baker.make(
-            Calendar, organization=org1, name="Org1 Calendar Unowned", external_id="org1-cal1-unowned"
+            Calendar,
+            organization=org1,
+            name="Org1 Calendar Unowned",
+            external_id="org1-cal1-unowned",
         )
         other_user = baker.make(User, email="other@example.com")
         other_membership = baker.make(
@@ -166,9 +165,7 @@ class TestFilterScopeSecurity:
         assert events[0].id == event1.id
         assert event1_unowned.id not in [e.id for e in events]
 
-    def test_unscoped_filter_includes_all_org_calendars(
-        self, org1, event1, event1_unowned
-    ):
+    def test_unscoped_filter_includes_all_org_calendars(self, org1, event1, event1_unowned):
         """Filter without system user includes events from all calendars in the org."""
         base_dt = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
         filter_input = CalendarEventAggregateFilterInput(

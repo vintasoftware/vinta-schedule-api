@@ -149,9 +149,7 @@ class TestCalendarEventAggregateFilterInput:
         with pytest.raises(GraphQLError, match="Invalid time range"):
             filter_input.apply(qs, organization.id)
 
-    def test_calendar_id_narrows_events(
-        self, organization, event1, event2, base_datetime
-    ):
+    def test_calendar_id_narrows_events(self, organization, event1, event2, base_datetime):
         """Filter narrows events by calendar_id."""
         filter_input = CalendarEventAggregateFilterInput(
             calendar_id=event1.calendar_fk_id,
@@ -559,9 +557,7 @@ class TestCalendarAggregateFilterInput:
         cal1 = baker.make(
             Calendar, organization=organization, name="Calendar 1", external_id="cal1"
         )
-        baker.make(
-            Calendar, organization=organization, name="Calendar 2", external_id="cal2"
-        )
+        baker.make(Calendar, organization=organization, name="Calendar 2", external_id="cal2")
         filter_input = CalendarAggregateFilterInput(calendar_id=cal1.id)
         qs = Calendar.objects.filter_by_organization(organization.id)
         result = list(filter_input.apply(qs, organization.id))
