@@ -83,7 +83,7 @@ tiers:
       tuning slow query against partitioned hot table, debugging heisenbug.
     models:
       anthropic:
-        - id: claude-opus-4-8
+        - id: claude-opus-5
           note: "[1m] 1M-context variant for large codebases"
       openai:
         - id: gpt-5.6-sol

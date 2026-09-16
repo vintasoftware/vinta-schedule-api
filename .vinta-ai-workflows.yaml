@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=./node_modules/vinta-ai-workflows/schemas/vinta-ai-workflows-config.v1.schema.json
 
 schema_version: 1
-vinta_ai_workflows_version: "0.7.0-alpha13"
-last_synced_at: "2026-09-16T00:00:00Z"
+vinta_ai_workflows_version: "0.7.0-alpha15"
+last_synced_at: "2026-09-16T12:26:25Z"
 
 project:
   name: vinta_schedule_api
