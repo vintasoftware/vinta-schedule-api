@@ -49,32 +49,54 @@ class TestFilterScopeSecurity:
         )
 
     @pytest.fixture
-    def calendar1(self, org1, user1):
+    def calendar1(self, org1, membership1):
         """Create calendar in org1 owned by user1."""
-        calendar = baker.make(Calendar, organization=org1, name="Org1 Calendar")
+        calendar = baker.make(
+            Calendar, organization=org1, name="Org1 Calendar", external_id="org1-cal1"
+        )
         baker.make(
             CalendarOwnership,
             calendar=calendar,
-            membership_user_id=user1.id,
+            membership_user_id=membership1.user_id,
             organization=org1,
         )
         return calendar
 
     @pytest.fixture
-    def calendar2(self, org2, user2):
+    def calendar2(self, org2, membership2):
         """Create calendar in org2 owned by user2."""
-        calendar = baker.make(Calendar, organization=org2, name="Org2 Calendar")
+        calendar = baker.make(
+            Calendar, organization=org2, name="Org2 Calendar", external_id="org2-cal2"
+        )
         baker.make(
             CalendarOwnership,
             calendar=calendar,
-            membership_user_id=user2.id,
+            membership_user_id=membership2.user_id,
             organization=org2,
         )
         return calendar
 
     @pytest.fixture
+    def calendar1_unowned(self, org1, membership1):
+        """Create second calendar in org1 not owned by user1."""
+        calendar = baker.make(
+            Calendar, organization=org1, name="Org1 Calendar Unowned", external_id="org1-cal1-unowned"
+        )
+        other_user = baker.make(User, email="other@example.com")
+        other_membership = baker.make(
+            OrganizationMembership, user=other_user, organization=org1, is_active=True
+        )
+        baker.make(
+            CalendarOwnership,
+            calendar=calendar,
+            membership_user_id=other_membership.user_id,
+            organization=org1,
+        )
+        return calendar
+
+    @pytest.fixture
     def event1(self, org1, calendar1):
-        """Create event in org1."""
+        """Create event in org1 on owned calendar."""
         base_dt = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
         return baker.make(
             CalendarEvent,
@@ -84,7 +106,22 @@ class TestFilterScopeSecurity:
             end_time_tz_unaware=base_dt + datetime.timedelta(hours=1),
             timezone="UTC",
             title="Org1 Event",
-            external_id="event-org1",
+            external_id="event-org1-owned",
+        )
+
+    @pytest.fixture
+    def event1_unowned(self, org1, calendar1_unowned):
+        """Create event in org1 on unowned calendar."""
+        base_dt = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
+        return baker.make(
+            CalendarEvent,
+            organization=org1,
+            calendar_fk=calendar1_unowned,
+            start_time_tz_unaware=base_dt,
+            end_time_tz_unaware=base_dt + datetime.timedelta(hours=1),
+            timezone="UTC",
+            title="Org1 Unowned Event",
+            external_id="event-org1-unowned-scoped",
         )
 
     @pytest.fixture
@@ -99,7 +136,7 @@ class TestFilterScopeSecurity:
             end_time_tz_unaware=base_dt + datetime.timedelta(hours=1),
             timezone="UTC",
             title="Org2 Event",
-            external_id="event-org2",
+            external_id="event-org2-scoped",
         )
 
     @pytest.fixture
@@ -111,10 +148,10 @@ class TestFilterScopeSecurity:
             organization=membership1.organization,
         )
 
-    def test_scoped_filter_excludes_other_org_events(
-        self, org1, org2, event1, event2, system_user1
+    def test_scoped_filter_excludes_unowned_calendars(
+        self, org1, event1, event1_unowned, system_user1
     ):
-        """A scoped user's filter returns only events from their org's calendars."""
+        """A scoped user's filter excludes events from calendars they don't own."""
         base_dt = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
         filter_input = CalendarEventAggregateFilterInput(
             start_datetime=base_dt,
@@ -127,12 +164,12 @@ class TestFilterScopeSecurity:
         events = list(filtered_qs)
         assert len(events) == 1
         assert events[0].id == event1.id
-        assert events[0].organization_id == org1.id
+        assert event1_unowned.id not in [e.id for e in events]
 
-    def test_unscoped_filter_still_respects_org_boundary(
-        self, org1, org2, event1, event2
+    def test_unscoped_filter_includes_all_org_calendars(
+        self, org1, event1, event1_unowned
     ):
-        """Filter always applies organization filter, even without a system user."""
+        """Filter without system user includes events from all calendars in the org."""
         base_dt = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
         filter_input = CalendarEventAggregateFilterInput(
             start_datetime=base_dt,
@@ -142,7 +179,6 @@ class TestFilterScopeSecurity:
         qs = CalendarEvent.objects.filter_by_organization(org1.id)
         filtered_qs = filter_input.apply(qs, org1.id, system_user=None)
 
-        org1_events = list(filtered_qs)
-        assert len(org1_events) == 1
-        assert org1_events[0].id == event1.id
-        assert org1_events[0].organization_id == org1.id
+        events = sorted(list(filtered_qs), key=lambda e: e.id)
+        assert len(events) == 2
+        assert {events[0].id, events[1].id} == {event1.id, event1_unowned.id}
