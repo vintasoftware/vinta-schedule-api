@@ -136,6 +136,8 @@ class BlockedTimeAggregateFilterInput:
 class AppointmentTypeAggregateFilterInput:
     """Filter input for aggregating appointment types."""
 
+    name: str | None = None
+
     def apply(self, base_qs: Any, organization_id: int, system_user: Any = None) -> Any:
         """Return a narrowed queryset filtered by this input.
 
@@ -144,6 +146,9 @@ class AppointmentTypeAggregateFilterInput:
         from organizations.models import Organization
 
         qs = base_qs.filter_by_organization(organization_id)
+
+        if self.name is not None:
+            qs = qs.filter(name=self.name)
 
         if system_user is not None:
             org = Organization.objects.get(id=organization_id)
@@ -156,12 +161,17 @@ class AppointmentTypeAggregateFilterInput:
 class CalendarAggregateFilterInput:
     """Filter input for aggregating calendars."""
 
+    calendar_id: int | None = None
+
     def apply(self, base_qs: Any, organization_id: int, system_user: Any = None) -> Any:
         """Return a narrowed queryset filtered by this input.
 
         Applies calendar ownership scope.
         """
         qs = base_qs.filter_by_organization(organization_id)
+
+        if self.calendar_id is not None:
+            qs = qs.filter(id=self.calendar_id)
 
         if system_user is not None:
             from organizations.models import Organization
@@ -178,6 +188,8 @@ class CalendarAggregateFilterInput:
 class CalendarPoolAggregateFilterInput:
     """Filter input for aggregating calendar pools."""
 
+    name: str | None = None
+
     def apply(self, base_qs: Any, organization_id: int, system_user: Any = None) -> Any:
         """Return a narrowed queryset filtered by this input.
 
@@ -186,6 +198,9 @@ class CalendarPoolAggregateFilterInput:
         from organizations.models import Organization
 
         qs = base_qs.filter_by_organization(organization_id)
+
+        if self.name is not None:
+            qs = qs.filter(name=self.name)
 
         if system_user is not None:
             org = Organization.objects.get(id=organization_id)

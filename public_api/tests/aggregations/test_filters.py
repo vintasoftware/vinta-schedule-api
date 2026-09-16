@@ -163,10 +163,24 @@ class TestAppointmentTypeAggregateFilterInput:
         """An empty filter input is accepted."""
         from calendar_integration.models import AppointmentType
 
+        apt = baker.make(AppointmentType, organization=organization, name="Test Appointment")
         filter_input = AppointmentTypeAggregateFilterInput()
-        qs = AppointmentType.objects.none()
-        result = filter_input.apply(qs, organization.id)
-        assert result is not None
+        qs = AppointmentType.objects.filter_by_organization(organization.id)
+        result = list(filter_input.apply(qs, organization.id))
+        assert len(result) == 1
+        assert result[0].id == apt.id
+
+    def test_filter_narrows_by_name(self, organization):
+        """Filter narrows appointment types by name."""
+        from calendar_integration.models import AppointmentType
+
+        apt1 = baker.make(AppointmentType, organization=organization, name="Consultation")
+        baker.make(AppointmentType, organization=organization, name="Follow-up")
+        filter_input = AppointmentTypeAggregateFilterInput(name="Consultation")
+        qs = AppointmentType.objects.filter_by_organization(organization.id)
+        result = list(filter_input.apply(qs, organization.id))
+        assert len(result) == 1
+        assert result[0].id == apt1.id
 
 
 @pytest.mark.django_db
@@ -182,10 +196,30 @@ class TestCalendarAggregateFilterInput:
         """An empty filter input is accepted."""
         from calendar_integration.models import Calendar
 
+        cal = baker.make(
+            Calendar, organization=organization, name="Test Calendar", external_id="test-cal"
+        )
         filter_input = CalendarAggregateFilterInput()
-        qs = Calendar.objects.none()
-        result = filter_input.apply(qs, organization.id)
-        assert result is not None
+        qs = Calendar.objects.filter_by_organization(organization.id)
+        result = list(filter_input.apply(qs, organization.id))
+        assert len(result) == 1
+        assert result[0].id == cal.id
+
+    def test_filter_narrows_by_calendar_id(self, organization):
+        """Filter narrows calendars by calendar_id."""
+        from calendar_integration.models import Calendar
+
+        cal1 = baker.make(
+            Calendar, organization=organization, name="Calendar 1", external_id="cal1"
+        )
+        baker.make(
+            Calendar, organization=organization, name="Calendar 2", external_id="cal2"
+        )
+        filter_input = CalendarAggregateFilterInput(calendar_id=cal1.id)
+        qs = Calendar.objects.filter_by_organization(organization.id)
+        result = list(filter_input.apply(qs, organization.id))
+        assert len(result) == 1
+        assert result[0].id == cal1.id
 
 
 @pytest.mark.django_db
@@ -201,7 +235,21 @@ class TestCalendarPoolAggregateFilterInput:
         """An empty filter input is accepted."""
         from calendar_integration.models import CalendarPool
 
+        pool = baker.make(CalendarPool, organization=organization, name="Test Pool")
         filter_input = CalendarPoolAggregateFilterInput()
-        qs = CalendarPool.objects.none()
-        result = filter_input.apply(qs, organization.id)
-        assert result is not None
+        qs = CalendarPool.objects.filter_by_organization(organization.id)
+        result = list(filter_input.apply(qs, organization.id))
+        assert len(result) == 1
+        assert result[0].id == pool.id
+
+    def test_filter_narrows_by_name(self, organization):
+        """Filter narrows calendar pools by name."""
+        from calendar_integration.models import CalendarPool
+
+        pool1 = baker.make(CalendarPool, organization=organization, name="Team A")
+        baker.make(CalendarPool, organization=organization, name="Team B")
+        filter_input = CalendarPoolAggregateFilterInput(name="Team A")
+        qs = CalendarPool.objects.filter_by_organization(organization.id)
+        result = list(filter_input.apply(qs, organization.id))
+        assert len(result) == 1
+        assert result[0].id == pool1.id
