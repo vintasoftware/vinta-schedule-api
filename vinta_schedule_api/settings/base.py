@@ -3,9 +3,9 @@ import re
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.core.validators import URLValidator
 
 from cuid2 import cuid_wrapper
@@ -609,6 +609,58 @@ HEADLESS_FRONTEND_URLS = {
 # override it with their real frontend origin; this default matches the local dev
 # frontend port used throughout HEADLESS_FRONTEND_URLS above.
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000").rstrip("/")
+
+
+# The only hosts that may use plain http. Every other host must use https. An origin
+# listed in CSRF_TRUSTED_ORIGINS is trusted for CSRF checks and accepted as an OAuth
+# redirect target, and both are too much to give a cleartext origin off a developer
+# machine.
+CLEARTEXT_ORIGIN_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def build_csrf_trusted_origins(frontend_base_url: str) -> list[str]:
+    """Normalize the frontend base URL to Django's CSRF_TRUSTED_ORIGINS shape.
+
+    Public (no leading underscore) on purpose: staging.py/production.py reach it
+    through ``from .base import *``, which skips underscore-prefixed names.
+
+    The result feeds two security checks: Django's CSRF origin check, and the list of
+    allowed redirect targets allauth builds in ``is_safe_url``. It comes from
+    FRONTEND_BASE_URL alone for that reason. Reading CORS_ALLOWED_ORIGINS here too
+    would let one environment variable open up all three at once, and two of them
+    without anyone noticing.
+
+    A bad value raises instead of being skipped. Returning an empty list would start
+    the app normally and then reject every social login callback, in production only.
+    """
+    parsed = urlparse(frontend_base_url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ImproperlyConfigured(
+            f"FRONTEND_BASE_URL must be an http(s) origin, got {frontend_base_url!r}."
+        )
+    if "*" in parsed.netloc:
+        # Django accepts a wildcard host in CSRF_TRUSTED_ORIGINS. django-cors-headers
+        # ignores one in CORS_ALLOWED_ORIGINS. So a wildcard copied from the CORS
+        # setting looks like it does nothing while it hands CSRF trust, and an OAuth
+        # redirect slot, to every subdomain.
+        raise ImproperlyConfigured(
+            f"FRONTEND_BASE_URL must name one host, not a wildcard: {frontend_base_url!r}."
+        )
+    if parsed.scheme == "http" and parsed.hostname not in CLEARTEXT_ORIGIN_HOSTNAMES:
+        raise ImproperlyConfigured(
+            f"FRONTEND_BASE_URL must use https outside local development, got "
+            f"{frontend_base_url!r}."
+        )
+    return [f"{parsed.scheme}://{parsed.netloc}"]
+
+
+# Headless social login checks ``callback_url`` with ``AccountAdapter.is_safe_url``.
+# That method accepts the request host, the hosts in ALLOWED_HOSTS, and the hosts in
+# this setting. It reads neither CORS_ALLOWED_ORIGINS nor FRONTEND_BASE_URL, so the
+# SPA's origin has to appear here. ECS sets ALLOWED_HOSTS to the API hostname alone
+# where Render used to set ``*``, which is why the callback needs this setting now.
+# staging.py and production.py recompute it after they override FRONTEND_BASE_URL.
+CSRF_TRUSTED_ORIGINS = build_csrf_trusted_origins(FRONTEND_BASE_URL)
 # The signed-in app, relative to FRONTEND_BASE_URL. The origin's own root is the
 # public landing page, NOT the app, so a caller needing a stable
 # non-organization-specific destination for a just-authenticated user (see

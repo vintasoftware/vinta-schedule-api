@@ -224,6 +224,7 @@ LOGGING = {
 sentry_sdk.init(dsn=SENTRY_DSN, integrations=[DjangoIntegration()], release=COMMIT_SHA)
 
 FRONTEND_BASE_URL = "https://schedule.vintasoftware.com"
+CSRF_TRUSTED_ORIGINS = build_csrf_trusted_origins(FRONTEND_BASE_URL)
 HEADLESS_FRONTEND_URLS = {
     "account_confirm_email": f"{FRONTEND_BASE_URL}/auth/verify-email/{{key}}",
     "account_reset_password": f"{FRONTEND_BASE_URL}/auth/request-password-reset",

@@ -7,6 +7,8 @@ FRONTEND_BASE_URL = config(
     "FRONTEND_BASE_URL", default="https://schedule-staging.vintasoftware.com"
 ).rstrip("/")
 
+CSRF_TRUSTED_ORIGINS = build_csrf_trusted_origins(FRONTEND_BASE_URL)
+
 HEADLESS_FRONTEND_URLS = {
     "account_confirm_email": f"{FRONTEND_BASE_URL}/auth/verify-email/{{key}}",
     "account_reset_password": f"{FRONTEND_BASE_URL}/auth/request-password-reset",

@@ -292,12 +292,12 @@ variable "site_domain" {
 }
 
 variable "frontend_base_url" {
-  description = "FRONTEND_BASE_URL used in emails and OAuth redirects."
+  description = "FRONTEND_BASE_URL used in emails and OAuth redirects. It is also the only source of CSRF_TRUSTED_ORIGINS, which allauth uses to decide which OAuth callback_url values it accepts. Give it one https origin, with no wildcard, or the app will not start."
   type        = string
 }
 
 variable "cors_allowed_origins" {
-  description = "Origins the API answers CORS requests from. Separate from storage_cors_allowed_origins on purpose."
+  description = "Origins the API answers CORS requests from. Kept separate from storage_cors_allowed_origins on purpose, and it does not grant CSRF trust. The accepted OAuth redirect targets come from frontend_base_url alone."
   type        = list(string)
 }
 
