@@ -43,7 +43,7 @@
     "senior": {
       "role": "implementer",
       "tier": 4,
-      "model": "claude-opus-4-8",
+      "model": "claude-opus-5",
       "description": "The entity-agnostic aggregate engine, the window-over-subquery construction, and the batched nested GROUP BY. No precedent in this repo."
     },
     "mid": {
@@ -61,7 +61,7 @@
     "reviewer": {
       "role": "reviewer",
       "tier": 4,
-      "model": "claude-opus-4-8",
+      "model": "claude-opus-5",
       "description": "Reads every phase. Must sit at or above Phase 7, the hardest work on the plan."
     }
   },
