@@ -2,10 +2,13 @@ import datetime
 from unittest.mock import MagicMock, patch
 
 from django.conf import settings as django_settings
+from django.test import RequestFactory
 from django.utils import timezone
 
 import pytest
 from allauth.account import app_settings as account_app_settings
+from allauth.account.adapter import get_adapter
+from allauth.core import context
 from allauth.socialaccount.models import SocialLogin
 from model_bakery import baker
 from vinta_billing.constants import BillingState, LimitKind
@@ -21,6 +24,7 @@ from organizations.models import Organization, OrganizationInvitation, Organizat
 from payments.seams.resource_keys import ORGANIZATION_MEMBERS
 from payments.seams.scopes import scope_for
 from users.models import Profile, User
+from vinta_schedule_api.settings.base import build_csrf_trusted_origins
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -293,6 +297,29 @@ class TestAccountAdapter:
         assert account_app_settings.USER_MODEL_USERNAME_FIELD is None
         # Must not raise NotImplementedError.
         adapter.populate_username(None, User(email="fresh@example.com"))
+
+    def test_is_safe_url_allows_frontend_oauth_callback_on_ecs_style_hosts(self, settings):
+        """ECS sets ALLOWED_HOSTS to the API hostname only; SPA callback_url must still pass.
+
+        Builds the setting with ``build_csrf_trusted_origins`` instead of writing the
+        list by hand, so the test runs against the value the deployed environments
+        compute. The ``settings`` fixture puts the originals back afterwards, because
+        ALLOWED_HOSTS and CSRF_TRUSTED_ORIGINS apply to the whole process and would
+        otherwise follow every later test in the same xdist worker.
+        """
+        frontend_origin = "https://schedule-staging.vintasoftware.com"
+        settings.ALLOWED_HOSTS = ["api.schedule-staging.vintasoftware.com"]
+        settings.FRONTEND_BASE_URL = frontend_origin
+        settings.CORS_ALLOWED_ORIGINS = [frontend_origin]
+        settings.CSRF_TRUSTED_ORIGINS = build_csrf_trusted_origins(frontend_origin)
+        request = RequestFactory().get(
+            "/",
+            HTTP_HOST="api.schedule-staging.vintasoftware.com",
+        )
+        callback = f"{frontend_origin}/auth/social/google/callback"
+        with context.request_context(request):
+            assert get_adapter().is_safe_url(callback)
+            assert not get_adapter().is_safe_url("https://evil.example.com/callback")
 
     def test_send_password_reset_mail(self, adapter, user):
         with (
