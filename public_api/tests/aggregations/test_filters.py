@@ -117,7 +117,7 @@ class TestCalendarEventAggregateFilterInput:
         )
         qs = CalendarEvent.objects.none()
         result = filter_input.apply(qs, organization.id)
-        assert result is not None
+        assert len(list(result)) == 0
 
     def test_range_exceeding_max_rejected(self, organization, base_datetime):
         """A date range exceeding MAX_AGGREGATE_RANGE raises GraphQLError."""
@@ -263,7 +263,7 @@ class TestAvailableTimeAggregateFilterInput:
         )
         qs = AvailableTime.objects.none()
         result = filter_input.apply(qs, organization.id)
-        assert result is not None
+        assert len(list(result)) == 0
 
     def test_range_exceeding_max_rejected(self, organization, base_datetime):
         """A date range exceeding MAX_AGGREGATE_RANGE raises GraphQLError."""
@@ -391,7 +391,7 @@ class TestBlockedTimeAggregateFilterInput:
         )
         qs = BlockedTime.objects.none()
         result = filter_input.apply(qs, organization.id)
-        assert result is not None
+        assert len(list(result)) == 0
 
     def test_range_exceeding_max_rejected(self, organization, base_datetime):
         """A date range exceeding MAX_AGGREGATE_RANGE raises GraphQLError."""
@@ -487,7 +487,7 @@ class TestAppointmentTypeAggregateFilterInput:
         filter_input = AppointmentTypeAggregateFilterInput()
         qs = AppointmentType.objects.filter_by_organization(organization.id)
         result = list(filter_input.apply(qs, organization.id, system_user))
-        assert result is not None
+        assert len(result) == 0
 
 
 @pytest.mark.django_db
@@ -631,4 +631,4 @@ class TestCalendarPoolAggregateFilterInput:
         filter_input = CalendarPoolAggregateFilterInput()
         qs = CalendarPool.objects.filter_by_organization(organization.id)
         result = list(filter_input.apply(qs, organization.id, system_user))
-        assert result is not None
+        assert len(result) == 0

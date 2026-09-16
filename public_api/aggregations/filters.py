@@ -12,6 +12,42 @@ from public_api.scoping import (
 )
 
 
+def _apply_temporal_range_filter(
+    base_qs: Any,
+    organization_id: int,
+    calendar_id: int | None,
+    start_datetime: datetime.datetime,
+    end_datetime: datetime.datetime,
+    system_user: Any = None,
+) -> Any:
+    """Apply temporal range and calendar scope filtering.
+
+    Shared helper for CalendarEvent, AvailableTime, and BlockedTime filters.
+    """
+    if end_datetime <= start_datetime:
+        raise GraphQLError("Invalid time range: end_datetime must be after start_datetime.")
+    if (end_datetime - start_datetime) > MAX_AGGREGATE_RANGE:
+        raise GraphQLError("Requested time range is too large.")
+
+    qs = base_qs.filter_by_organization(organization_id).filter(
+        start_time__lt=end_datetime,
+        end_time__gt=start_datetime,
+    )
+
+    if calendar_id is not None:
+        qs = qs.filter(calendar_fk_id=calendar_id)
+
+    if system_user is not None:
+        from organizations.models import Organization
+
+        org = Organization.objects.get(id=organization_id)
+        allowed_ids = scoped_calendar_ids(system_user, org)
+        if allowed_ids is not None:
+            qs = qs.filter(calendar_fk_id__in=allowed_ids)
+
+    return qs
+
+
 @strawberry.input
 class CalendarEventAggregateFilterInput:
     """Filter input for aggregating calendar events.
@@ -28,28 +64,14 @@ class CalendarEventAggregateFilterInput:
 
         Validates the date range and applies calendar ownership scope.
         """
-        if self.end_datetime <= self.start_datetime:
-            raise GraphQLError("Invalid time range: end_datetime must be after start_datetime.")
-        if (self.end_datetime - self.start_datetime) > MAX_AGGREGATE_RANGE:
-            raise GraphQLError("Requested time range is too large.")
-
-        qs = base_qs.filter_by_organization(organization_id).filter(
-            start_time__lt=self.end_datetime,
-            end_time__gt=self.start_datetime,
+        return _apply_temporal_range_filter(
+            base_qs,
+            organization_id,
+            self.calendar_id,
+            self.start_datetime,
+            self.end_datetime,
+            system_user,
         )
-
-        if self.calendar_id is not None:
-            qs = qs.filter(calendar_fk_id=self.calendar_id)
-
-        if system_user is not None:
-            from organizations.models import Organization
-
-            org = Organization.objects.get(id=organization_id)
-            allowed_ids = scoped_calendar_ids(system_user, org)
-            if allowed_ids is not None:
-                qs = qs.filter(calendar_fk_id__in=allowed_ids)
-
-        return qs
 
 
 @strawberry.input
@@ -68,28 +90,14 @@ class AvailableTimeAggregateFilterInput:
 
         Validates the date range and applies calendar ownership scope.
         """
-        if self.end_datetime <= self.start_datetime:
-            raise GraphQLError("Invalid time range: end_datetime must be after start_datetime.")
-        if (self.end_datetime - self.start_datetime) > MAX_AGGREGATE_RANGE:
-            raise GraphQLError("Requested time range is too large.")
-
-        qs = base_qs.filter_by_organization(organization_id).filter(
-            start_time__lt=self.end_datetime,
-            end_time__gt=self.start_datetime,
+        return _apply_temporal_range_filter(
+            base_qs,
+            organization_id,
+            self.calendar_id,
+            self.start_datetime,
+            self.end_datetime,
+            system_user,
         )
-
-        if self.calendar_id is not None:
-            qs = qs.filter(calendar_fk_id=self.calendar_id)
-
-        if system_user is not None:
-            from organizations.models import Organization
-
-            org = Organization.objects.get(id=organization_id)
-            allowed_ids = scoped_calendar_ids(system_user, org)
-            if allowed_ids is not None:
-                qs = qs.filter(calendar_fk_id__in=allowed_ids)
-
-        return qs
 
 
 @strawberry.input
@@ -108,28 +116,14 @@ class BlockedTimeAggregateFilterInput:
 
         Validates the date range and applies calendar ownership scope.
         """
-        if self.end_datetime <= self.start_datetime:
-            raise GraphQLError("Invalid time range: end_datetime must be after start_datetime.")
-        if (self.end_datetime - self.start_datetime) > MAX_AGGREGATE_RANGE:
-            raise GraphQLError("Requested time range is too large.")
-
-        qs = base_qs.filter_by_organization(organization_id).filter(
-            start_time__lt=self.end_datetime,
-            end_time__gt=self.start_datetime,
+        return _apply_temporal_range_filter(
+            base_qs,
+            organization_id,
+            self.calendar_id,
+            self.start_datetime,
+            self.end_datetime,
+            system_user,
         )
-
-        if self.calendar_id is not None:
-            qs = qs.filter(calendar_fk_id=self.calendar_id)
-
-        if system_user is not None:
-            from organizations.models import Organization
-
-            org = Organization.objects.get(id=organization_id)
-            allowed_ids = scoped_calendar_ids(system_user, org)
-            if allowed_ids is not None:
-                qs = qs.filter(calendar_fk_id__in=allowed_ids)
-
-        return qs
 
 
 @strawberry.input

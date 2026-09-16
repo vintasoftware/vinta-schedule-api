@@ -179,3 +179,21 @@ class TestFilterScopeSecurity:
         events = sorted(list(filtered_qs), key=lambda e: e.id)
         assert len(events) == 2
         assert {events[0].id, events[1].id} == {event1.id, event1_unowned.id}
+
+    def test_filter_enforces_organization_isolation(
+        self, org1, org2, event1, event1_unowned, event2
+    ):
+        """Filter enforces organization isolation even with unscoped queryset."""
+        base_dt = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
+        filter_input = CalendarEventAggregateFilterInput(
+            start_datetime=base_dt,
+            end_datetime=base_dt + datetime.timedelta(days=30),
+        )
+
+        qs = CalendarEvent.original_manager.all()
+        filtered_qs = filter_input.apply(qs, org1.id, system_user=None)
+
+        events = list(filtered_qs)
+        assert len(events) == 2
+        assert all(e.organization_id == org1.id for e in events)
+        assert event2.id not in [e.id for e in events]
