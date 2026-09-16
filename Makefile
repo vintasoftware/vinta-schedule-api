@@ -74,3 +74,14 @@ update_schema:
 attach:
 	# attach to the running api container to an interactive shell so we can debug using breakpoints
 	docker compose attach api
+
+# vinta-ai-maestro lanes. Each lane runs its own compose project named
+# vinta-schedule-api_<lane>; `purge --lanes` removes worktrees and branches but
+# leaves the containers, volumes and the per-lane api image behind.
+lanes:
+	docker compose ls -a | grep 'vinta-schedule-api_' || echo "no lane compose projects"
+
+# make lane_down LANE=vinta-schedule-api_<lane>   (project names come from `make lanes`)
+lane_down:
+	@test -n "$(LANE)" || { echo "usage: make lane_down LANE=<compose project name>"; exit 2; }
+	docker compose -p $(LANE) down -v --rmi local --remove-orphans
