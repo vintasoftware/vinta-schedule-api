@@ -1,4 +1,9 @@
+import datetime
+
 from django.db.models import TextChoices
+
+
+MAX_AGGREGATE_RANGE = datetime.timedelta(days=366)
 
 
 class PublicAPIResources(TextChoices):
