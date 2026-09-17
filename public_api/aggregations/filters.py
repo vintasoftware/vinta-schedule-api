@@ -61,11 +61,13 @@ class CalendarEventAggregateFilterInput:
         """Apply filter to CalendarEvent queryset and return the narrowed result.
 
         Raises:
-            AggregateFilterValidationError: If the date range exceeds MAX_AGGREGATE_RANGE.
+            AggregateFilterValidationError: If the date range is backwards or exceeds MAX_AGGREGATE_RANGE.
 
         Returns:
             A scoped, filtered CalendarEvent queryset.
         """
+        if self.end_datetime <= self.start_datetime:
+            raise AggregateFilterValidationError("Invalid time range.")
         span = self.end_datetime - self.start_datetime
         if span > MAX_AGGREGATE_RANGE:
             raise AggregateFilterValidationError(
@@ -73,6 +75,11 @@ class CalendarEventAggregateFilterInput:
             )
 
         qs = CalendarEvent.objects.filter_by_organization(organization.id)
+
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, organization)
+            if allowed_ids is not None:
+                qs = qs.filter(calendar_fk__in=allowed_ids)
 
         if self.calendar_id is not None:
             qs = qs.filter(calendar_fk_id=self.calendar_id)
@@ -105,11 +112,13 @@ class BlockedTimeAggregateFilterInput:
         """Apply filter to BlockedTime queryset and return the narrowed result.
 
         Raises:
-            AggregateFilterValidationError: If the date range exceeds MAX_AGGREGATE_RANGE.
+            AggregateFilterValidationError: If the date range is backwards or exceeds MAX_AGGREGATE_RANGE.
 
         Returns:
             A scoped, filtered BlockedTime queryset.
         """
+        if self.end_datetime <= self.start_datetime:
+            raise AggregateFilterValidationError("Invalid time range.")
         span = self.end_datetime - self.start_datetime
         if span > MAX_AGGREGATE_RANGE:
             raise AggregateFilterValidationError(
@@ -117,6 +126,11 @@ class BlockedTimeAggregateFilterInput:
             )
 
         qs = BlockedTime.objects.filter_by_organization(organization.id)
+
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, organization)
+            if allowed_ids is not None:
+                qs = qs.filter(calendar_fk__in=allowed_ids)
 
         if self.calendar_id is not None:
             qs = qs.filter(calendar_fk_id=self.calendar_id)
@@ -149,11 +163,13 @@ class AvailableTimeAggregateFilterInput:
         """Apply filter to AvailableTime queryset and return the narrowed result.
 
         Raises:
-            AggregateFilterValidationError: If the date range exceeds MAX_AGGREGATE_RANGE.
+            AggregateFilterValidationError: If the date range is backwards or exceeds MAX_AGGREGATE_RANGE.
 
         Returns:
             A scoped, filtered AvailableTime queryset.
         """
+        if self.end_datetime <= self.start_datetime:
+            raise AggregateFilterValidationError("Invalid time range.")
         span = self.end_datetime - self.start_datetime
         if span > MAX_AGGREGATE_RANGE:
             raise AggregateFilterValidationError(
@@ -163,6 +179,11 @@ class AvailableTimeAggregateFilterInput:
         from calendar_integration.models import AvailableTime
 
         qs = AvailableTime.objects.filter_by_organization(organization.id)
+
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, organization)
+            if allowed_ids is not None:
+                qs = qs.filter(calendar_fk__in=allowed_ids)
 
         if self.calendar_id is not None:
             qs = qs.filter(calendar_fk_id=self.calendar_id)
@@ -199,7 +220,7 @@ class AppointmentTypeAggregateFilterInput:
         qs = AppointmentType.objects.filter_by_organization(organization.id)
 
         if self.calendar_id is not None:
-            qs = qs.filter(slot_memberships__calendar_fk_id=self.calendar_id).distinct()
+            qs = qs.filter(slots__memberships__calendar_fk_id=self.calendar_id).distinct()
 
         qs = scoped_appointment_type_queryset(system_user, organization, qs)
         return qs
@@ -211,6 +232,10 @@ class CalendarAggregateFilterInput:
 
     Non-temporal entity with owner-scope filtering for scoped tokens.
     """
+
+    calendar_id: int | None = None
+    user_id: int | None = None
+    calendar_type: str | None = None
 
     def apply(
         self,
@@ -231,6 +256,15 @@ class CalendarAggregateFilterInput:
             if allowed_ids is not None:
                 qs = qs.filter(id__in=allowed_ids)
 
+        if self.calendar_id is not None:
+            qs = qs.filter(id=self.calendar_id)
+
+        if self.user_id is not None:
+            qs = qs.filter(ownerships__membership_user_id=self.user_id)
+
+        if self.calendar_type is not None:
+            qs = qs.filter(calendar_type=self.calendar_type)
+
         return qs
 
 
@@ -240,6 +274,8 @@ class CalendarPoolAggregateFilterInput:
 
     Non-temporal entity with role-aware membership visibility scoping.
     """
+
+    pool_id: int | None = None
 
     def apply(
         self,
@@ -254,5 +290,9 @@ class CalendarPoolAggregateFilterInput:
             A scoped, filtered CalendarPool queryset.
         """
         qs = CalendarPool.objects.filter_by_organization(organization.id)
+
+        if self.pool_id is not None:
+            qs = qs.filter(id=self.pool_id)
+
         qs = scoped_calendar_pool_queryset(system_user, organization, qs)
         return qs
