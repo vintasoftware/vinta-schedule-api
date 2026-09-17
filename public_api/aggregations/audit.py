@@ -5,13 +5,14 @@ bounds, and row count — but never field values, group keys, or free-text predi
 """
 
 from typing import Any
+
 from vinta_audit_logs.types import SubjectRef
 
 from audit_integration.constants import AuditAction
 from audit_integration.services import OrganizationAuditService
 from public_api.models import SystemUser
 
-from .plan import AggregateQueryPlan, FilterBounds
+from .plan import AggregateQueryPlan
 
 
 def record_aggregate_query(

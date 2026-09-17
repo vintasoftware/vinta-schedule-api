@@ -1,6 +1,8 @@
 """Test that audit payloads record shape, not values."""
 
 import datetime
+from unittest import mock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -11,27 +13,35 @@ from public_api.aggregations.plan import (
     AggregatableEntity,
     AggregateOp,
     AggregateQueryPlan,
+    DimensionSpec,
     FilterBounds,
     MetricSpec,
+    TemporalGranularity,
 )
-from public_api.models import SystemUser
 
 
 @pytest.mark.django_db
 def test_audit_payload_omits_field_values_and_predicates(
-    db, mocker, user, organization: Organization, system_user: SystemUser
+    organization: Organization,
 ):
     """Audit payload records metrics and operations, not values or group keys."""
     # Mock the audit service to capture what we're recording.
-    audit_service = mocker.MagicMock()
+    audit_service = mock.MagicMock()
     audit_service.actor_from_system_user.return_value = {"type": "system_user", "id": "token-123"}
     audit_service.scope_from_organization_id.return_value = {"organization_id": organization.id}
 
-    # Build a plan with a concat metric (the most sensitive case — it generates string values).
+    # Build a plan with at least one dimension (required) and a concat metric.
     now = datetime.datetime(2025, 9, 17, 12, 0, 0, tzinfo=datetime.UTC)
     plan = AggregateQueryPlan(
         entity=AggregatableEntity.CALENDAR_EVENT,
-        dimensions=(),
+        dimensions=(
+            DimensionSpec(
+                alias="by_day",
+                field_path="start_date",
+                granularity=TemporalGranularity.DAY,
+                tzinfo=ZoneInfo("UTC"),
+            ),
+        ),
         metrics=(
             MetricSpec.row_count(alias="count"),
             MetricSpec(alias="title_concat", field_path="title", op=AggregateOp.CONCAT, options={"separator": ", ", "distinct": True}),
@@ -50,7 +60,7 @@ def test_audit_payload_omits_field_values_and_predicates(
     record_aggregate_query(
         audit_service=audit_service,
         actor_from_system_user=audit_service.actor_from_system_user.return_value,
-        system_user=system_user,
+        system_user=None,
         organization_id=organization.id,
         plan=plan,
         row_count=5,
@@ -71,11 +81,17 @@ def test_audit_payload_omits_field_values_and_predicates(
     assert diff["offset"] == 0
     assert diff["row_count"] == 5
 
+    # Verify the dimensions are recorded.
+    dimensions = diff["dimensions"]
+    assert len(dimensions) == 1
+    assert dimensions[0]["field_path"] == "start_date"
+    assert dimensions[0]["granularity"] == "DAY"
+
     # Verify the metrics are recorded BY NAME AND OPERATION, not by value.
     metrics = diff["metrics"]
     assert len(metrics) == 3
     assert metrics[0]["alias"] == "count"
-    assert metrics[0]["op"] is None
+    assert metrics[0]["op"] == "count"
 
     assert metrics[1]["alias"] == "title_concat"
     assert metrics[1]["field_path"] == "title"
@@ -96,16 +112,23 @@ def test_audit_payload_omits_field_values_and_predicates(
 
 
 @pytest.mark.django_db
-def test_audit_payload_with_no_metrics(mocker, organization: Organization, system_user: SystemUser):
+def test_audit_payload_with_minimal_metrics(organization: Organization):
     """Audit payload handles a plan with minimal metrics (only row count)."""
-    audit_service = mocker.MagicMock()
+    audit_service = mock.MagicMock()
     audit_service.actor_from_system_user.return_value = {"type": "system_user"}
     audit_service.scope_from_organization_id.return_value = {"organization_id": organization.id}
 
     now = datetime.datetime(2025, 9, 17, 12, 0, 0, tzinfo=datetime.UTC)
     plan = AggregateQueryPlan(
         entity=AggregatableEntity.AVAILABLE_TIME,
-        dimensions=(),
+        dimensions=(
+            DimensionSpec(
+                alias="by_week",
+                field_path="start_date",
+                granularity=TemporalGranularity.WEEK,
+                tzinfo=ZoneInfo("UTC"),
+            ),
+        ),
         metrics=(MetricSpec.row_count(alias="count"),),
         filter_bounds=FilterBounds(
             start=now,
@@ -119,7 +142,7 @@ def test_audit_payload_with_no_metrics(mocker, organization: Organization, syste
     record_aggregate_query(
         audit_service=audit_service,
         actor_from_system_user=audit_service.actor_from_system_user.return_value,
-        system_user=system_user,
+        system_user=None,
         organization_id=organization.id,
         plan=plan,
         row_count=0,
@@ -134,3 +157,4 @@ def test_audit_payload_with_no_metrics(mocker, organization: Organization, syste
     assert diff["filter_bounds"]["predicates"]["user_id"] == 456
     assert len(diff["metrics"]) == 1
     assert diff["metrics"][0]["alias"] == "count"
+    assert diff["metrics"][0]["op"] == "count"
