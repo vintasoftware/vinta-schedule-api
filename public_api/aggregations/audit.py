@@ -25,9 +25,9 @@ def record_aggregate_query(
 ) -> None:
     """Record an aggregate query to the audit trail.
 
-    Records actor, organization, entity, dimensions, metrics, filter bounds,
-    limit/offset, and row count — never field values, group keys, or free-text
-    predicate values.
+    Records the full query plan plus row count. The plan's as_audit_dict()
+    captures the shape (entity, dimensions, metrics, filter bounds, order_by,
+    window, pagination) without any aggregated values or field values.
 
     Args:
         audit_service: The audit service from DI.
@@ -37,7 +37,7 @@ def record_aggregate_query(
         plan: The AggregateQueryPlan.
         row_count: The number of rows returned.
     """
-    payload = _serialize_plan(plan, row_count)
+    payload = {**plan.as_audit_dict(), "row_count": row_count}
 
     audit_service.record(
         action=AuditAction.AGGREGATE_QUERY,
@@ -49,34 +49,3 @@ def record_aggregate_query(
         scope=audit_service.scope_from_organization_id(organization_id),
         diff=payload,
     )
-
-
-def _serialize_plan(plan: AggregateQueryPlan, row_count: int) -> dict[str, Any]:
-    """Serialize an AggregateQueryPlan to a payload for the audit record.
-
-    Records entity, dimension field paths and granularities, metric aliases and
-    operations, filter bounds (datetime range and scalar id predicates), pagination,
-    and row count. Explicitly omits any field value.
-    """
-    return {
-        "entity": plan.entity.value,
-        "dimensions": [
-            {
-                "field_path": dim.field_path,
-                "granularity": dim.granularity.value if dim.granularity else None,
-            }
-            for dim in plan.dimensions
-        ],
-        "metrics": [
-            {
-                "alias": metric.alias,
-                "field_path": metric.field_path,
-                "op": metric.op.value if metric.op else None,
-            }
-            for metric in plan.metrics
-        ],
-        "filter_bounds": plan.filter_bounds.as_audit_dict(),
-        "limit": plan.limit,
-        "offset": plan.offset,
-        "row_count": row_count,
-    }

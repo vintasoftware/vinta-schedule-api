@@ -44,7 +44,12 @@ def test_audit_payload_omits_field_values_and_predicates(
         ),
         metrics=(
             MetricSpec.row_count(alias="count"),
-            MetricSpec(alias="title_concat", field_path="title", op=AggregateOp.CONCAT, options={"separator": ", ", "distinct": True}),
+            MetricSpec(
+                alias="title_concat",
+                field_path="title",
+                op=AggregateOp.CONCAT,
+                options={"separator": ", ", "distinct": True},
+            ),
             MetricSpec(alias="duration_sum", field_path="duration_minutes", op=AggregateOp.SUM),
         ),
         filter_bounds=FilterBounds(
@@ -74,41 +79,50 @@ def test_audit_payload_omits_field_values_and_predicates(
     assert call_kwargs["action"] == AuditAction.AGGREGATE_QUERY
     assert call_kwargs["scope"] == {"organization_id": organization.id}
 
-    # Check the payload structure.
+    # Verify the entire payload structure and ensure no field values leak.
     diff = call_kwargs["diff"]
-    assert diff["entity"] == "calendar_event"
-    assert diff["limit"] == 10
-    assert diff["offset"] == 0
-    assert diff["row_count"] == 5
-
-    # Verify the dimensions are recorded.
-    dimensions = diff["dimensions"]
-    assert len(dimensions) == 1
-    assert dimensions[0]["field_path"] == "start_date"
-    assert dimensions[0]["granularity"] == "DAY"
-
-    # Verify the metrics are recorded BY NAME AND OPERATION, not by value.
-    metrics = diff["metrics"]
-    assert len(metrics) == 3
-    assert metrics[0]["alias"] == "count"
-    assert metrics[0]["op"] == "count"
-
-    assert metrics[1]["alias"] == "title_concat"
-    assert metrics[1]["field_path"] == "title"
-    assert metrics[1]["op"] == "concat"
-
-    assert metrics[2]["alias"] == "duration_sum"
-    assert metrics[2]["field_path"] == "duration_minutes"
-    assert metrics[2]["op"] == "sum"
-
-    # Verify filter bounds are recorded as opaque ids and datetime ranges, not values.
-    bounds = diff["filter_bounds"]
-    assert bounds["start"] == now.isoformat()
-    assert bounds["end"] == (now + datetime.timedelta(days=1)).isoformat()
-    assert bounds["predicates"]["calendar_id"] == 123
-    # Free-text fields are not present.
-    assert "calendar_name" not in bounds
-    assert "calendar_title" not in bounds
+    assert diff == {
+        "entity": "calendar_event",
+        "dimensions": [
+            {
+                "alias": "by_day",
+                "field_path": "start_date",
+                "granularity": "DAY",
+                "timezone": "UTC",
+            }
+        ],
+        "metrics": [
+            {
+                "alias": "count",
+                "field_path": None,
+                "op": "count",
+                "options": {},
+            },
+            {
+                "alias": "title_concat",
+                "field_path": "title",
+                "op": "concat",
+                "options": {"distinct": True, "separator": ", "},
+            },
+            {
+                "alias": "duration_sum",
+                "field_path": "duration_minutes",
+                "op": "sum",
+                "options": {},
+            },
+        ],
+        "filter_bounds": {
+            "start": now.isoformat(),
+            "end": (now + datetime.timedelta(days=1)).isoformat(),
+            "predicates": {"calendar_id": 123},
+        },
+        "has_having": False,
+        "order_by": [],
+        "window": None,
+        "limit": 10,
+        "offset": 0,
+        "row_count": 5,
+    }
 
 
 @pytest.mark.django_db
