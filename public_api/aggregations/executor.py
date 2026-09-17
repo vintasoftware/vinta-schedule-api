@@ -167,9 +167,7 @@ def build_aggregate_queryset(
         # functions after ``HAVING`` anyway. Doing it in this order means the
         # running total runs over the groups that survived the filter, which is
         # the only reading of "a window over the filtered result".
-        window_annotations = _window_annotations(
-            registration, plan.window, aggregates, set(group_by)
-        )
+        window_annotations = _window_annotations(registration, plan.window, aggregates, group_by)
         for alias in window_annotations:
             _reject_reserved_alias(registration, alias, column_names)
         grouped = grouped.annotate(**window_annotations)
@@ -303,14 +301,25 @@ def _frame(spec: WindowSpec) -> RowRange:
 
 
 def _bound(name: str, offset: int | None) -> int | None:
-    """One frame bound as the integer ``RowRange`` wants."""
+    """One frame bound as the integer ``RowRange`` wants.
+
+    Both unbounded bounds map to ``None``, because that is the only thing
+    Django accepts for either: it renders ``None`` as ``UNBOUNDED PRECEDING``
+    at the start and ``UNBOUNDED FOLLOWING`` at the end, reading the *position*
+    rather than the name. That mapping is only safe because
+    :class:`~public_api.aggregations.plan.WindowSpec` has already refused an
+    unbounded bound on the side it cannot occupy -- without that, this function
+    would turn ``end: UNBOUNDED_PRECEDING`` into a whole-partition frame
+    without a word.
+    """
     if name == "CURRENT_ROW":
         return 0
     if name == "PRECEDING":
         return -(offset or 0)
     if name == "FOLLOWING":
         return offset or 0
-    # UNBOUNDED_PRECEDING / UNBOUNDED_FOLLOWING.
+    # UNBOUNDED_PRECEDING at the start, UNBOUNDED_FOLLOWING at the end -- and
+    # `WindowSpec` guarantees it is never the other way round.
     return None
 
 
@@ -323,7 +332,7 @@ def _window_annotations(
     registration: EntityRegistration,
     spec: WindowSpec,
     aggregates: Mapping[str, Combinable],
-    group_by: set[str],
+    group_by: list[str],
 ) -> dict[str, Combinable]:
     """One annotation per requested window metric.
 
@@ -331,6 +340,9 @@ def _window_annotations(
     alias. A window metric names one of those aliases as its source and the
     expression is rebuilt from it here, so the running total is provably over
     the same number the row displays rather than over a second definition of it.
+
+    Two orderings are built, and which one a metric gets depends on whether row
+    *order* or only row *value* decides its answer. See ``_tiebroken`` below.
     """
     # A partition splits rows the query already grouped, so it can only address
     # a column those rows carry. Checked here as well as at the schema edge,
@@ -344,14 +356,30 @@ def _window_annotations(
         F(order.alias).desc() if order.descending else F(order.alias).asc()
         for order in spec.order_by
     ]
+    tiebroken_order_by = order_by + _tiebreak(spec, group_by)
     frame = _frame(spec)
 
     annotations: dict[str, Combinable] = {}
     for metric in spec.metrics:
         annotations[metric.alias] = _window_expression(
-            metric, aggregates, partition_by, order_by, frame
+            metric, aggregates, partition_by, order_by, tiebroken_order_by, frame
         )
     return annotations
+
+
+def _tiebreak(spec: WindowSpec, group_by: list[str]) -> list[Any]:
+    """The group-key columns the caller's window ordering did not name.
+
+    The mirror of what :func:`_order_by` does for the result ordering, and for
+    the same reason: an ordering that does not fully determine row order leaves
+    the rest to the database, and a running total accumulated in an arbitrary
+    order over tied rows is a different series on the next run of the same
+    query -- with a correct-looking final value and wrong intermediates.
+    Appended ascending, in group-by order, so the sequence is the same every
+    time.
+    """
+    named = {order.alias for order in spec.order_by}
+    return [F(alias).asc() for alias in group_by if alias not in named]
 
 
 def _window_expression(
@@ -359,12 +387,17 @@ def _window_expression(
     aggregates: Mapping[str, Combinable],
     partition_by: list[Any],
     order_by: list[Any],
+    tiebroken_order_by: list[Any],
     frame: RowRange,
 ) -> Combinable:
     """The ``OVER`` expression for one window metric."""
     if metric.function is WindowFunction.RANK:
-        # Ranks rows by the window's own ordering; there is nothing to sum, and
-        # a frame would not change a rank.
+        # Ranks rows by the window's own ordering, and gets the caller's
+        # ordering *untiebroken*. A rank is decided by the ordering's values
+        # rather than by the physical order of the rows carrying them, so it is
+        # already the same on every run -- and appending a tiebreak would split
+        # rows the caller asked to be tied, turning `RANK` into a row number and
+        # contradicting the field's own "ties share a rank".
         return _GroupBlindWindow(Rank(), partition_by=partition_by or None, order_by=order_by)
 
     source = aggregates.get(metric.source_alias)
@@ -383,12 +416,14 @@ def _window_expression(
             output_field=FloatField(),
         )
 
+    # Both of the remaining functions accumulate *across* rows, so which row
+    # comes next changes their answer and they take the tiebroken ordering.
     applied_frame = frame if metric.function in FRAMED_WINDOW_FUNCTIONS else _RUNNING_FRAME
     if metric.function is WindowFunction.MOVING_AVG:
         return _GroupBlindWindow(
             _WindowedAvg(source),
             partition_by=partition_by or None,
-            order_by=order_by,
+            order_by=tiebroken_order_by,
             frame=applied_frame,
             output_field=FloatField(),
         )
@@ -398,7 +433,7 @@ def _window_expression(
     return _GroupBlindWindow(
         _WindowedSum(source),
         partition_by=partition_by or None,
-        order_by=order_by,
+        order_by=tiebroken_order_by,
         frame=applied_frame,
         output_field=IntegerField() if _counts_rows(source) else FloatField(),
     )

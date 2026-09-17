@@ -38,6 +38,8 @@ WINDOW_ORDERING_REQUIRED_MESSAGE = (
 WINDOW_FRAME_OFFSET_TEMPLATE = (
     "A {bound} frame bound needs a non-negative row offset saying how many rows it spans"
 )
+WINDOW_FRAME_BOUND_SIDE_TEMPLATE = "{bound} cannot be a frame's {side}"
+WINDOW_FRAME_ORDER_MESSAGE = "A frame's start must not come after its end"
 UNGROUPED_PARTITION_KEY_TEMPLATE = (
     "Cannot partition by {field}: it is not one of this query's groupBy dimensions"
 )
@@ -170,6 +172,36 @@ class WindowFrameOffsetError(AggregateError):
 
     def __init__(self, bound: str) -> None:
         super().__init__(WINDOW_FRAME_OFFSET_TEMPLATE.format(bound=bound))
+
+
+class MisplacedFrameBoundError(AggregateError):
+    """An unbounded frame bound was put on the side it cannot occupy.
+
+    A frame cannot start at ``UNBOUNDED FOLLOWING`` or end at ``UNBOUNDED
+    PRECEDING`` -- both name the far edge of the wrong side. Refused here
+    because Django would not refuse it: an unbounded bound reaches the backend
+    as ``None`` and is read *positionally*, so ``None`` at the start means
+    ``UNBOUNDED PRECEDING`` and at the end means ``UNBOUNDED FOLLOWING``
+    whatever the caller meant. ``end: UNBOUNDED_PRECEDING`` would therefore
+    compile to a frame spanning the whole partition and return a
+    whole-partition average labelled a moving average, with no error anywhere.
+    """
+
+    def __init__(self, bound: str, side: str) -> None:
+        super().__init__(WINDOW_FRAME_BOUND_SIDE_TEMPLATE.format(bound=bound, side=side))
+
+
+class WindowFrameOrderError(AggregateError):
+    """A frame's start sorts after its end.
+
+    ``FOLLOWING 2`` to ``CURRENT ROW`` describes no rows. Django's backend does
+    catch the integer case, but as a bare ``ValueError`` raised while the SQL
+    is being compiled -- which reaches a partner as an internal error rather
+    than as the validation failure it is.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(WINDOW_FRAME_ORDER_MESSAGE)
 
 
 class UngroupedPartitionKeyError(AggregateError):

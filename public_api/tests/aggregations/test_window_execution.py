@@ -404,6 +404,162 @@ class TestWindowsComposeWithTheRestOfThePipeline:
 
 
 @pytest.mark.django_db
+class TestOrderingDeterminism:
+    """A window ordering that leaves rows tied is completed by the group key.
+
+    Without the appended tiebreak the database chooses the order of tied rows,
+    so a running total's intermediate values differ between two runs of the
+    same query while the final value stays right -- the shape of wrongness
+    nothing downstream would catch.
+    """
+
+    def test_a_running_total_over_a_tied_ordering_is_the_same_every_run(self, organization):
+        """Five calendars with one event each, all on the same day.
+
+        Ordered by day, every row ties. The running count must still be
+        1, 2, 3, 4, 5 against a stable sequence of calendars on every run.
+        """
+        calendars = [make_calendar(organization, name=f"T{index}") for index in range(5)]
+        for calendar in calendars:
+            make_event(
+                organization,
+                calendar,
+                title=calendar.name,
+                start=datetime.datetime(2026, 3, 2, 9, 0),
+                minutes=30,
+            )
+
+        system_user, token, auth = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+        # Grouped by calendar *and* day, ordered by day only -- so the window's
+        # own ordering ties every row against every other.
+        query = """
+        query EventWindow($start: DateTime!, $end: DateTime!, $window: CalendarEventWindowInput) {
+          calendarEventAggregate(
+            filter: {startDatetime: $start, endDatetime: $end}
+            groupBy: [{scalar: CALENDAR_ID}, {temporal: {field: START_TIME, granularity: DAY}}]
+            timezone: "UTC"
+            window: $window
+          ) {
+            key { calendarId }
+            window { runningCount }
+          }
+        }
+        """
+        variables = _window() | {"window": {"orderBy": BY_DAY}}
+
+        runs = []
+        for _ in range(4):
+            response = post_graphql(query, system_user, token, auth, variables)
+            assert response.json().get("errors", []) == []
+            rows = response.json()["data"]["calendarEventAggregate"]
+            runs.append([(r["key"]["calendarId"], r["window"]["runningCount"]) for r in rows])
+
+        assert all(run == runs[0] for run in runs), runs
+        assert [running for _calendar, running in runs[0]] == [1, 2, 3, 4, 5]
+
+    def test_rank_still_lets_tied_rows_share_a_rank(self, organization):
+        """The tiebreak must not reach `rank`, which is defined to tie.
+
+        Three calendars with two events each: ranked by count they are all
+        equal, so all three are rank 1. A tiebreak appended here would return
+        1, 2, 3 and quietly turn `rank` into a row number.
+        """
+        for index in range(3):
+            calendar = make_calendar(organization, name=f"R{index}")
+            for event in range(2):
+                make_event(
+                    organization,
+                    calendar,
+                    title=f"r{index}-{event}",
+                    start=datetime.datetime(2026, 3, 2, 9 + event, 0),
+                    minutes=30,
+                )
+
+        system_user, token, auth = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+        query = """
+        query EventWindow($start: DateTime!, $end: DateTime!, $window: CalendarEventWindowInput) {
+          calendarEventAggregate(
+            filter: {startDatetime: $start, endDatetime: $end}
+            groupBy: [{scalar: CALENDAR_ID}]
+            timezone: "UTC"
+            window: $window
+          ) {
+            key { calendarId }
+            count
+            window { rank }
+          }
+        }
+        """
+        variables = _window() | {"window": {"orderBy": [{"metric": "COUNT", "direction": "DESC"}]}}
+        response = post_graphql(query, system_user, token, auth, variables)
+
+        assert response.json().get("errors", []) == []
+        rows = response.json()["data"]["calendarEventAggregate"]
+        assert [row["count"] for row in rows] == [2, 2, 2]
+        assert [row["window"]["rank"] for row in rows] == [1, 1, 1]
+
+
+@pytest.mark.django_db
+class TestFrameBoundsReachTheDatabaseIntact:
+    def test_a_frame_ending_at_unbounded_preceding_is_refused(self, organization, five_days):
+        """It would compile to a whole-partition frame, not an error."""
+        system_user, token, auth = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+        variables = _window() | {
+            "window": {
+                "orderBy": BY_DAY,
+                "frame": {"start": "UNBOUNDED_PRECEDING", "end": "UNBOUNDED_PRECEDING"},
+            }
+        }
+        response = post_graphql(RUNNING_QUERY, system_user, token, auth, variables)
+
+        messages = [error["message"] for error in response.json().get("errors", [])]
+        assert len(messages) == 1
+        assert "UNBOUNDED_PRECEDING" in messages[0]
+
+    def test_a_backwards_frame_is_refused_as_a_validation_error(self, organization, five_days):
+        """Not as the bare `ValueError` Django raises while compiling the SQL."""
+        system_user, token, auth = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+        variables = _window() | {
+            "window": {
+                "orderBy": BY_DAY,
+                "frame": {"start": "FOLLOWING", "startOffset": 2, "end": "CURRENT_ROW"},
+            }
+        }
+        response = post_graphql(RUNNING_QUERY, system_user, token, auth, variables)
+
+        assert response.status_code == 200
+        messages = [error["message"] for error in response.json().get("errors", [])]
+        assert messages == ["A frame's start must not come after its end"]
+
+    def test_a_forward_looking_frame_is_honoured(self, organization, five_days):
+        """`CURRENT ROW` to `2 FOLLOWING` over counts 1,2,3,4,5.
+
+        Row 1: (1+2+3)/3 = 2.0
+        Row 2: (2+3+4)/3 = 3.0
+        Row 3: (3+4+5)/3 = 4.0
+        Row 4: (4+5)/2   = 4.5   (frame runs off the end)
+        Row 5: 5/1       = 5.0
+        """
+        system_user, token, auth = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+        variables = _window() | {
+            "window": {
+                "orderBy": BY_DAY,
+                "frame": {"start": "CURRENT_ROW", "end": "FOLLOWING", "endOffset": 2},
+            }
+        }
+
+        with CaptureQueriesContext(connection) as captured:
+            response = post_graphql(RUNNING_QUERY, system_user, token, auth, variables)
+
+        assert response.json().get("errors", []) == []
+        rows = response.json()["data"]["calendarEventAggregate"]
+        assert [row["window"]["movingAvgCount"] for row in rows] == [
+            pytest.approx(v) for v in (2.0, 3.0, 4.0, 4.5, 5.0)
+        ]
+        assert "ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING" in _grouped_sql(captured)[0]
+
+
+@pytest.mark.django_db
 class TestWindowValidationThroughTheSchema:
     def test_partitioning_by_an_ungrouped_dimension_is_refused(self, organization, five_days):
         system_user, token, auth = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])

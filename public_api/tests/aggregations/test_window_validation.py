@@ -18,8 +18,10 @@ import pytest
 
 from public_api.aggregations.errors import (
     WINDOW_ORDERING_REQUIRED_MESSAGE,
+    MisplacedFrameBoundError,
     UngroupedPartitionKeyError,
     WindowFrameOffsetError,
+    WindowFrameOrderError,
     WindowOrderingRequiredError,
     WindowSourceMissingError,
 )
@@ -163,6 +165,115 @@ class TestFrameValidation:
         spec = WindowSpec(order_by=(OrderSpec(alias="day"),))
         assert spec.frame_start == "UNBOUNDED_PRECEDING"
         assert spec.frame_end == "CURRENT_ROW"
+
+
+class TestUnboundedBoundsMustBeOnTheirOwnSide:
+    """An unbounded bound on the wrong side is read as the opposite edge.
+
+    Django hands an unbounded bound to the backend as `None` and reads it
+    *positionally*: `None` at the start is `UNBOUNDED PRECEDING`, at the end it
+    is `UNBOUNDED FOLLOWING`. So `end: UNBOUNDED_PRECEDING` would compile to a
+    frame spanning the whole partition, and `movingAvgCount` would come back as
+    the whole-partition average, labelled a moving average, with no error.
+    """
+
+    def test_a_frame_cannot_end_at_unbounded_preceding(self):
+        with pytest.raises(MisplacedFrameBoundError) as exc_info:
+            WindowSpec(
+                order_by=(OrderSpec(alias="day"),),
+                frame_start="UNBOUNDED_PRECEDING",
+                frame_end="UNBOUNDED_PRECEDING",
+            )
+        assert "UNBOUNDED_PRECEDING" in exc_info.value.message
+        assert "end" in exc_info.value.message
+
+    def test_a_frame_cannot_start_at_unbounded_following(self):
+        with pytest.raises(MisplacedFrameBoundError) as exc_info:
+            WindowSpec(
+                order_by=(OrderSpec(alias="day"),),
+                frame_start="UNBOUNDED_FOLLOWING",
+                frame_end="UNBOUNDED_FOLLOWING",
+            )
+        assert "UNBOUNDED_FOLLOWING" in exc_info.value.message
+        assert "start" in exc_info.value.message
+
+    def test_unbounded_on_its_own_side_is_accepted(self):
+        spec = WindowSpec(
+            order_by=(OrderSpec(alias="day"),),
+            frame_start="UNBOUNDED_PRECEDING",
+            frame_end="UNBOUNDED_FOLLOWING",
+        )
+        assert spec.frame_start == "UNBOUNDED_PRECEDING"
+        assert spec.frame_end == "UNBOUNDED_FOLLOWING"
+
+
+class TestFrameBoundsMustBeInOrder:
+    """A start that sorts after its end describes no rows.
+
+    Django's backend does catch the both-integers case, but as a bare
+    `ValueError` raised while compiling the SQL -- which reaches a partner as an
+    internal error rather than as the validation failure it is.
+    """
+
+    def test_a_frame_starting_after_the_current_row_and_ending_on_it_is_refused(self):
+        with pytest.raises(WindowFrameOrderError):
+            WindowSpec(
+                order_by=(OrderSpec(alias="day"),),
+                frame_start="FOLLOWING",
+                frame_start_offset=2,
+                frame_end="CURRENT_ROW",
+            )
+
+    def test_a_frame_ending_before_the_current_row_it_starts_on_is_refused(self):
+        with pytest.raises(WindowFrameOrderError):
+            WindowSpec(
+                order_by=(OrderSpec(alias="day"),),
+                frame_start="CURRENT_ROW",
+                frame_end="PRECEDING",
+                frame_end_offset=2,
+            )
+
+    def test_two_preceding_bounds_in_the_wrong_order_are_refused(self):
+        """`1 PRECEDING` to `2 PRECEDING` runs backwards."""
+        with pytest.raises(WindowFrameOrderError):
+            WindowSpec(
+                order_by=(OrderSpec(alias="day"),),
+                frame_start="PRECEDING",
+                frame_start_offset=1,
+                frame_end="PRECEDING",
+                frame_end_offset=2,
+            )
+
+    @pytest.mark.parametrize(
+        ("start", "start_offset", "end", "end_offset"),
+        [
+            ("PRECEDING", 2, "CURRENT_ROW", None),
+            ("PRECEDING", 2, "PRECEDING", 1),
+            ("PRECEDING", 1, "FOLLOWING", 1),
+            ("CURRENT_ROW", None, "FOLLOWING", 3),
+            ("UNBOUNDED_PRECEDING", None, "CURRENT_ROW", None),
+            ("CURRENT_ROW", None, "UNBOUNDED_FOLLOWING", None),
+        ],
+    )
+    def test_well_ordered_frames_are_accepted(self, start, start_offset, end, end_offset):
+        spec = WindowSpec(
+            order_by=(OrderSpec(alias="day"),),
+            frame_start=start,
+            frame_start_offset=start_offset,
+            frame_end=end,
+            frame_end_offset=end_offset,
+        )
+        assert spec.frame_start == start
+        assert spec.frame_end == end
+
+    def test_a_frame_spanning_the_same_row_twice_is_accepted(self):
+        """`CURRENT ROW` to `CURRENT ROW` is a one-row frame, not a backwards one."""
+        spec = WindowSpec(
+            order_by=(OrderSpec(alias="day"),),
+            frame_start="CURRENT_ROW",
+            frame_end="CURRENT_ROW",
+        )
+        assert spec.frame_start == spec.frame_end == "CURRENT_ROW"
 
     def test_a_frame_is_carried_onto_the_spec(self):
         spec, _metrics = window_from_input(

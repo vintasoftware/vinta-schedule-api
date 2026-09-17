@@ -30,10 +30,12 @@ from public_api.aggregations.errors import (
     AliasCollisionError,
     EmptyAggregatePlanError,
     LimitOutOfRangeError,
+    MisplacedFrameBoundError,
     MissingBucketTimezoneError,
     OffsetNegativeError,
     UnknownOrderAliasError,
     WindowFrameOffsetError,
+    WindowFrameOrderError,
     WindowOrderingRequiredError,
     WindowSourceMissingError,
 )
@@ -314,6 +316,25 @@ class WindowSpec:
             if bound in _OFFSET_BOUNDS and offset is not None and offset < 0:
                 raise WindowFrameOffsetError(bound)
 
+        # An unbounded bound reaches the database as "no limit in this
+        # direction", and which direction that is comes from *which side of the
+        # frame it sits on* rather than from its name. Putting one on the wrong
+        # side is therefore not refused downstream -- it is silently read as
+        # the opposite edge, and the frame ends up spanning the whole
+        # partition. Refused here, where the name is still available to say so.
+        if self.frame_start == "UNBOUNDED_FOLLOWING":
+            raise MisplacedFrameBoundError(self.frame_start, "start")
+        if self.frame_end == "UNBOUNDED_PRECEDING":
+            raise MisplacedFrameBoundError(self.frame_end, "end")
+
+        # A frame whose start sorts after its end describes no rows. Django's
+        # backend catches the both-integers case, but as a bare `ValueError`
+        # while compiling the SQL, which surfaces as an internal error.
+        if _frame_position(self.frame_start, self.frame_start_offset) > _frame_position(
+            self.frame_end, self.frame_end_offset
+        ):
+            raise WindowFrameOrderError
+
     def as_audit_dict(self) -> dict[str, Any]:
         """A stable description of the window's shape."""
         return {
@@ -330,6 +351,24 @@ class WindowSpec:
 
 # The two bounds that mean nothing without a row count attached.
 _OFFSET_BOUNDS = frozenset({"PRECEDING", "FOLLOWING"})
+
+
+def _frame_position(bound: str, offset: int | None) -> float:
+    """Where a frame bound sits, as a signed row offset from the current row.
+
+    Negative is behind, positive is ahead, and the unbounded pair are the
+    infinities -- the same reading the executor applies when it hands these to
+    Django, so ordering them here orders the frame that actually gets built.
+    """
+    if bound == "CURRENT_ROW":
+        return 0.0
+    if bound == "PRECEDING":
+        return -float(offset or 0)
+    if bound == "FOLLOWING":
+        return float(offset or 0)
+    if bound == "UNBOUNDED_FOLLOWING":
+        return float("inf")
+    return float("-inf")
 
 
 @dataclass(frozen=True)
