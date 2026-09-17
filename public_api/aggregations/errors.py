@@ -137,6 +137,39 @@ class AliasCollisionError(AggregateConfigurationError):
         super().__init__(f"Alias {alias!r} is used more than once in one aggregate plan")
 
 
+class MissingBucketTimezoneError(AggregateConfigurationError):
+    """A temporal dimension asks for a bucket size but names no timezone.
+
+    Left unset, ``Trunc*`` falls back to Django's *current* timezone, so the
+    bucket boundary becomes the server's midnight rather than the one the
+    caller named. That is the alternative the plan explicitly rejected: it
+    mixes wall clocks inside one result set and returns a plausible wrong
+    answer instead of an error. Refused here so it cannot happen at all.
+    """
+
+    def __init__(self, field_path: str) -> None:
+        super().__init__(
+            f"Bucketing {field_path!r} needs an explicit timezone: a granularity "
+            f"without one buckets on the server's clock, not the caller's"
+        )
+
+
+class ConcatArgumentsMismatchError(AggregateConfigurationError):
+    """``concat`` was selected with arguments the executed query did not use.
+
+    ``separator`` and ``distinct`` change the SQL, so they have to be read off
+    the selection when the plan is built. If the resolver that built the plan
+    ignored them, the string returned here answers a different question from
+    the one the caller asked -- and would do so silently. Raised instead.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "concat() was resolved with arguments the aggregate query was not built "
+            "for; the plan builder must read separator/distinct off the selection"
+        )
+
+
 class UnknownOrderAliasError(AggregateConfigurationError):
     """A plan orders by an alias none of its dimensions or metrics produces.
 

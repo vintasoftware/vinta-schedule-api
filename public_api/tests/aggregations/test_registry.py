@@ -9,6 +9,9 @@ None of this touches the database -- the registry is a table plus the model
 metadata it validates itself against.
 """
 
+from django.db.models import ExpressionWrapper, F, FloatField, Value
+from django.db.models.functions import Extract
+
 import pytest
 
 from calendar_integration.models import (
@@ -20,6 +23,8 @@ from calendar_integration.models import (
     CalendarPool,
 )
 from public_api.aggregations.errors import (
+    AggregateRegistrationError,
+    ConcatArgumentsMismatchError,
     UnknownAggregateEntityError,
     UnknownAggregateFieldError,
     UnknownDimensionError,
@@ -29,7 +34,9 @@ from public_api.aggregations.registry import (
     GRAPHQL_TYPE_BY_KIND,
     OPS_BY_KIND,
     REGISTRY,
+    AggregatableField,
     AggregateKind,
+    EntityRegistration,
     aggregate_kind_for_model_field,
     dimension_alias,
     get_registration,
@@ -37,6 +44,7 @@ from public_api.aggregations.registry import (
     reverse_relation_fk_attname,
 )
 from public_api.aggregations.types import (
+    DEFAULT_CONCAT_SEPARATOR,
     BooleanAggregate,
     DateTimeAggregate,
     NumericAggregate,
@@ -206,6 +214,53 @@ class TestModelFieldKindMapping:
         assert aggregate_kind_for_model_field(CalendarEvent._meta.get_field("meta")) is None
 
 
+class TestADurationColumnMustBeReadThroughAnExpression:
+    """A duration column is numeric, but aggregating it returns a ``timedelta``.
+
+    ``NumericAggregate`` publishes floats, so a duration-backed field has to be
+    registered with an expression that yields a number. Both duration metrics
+    in the registry already do; this is what stops the next one forgetting.
+    """
+
+    def test_registering_a_duration_field_without_an_expression_is_refused(self):
+        with pytest.raises(AggregateRegistrationError) as excinfo:
+            EntityRegistration(
+                entity=AggregatableEntity.APPOINTMENT_TYPE,
+                model=AppointmentType,
+                groupable=(),
+                aggregatable=(AggregatableField(name="duration", kind=AggregateKind.NUMERIC),),
+            )
+
+        assert "DurationField" in str(excinfo.value)
+        assert "expression" in str(excinfo.value)
+
+    def test_the_same_field_is_accepted_behind_a_minutes_expression(self):
+        registration = EntityRegistration(
+            entity=AggregatableEntity.APPOINTMENT_TYPE,
+            model=AppointmentType,
+            groupable=(),
+            aggregatable=(
+                AggregatableField(
+                    name="duration_minutes",
+                    kind=AggregateKind.NUMERIC,
+                    field_path="duration",
+                    expression=ExpressionWrapper(
+                        Extract(F("duration"), "epoch") / Value(60.0),
+                        output_field=FloatField(),
+                    ),
+                ),
+            ),
+        )
+
+        assert registration.aggregatable_field("duration_minutes").kind is AggregateKind.NUMERIC
+
+    def test_the_shipped_registrations_read_every_duration_as_minutes(self):
+        for entity in (AggregatableEntity.APPOINTMENT_TYPE, AggregatableEntity.CALENDAR_EVENT):
+            duration = get_registration(entity).aggregatable_field("duration_minutes")
+            assert duration.expression is not None
+            assert duration.kind is AggregateKind.NUMERIC
+
+
 class TestRelationCountsResolve:
     """Each relation count names a reverse foreign key with a concrete column."""
 
@@ -223,12 +278,97 @@ class TestRelationCountsResolve:
         assert reverse_relation_fk_attname(Calendar, "blocked_times") == "calendar_fk_id"
 
 
+class TestConcatArgumentsAreCheckedNotIgnored:
+    """``separator`` / ``distinct`` change the SQL, so the field must verify them.
+
+    A resolver that forgot to read them off the selection would otherwise
+    return a string joined on a separator the caller never asked for, and
+    nothing downstream could tell.
+    """
+
+    def test_matching_arguments_return_the_concatenation(self):
+        aggregate = StringAggregate(
+            concat_value="a; b",
+            concat_separator="; ",
+            concat_distinct=True,
+        )
+
+        assert aggregate.concat(separator="; ", distinct=True) == "a; b"
+
+    def test_the_defaults_match_a_query_built_with_the_defaults(self):
+        aggregate = StringAggregate(concat_value="a,b")
+
+        assert aggregate.concat() == "a,b"
+        assert aggregate.concat(separator=DEFAULT_CONCAT_SEPARATOR, distinct=False) == "a,b"
+
+    def test_a_separator_the_query_did_not_use_is_refused(self):
+        aggregate = StringAggregate(concat_value="a,b", concat_separator=",")
+
+        with pytest.raises(ConcatArgumentsMismatchError):
+            aggregate.concat(separator="; ")
+
+    def test_a_distinctness_the_query_did_not_use_is_refused(self):
+        aggregate = StringAggregate(concat_value="a,a,b", concat_distinct=False)
+
+        with pytest.raises(ConcatArgumentsMismatchError):
+            aggregate.concat(distinct=True)
+
+
 class TestAliasNaming:
     """One naming scheme, so a row key is predictable and never shadows a column."""
 
     def test_metric_alias_joins_the_field_and_the_operation(self):
         assert metric_alias("title", AggregateOp.MIN) == "title_min"
         assert metric_alias("duration_minutes", AggregateOp.SUM) == "duration_minutes_sum"
+
+    def test_default_options_do_not_lengthen_the_alias(self):
+        assert metric_alias("title", AggregateOp.CONCAT) == "title_concat"
+        assert (
+            metric_alias("title", AggregateOp.CONCAT, {"separator": DEFAULT_CONCAT_SEPARATOR})
+            == "title_concat"
+        )
+        assert (
+            metric_alias("title", AggregateOp.CONCAT, {"separator": ",", "distinct": False})
+            == "title_concat"
+        )
+        assert metric_alias("id", AggregateOp.COUNT, {"distinct": False}) == "id_count"
+
+    def test_distinct_is_named_in_the_alias(self):
+        assert (
+            metric_alias("title", AggregateOp.CONCAT, {"distinct": True}) == "title_concat_distinct"
+        )
+        assert metric_alias("id", AggregateOp.COUNT, {"distinct": True}) == "id_count_distinct"
+
+    def test_two_concats_with_different_separators_get_different_aliases(self):
+        # One legal GraphQL document may select concat twice under two response
+        # keys; one row key for two different strings would lose one of them.
+        commas = metric_alias("title", AggregateOp.CONCAT, {"separator": ","})
+        lines = metric_alias("title", AggregateOp.CONCAT, {"separator": "\n"})
+        semicolons = metric_alias("title", AggregateOp.CONCAT, {"separator": "; "})
+
+        assert len({commas, lines, semicolons}) == 3
+
+    def test_separator_and_distinctness_vary_independently(self):
+        aliases = {
+            metric_alias("title", AggregateOp.CONCAT, options)
+            for options in (
+                {},
+                {"distinct": True},
+                {"separator": "; "},
+                {"separator": "; ", "distinct": True},
+            )
+        }
+
+        assert len(aliases) == 4
+
+    def test_the_alias_for_one_set_of_options_is_stable(self):
+        # Not `hash()`, which is salted per process: a row key has to survive
+        # into the next request that builds the same query.
+        first = metric_alias("title", AggregateOp.CONCAT, {"separator": "; ", "distinct": True})
+        second = metric_alias("title", AggregateOp.CONCAT, {"distinct": True, "separator": "; "})
+
+        assert first == second
+        assert first == "title_concat_distinct_ccb7d2c9"
 
     def test_dimension_alias_carries_the_bucket_size_when_there_is_one(self):
         assert dimension_alias("calendar_id") == "calendar_id"

@@ -22,10 +22,12 @@ calls ``original_manager`` or ``unscoped()``.
 """
 
 import enum
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from types import MappingProxyType
+from typing import Any
 
 from django.core.exceptions import FieldDoesNotExist
 from django.db import models
@@ -54,6 +56,7 @@ from public_api.aggregations.plan import (
     AggregateQueryPlan,
 )
 from public_api.aggregations.types import (
+    DEFAULT_CONCAT_SEPARATOR,
     BooleanAggregate,
     DateTimeAggregate,
     NumericAggregate,
@@ -110,6 +113,18 @@ _KIND_BY_FIELD_CLASS: Sequence[tuple[type[models.Field], AggregateKind]] = (
 )
 
 
+def concrete_output_field(model_field: models.Field) -> models.Field | None:
+    """The field whose *type* decides how a column aggregates.
+
+    A ``GeneratedField`` (``start_time`` / ``end_time``) is a column whose type
+    is its ``output_field``; aggregating one is no different from aggregating a
+    stored column.
+    """
+    if isinstance(model_field, models.GeneratedField):
+        return model_field.output_field
+    return model_field
+
+
 def aggregate_kind_for_model_field(model_field: models.Field) -> AggregateKind | None:
     """Map a concrete model field onto its aggregate kind, or ``None``.
 
@@ -118,13 +133,7 @@ def aggregate_kind_for_model_field(model_field: models.Field) -> AggregateKind |
     registry's import-time check honest: a field nobody classified cannot be
     silently admitted as numeric.
     """
-    # A ``GeneratedField`` (``start_time`` / ``end_time``) is a column whose type
-    # is its ``output_field``; aggregating one is no different from aggregating a
-    # stored column.
-    resolved: models.Field | None = model_field
-    if isinstance(model_field, models.GeneratedField):
-        resolved = model_field.output_field
-
+    resolved = concrete_output_field(model_field)
     if resolved is None:
         return None
 
@@ -134,16 +143,69 @@ def aggregate_kind_for_model_field(model_field: models.Field) -> AggregateKind |
     return None
 
 
-def metric_alias(field_name: str, op: AggregateOp) -> str:
+# What each operation does when its options are not named. An option equal to
+# its default contributes nothing to a metric's alias, so the common selection
+# keeps the short row key.
+DEFAULT_METRIC_OPTIONS: Mapping[AggregateOp, Mapping[str, Any]] = MappingProxyType(
+    {
+        AggregateOp.COUNT: MappingProxyType({"distinct": False}),
+        AggregateOp.CONCAT: MappingProxyType(
+            {"separator": DEFAULT_CONCAT_SEPARATOR, "distinct": False}
+        ),
+    }
+)
+
+
+def metric_alias(field_name: str, op: AggregateOp, options: Mapping[str, Any] | None = None) -> str:
     """The row key a metric lands under: ``title`` + ``min`` -> ``title_min``.
 
-    Every phase names metrics through this function, for two reasons. It makes
-    a row key predictable from the selection that asked for it, and it keeps
+    Every phase names metrics through this function, for three reasons. It
+    makes a row key predictable from the selection that asked for it; it keeps
     the key clear of the model's own column names -- Django refuses an
-    annotation whose alias matches a field, so a metric plainly called
-    ``title`` would fail at query-build time.
+    annotation whose alias matches a field, so a metric plainly called ``title``
+    would fail at query-build time; and it separates two selections of the *same*
+    operation that carry different arguments.
+
+    That last one is not hypothetical. ``concat`` takes a separator and a
+    distinctness flag, and one legal GraphQL document may select it twice under
+    two response keys::
+
+        commas: concat(separator: ",")
+        lines:  concat(separator: "\\n", distinct: true)
+
+    Both are ``StringAgg`` over ``title`` and both would otherwise be named
+    ``title_concat`` -- one row key for two different strings. Options that
+    differ from :data:`DEFAULT_METRIC_OPTIONS` therefore extend the alias:
+    ``distinct`` by name, because it reads, and anything else by a short stable
+    digest, because a separator is arbitrary text and cannot be one.
     """
-    return f"{field_name}_{op.value}"
+    parts = [field_name, op.value]
+    extras = _non_default_options(op, options)
+    if extras.pop("distinct", False):
+        parts.append("distinct")
+    if extras:
+        parts.append(_options_digest(extras))
+    return "_".join(parts)
+
+
+def _non_default_options(op: AggregateOp, options: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The options that actually change this operation's SQL."""
+    defaults = DEFAULT_METRIC_OPTIONS.get(op, {})
+    return {
+        key: value
+        for key, value in (options or {}).items()
+        if key not in defaults or defaults[key] != value
+    }
+
+
+def _options_digest(options: Mapping[str, Any]) -> str:
+    """A short, stable key for a set of option values.
+
+    ``blake2s`` rather than :func:`hash`, which is salted per process: a row key
+    has to be the same one this query built it under and the next one too.
+    """
+    payload = repr(sorted(options.items())).encode()
+    return hashlib.blake2s(payload, digest_size=4).hexdigest()
 
 
 def dimension_alias(field_name: str, granularity: TemporalGranularity | None = None) -> str:
@@ -279,6 +341,19 @@ class EntityRegistration:
                 # or contradict the declared kind.
                 continue
             model_field = self._resolve_model_field(metric.field_path, metric.name)
+            if isinstance(concrete_output_field(model_field), models.DurationField):
+                # A duration column *is* numeric, and the kind map says so --
+                # but ``Sum``/``Avg``/``Min``/``Max`` over an interval return a
+                # ``timedelta``, and ``NumericAggregate`` publishes floats. The
+                # column has to be read through an expression that yields a
+                # number, which is what both duration metrics registered below
+                # already do. Refused here so the next one cannot forget.
+                raise AggregateRegistrationError(
+                    f"{self.model.__name__}.{metric.field_path} is a DurationField; register "
+                    f"{metric.name!r} with an `expression` yielding a number (minutes, say) -- "
+                    f"aggregating an interval returns a timedelta, which NumericAggregate "
+                    f"cannot publish"
+                )
             actual = aggregate_kind_for_model_field(model_field)
             if actual is None:
                 raise AggregateRegistrationError(

@@ -12,6 +12,7 @@ meant to be called.
 """
 
 import datetime
+import zoneinfo
 from typing import Any
 
 from django.db import connection
@@ -38,9 +39,12 @@ from public_api.aggregations.plan import (
     OrderSpec,
     WindowSpec,
 )
+from public_api.aggregations.types import TemporalGranularity
 
 
 pytestmark = pytest.mark.django_db
+
+SAO_PAULO = zoneinfo.ZoneInfo("America/Sao_Paulo")
 
 
 def make_event(
@@ -405,6 +409,134 @@ class TestItIsOneGroupedQuery:
                 execute_plan(plan, Calendar.objects.all())
 
         assert len(captured.captured_queries) == 1
+
+
+class TestTemporalBucketingUsesTheCallersClock:
+    """The plan's second goal, and the place a wrong answer looks right.
+
+    ``TIME_ZONE`` is UTC in this project, so bucketing without a caller-supplied
+    zone would silently answer in UTC. These tests put events either side of a
+    Sao Paulo midnight (UTC-3) and assert the same rows land in *different* days
+    in Sao Paulo and in the *same* day in UTC -- which only one of the two
+    answers can satisfy.
+    """
+
+    def day_plan(self, tz: zoneinfo.ZoneInfo) -> AggregateQueryPlan:
+        return AggregateQueryPlan(
+            entity=AggregatableEntity.CALENDAR_EVENT,
+            dimensions=(
+                DimensionSpec(
+                    alias="start_time_day",
+                    field_path="start_time",
+                    granularity=TemporalGranularity.DAY,
+                    tzinfo=tz,
+                ),
+            ),
+            metrics=(MetricSpec.row_count(),),
+        )
+
+    def test_a_day_bucket_straddles_local_midnight_not_the_servers(self, organization, calendars):
+        first, _second = calendars
+        with organization_context(organization):
+            # 01:00 UTC is 22:00 the previous day in Sao Paulo; 04:00 UTC is
+            # 01:00 the same day. Same UTC date, different Sao Paulo dates.
+            make_event(first, title="LateNight", start_hour=1, duration_minutes=30, day=5)
+            make_event(first, title="EarlyHours", start_hour=4, duration_minutes=30, day=5)
+
+            sao_paulo_rows = execute_plan(self.day_plan(SAO_PAULO), CalendarEvent.objects.all())
+            utc_rows = execute_plan(self.day_plan(datetime.UTC), CalendarEvent.objects.all())
+
+        assert [
+            (row["start_time_day"].astimezone(SAO_PAULO).date(), row["count"])
+            for row in sao_paulo_rows
+        ] == [(datetime.date(2026, 3, 4), 1), (datetime.date(2026, 3, 5), 1)]
+
+        # The very same rows, bucketed on the server's clock, collapse into one
+        # day -- which is the answer a missing timezone would have returned.
+        assert [
+            (row["start_time_day"].astimezone(datetime.UTC).date(), row["count"])
+            for row in utc_rows
+        ] == [(datetime.date(2026, 3, 5), 2)]
+
+    def test_a_week_bucket_splits_on_the_monday_boundary(self, organization, calendars):
+        first, _second = calendars
+        with organization_context(organization):
+            # 2026-03-05 is a Thursday; 2026-03-09 is the following Monday.
+            make_event(first, title="Thu", start_hour=12, duration_minutes=30, day=5)
+            make_event(first, title="Sun", start_hour=12, duration_minutes=30, day=8)
+            make_event(first, title="Mon", start_hour=12, duration_minutes=30, day=9)
+
+            plan = AggregateQueryPlan(
+                entity=AggregatableEntity.CALENDAR_EVENT,
+                dimensions=(
+                    DimensionSpec(
+                        alias="start_time_week",
+                        field_path="start_time",
+                        granularity=TemporalGranularity.WEEK,
+                        tzinfo=SAO_PAULO,
+                    ),
+                ),
+                metrics=(MetricSpec.row_count(),),
+            )
+            rows = execute_plan(plan, CalendarEvent.objects.all())
+
+        assert [
+            (row["start_time_week"].astimezone(SAO_PAULO).date(), row["count"]) for row in rows
+        ] == [(datetime.date(2026, 3, 2), 2), (datetime.date(2026, 3, 9), 1)]
+
+    def test_a_month_bucket_groups_a_whole_month(self, organization, calendars):
+        first, _second = calendars
+        with organization_context(organization):
+            make_event(first, title="Early", start_hour=12, duration_minutes=30, day=5)
+            make_event(first, title="Late", start_hour=12, duration_minutes=30, day=26)
+
+            plan = AggregateQueryPlan(
+                entity=AggregatableEntity.CALENDAR_EVENT,
+                dimensions=(
+                    DimensionSpec(
+                        alias="start_time_month",
+                        field_path="start_time",
+                        granularity=TemporalGranularity.MONTH,
+                        tzinfo=SAO_PAULO,
+                    ),
+                ),
+                metrics=(MetricSpec.row_count(),),
+            )
+            rows = execute_plan(plan, CalendarEvent.objects.all())
+
+        assert [
+            (row["start_time_month"].astimezone(SAO_PAULO).date(), row["count"]) for row in rows
+        ] == [(datetime.date(2026, 3, 1), 2)]
+
+    def test_a_bucketed_plan_is_still_one_query_that_groups_in_sql(self, organization, calendars):
+        first, _second = calendars
+        with organization_context(organization):
+            make_event(first, title="A1", start_hour=1, duration_minutes=30)
+            plan = self.day_plan(SAO_PAULO)
+            sql = str(build_aggregate_queryset(plan, CalendarEvent.objects.all()).query)
+
+            with CaptureQueriesContext(connection) as captured:
+                execute_plan(plan, CalendarEvent.objects.all())
+
+        assert "GROUP BY" in sql
+        # The bucket boundary is computed by the database in the named zone.
+        assert "America/Sao_Paulo" in sql
+        assert len(captured.captured_queries) == 1
+
+    def test_a_day_with_no_events_produces_no_bucket(self, organization, calendars):
+        first, _second = calendars
+        with organization_context(organization):
+            make_event(first, title="Day5", start_hour=12, duration_minutes=30, day=5)
+            make_event(first, title="Day7", start_hour=12, duration_minutes=30, day=7)
+
+            rows = execute_plan(self.day_plan(SAO_PAULO), CalendarEvent.objects.all())
+
+        # The 6th has no events, so it has no row. Buckets are sparse and the
+        # zero is the client's to draw.
+        assert [row["start_time_day"].astimezone(SAO_PAULO).date() for row in rows] == [
+            datetime.date(2026, 3, 5),
+            datetime.date(2026, 3, 7),
+        ]
 
 
 class TestBucketsAreSparseAndOrderingIsDeterministic:

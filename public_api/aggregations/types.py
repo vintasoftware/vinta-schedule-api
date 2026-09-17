@@ -17,6 +17,14 @@ import enum
 
 import strawberry
 
+from public_api.aggregations.errors import ConcatArgumentsMismatchError
+
+
+# The default ``concat`` separator, declared once. It is the GraphQL argument's
+# default, the registry's default metric option, and the executor's fallback --
+# three places that have to agree for a row key to describe the string it holds.
+DEFAULT_CONCAT_SEPARATOR = ","
+
 
 @strawberry.enum(description="Bucket size for a temporal group-by dimension.")
 class TemporalGranularity(enum.Enum):
@@ -58,12 +66,16 @@ class StringAggregate:
     min: str | None = None
     max: str | None = None
 
-    # Held privately and returned by the ``concat`` resolver below. The
-    # separator and distinctness are query *arguments*, so they change the SQL
-    # rather than the presentation: the resolver that builds the query plan
-    # reads them off the selection and asks the database for exactly this
-    # string. By the time the field resolves, the work is done.
+    # Held privately and returned by the ``concat`` resolver below, alongside
+    # the arguments the query was actually built for. ``separator`` and
+    # ``distinct`` are query *arguments*: they change the SQL rather than the
+    # presentation, so the resolver that builds the query plan reads them off
+    # the selection and asks the database for exactly this string. By the time
+    # the field resolves, the work is done -- and the two fields below are what
+    # let it prove that the work done matches the work asked for.
     concat_value: strawberry.Private[str | None] = None
+    concat_separator: strawberry.Private[str] = DEFAULT_CONCAT_SEPARATOR
+    concat_distinct: strawberry.Private[bool] = False
 
     @strawberry.field(
         description=(
@@ -71,12 +83,19 @@ class StringAggregate:
             "so repeated runs of the same query return the same string."
         )
     )
-    def concat(self, separator: str = ",", distinct: bool = False) -> str | None:
+    def concat(
+        self, separator: str = DEFAULT_CONCAT_SEPARATOR, distinct: bool = False
+    ) -> str | None:
         """Return the concatenation the query plan already asked the database for.
 
-        The arguments are declared here because they belong to this field in
-        the published schema, and they are consumed when the plan is built.
+        The arguments are checked rather than ignored. They were consumed when
+        the plan was built, so a mismatch here means the plan builder did not
+        read them off the selection -- in which case this string joins on a
+        separator the caller did not ask for, and returning it would be wrong
+        in a way nothing downstream could detect.
         """
+        if separator != self.concat_separator or distinct != self.concat_distinct:
+            raise ConcatArgumentsMismatchError
         return self.concat_value
 
 

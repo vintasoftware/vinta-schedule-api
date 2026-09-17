@@ -30,6 +30,7 @@ from public_api.aggregations.errors import (
     AliasCollisionError,
     EmptyAggregatePlanError,
     LimitOutOfRangeError,
+    MissingBucketTimezoneError,
     OffsetNegativeError,
     UnknownOrderAliasError,
 )
@@ -140,7 +141,7 @@ class DimensionSpec:
     (``"calendar_id"`` reads the concrete ``calendar_fk`` column).
 
     ``tzinfo`` is the caller-supplied IANA zone the bucket boundary is computed
-    in, and is meaningful only alongside ``granularity``. It is a resolved
+    in, and is **required** whenever ``granularity`` is set. It is a resolved
     :class:`zoneinfo.ZoneInfo` rather than a string because the name has
     already been validated by the time a plan exists -- an unknown name is
     refused before this dataclass is built.
@@ -150,6 +151,10 @@ class DimensionSpec:
     field_path: str
     granularity: TemporalGranularity | None = None
     tzinfo: zoneinfo.ZoneInfo | None = None
+
+    def __post_init__(self) -> None:
+        if self.granularity is not None and self.tzinfo is None:
+            raise MissingBucketTimezoneError(self.field_path)
 
     def as_audit_dict(self) -> dict[str, Any]:
         """A stable, value-free description of this dimension."""

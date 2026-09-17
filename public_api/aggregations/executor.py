@@ -66,7 +66,7 @@ from public_api.aggregations.registry import (
     reverse_relation_fk_attname,
     validate_plan,
 )
-from public_api.aggregations.types import TemporalGranularity
+from public_api.aggregations.types import DEFAULT_CONCAT_SEPARATOR, TemporalGranularity
 
 
 # Bucketing functions, one per granularity. All three take the caller's
@@ -295,7 +295,7 @@ def _string_agg(source: Combinable | str, options: Mapping[str, Any]) -> Combina
     only ordering compatible with ``DISTINCT``, which Postgres requires to
     match the ``ORDER BY`` expression.
     """
-    separator = options.get("separator", ",")
+    separator = options.get("separator", DEFAULT_CONCAT_SEPARATOR)
     return StringAgg(
         source,
         Value(separator),

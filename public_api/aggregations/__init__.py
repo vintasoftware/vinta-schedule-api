@@ -29,10 +29,12 @@ from public_api.aggregations.errors import (
     AggregateQueryTimeoutError,
     AggregateRegistrationError,
     AliasCollisionError,
+    ConcatArgumentsMismatchError,
     DateRangeTooLargeError,
     EmptyAggregatePlanError,
     EntityQuerysetMismatchError,
     LimitOutOfRangeError,
+    MissingBucketTimezoneError,
     OffsetNegativeError,
     ReservedAliasError,
     UnknownAggregateEntityError,
@@ -58,6 +60,7 @@ from public_api.aggregations.plan import (
     WindowSpec,
 )
 from public_api.aggregations.registry import (
+    DEFAULT_METRIC_OPTIONS,
     REGISTRY,
     AggregatableField,
     AggregateKind,
@@ -65,12 +68,14 @@ from public_api.aggregations.registry import (
     GroupableField,
     RelationCount,
     aggregate_kind_for_model_field,
+    concrete_output_field,
     dimension_alias,
     get_registration,
     metric_alias,
     validate_plan,
 )
 from public_api.aggregations.types import (
+    DEFAULT_CONCAT_SEPARATOR,
     BooleanAggregate,
     DateTimeAggregate,
     NumericAggregate,
@@ -80,6 +85,8 @@ from public_api.aggregations.types import (
 
 
 __all__ = [
+    "DEFAULT_CONCAT_SEPARATOR",
+    "DEFAULT_METRIC_OPTIONS",
     "MAX_LIMIT",
     "MIN_LIMIT",
     "REGISTRY",
@@ -94,6 +101,7 @@ __all__ = [
     "AggregateRegistrationError",
     "AliasCollisionError",
     "BooleanAggregate",
+    "ConcatArgumentsMismatchError",
     "DateRangeTooLargeError",
     "DateTimeAggregate",
     "DimensionSpec",
@@ -105,6 +113,7 @@ __all__ = [
     "HavingSpec",
     "LimitOutOfRangeError",
     "MetricSpec",
+    "MissingBucketTimezoneError",
     "NumericAggregate",
     "OffsetNegativeError",
     "OrderSpec",
@@ -122,6 +131,7 @@ __all__ = [
     "WindowSpec",
     "aggregate_kind_for_model_field",
     "build_aggregate_queryset",
+    "concrete_output_field",
     "dimension_alias",
     "execute_plan",
     "get_registration",

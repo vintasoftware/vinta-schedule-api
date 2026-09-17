@@ -21,6 +21,7 @@ from public_api.aggregations.errors import (
     AliasCollisionError,
     EmptyAggregatePlanError,
     LimitOutOfRangeError,
+    MissingBucketTimezoneError,
     OffsetNegativeError,
     UnknownOrderAliasError,
 )
@@ -217,6 +218,38 @@ class TestAliasesAreUnique:
         assert plan.dimension_aliases == ("calendar_id",)
         assert plan.metric_aliases == ("count", "duration_minutes_sum")
         assert plan.aliases == ("calendar_id", "count", "duration_minutes_sum")
+
+
+class TestABucketNamesItsOwnClock:
+    """A granularity with no timezone buckets on the server's midnight.
+
+    That is the alternative the plan's guiding decision rejects: it mixes wall
+    clocks inside one result set and returns a plausible wrong answer rather
+    than an error. Refused at construction so no phase can reach it.
+    """
+
+    @pytest.mark.parametrize("granularity", list(TemporalGranularity))
+    def test_a_granularity_without_a_timezone_is_rejected(self, granularity):
+        with pytest.raises(MissingBucketTimezoneError) as excinfo:
+            DimensionSpec(alias="start_time_day", field_path="start_time", granularity=granularity)
+
+        assert "start_time" in str(excinfo.value)
+
+    def test_a_granularity_with_a_timezone_is_accepted(self):
+        dimension = DimensionSpec(
+            alias="start_time_day",
+            field_path="start_time",
+            granularity=TemporalGranularity.DAY,
+            tzinfo=SAO_PAULO,
+        )
+
+        assert dimension.tzinfo is SAO_PAULO
+
+    def test_a_scalar_dimension_needs_no_timezone(self):
+        dimension = DimensionSpec(alias="calendar_id", field_path="calendar_id")
+
+        assert dimension.granularity is None
+        assert dimension.tzinfo is None
 
 
 class TestAPlanMustAskForSomething:
