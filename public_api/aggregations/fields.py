@@ -52,10 +52,13 @@ from django.db import OperationalError, connection, transaction
 
 import strawberry
 import strawberry_django
+from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 from strawberry.types.nodes import SelectedField, Selection
 from strawberry.utils.str_converters import to_camel_case
 
+from audit_integration.services import OrganizationAuditService
+from public_api.aggregations.audit import record_aggregate_query
 from public_api.aggregations.dimensions import (
     GROUP_BY_INPUT_TYPE_BY_ENTITY,
     GROUP_KEY_TYPE_BY_ENTITY,
@@ -505,6 +508,7 @@ def _filter_bounds(filter_input: Any) -> FilterBounds:
     )
 
 
+@inject
 def _resolve_aggregate(
     entity: AggregatableEntity,
     info: strawberry.Info,
@@ -513,6 +517,7 @@ def _resolve_aggregate(
     timezone: str,
     limit: int,
     offset: int,
+    audit_service: OrganizationAuditService = Provide["audit_service"],
 ) -> list[Any]:
     """Resolve one aggregate field. Shared, unmodified, by all six."""
     registration = get_registration(entity)
@@ -554,7 +559,21 @@ def _resolve_aggregate(
 
     rows = _execute_within_budget(plan, queryset)
     row_type = AGGREGATE_ROW_TYPE_BY_ENTITY[entity]
-    return [_build_row(row_type, plan, row, selected) for row in rows]
+    result = [_build_row(row_type, plan, row, selected) for row in rows]
+
+    # Record the aggregate query to the audit trail.
+    if audit_service is not None:
+        actor = audit_service.actor_from_system_user(system_user)
+        record_aggregate_query(
+            audit_service=audit_service,
+            actor_from_system_user=actor,
+            system_user=system_user,
+            organization_id=organization.id,
+            plan=plan,
+            row_count=len(result),
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------

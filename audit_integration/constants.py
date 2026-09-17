@@ -48,3 +48,4 @@ class AuditAction(models.TextChoices):
         "calendar.event.external_change_auto_undone",
         "External change auto-undone",
     )
+    AGGREGATE_QUERY = "aggregate.query", "Aggregate query"

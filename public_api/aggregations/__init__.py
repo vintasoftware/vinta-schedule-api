@@ -31,9 +31,12 @@ The pieces, in the order a request moves through them:
 * :mod:`~public_api.aggregations.fields` -- the six root fields, built from the
   registry by one factory, and the cost guards that bound what one may ask for.
   This is the only module here that touches the published schema.
+* :mod:`~public_api.aggregations.audit` -- audit logging for aggregate queries,
+  recording shape and scope without field values.
 * :mod:`~public_api.aggregations.errors` -- every message these raise.
 """
 
+from public_api.aggregations.audit import record_aggregate_query
 from public_api.aggregations.dimensions import (
     GROUP_BY_INPUT_TYPE_BY_ENTITY,
     GROUP_KEY_TYPE_BY_ENTITY,
@@ -254,6 +257,7 @@ __all__ = [
     "execute_plan",
     "get_registration",
     "metric_alias",
+    "record_aggregate_query",
     "resolve_timezone",
     "validate_plan",
 ]
