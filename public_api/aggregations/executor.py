@@ -103,6 +103,11 @@ def build_aggregate_queryset(
     if queryset.model is not registration.model:
         raise EntityQuerysetMismatchError(plan.entity, registration.model, queryset.model)
 
+    # Built once rather than per alias: every annotation name is checked against
+    # it, and walking the model's fields for each one is the same answer several
+    # times over.
+    column_names = _column_names(registration)
+
     pre_annotations: dict[str, Combinable] = {}
     dimension_annotations: dict[str, Combinable] = {}
     group_by: list[str] = []
@@ -114,13 +119,13 @@ def build_aggregate_queryset(
             # no annotation (and no alias collision) is possible.
             group_by.append(dimension.alias)
             continue
-        _reject_reserved_alias(registration, dimension.alias)
+        _reject_reserved_alias(registration, dimension.alias, column_names)
         dimension_annotations[dimension.alias] = expression
         group_by.append(dimension.alias)
 
     aggregates: dict[str, Combinable] = {}
     for metric in plan.metrics:
-        _reject_reserved_alias(registration, metric.alias)
+        _reject_reserved_alias(registration, metric.alias, column_names)
         relation = _relation_count_for(registration, metric)
         if relation is not None:
             hidden_alias = f"{_RELATION_COUNT_PREFIX}{metric.alias}"
@@ -299,14 +304,25 @@ def _string_agg(source: Combinable | str, options: Mapping[str, Any]) -> Combina
     )
 
 
-def _reject_reserved_alias(registration: EntityRegistration, alias: str) -> None:
+def _column_names(registration: EntityRegistration) -> frozenset[str]:
+    """Every name the model already answers to, as field names and attnames."""
+    names: set[str] = set()
+    for model_field in registration.model._meta.get_fields():
+        names.add(model_field.name)
+        attname = getattr(model_field, "attname", None)
+        if attname:
+            names.add(attname)
+    return frozenset(names)
+
+
+def _reject_reserved_alias(
+    registration: EntityRegistration, alias: str, column_names: frozenset[str]
+) -> None:
     """Refuse an alias that shadows a column of the model being grouped.
 
     Django raises on an annotation whose name matches a model field, with a
     message about the model rather than about the aggregate. Catching it here
     names the alias to rename instead.
     """
-    meta = registration.model._meta
-    for model_field in meta.get_fields():
-        if model_field.name == alias or getattr(model_field, "attname", None) == alias:
-            raise ReservedAliasError(alias, registration.model.__name__)
+    if alias in column_names:
+        raise ReservedAliasError(alias, registration.model.__name__)
