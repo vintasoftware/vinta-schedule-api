@@ -26,8 +26,8 @@ from organizations.models import Organization
 from public_api.aggregations.errors import (
     EntityQuerysetMismatchError,
     UnknownAggregateFieldError,
+    UnknownWindowSourceError,
     UnsupportedAggregateOperationError,
-    WindowNotSupportedError,
 )
 from public_api.aggregations.executor import build_aggregate_queryset, execute_plan
 from public_api.aggregations.plan import (
@@ -37,6 +37,8 @@ from public_api.aggregations.plan import (
     DimensionSpec,
     MetricSpec,
     OrderSpec,
+    WindowFunction,
+    WindowMetricSpec,
     WindowSpec,
 )
 from public_api.aggregations.types import TemporalGranularity
@@ -631,10 +633,27 @@ class TestThePlanIsValidatedBeforeAnySql:
         with organization_context(organization), pytest.raises(UnsupportedAggregateOperationError):
             build_aggregate_queryset(plan, CalendarEvent.objects.all())
 
-    def test_a_window_is_refused_rather_than_silently_dropped(self, organization, calendars):
+    def test_a_window_over_a_metric_the_plan_does_not_annotate_is_refused(
+        self, organization, calendars
+    ):
+        """Phase 6 executes windows; what it will not do is guess a source.
+
+        This replaces the Phase 0 case asserting windows were refused outright.
+        The remaining refusal is narrower and is the one that matters: a window
+        whose source alias no metric annotates has no aggregate expression to
+        wrap in an ``OVER`` clause, and the layer that built the window is the
+        one that should have added it.
+        """
         plan = events_by_calendar_plan(
-            window=WindowSpec(order_by=(OrderSpec(alias="calendar_id"),))
+            window=WindowSpec(
+                order_by=(OrderSpec(alias="calendar_id"),),
+                metrics=(
+                    WindowMetricSpec(
+                        alias="running", function=WindowFunction.RUNNING_SUM, source_alias="absent"
+                    ),
+                ),
+            )
         )
 
-        with organization_context(organization), pytest.raises(WindowNotSupportedError):
+        with organization_context(organization), pytest.raises(UnknownWindowSourceError):
             build_aggregate_queryset(plan, CalendarEvent.objects.all())

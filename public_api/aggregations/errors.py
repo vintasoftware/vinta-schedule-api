@@ -32,6 +32,15 @@ QUERY_TIMEOUT_MESSAGE = "Aggregate query exceeded its time budget"
 AMBIGUOUS_GROUP_BY_MESSAGE = "Each groupBy entry must name exactly one of `scalar` or `temporal`"
 DUPLICATE_GROUP_KEY_TEMPLATE = "groupBy names {field} more than once"
 AMBIGUOUS_ORDER_INPUT_MESSAGE = "Each orderBy entry must name exactly one of `key` or `metric`"
+WINDOW_ORDERING_REQUIRED_MESSAGE = (
+    "A window needs an `orderBy`: a running total over unordered rows has no defined value"
+)
+WINDOW_FRAME_OFFSET_TEMPLATE = (
+    "A {bound} frame bound needs a non-negative row offset saying how many rows it spans"
+)
+UNGROUPED_PARTITION_KEY_TEMPLATE = (
+    "Cannot partition by {field}: it is not one of this query's groupBy dimensions"
+)
 UNGROUPED_ORDER_KEY_TEMPLATE = (
     "Cannot order by {field}: it is not one of this query's groupBy dimensions"
 )
@@ -134,6 +143,49 @@ class UngroupedOrderKeyError(AggregateError):
 
     def __init__(self, field: str) -> None:
         super().__init__(UNGROUPED_ORDER_KEY_TEMPLATE.format(field=field))
+
+
+class WindowOrderingRequiredError(AggregateError):
+    """A window was asked for with nothing to order it by.
+
+    Refused rather than defaulted. "Running total" means "summed in some
+    order", and SQL will happily compute one over whatever order the database
+    found convenient -- which is a different number on the next run of the same
+    query, with nothing to say so. The plan calls this meaningless rather than
+    merely wrong, and that is the distinction: there is no ordering this layer
+    could pick on the caller's behalf that would be their intent.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(WINDOW_ORDERING_REQUIRED_MESSAGE)
+
+
+class WindowFrameOffsetError(AggregateError):
+    """A ``PRECEDING`` / ``FOLLOWING`` frame bound carried no row offset.
+
+    Unlike ``UNBOUNDED PRECEDING`` and ``CURRENT ROW``, these two name a
+    distance rather than a position, so "3 preceding" is the whole of the
+    instruction and "preceding" on its own is half of it.
+    """
+
+    def __init__(self, bound: str) -> None:
+        super().__init__(WINDOW_FRAME_OFFSET_TEMPLATE.format(bound=bound))
+
+
+class UngroupedPartitionKeyError(AggregateError):
+    """``partitionBy`` named a dimension this query did not group by.
+
+    A partition splits the already-grouped rows, so it can only address a
+    column those rows carry. Naming anything else would either fail in the
+    database or -- worse -- add a column to the ``GROUP BY``, which changes the
+    numbers the window is computed over while still returning a plausible
+    result.
+
+    The field name is a schema enum member rather than caller text.
+    """
+
+    def __init__(self, field: str) -> None:
+        super().__init__(UNGROUPED_PARTITION_KEY_TEMPLATE.format(field=field))
 
 
 class AggregateQueryTimeoutError(AggregateError):
@@ -289,16 +341,34 @@ class EmptyAggregatePlanError(AggregateConfigurationError):
     """
 
 
-class WindowNotSupportedError(AggregateConfigurationError):
-    """A plan carries a window, which this engine does not execute yet.
+class WindowSourceMissingError(AggregateConfigurationError):
+    """A window metric that windows over an aggregate named no source metric.
 
-    Window construction lands in its own phase (see the plan's Phase 6). Until
-    it does, a plan that sets ``window`` is refused rather than executed with
-    the window quietly dropped.
+    Only ``RANK`` has no source. Everything else -- a running sum, a moving
+    average, a share of the partition -- is computed *over* a number the plan
+    already produces, and a window function with nothing under it has no
+    meaning to fall back on.
     """
 
-    def __init__(self) -> None:
-        super().__init__("Window functions are not implemented by the aggregate executor yet")
+    def __init__(self, alias: str, function: str) -> None:
+        super().__init__(f"Window metric {alias!r} ({function}) names no source metric")
+
+
+class UnknownWindowSourceError(AggregateConfigurationError):
+    """A window metric's source alias is not one the plan annotates.
+
+    The layer that builds the window also decides the plan's metrics, so it is
+    that layer's job to add a metric a window reads but the selection did not
+    -- the same contract, and the same reason, as
+    :class:`UnknownHavingAliasError`. Without the annotation there is no
+    aggregate expression to wrap in an ``OVER`` clause.
+    """
+
+    def __init__(self, alias: str, source_alias: str) -> None:
+        super().__init__(
+            f"Window metric {alias!r} windows over {source_alias!r}, which no metric in "
+            f"this plan annotates"
+        )
 
 
 class EntityQuerysetMismatchError(AggregateConfigurationError):

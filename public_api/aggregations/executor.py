@@ -32,33 +32,43 @@ from typing import Any
 from django.db.models import (
     Avg,
     Count,
+    ExpressionWrapper,
     F,
+    FloatField,
+    IntegerField,
     Max,
     Min,
     OuterRef,
     Q,
     QuerySet,
+    RowRange,
     StringAgg,
     Subquery,
     Sum,
     Value,
+    Window,
 )
-from django.db.models.expressions import Combinable
-from django.db.models.functions import Coalesce, TruncDay, TruncMonth, TruncWeek
+from django.db.models.expressions import Combinable, Func
+from django.db.models.functions import Coalesce, Rank, TruncDay, TruncMonth, TruncWeek
 
 from public_api.aggregations.errors import (
     AggregateRegistrationError,
     EntityQuerysetMismatchError,
     ReservedAliasError,
+    UngroupedPartitionKeyError,
     UnknownHavingAliasError,
+    UnknownWindowSourceError,
     UnsupportedAggregateOperationError,
-    WindowNotSupportedError,
 )
 from public_api.aggregations.plan import (
+    FRAMED_WINDOW_FUNCTIONS,
     AggregateOp,
     AggregateQueryPlan,
     DimensionSpec,
     MetricSpec,
+    WindowFunction,
+    WindowMetricSpec,
+    WindowSpec,
 )
 from public_api.aggregations.registry import (
     AggregatableField,
@@ -97,9 +107,6 @@ def build_aggregate_queryset(
     is sliced to the plan's ``offset`` / ``limit``. It has not been evaluated.
     """
     registration = validate_plan(plan)
-
-    if plan.window is not None:
-        raise WindowNotSupportedError
 
     if queryset.model is not registration.model:
         raise EntityQuerysetMismatchError(plan.entity, registration.model, queryset.model)
@@ -154,6 +161,19 @@ def build_aggregate_queryset(
         # as ``HAVING`` rather than folding it into the ``WHERE`` clause.
         grouped = grouped.filter(plan.having.predicate)
 
+    if plan.window is not None:
+        # Annotated *after* the ``having`` filter, and deliberately so: Django
+        # refuses a filter over a window expression, and SQL computes window
+        # functions after ``HAVING`` anyway. Doing it in this order means the
+        # running total runs over the groups that survived the filter, which is
+        # the only reading of "a window over the filtered result".
+        window_annotations = _window_annotations(
+            registration, plan.window, aggregates, set(group_by)
+        )
+        for alias in window_annotations:
+            _reject_reserved_alias(registration, alias, column_names)
+        grouped = grouped.annotate(**window_annotations)
+
     grouped = grouped.order_by(*_order_by(plan, group_by))
     return grouped[plan.offset : plan.offset + plan.limit]
 
@@ -165,6 +185,233 @@ def execute_plan(plan: AggregateQueryPlan, queryset: QuerySet) -> list[dict[str,
     reshapes them.
     """
     return list(build_aggregate_queryset(plan, queryset))
+
+
+# ---------------------------------------------------------------------------
+# Window functions
+# ---------------------------------------------------------------------------
+#
+# The construction here is the one thing in this module worth reading in full
+# before changing, because a wrong frame bound returns confident numbers.
+#
+# **Why the window can live in the same statement.** Postgres evaluates window
+# functions *after* ``GROUP BY`` and ``HAVING``, so ``SUM(COUNT(id)) OVER
+# (ORDER BY day)`` is a legal running total over grouped rows -- no subquery
+# needed. Django refuses to build it only because ``Aggregate.resolve_expression``
+# rejects an aggregate nested inside another aggregate, a rule that is right
+# everywhere except inside an ``OVER`` clause. :class:`_WindowedSum` and
+# :class:`_WindowedAvg` below opt out of exactly that check and change nothing
+# else, which is what keeps the whole aggregate in one round trip instead of
+# two. Everything is still ORM-generated; there is no raw SQL here.
+#
+# **Why the windows are annotated last.** ``Window.get_group_by_cols()`` returns
+# nothing, so a window annotation never joins the ``GROUP BY`` list -- but
+# Django *does* refuse a ``.filter()`` over one. Annotating after the ``having``
+# filter keeps that impossible rather than merely unlikely.
+
+
+class _GroupBlindWindow(Window):
+    """A window that never contributes a column to ``GROUP BY``.
+
+    ``Window.get_group_by_cols()`` reports the columns its ``PARTITION BY`` and
+    ``ORDER BY`` read, so that a query inferring its grouping from scratch
+    groups by them. This query does not infer anything: ``.values()`` already
+    fixed the ``GROUP BY``, and every column a window here addresses is by
+    construction one of those aliases -- ``partition_by`` is checked against
+    them, and ``order_by`` names aliases the plan produces.
+
+    Left to Django, that report is folded back in through
+    ``Query.set_group_by()``, which -- depending on whether it decides aliases
+    are usable, and that decision changes with the *other* annotations present
+    -- can append the **window's own alias** to the ``GROUP BY``. Grouping by a
+    window function is not something Postgres will run, and the trigger for it
+    was a second window elsewhere in the same request. Reporting nothing is
+    both correct here and the same answer every time.
+    """
+
+    def get_group_by_cols(self) -> list[Any]:
+        return []
+
+
+class _WindowedSum(Sum):
+    """``SUM(<aggregate>)``, legal only inside an ``OVER`` clause.
+
+    ``Aggregate.resolve_expression`` refuses an aggregate whose argument is
+    itself an aggregate, which is correct for a bare ``SELECT`` and wrong for a
+    window: ``SUM(COUNT(id)) OVER (...)`` is exactly how a running total over
+    grouped rows is spelled. Resolving through ``Func`` skips that one check and
+    inherits everything else.
+
+    ``filter`` and ``default`` are refused rather than silently dropped --
+    ``Aggregate.resolve_expression`` is where both are handled, and this does
+    not run it.
+    """
+
+    def __init__(self, *expressions: Any, **extra: Any) -> None:
+        if extra.get("filter") is not None or extra.get("default") is not None:
+            raise AggregateRegistrationError(
+                f"{type(self).__name__} does not support `filter` or `default`: they are "
+                f"applied by the resolution path this class deliberately skips"
+            )
+        super().__init__(*expressions, **extra)
+
+    def resolve_expression(
+        self,
+        query: Any = None,
+        allow_joins: bool = True,
+        reuse: Any = None,
+        summarize: bool = False,
+        for_save: bool = False,
+    ) -> Any:
+        return Func.resolve_expression(self, query, allow_joins, reuse, summarize, for_save)
+
+
+class _WindowedAvg(Avg):
+    """``AVG(<aggregate>)`` inside an ``OVER`` clause. See :class:`_WindowedSum`."""
+
+    def __init__(self, *expressions: Any, **extra: Any) -> None:
+        if extra.get("filter") is not None or extra.get("default") is not None:
+            raise AggregateRegistrationError(
+                f"{type(self).__name__} does not support `filter` or `default`: they are "
+                f"applied by the resolution path this class deliberately skips"
+            )
+        super().__init__(*expressions, **extra)
+
+    def resolve_expression(
+        self,
+        query: Any = None,
+        allow_joins: bool = True,
+        reuse: Any = None,
+        summarize: bool = False,
+        for_save: bool = False,
+    ) -> Any:
+        return Func.resolve_expression(self, query, allow_joins, reuse, summarize, for_save)
+
+
+def _frame(spec: WindowSpec) -> RowRange:
+    """The caller's frame as Django's ``RowRange``.
+
+    ``None`` is Django's spelling of an unbounded end, and a ``PRECEDING``
+    offset is negative while a ``FOLLOWING`` one is positive -- the plan's
+    enums carry the direction and a non-negative row count, so the sign is
+    applied here rather than asked of the caller.
+    """
+    return RowRange(
+        start=_bound(spec.frame_start, spec.frame_start_offset),
+        end=_bound(spec.frame_end, spec.frame_end_offset),
+    )
+
+
+def _bound(name: str, offset: int | None) -> int | None:
+    """One frame bound as the integer ``RowRange`` wants."""
+    if name == "CURRENT_ROW":
+        return 0
+    if name == "PRECEDING":
+        return -(offset or 0)
+    if name == "FOLLOWING":
+        return offset or 0
+    # UNBOUNDED_PRECEDING / UNBOUNDED_FOLLOWING.
+    return None
+
+
+# A running total is cumulative by definition, so its frame is fixed here
+# rather than read off the caller's -- see `FRAMED_WINDOW_FUNCTIONS`.
+_RUNNING_FRAME = RowRange(start=None, end=0)
+
+
+def _window_annotations(
+    registration: EntityRegistration,
+    spec: WindowSpec,
+    aggregates: Mapping[str, Combinable],
+    group_by: set[str],
+) -> dict[str, Combinable]:
+    """One annotation per requested window metric.
+
+    ``aggregates`` is what the grouped queryset already annotates, keyed by row
+    alias. A window metric names one of those aliases as its source and the
+    expression is rebuilt from it here, so the running total is provably over
+    the same number the row displays rather than over a second definition of it.
+    """
+    # A partition splits rows the query already grouped, so it can only address
+    # a column those rows carry. Checked here as well as at the schema edge,
+    # because the failure is a partition that silently widens the GROUP BY.
+    for alias in spec.partition_by:
+        if alias not in group_by:
+            raise UngroupedPartitionKeyError(alias)
+
+    partition_by = [F(alias) for alias in spec.partition_by]
+    order_by = [
+        F(order.alias).desc() if order.descending else F(order.alias).asc()
+        for order in spec.order_by
+    ]
+    frame = _frame(spec)
+
+    annotations: dict[str, Combinable] = {}
+    for metric in spec.metrics:
+        annotations[metric.alias] = _window_expression(
+            metric, aggregates, partition_by, order_by, frame
+        )
+    return annotations
+
+
+def _window_expression(
+    metric: WindowMetricSpec,
+    aggregates: Mapping[str, Combinable],
+    partition_by: list[Any],
+    order_by: list[Any],
+    frame: RowRange,
+) -> Combinable:
+    """The ``OVER`` expression for one window metric."""
+    if metric.function is WindowFunction.RANK:
+        # Ranks rows by the window's own ordering; there is nothing to sum, and
+        # a frame would not change a rank.
+        return _GroupBlindWindow(Rank(), partition_by=partition_by or None, order_by=order_by)
+
+    source = aggregates.get(metric.source_alias)
+    if source is None:
+        raise UnknownWindowSourceError(metric.alias, metric.source_alias)
+
+    if metric.function is WindowFunction.PERCENT_OF_TOTAL:
+        # This row's share of its partition. The denominator is the partition
+        # total, so it takes no frame at all -- a framed denominator would make
+        # the column a share of a moving window, which is not what it is named.
+        total = _GroupBlindWindow(
+            _WindowedSum(source), partition_by=partition_by or None, output_field=FloatField()
+        )
+        return ExpressionWrapper(
+            source * Value(100.0) / total,
+            output_field=FloatField(),
+        )
+
+    applied_frame = frame if metric.function in FRAMED_WINDOW_FUNCTIONS else _RUNNING_FRAME
+    if metric.function is WindowFunction.MOVING_AVG:
+        return _GroupBlindWindow(
+            _WindowedAvg(source),
+            partition_by=partition_by or None,
+            order_by=order_by,
+            frame=applied_frame,
+            output_field=FloatField(),
+        )
+
+    # RUNNING_SUM. A running count stays an integer; everything else is read as
+    # a float, which is also what the GraphQL field publishes.
+    return _GroupBlindWindow(
+        _WindowedSum(source),
+        partition_by=partition_by or None,
+        order_by=order_by,
+        frame=applied_frame,
+        output_field=IntegerField() if _counts_rows(source) else FloatField(),
+    )
+
+
+def _counts_rows(source: Combinable) -> bool:
+    """Whether this aggregate is a row count, whose running total is an integer.
+
+    Asked of the resolved output field where there is one; an aggregate over an
+    expression cannot always answer before resolution, and float is the right
+    answer for every metric that is not a count.
+    """
+    return isinstance(getattr(source, "_output_field_or_none", None), IntegerField)
 
 
 def _having_aliases(predicate: Q) -> set[str]:

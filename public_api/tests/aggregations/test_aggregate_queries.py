@@ -228,6 +228,48 @@ class TestCalendarEventAggregate:
         assert len(grouped) == 1, grouped
         assert "HAVING" not in grouped[0], grouped[0]
 
+    def test_omitting_window_preserves_phase_four_behaviour(self, organization):
+        """A document naming no `window` answers exactly as it did before Phase 6.
+
+        The new argument is optional and the new `window` field is nullable, so
+        the regression to guard is that their existence changed nothing: same
+        rows, same order, same numbers, and SQL with no `OVER (` in it. The last
+        one is the load-bearing assertion -- a window annotated unconditionally
+        would still return these numbers, and would quietly cost an extra sort
+        per query.
+        """
+        calendars = [make_calendar(organization, name=f"W{index}") for index in range(3)]
+        base = datetime.datetime(2026, 3, 24, 9, 0)
+        for offset, calendar in enumerate(calendars, start=1):
+            for index in range(offset):
+                make_event(
+                    organization,
+                    calendar,
+                    title=f"{calendar.name}-{index}",
+                    start=base + datetime.timedelta(hours=index),
+                    minutes=30,
+                )
+
+        system_user, token, auth = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+        with CaptureQueriesContext(connection) as captured:
+            response = post_graphql(EVENT_AGGREGATE_QUERY, system_user, token, auth, _window())
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload.get("errors", []) == []
+        rows = payload["data"]["calendarEventAggregate"]
+
+        assert [row["key"]["calendarId"] for row in rows] == [c.id for c in calendars]
+        assert [row["count"] for row in rows] == [1, 2, 3]
+        assert [row["durationMinutes"]["sum"] for row in rows] == [30.0, 60.0, 90.0]
+
+        grouped = [
+            query["sql"] for query in captured.captured_queries if "GROUP BY" in query["sql"]
+        ]
+        assert len(grouped) == 1, grouped
+        assert "OVER (" not in grouped[0], grouped[0]
+        assert "HAVING" not in grouped[0], grouped[0]
+
     def test_the_same_document_is_byte_identical_across_runs(self, organization):
         """Determinism, asserted on the serialized body rather than on fields."""
         for index in range(3):

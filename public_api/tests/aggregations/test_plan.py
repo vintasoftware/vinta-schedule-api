@@ -320,9 +320,12 @@ class TestOptionalClausesAreCarriedButNotInterpreted:
         assert plan.as_audit_dict()["window"] == {
             "partition_by": ["calendar_id"],
             "order_by": ["calendar_id"],
+            "metrics": [],
             "frame_type": "ROWS",
             "frame_start": "UNBOUNDED_PRECEDING",
             "frame_end": "CURRENT_ROW",
+            "frame_start_offset": None,
+            "frame_end_offset": None,
         }
 
 

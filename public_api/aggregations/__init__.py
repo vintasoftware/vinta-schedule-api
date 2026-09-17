@@ -32,6 +32,9 @@ The pieces, in the order a request moves through them:
 * :mod:`~public_api.aggregations.ordering` -- the per-entity order inputs, and
   the generated enums naming a group-key dimension or a metric to sort on.
   Together with the limit, this is what makes top-N expressible.
+* :mod:`~public_api.aggregations.windows` -- the window inputs and the per-entity
+  ``*WindowMetrics`` types, for the questions about a row's place in the
+  *sequence* of rows that no amount of grouping can answer.
 * :mod:`~public_api.aggregations.executor` -- the plan turned into a single
   ``.values(...).annotate(...)`` queryset over a caller-supplied, already
   organization-scoped base.
@@ -94,14 +97,18 @@ from public_api.aggregations.errors import (
     OffsetNegativeError,
     ReservedAliasError,
     UngroupedOrderKeyError,
+    UngroupedPartitionKeyError,
     UnknownAggregateEntityError,
     UnknownAggregateFieldError,
     UnknownDimensionError,
     UnknownHavingAliasError,
     UnknownOrderAliasError,
     UnknownTimezoneError,
+    UnknownWindowSourceError,
     UnsupportedAggregateOperationError,
-    WindowNotSupportedError,
+    WindowFrameOffsetError,
+    WindowOrderingRequiredError,
+    WindowSourceMissingError,
 )
 from public_api.aggregations.executor import build_aggregate_queryset, execute_plan
 from public_api.aggregations.fields import (
@@ -156,6 +163,8 @@ from public_api.aggregations.plan import (
     HavingSpec,
     MetricSpec,
     OrderSpec,
+    WindowFunction,
+    WindowMetricSpec,
     WindowSpec,
 )
 from public_api.aggregations.registry import (
@@ -182,6 +191,19 @@ from public_api.aggregations.types import (
     StringAggregate,
     TemporalGranularity,
 )
+from public_api.aggregations.windows import (
+    WINDOW_INPUT_TYPE_BY_ENTITY,
+    WINDOW_METRIC_DEFINITIONS_BY_ENTITY,
+    WINDOW_METRICS_TYPE_BY_ENTITY,
+    WINDOW_ORDER_INPUT_TYPE_BY_ENTITY,
+    WindowBound,
+    WindowFrameInput,
+    WindowFrameType,
+    build_window_metrics,
+    window_from_input,
+    window_input_type,
+    window_metrics_type,
+)
 
 
 __all__ = [
@@ -202,6 +224,10 @@ __all__ = [
     "ORDER_INPUT_TYPE_BY_ENTITY",
     "ORDER_KEY_ENUM_BY_ENTITY",
     "REGISTRY",
+    "WINDOW_INPUT_TYPE_BY_ENTITY",
+    "WINDOW_METRICS_TYPE_BY_ENTITY",
+    "WINDOW_METRIC_DEFINITIONS_BY_ENTITY",
+    "WINDOW_ORDER_INPUT_TYPE_BY_ENTITY",
     "AggregatableEntity",
     "AggregatableField",
     "AggregateConfigurationError",
@@ -282,20 +308,30 @@ __all__ = [
     "StringComparison",
     "TemporalGranularity",
     "UngroupedOrderKeyError",
+    "UngroupedPartitionKeyError",
     "UnknownAggregateEntityError",
     "UnknownAggregateFieldError",
     "UnknownDimensionError",
     "UnknownHavingAliasError",
     "UnknownOrderAliasError",
     "UnknownTimezoneError",
+    "UnknownWindowSourceError",
     "UnsupportedAggregateOperationError",
-    "WindowNotSupportedError",
+    "WindowBound",
+    "WindowFrameInput",
+    "WindowFrameOffsetError",
+    "WindowFrameType",
+    "WindowFunction",
+    "WindowMetricSpec",
+    "WindowOrderingRequiredError",
+    "WindowSourceMissingError",
     "WindowSpec",
     "aggregate_field",
     "aggregate_kind_for_model_field",
     "aggregate_statement_timeout",
     "build_aggregate_queryset",
     "build_group_key",
+    "build_window_metrics",
     "concrete_output_field",
     "dimension_alias",
     "dimensions_from_group_by",
@@ -309,4 +345,7 @@ __all__ = [
     "order_input_type",
     "resolve_timezone",
     "validate_plan",
+    "window_from_input",
+    "window_input_type",
+    "window_metrics_type",
 ]

@@ -99,6 +99,13 @@ from public_api.aggregations.types import (
     NumericAggregate,
     StringAggregate,
 )
+from public_api.aggregations.windows import (
+    WINDOW_INPUT_TYPE_BY_ENTITY,
+    WINDOW_METRIC_DEFINITIONS_BY_ENTITY,
+    WINDOW_METRICS_TYPE_BY_ENTITY,
+    build_window_metrics,
+    window_from_input,
+)
 from public_api.constants import AGGREGATE_STATEMENT_TIMEOUT_MS, PublicAPIResources
 from public_api.pagination import validate_pagination
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
@@ -213,6 +220,15 @@ def _build_row_type(registration: EntityRegistration) -> type:
             default=None, description=relation.description or None
         )
 
+    annotations["window"] = WINDOW_METRICS_TYPE_BY_ENTITY[registration.entity] | None
+    namespace["window"] = strawberry.field(
+        default=None,
+        description=(
+            "Values computed over this row's place in the ordered sequence of groups. "
+            "Null unless the field was given a `window` argument."
+        ),
+    )
+
     namespace["__annotations__"] = annotations
     namespace["__module__"] = __name__
     namespace["__doc__"] = f"One grouped row of a {prefix} aggregate."
@@ -282,6 +298,31 @@ def _concat_options(arguments: Mapping[str, Any]) -> dict[str, Any]:
         "separator": arguments.get("separator", DEFAULT_CONCAT_SEPARATOR),
         "distinct": bool(arguments.get("distinct", False)),
     }
+
+
+def _window_metrics_from_selection(
+    entity: AggregatableEntity, info: strawberry.Info
+) -> tuple[str, ...]:
+    """Which fields of the `*WindowMetrics` type the document asked for.
+
+    A window function nobody selected is not computed, for the same reason an
+    unselected aggregate is not: the `OVER` clause is the expensive half of the
+    query, and asking the database for four of them to return one is the sort
+    of cost this plan bounds everywhere else.
+    """
+    known = {
+        to_camel_case(definition.name): definition.name
+        for definition in WINDOW_METRIC_DEFINITIONS_BY_ENTITY[entity]
+    }
+    selected: list[str] = []
+    for selection in _root_selections(info):
+        if selection.name != "window":
+            continue
+        for window_field in _flatten(selection.selections):
+            name = known.get(window_field.name)
+            if name is not None and name not in selected:
+                selected.append(name)
+    return tuple(selected)
 
 
 def _metrics_from_selection(
@@ -413,6 +454,7 @@ def _build_row(
     plan: AggregateQueryPlan,
     row: Mapping[str, Any],
     selected: tuple[_SelectedMetric, ...],
+    window_metric_names: tuple[str, ...] = (),
 ) -> Any:
     """One aggregated row dict as the entity's `*AggregateRow`."""
     values: dict[str, Any] = {
@@ -425,6 +467,10 @@ def _build_row(
             values[metric.row_field] = row.get(alias)
             continue
         values[metric.row_field] = _aggregate_value(metric, row)
+
+    if plan.window is not None and window_metric_names:
+        values["window"] = build_window_metrics(plan.entity, window_metric_names, row)
+
     return row_type(**values)
 
 
@@ -534,6 +580,7 @@ def _resolve_aggregate(
     timezone: str,
     having: Any,
     order_by: Sequence[Any] | None,
+    window: Any,
     limit: int,
     offset: int,
 ) -> list[Any]:
@@ -571,6 +618,13 @@ def _resolve_aggregate(
     having_spec, having_metrics = having_from_input(registration, having)
     order_specs, order_metrics = order_from_input(entity, order_by, dimensions)
 
+    # Windows read the same kind of unselected metric a `having` does -- a
+    # running total over `durationMinutes` needs that sum annotated whether or
+    # not the document displays it -- so the converter hands its metrics back
+    # the same way and they are merged in the same place.
+    window_metric_names = _window_metrics_from_selection(entity, info)
+    window_spec, window_metrics = window_from_input(entity, window, window_metric_names, dimensions)
+
     # Whatever the caller did not order by, the executor appends from the group
     # key -- cost guard 3. Paging a grouped result whose ordering does not
     # fully determine row order returns overlapping and missing groups between
@@ -578,17 +632,18 @@ def _resolve_aggregate(
     plan = AggregateQueryPlan(
         entity=entity,
         dimensions=dimensions,
-        metrics=_merge_metrics(metrics, having_metrics, order_metrics),
+        metrics=_merge_metrics(metrics, having_metrics, order_metrics, window_metrics),
         filter_bounds=_filter_bounds(filter_input),
         having=having_spec,
         order_by=order_specs,
+        window=window_spec,
         limit=limit,
         offset=offset,
     )
 
     rows = _execute_within_budget(plan, queryset)
     row_type = AGGREGATE_ROW_TYPE_BY_ENTITY[entity]
-    return [_build_row(row_type, plan, row, selected) for row in rows]
+    return [_build_row(row_type, plan, row, selected, window_metric_names) for row in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -607,6 +662,7 @@ def aggregate_field(entity: AggregatableEntity) -> Any:
     group_by_type = GROUP_BY_INPUT_TYPE_BY_ENTITY[entity]
     having_type = HAVING_INPUT_TYPE_BY_ENTITY[entity]
     order_type = ORDER_INPUT_TYPE_BY_ENTITY[entity]
+    window_type = WINDOW_INPUT_TYPE_BY_ENTITY[entity]
     row_type = AGGREGATE_ROW_TYPE_BY_ENTITY[entity]
     prefix = entity_class_prefix(entity)
 
@@ -617,11 +673,12 @@ def aggregate_field(entity: AggregatableEntity) -> Any:
         timezone: str,
         having: Any = None,
         order_by: Sequence[Any] | None = None,
+        window: Any = None,
         limit: int = MAX_LIMIT,
         offset: int = 0,
     ) -> list[Any]:
         return _resolve_aggregate(
-            entity, info, filter, group_by, timezone, having, order_by, limit, offset
+            entity, info, filter, group_by, timezone, having, order_by, window, limit, offset
         )
 
     resolver.__name__ = AGGREGATE_ATTRIBUTE_NAME_BY_ENTITY[entity]
@@ -633,6 +690,7 @@ def aggregate_field(entity: AggregatableEntity) -> Any:
         "timezone": str,
         "having": having_type | None,
         "order_by": list[order_type] | None,  # type: ignore[valid-type]
+        "window": window_type | None,
         "limit": int,
         "offset": int,
         "return": list[row_type],  # type: ignore[valid-type]
@@ -644,9 +702,10 @@ def aggregate_field(entity: AggregatableEntity) -> Any:
         description=(
             f"Group {prefix} rows and aggregate over them. `timezone` is the IANA "
             f"name every temporal bucket boundary is computed in. `having` drops "
-            f"groups on their aggregated values and `orderBy` sorts them -- both "
-            f"in SQL, and neither requires the metric it names to be selected. The "
-            f"filter's date range is mandatory and bounded, and `limit` is capped "
-            f"at {MAX_LIMIT}."
+            f"groups on their aggregated values, `orderBy` sorts them, and `window` "
+            f"computes running totals and moving averages across them -- all in "
+            f"SQL, and none of them requires the metric it names to be selected. "
+            f"The filter's date range is mandatory and bounded, and `limit` is "
+            f"capped at {MAX_LIMIT}."
         ),
     )

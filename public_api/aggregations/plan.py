@@ -33,6 +33,9 @@ from public_api.aggregations.errors import (
     MissingBucketTimezoneError,
     OffsetNegativeError,
     UnknownOrderAliasError,
+    WindowFrameOffsetError,
+    WindowOrderingRequiredError,
+    WindowSourceMissingError,
 )
 from public_api.aggregations.types import TemporalGranularity
 
@@ -221,31 +224,112 @@ class OrderSpec:
         return f"-{self.alias}" if self.descending else self.alias
 
 
+class WindowFunction(enum.Enum):
+    """What a window metric computes over its frame.
+
+    Each one compiles to a real ``OVER`` clause. ``RANK`` takes no source
+    metric -- it ranks rows by the window's own ``ORDER BY`` -- while the other
+    three window over an aggregate the plan already computes.
+    """
+
+    RUNNING_SUM = "running_sum"
+    MOVING_AVG = "moving_avg"
+    RANK = "rank"
+    PERCENT_OF_TOTAL = "percent_of_total"
+
+
+# ``running_*`` is cumulative *by definition*, so it fixes its own frame and
+# ignores the caller's; a "running total" over a three-row frame is not a
+# running total. The caller's frame is what ``moving_avg`` reads, which is the
+# metric a frame is actually for. ``rank`` and ``percent_of_total`` take no
+# frame at all -- one is a position, the other is over the whole partition.
+FRAMED_WINDOW_FUNCTIONS = frozenset({WindowFunction.MOVING_AVG})
+
+
+@dataclass(frozen=True)
+class WindowMetricSpec:
+    """One window metric: what to compute, and over which grouped metric.
+
+    ``source_alias`` names a metric this same plan annotates, rather than
+    repeating its definition, so the running total is guaranteed to be over
+    exactly the number the row displays. It is empty for :data:`WindowFunction.RANK`,
+    which has no source.
+    """
+
+    alias: str
+    function: WindowFunction
+    source_alias: str = ""
+
+    def __post_init__(self) -> None:
+        if self.function is WindowFunction.RANK:
+            return
+        if not self.source_alias:
+            raise WindowSourceMissingError(self.alias, self.function.value)
+
+    def as_audit_dict(self) -> dict[str, Any]:
+        """A stable, value-free description of this window metric."""
+        return {
+            "alias": self.alias,
+            "function": self.function.value,
+            "source_alias": self.source_alias,
+        }
+
+
 @dataclass(frozen=True)
 class WindowSpec:
     """A window function applied over the grouped result.
 
-    Carried by the plan so the audit hook can record that one was requested,
-    but not executed here: the window-over-subquery construction is its own
-    phase of the plan, and until it lands the executor refuses a plan that sets
-    this rather than dropping it.
+    ``partition_by`` and ``order_by`` hold *row aliases* -- the same keys the
+    grouped rows come back under -- because that is what a window over a
+    grouped result can address. Which of those aliases are legal is the
+    registry's and the plan's business, not this dataclass's; what it enforces
+    is the one rule that is true of every window regardless of entity: an
+    unordered running total is meaningless rather than merely wrong, so a
+    window with no ordering is refused rather than executed.
     """
 
-    partition_by: tuple[str, ...] = ()
     order_by: tuple[OrderSpec, ...] = ()
+    partition_by: tuple[str, ...] = ()
+    metrics: tuple[WindowMetricSpec, ...] = ()
     frame_type: str = "ROWS"
     frame_start: str = "UNBOUNDED_PRECEDING"
     frame_end: str = "CURRENT_ROW"
+    frame_start_offset: int | None = None
+    frame_end_offset: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "order_by", tuple(self.order_by))
+        object.__setattr__(self, "partition_by", tuple(self.partition_by))
+        object.__setattr__(self, "metrics", tuple(self.metrics))
+
+        if not self.order_by:
+            raise WindowOrderingRequiredError
+
+        for bound, offset in (
+            (self.frame_start, self.frame_start_offset),
+            (self.frame_end, self.frame_end_offset),
+        ):
+            if bound in _OFFSET_BOUNDS and offset is None:
+                raise WindowFrameOffsetError(bound)
+            if bound in _OFFSET_BOUNDS and offset is not None and offset < 0:
+                raise WindowFrameOffsetError(bound)
 
     def as_audit_dict(self) -> dict[str, Any]:
         """A stable description of the window's shape."""
         return {
             "partition_by": list(self.partition_by),
             "order_by": [order.as_order_by() for order in self.order_by],
+            "metrics": [metric.as_audit_dict() for metric in self.metrics],
             "frame_type": self.frame_type,
             "frame_start": self.frame_start,
             "frame_end": self.frame_end,
+            "frame_start_offset": self.frame_start_offset,
+            "frame_end_offset": self.frame_end_offset,
         }
+
+
+# The two bounds that mean nothing without a row count attached.
+_OFFSET_BOUNDS = frozenset({"PRECEDING", "FOLLOWING"})
 
 
 @dataclass(frozen=True)
