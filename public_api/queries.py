@@ -9,7 +9,6 @@ from django.db.models.functions import Concat
 import strawberry
 import strawberry_django
 from dependency_injector.wiring import Provide, inject
-from django_virtual_models import QuerySet
 from graphql import GraphQLError
 
 from calendar_integration.booking_auth import MAX_CODE_GATED_RANGE
@@ -67,7 +66,10 @@ from organizations.models import (
     OrganizationMembership,
     resolve_branding_for_display,
 )
+from public_api.aggregations.fields import aggregate_field
+from public_api.aggregations.plan import AggregatableEntity
 from public_api.capabilities import assert_org_can_invite
+from public_api.pagination import slice_queryset as _slice_qs
 from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
@@ -199,14 +201,6 @@ def _vinta_default_branding(request=None) -> PublicBrandingResult:
     )
 
 
-def _slice_qs[TQuerySet: QuerySet](qs: TQuerySet, offset: int, limit: int) -> TQuerySet:
-    if offset < 0:
-        raise GraphQLError("Offset must be non-negative")
-    if limit <= 0 or limit > 100:
-        raise GraphQLError("Limit must be between 1 and 100")
-    return qs[offset : offset + limit]
-
-
 def _prepare_service_and_calendar(
     info: strawberry.Info, calendar_id: int
 ) -> tuple["CalendarService", Calendar]:
@@ -304,6 +298,20 @@ class DateTimeRangeInput:
 
 @strawberry.type
 class Query:
+    # The six aggregate root fields, each built by the same factory from the
+    # entity's registration -- see `public_api/aggregations/fields.py`. The
+    # attribute name here is what Strawberry camel-cases into the GraphQL field
+    # name, and therefore what
+    # `OrganizationResourceAccess.FIELD_TO_RESOURCE_MAPPING` must carry an entry
+    # for; `public_api/tests/aggregations/test_field_registration.py` asserts
+    # that from the registry rather than from a list.
+    calendar_event_aggregate = aggregate_field(AggregatableEntity.CALENDAR_EVENT)
+    available_time_aggregate = aggregate_field(AggregatableEntity.AVAILABLE_TIME)
+    blocked_time_aggregate = aggregate_field(AggregatableEntity.BLOCKED_TIME)
+    appointment_type_aggregate = aggregate_field(AggregatableEntity.APPOINTMENT_TYPE)
+    calendar_aggregate = aggregate_field(AggregatableEntity.CALENDAR)
+    calendar_pool_aggregate = aggregate_field(AggregatableEntity.CALENDAR_POOL)
+
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def calendars(
         self,

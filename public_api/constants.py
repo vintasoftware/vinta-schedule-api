@@ -5,6 +5,14 @@ from django.db.models import TextChoices
 
 MAX_AGGREGATE_RANGE = datetime.timedelta(days=366)
 
+# How long one aggregate query may run before Postgres cancels it. A bounded
+# date range and a limit of 100 bound what an aggregate *asks* for; neither
+# bounds what it costs to answer, which is what this is for. Applied around
+# aggregate execution only -- see
+# `public_api.aggregations.fields.aggregate_statement_timeout` -- so nothing
+# else on the connection inherits it.
+AGGREGATE_STATEMENT_TIMEOUT_MS = 10_000
+
 
 class PublicAPIResources(TextChoices):
     """

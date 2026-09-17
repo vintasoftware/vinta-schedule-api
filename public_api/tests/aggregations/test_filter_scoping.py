@@ -40,7 +40,9 @@ class TestCalendarEventFilterOrganizationScoping:
         event_end = event_start + datetime.timedelta(hours=1)
 
         # Create calendar and event in org1
-        calendar1 = baker.make("calendar_integration.Calendar", organization=org1, external_id="cal1")
+        calendar1 = baker.make(
+            "calendar_integration.Calendar", organization=org1, external_id="cal1"
+        )
         event1 = baker.make(
             "calendar_integration.CalendarEvent",
             calendar_fk=calendar1,
@@ -53,7 +55,9 @@ class TestCalendarEventFilterOrganizationScoping:
         )
 
         # Create calendar and event in org2
-        calendar2 = baker.make("calendar_integration.Calendar", organization=org2, external_id="cal2")
+        calendar2 = baker.make(
+            "calendar_integration.Calendar", organization=org2, external_id="cal2"
+        )
         event2 = baker.make(
             "calendar_integration.CalendarEvent",
             calendar_fk=calendar2,
@@ -85,8 +89,12 @@ class TestCalendarEventFilterOrganizationScoping:
         event_start = start + datetime.timedelta(hours=1)
         event_end = event_start + datetime.timedelta(hours=1)
 
-        calendar1 = baker.make("calendar_integration.Calendar", organization=org1, external_id="cal1")
-        calendar2 = baker.make("calendar_integration.Calendar", organization=org2, external_id="cal2")
+        calendar1 = baker.make(
+            "calendar_integration.Calendar", organization=org1, external_id="cal1"
+        )
+        calendar2 = baker.make(
+            "calendar_integration.Calendar", organization=org2, external_id="cal2"
+        )
 
         # Create events in both calendars
         event1 = baker.make(
@@ -141,8 +149,12 @@ class TestCalendarFilterOwnerScoping:
         org = organization
 
         # Create multiple calendars
-        calendar1 = baker.make("calendar_integration.Calendar", organization=org, external_id="cal1")
-        calendar2 = baker.make("calendar_integration.Calendar", organization=org, external_id="cal2")
+        calendar1 = baker.make(
+            "calendar_integration.Calendar", organization=org, external_id="cal1"
+        )
+        calendar2 = baker.make(
+            "calendar_integration.Calendar", organization=org, external_id="cal2"
+        )
 
         # Create an org-wide system user (no scoping)
         system_user = baker.make(
@@ -180,10 +192,14 @@ class TestCalendarFilterOwnerScoping:
         )
 
         # Create calendars owned by different users
-        calendar1 = baker.make("calendar_integration.Calendar", organization=org, external_id="cal1")
+        calendar1 = baker.make(
+            "calendar_integration.Calendar", organization=org, external_id="cal1"
+        )
         calendar1.ownerships.create(membership=membership1, organization=org)
 
-        calendar2 = baker.make("calendar_integration.Calendar", organization=org, external_id="cal2")
+        calendar2 = baker.make(
+            "calendar_integration.Calendar", organization=org, external_id="cal2"
+        )
         calendar2.ownerships.create(membership=membership2, organization=org)
 
         # Create a system user scoped to user1
@@ -214,7 +230,9 @@ class TestCalendarFilterOwnerScoping:
             is_active=False,
         )
 
-        calendar1 = baker.make("calendar_integration.Calendar", organization=org, external_id="cal1")
+        calendar1 = baker.make(
+            "calendar_integration.Calendar", organization=org, external_id="cal1"
+        )
         calendar1.ownerships.create(membership=membership1, organization=org)
 
         # Create a system user scoped to user1

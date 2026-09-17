@@ -112,6 +112,19 @@ class OrganizationResourceAccess(BasePermission):
         "approveExternalEventChangeRequest": PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST,
         "rejectExternalEventChangeRequest": PublicAPIResources.EXTERNAL_EVENT_CHANGE_REQUEST,
         "calendarBookableSlots": PublicAPIResources.BOOKABLE_SLOTS,
+        # The six aggregate root fields, each gated by the SAME resource as the
+        # entity's existing list field: an aggregate discloses strictly less
+        # about a row than a list of the rows does, so a separate grant would be
+        # a second thing to get wrong without being a second thing to protect.
+        # Built by `public_api/aggregations/fields.py`; the entry-per-field
+        # invariant is asserted in
+        # `public_api/tests/aggregations/test_field_registration.py`.
+        "calendarEventAggregate": PublicAPIResources.CALENDAR_EVENT,
+        "availableTimeAggregate": PublicAPIResources.AVAILABLE_TIME,
+        "blockedTimeAggregate": PublicAPIResources.BLOCKED_TIME,
+        "appointmentTypeAggregate": PublicAPIResources.APPOINTMENT_TYPE,
+        "calendarAggregate": PublicAPIResources.CALENDAR,
+        "calendarPoolAggregate": PublicAPIResources.CALENDAR_POOL,
         "bookingPolicies": PublicAPIResources.BOOKING_POLICY,
         "createBookingPolicy": PublicAPIResources.BOOKING_POLICY,
         "updateBookingPolicy": PublicAPIResources.BOOKING_POLICY,

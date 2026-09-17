@@ -28,10 +28,10 @@ The pieces, in the order a request moves through them:
 * :mod:`~public_api.aggregations.executor` -- the plan turned into a single
   ``.values(...).annotate(...)`` queryset over a caller-supplied, already
   organization-scoped base.
+* :mod:`~public_api.aggregations.fields` -- the six root fields, built from the
+  registry by one factory, and the cost guards that bound what one may ask for.
+  This is the only module here that touches the published schema.
 * :mod:`~public_api.aggregations.errors` -- every message these raise.
-
-Nothing here is attached to the GraphQL schema yet; the root fields that expose
-it arrive in a later phase of the plan.
 """
 
 from public_api.aggregations.dimensions import (
@@ -94,6 +94,16 @@ from public_api.aggregations.errors import (
     WindowNotSupportedError,
 )
 from public_api.aggregations.executor import build_aggregate_queryset, execute_plan
+from public_api.aggregations.fields import (
+    AGGREGATE_ATTRIBUTE_NAME_BY_ENTITY,
+    AGGREGATE_FIELD_NAME_BY_ENTITY,
+    AGGREGATE_RESOURCE_BY_ENTITY,
+    AGGREGATE_ROW_TYPE_BY_ENTITY,
+    FILTER_INPUT_TYPE_BY_ENTITY,
+    aggregate_field,
+    aggregate_statement_timeout,
+    entity_class_prefix,
+)
 from public_api.aggregations.filters import (
     AggregateFilterValidationError,
     AppointmentTypeAggregateFilterInput,
@@ -143,8 +153,13 @@ from public_api.aggregations.types import (
 
 
 __all__ = [
+    "AGGREGATE_ATTRIBUTE_NAME_BY_ENTITY",
+    "AGGREGATE_FIELD_NAME_BY_ENTITY",
+    "AGGREGATE_RESOURCE_BY_ENTITY",
+    "AGGREGATE_ROW_TYPE_BY_ENTITY",
     "DEFAULT_CONCAT_SEPARATOR",
     "DEFAULT_METRIC_OPTIONS",
+    "FILTER_INPUT_TYPE_BY_ENTITY",
     "GROUP_BY_INPUT_TYPE_BY_ENTITY",
     "GROUP_KEY_TYPE_BY_ENTITY",
     "MAX_LIMIT",
@@ -227,12 +242,15 @@ __all__ = [
     "UnsupportedAggregateOperationError",
     "WindowNotSupportedError",
     "WindowSpec",
+    "aggregate_field",
     "aggregate_kind_for_model_field",
+    "aggregate_statement_timeout",
     "build_aggregate_queryset",
     "build_group_key",
     "concrete_output_field",
     "dimension_alias",
     "dimensions_from_group_by",
+    "entity_class_prefix",
     "execute_plan",
     "get_registration",
     "metric_alias",
