@@ -187,6 +187,66 @@ class TestCalendarEventAggregate:
         grouped = [query for query in captured.captured_queries if "GROUP BY" in query["sql"]]
         assert len(grouped) == 1, [query["sql"] for query in grouped]
 
+    def test_omitting_having_and_order_by_preserves_phase_three_behaviour(self, organization):
+        """A document naming neither new argument answers exactly as before.
+
+        `having` and `orderBy` are optional arguments added to fields that
+        already existed, so the regression to guard is that their mere presence
+        changed nothing: same rows, same order, same numbers, and SQL with no
+        `HAVING` in it. The ordering assertion is the load-bearing one -- the
+        group key is still what sorts the result, so rows come back by
+        ascending calendar id the way they did before.
+        """
+        calendars = [make_calendar(organization, name=f"C{index}") for index in range(3)]
+        base = datetime.datetime(2026, 3, 20, 9, 0)
+        for offset, calendar in enumerate(calendars, start=1):
+            for index in range(offset):
+                make_event(
+                    organization,
+                    calendar,
+                    title=f"{calendar.name}-{index}",
+                    start=base + datetime.timedelta(hours=index),
+                    minutes=30,
+                )
+
+        system_user, token, auth = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+        with CaptureQueriesContext(connection) as captured:
+            response = post_graphql(EVENT_AGGREGATE_QUERY, system_user, token, auth, _window())
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload.get("errors", []) == []
+        rows = payload["data"]["calendarEventAggregate"]
+
+        assert [row["key"]["calendarId"] for row in rows] == [c.id for c in calendars]
+        assert [row["count"] for row in rows] == [1, 2, 3]
+        assert [row["durationMinutes"]["sum"] for row in rows] == [30.0, 60.0, 90.0]
+
+        grouped = [
+            query["sql"] for query in captured.captured_queries if "GROUP BY" in query["sql"]
+        ]
+        assert len(grouped) == 1, grouped
+        assert "HAVING" not in grouped[0], grouped[0]
+
+    def test_the_same_document_is_byte_identical_across_runs(self, organization):
+        """Determinism, asserted on the serialized body rather than on fields."""
+        for index in range(3):
+            calendar = make_calendar(organization, name=f"D{index}")
+            make_event(
+                organization,
+                calendar,
+                title=f"E{index}",
+                start=datetime.datetime(2026, 3, 22, 9, 0),
+                minutes=30,
+            )
+
+        system_user, token, auth = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+        bodies = {
+            post_graphql(EVENT_AGGREGATE_QUERY, system_user, token, auth, _window()).content
+            for _ in range(3)
+        }
+        assert len(bodies) == 1
+
 
 @pytest.mark.django_db
 class TestEverySpanEntityAggregates:

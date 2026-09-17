@@ -25,6 +25,13 @@ The pieces, in the order a request moves through them:
   refused without echoing it back.
 * :mod:`~public_api.aggregations.plan` -- the frozen description of one
   request, built from a GraphQL selection before any ORM call.
+* :mod:`~public_api.aggregations.having` -- the comparison inputs and per-entity
+  ``*HavingInput`` that drop whole groups on the strength of what they
+  aggregated to, and the conversion that hands back both the ``Q`` and the
+  metrics that ``Q`` needs annotated.
+* :mod:`~public_api.aggregations.ordering` -- the per-entity order inputs, and
+  the generated enums naming a group-key dimension or a metric to sort on.
+  Together with the limit, this is what makes top-N expressible.
 * :mod:`~public_api.aggregations.executor` -- the plan turned into a single
   ``.values(...).annotate(...)`` queryset over a caller-supplied, already
   organization-scoped base.
@@ -76,6 +83,7 @@ from public_api.aggregations.errors import (
     AggregateRegistrationError,
     AliasCollisionError,
     AmbiguousGroupByError,
+    AmbiguousOrderInputError,
     ConcatArgumentsMismatchError,
     DateRangeTooLargeError,
     DuplicateGroupKeyFieldError,
@@ -85,9 +93,11 @@ from public_api.aggregations.errors import (
     MissingBucketTimezoneError,
     OffsetNegativeError,
     ReservedAliasError,
+    UngroupedOrderKeyError,
     UnknownAggregateEntityError,
     UnknownAggregateFieldError,
     UnknownDimensionError,
+    UnknownHavingAliasError,
     UnknownOrderAliasError,
     UnknownTimezoneError,
     UnsupportedAggregateOperationError,
@@ -112,6 +122,28 @@ from public_api.aggregations.filters import (
     CalendarAggregateFilterInput,
     CalendarEventAggregateFilterInput,
     CalendarPoolAggregateFilterInput,
+)
+from public_api.aggregations.having import (
+    HAVING_INPUT_TYPE_BY_ENTITY,
+    BooleanAggregateComparison,
+    DateTimeAggregateComparison,
+    DateTimeComparison,
+    FloatComparison,
+    IntComparison,
+    NumericAggregateComparison,
+    StringAggregateComparison,
+    StringComparison,
+    having_from_input,
+    having_input_type,
+)
+from public_api.aggregations.ordering import (
+    METRIC_REF_ENUM_BY_ENTITY,
+    METRIC_SPEC_BY_ALIAS_BY_ENTITY,
+    ORDER_INPUT_TYPE_BY_ENTITY,
+    ORDER_KEY_ENUM_BY_ENTITY,
+    OrderDirection,
+    order_from_input,
+    order_input_type,
 )
 from public_api.aggregations.plan import (
     MAX_LIMIT,
@@ -162,8 +194,13 @@ __all__ = [
     "FILTER_INPUT_TYPE_BY_ENTITY",
     "GROUP_BY_INPUT_TYPE_BY_ENTITY",
     "GROUP_KEY_TYPE_BY_ENTITY",
+    "HAVING_INPUT_TYPE_BY_ENTITY",
     "MAX_LIMIT",
+    "METRIC_REF_ENUM_BY_ENTITY",
+    "METRIC_SPEC_BY_ALIAS_BY_ENTITY",
     "MIN_LIMIT",
+    "ORDER_INPUT_TYPE_BY_ENTITY",
+    "ORDER_KEY_ENUM_BY_ENTITY",
     "REGISTRY",
     "AggregatableEntity",
     "AggregatableField",
@@ -177,6 +214,7 @@ __all__ = [
     "AggregateRegistrationError",
     "AliasCollisionError",
     "AmbiguousGroupByError",
+    "AmbiguousOrderInputError",
     "AppointmentTypeAggregateFilterInput",
     "AppointmentTypeGroupByInput",
     "AppointmentTypeGroupKey",
@@ -196,6 +234,7 @@ __all__ = [
     "BlockedTimeTemporalGroupBy",
     "BlockedTimeTemporalGroupByField",
     "BooleanAggregate",
+    "BooleanAggregateComparison",
     "CalendarAggregateFilterInput",
     "CalendarEventAggregateFilterInput",
     "CalendarEventGroupByInput",
@@ -216,27 +255,37 @@ __all__ = [
     "ConcatArgumentsMismatchError",
     "DateRangeTooLargeError",
     "DateTimeAggregate",
+    "DateTimeAggregateComparison",
+    "DateTimeComparison",
     "DimensionSpec",
     "DuplicateGroupKeyFieldError",
     "EmptyAggregatePlanError",
     "EntityQuerysetMismatchError",
     "EntityRegistration",
     "FilterBounds",
+    "FloatComparison",
     "GroupableField",
     "HavingSpec",
+    "IntComparison",
     "LimitOutOfRangeError",
     "MetricSpec",
     "MissingBucketTimezoneError",
     "NumericAggregate",
+    "NumericAggregateComparison",
     "OffsetNegativeError",
+    "OrderDirection",
     "OrderSpec",
     "RelationCount",
     "ReservedAliasError",
     "StringAggregate",
+    "StringAggregateComparison",
+    "StringComparison",
     "TemporalGranularity",
+    "UngroupedOrderKeyError",
     "UnknownAggregateEntityError",
     "UnknownAggregateFieldError",
     "UnknownDimensionError",
+    "UnknownHavingAliasError",
     "UnknownOrderAliasError",
     "UnknownTimezoneError",
     "UnsupportedAggregateOperationError",
@@ -253,7 +302,11 @@ __all__ = [
     "entity_class_prefix",
     "execute_plan",
     "get_registration",
+    "having_from_input",
+    "having_input_type",
     "metric_alias",
+    "order_from_input",
+    "order_input_type",
     "resolve_timezone",
     "validate_plan",
 ]

@@ -73,6 +73,11 @@ from public_api.aggregations.filters import (
     CalendarEventAggregateFilterInput,
     CalendarPoolAggregateFilterInput,
 )
+from public_api.aggregations.having import HAVING_INPUT_TYPE_BY_ENTITY, having_from_input
+from public_api.aggregations.ordering import (
+    ORDER_INPUT_TYPE_BY_ENTITY,
+    order_from_input,
+)
 from public_api.aggregations.plan import (
     MAX_LIMIT,
     AggregatableEntity,
@@ -505,12 +510,30 @@ def _filter_bounds(filter_input: Any) -> FilterBounds:
     )
 
 
+def _merge_metrics(
+    selected: Sequence[MetricSpec], *additional: Sequence[MetricSpec]
+) -> tuple[MetricSpec, ...]:
+    """The selection's metrics, plus any a `having` or `orderBy` needs.
+
+    Deduplicated by alias, keeping the first: a metric the document both
+    selected and filtered on is one annotation, and two `MetricSpec`s under one
+    alias would be an `AliasCollisionError` rather than a merge.
+    """
+    merged: dict[str, MetricSpec] = {spec.alias: spec for spec in selected}
+    for group in additional:
+        for spec in group:
+            merged.setdefault(spec.alias, spec)
+    return tuple(merged.values())
+
+
 def _resolve_aggregate(
     entity: AggregatableEntity,
     info: strawberry.Info,
     filter_input: Any,
     group_by: Sequence[Any],
     timezone: str,
+    having: Any,
+    order_by: Sequence[Any] | None,
     limit: int,
     offset: int,
 ) -> list[Any]:
@@ -540,14 +563,25 @@ def _resolve_aggregate(
     dimensions = dimensions_from_group_by(entity, group_by, timezone)
     metrics, selected = _metrics_from_selection(registration, info)
 
-    # No `order_by` is passed: the executor then orders on the full group key,
-    # which is cost guard 3 -- paging a grouped result with no ordering returns
-    # overlapping and missing groups between two identical calls.
+    # A `having` or an `orderBy` may name a metric the document did not select.
+    # Both converters therefore hand back the metrics their clause reads, and
+    # those are merged into the plan -- an alias that is not annotated resolves
+    # against the model instead, which turns a `HAVING` into a `WHERE` and an
+    # `ORDER BY` on an aggregate into one on a column.
+    having_spec, having_metrics = having_from_input(registration, having)
+    order_specs, order_metrics = order_from_input(entity, order_by, dimensions)
+
+    # Whatever the caller did not order by, the executor appends from the group
+    # key -- cost guard 3. Paging a grouped result whose ordering does not
+    # fully determine row order returns overlapping and missing groups between
+    # two otherwise identical calls.
     plan = AggregateQueryPlan(
         entity=entity,
         dimensions=dimensions,
-        metrics=metrics,
+        metrics=_merge_metrics(metrics, having_metrics, order_metrics),
         filter_bounds=_filter_bounds(filter_input),
+        having=having_spec,
+        order_by=order_specs,
         limit=limit,
         offset=offset,
     )
@@ -571,6 +605,8 @@ def aggregate_field(entity: AggregatableEntity) -> Any:
     """
     filter_type = FILTER_INPUT_TYPE_BY_ENTITY[entity]
     group_by_type = GROUP_BY_INPUT_TYPE_BY_ENTITY[entity]
+    having_type = HAVING_INPUT_TYPE_BY_ENTITY[entity]
+    order_type = ORDER_INPUT_TYPE_BY_ENTITY[entity]
     row_type = AGGREGATE_ROW_TYPE_BY_ENTITY[entity]
     prefix = entity_class_prefix(entity)
 
@@ -579,10 +615,14 @@ def aggregate_field(entity: AggregatableEntity) -> Any:
         filter: Any,  # noqa: A002 -- the GraphQL argument this plan specifies is `filter`
         group_by: Sequence[Any],
         timezone: str,
+        having: Any = None,
+        order_by: Sequence[Any] | None = None,
         limit: int = MAX_LIMIT,
         offset: int = 0,
     ) -> list[Any]:
-        return _resolve_aggregate(entity, info, filter, group_by, timezone, limit, offset)
+        return _resolve_aggregate(
+            entity, info, filter, group_by, timezone, having, order_by, limit, offset
+        )
 
     resolver.__name__ = AGGREGATE_ATTRIBUTE_NAME_BY_ENTITY[entity]
     resolver.__qualname__ = resolver.__name__
@@ -591,6 +631,8 @@ def aggregate_field(entity: AggregatableEntity) -> Any:
         "filter": filter_type,
         "group_by": list[group_by_type],  # type: ignore[valid-type]
         "timezone": str,
+        "having": having_type | None,
+        "order_by": list[order_type] | None,  # type: ignore[valid-type]
         "limit": int,
         "offset": int,
         "return": list[row_type],  # type: ignore[valid-type]
@@ -601,8 +643,10 @@ def aggregate_field(entity: AggregatableEntity) -> Any:
         permission_classes=[IsAuthenticated, OrganizationResourceAccess],
         description=(
             f"Group {prefix} rows and aggregate over them. `timezone` is the IANA "
-            f"name every temporal bucket boundary is computed in. The filter's date "
-            f"range is mandatory and bounded, and `limit` is capped at "
-            f"{MAX_LIMIT}."
+            f"name every temporal bucket boundary is computed in. `having` drops "
+            f"groups on their aggregated values and `orderBy` sorts them -- both "
+            f"in SQL, and neither requires the metric it names to be selected. The "
+            f"filter's date range is mandatory and bounded, and `limit` is capped "
+            f"at {MAX_LIMIT}."
         ),
     )

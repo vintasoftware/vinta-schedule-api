@@ -50,6 +50,7 @@ from public_api.aggregations.errors import (
     AggregateRegistrationError,
     EntityQuerysetMismatchError,
     ReservedAliasError,
+    UnknownHavingAliasError,
     UnsupportedAggregateOperationError,
     WindowNotSupportedError,
 )
@@ -143,6 +144,12 @@ def build_aggregate_queryset(
     grouped = qs.values(*group_by).annotate(**aggregates)
 
     if plan.having is not None:
+        # Every alias the predicate names has to be one this plan annotates.
+        # An alias that is not resolves against the *model* instead, which
+        # Django renders as a ``WHERE`` over a column -- dropping rows before
+        # the grouping rather than groups after it. That is a plausible wrong
+        # answer, so it is refused here rather than executed.
+        _reject_unannotated_having_aliases(plan, set(group_by) | set(aggregates))
         # Applied after ``.annotate()``, which is what makes Django render it
         # as ``HAVING`` rather than folding it into the ``WHERE`` clause.
         grouped = grouped.filter(plan.having.predicate)
@@ -158,6 +165,39 @@ def execute_plan(plan: AggregateQueryPlan, queryset: QuerySet) -> list[dict[str,
     reshapes them.
     """
     return list(build_aggregate_queryset(plan, queryset))
+
+
+def _having_aliases(predicate: Q) -> set[str]:
+    """Every row key a ``HAVING`` predicate reads.
+
+    A ``Q``'s leaves are ``(lookup, value)`` pairs whose lookup is an alias
+    followed by zero or more ``__``-separated lookups, so the alias is the
+    first segment. Nested ``Q``s -- what ``and`` / ``or`` composition builds --
+    are walked through.
+    """
+    aliases: set[str] = set()
+    for child in predicate.children:
+        if isinstance(child, Q):
+            aliases |= _having_aliases(child)
+            continue
+        lookup = child[0] if isinstance(child, tuple) else str(child)
+        aliases.add(lookup.split("__", 1)[0])
+    return aliases
+
+
+def _reject_unannotated_having_aliases(plan: AggregateQueryPlan, annotated: set[str]) -> None:
+    """Refuse a ``HAVING`` naming a row key this plan does not produce.
+
+    The layer that builds the predicate also decides the plan's metrics, so it
+    is that layer's job to add a metric the ``having`` referenced but the
+    selection did not -- see
+    :func:`public_api.aggregations.having.having_from_input`, which returns
+    both halves together. This is the check that the two agreed.
+    """
+    if plan.having is None:
+        return
+    for alias in sorted(_having_aliases(plan.having.predicate) - annotated):
+        raise UnknownHavingAliasError(alias)
 
 
 def _order_by(plan: AggregateQueryPlan, group_by: list[str]) -> list[str]:

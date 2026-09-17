@@ -31,6 +31,10 @@ UNKNOWN_TIMEZONE_MESSAGE = "Unknown timezone"
 QUERY_TIMEOUT_MESSAGE = "Aggregate query exceeded its time budget"
 AMBIGUOUS_GROUP_BY_MESSAGE = "Each groupBy entry must name exactly one of `scalar` or `temporal`"
 DUPLICATE_GROUP_KEY_TEMPLATE = "groupBy names {field} more than once"
+AMBIGUOUS_ORDER_INPUT_MESSAGE = "Each orderBy entry must name exactly one of `key` or `metric`"
+UNGROUPED_ORDER_KEY_TEMPLATE = (
+    "Cannot order by {field}: it is not one of this query's groupBy dimensions"
+)
 
 
 class AggregateError(GraphQLError):
@@ -99,6 +103,37 @@ class DuplicateGroupKeyFieldError(AggregateError):
 
     def __init__(self, field: str) -> None:
         super().__init__(DUPLICATE_GROUP_KEY_TEMPLATE.format(field=field))
+
+
+class AmbiguousOrderInputError(AggregateError):
+    """An ``orderBy`` entry named neither of its two variants, or both.
+
+    The same shape -- and the same reason -- as
+    :class:`AmbiguousGroupByError`: GraphQL has no input unions, so "exactly
+    one of ``key`` or ``metric``" is the one part of the ordering contract the
+    schema cannot carry. Refused rather than resolved by precedence, because a
+    caller who set both has two different orderings in mind and picking one
+    silently answers the wrong question.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(AMBIGUOUS_ORDER_INPUT_MESSAGE)
+
+
+class UngroupedOrderKeyError(AggregateError):
+    """``orderBy`` named a dimension this query did not group by.
+
+    Not a harmless request. Django would resolve the name against the model,
+    which adds a column to the ``GROUP BY`` and changes the grouping the caller
+    asked for -- so the numbers would come back split more finely than the
+    query said, ordered correctly, and wrong.
+
+    The field name is a schema enum member rather than caller text, so naming
+    it discloses nothing the caller did not already have.
+    """
+
+    def __init__(self, field: str) -> None:
+        super().__init__(UNGROUPED_ORDER_KEY_TEMPLATE.format(field=field))
 
 
 class AggregateQueryTimeoutError(AggregateError):
@@ -213,6 +248,25 @@ class UnknownOrderAliasError(AggregateConfigurationError):
 
     def __init__(self, alias: str) -> None:
         super().__init__(f"Cannot order by {alias!r}: no dimension or metric produces it")
+
+
+class UnknownHavingAliasError(AggregateConfigurationError):
+    """A ``HAVING`` predicate names an alias none of the plan's metrics produces.
+
+    The layer that builds the predicate is the same layer that decides which
+    metrics the plan carries, so it is that layer's job to add a metric a
+    ``having`` clause referenced but the selection did not -- see
+    ``public_api.aggregations.having.having_from_input``, which returns both.
+    By the time the executor sees the plan the annotation must already be
+    there; this is the check that says so out loud rather than letting Django
+    resolve the name against the model and filter on a column in ``WHERE``.
+    """
+
+    def __init__(self, alias: str) -> None:
+        super().__init__(
+            f"HAVING references {alias!r}, which no metric in this plan annotates; "
+            f"the layer that built the predicate must add the metric alongside it"
+        )
 
 
 class ReservedAliasError(AggregateConfigurationError):
