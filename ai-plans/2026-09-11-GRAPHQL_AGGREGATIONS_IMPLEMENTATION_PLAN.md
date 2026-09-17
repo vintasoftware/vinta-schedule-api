@@ -253,12 +253,12 @@ type CalendarEventWindowMetrics {
 
 | Agent | Role | Tier | Takes | Why this tier |
 |---|---|---|---|---|
-| `senior` | implementer | 4 | Phase 0, Phase 6, Phase 7 | The generic metric/dimension engine, the window-over-subquery construction, and the batched nested `GROUP BY`. All three are novel here — no precedent in this repo, and each fails in ways a test suite does not obviously catch. |
-| `mid` | implementer | 3 | Phase 2, Phase 3, Phase 4 | Multi-file orchestration over an engine that already exists: bucketing, wiring six root fields with their permissions and guards, and the HAVING/order layer. Established patterns, non-trivial branching. |
-| `junior` | implementer | 2 | Phase 1, Phase 5 | Filter input types mirroring existing filter arguments, and an audit hook that consumes a plan object somebody else built. Pattern application against a fixed interface. |
+| `tier4` | implementer | 4 | Phase 0, Phase 6, Phase 7 | The generic metric/dimension engine, the window-over-subquery construction, and the batched nested `GROUP BY`. All three are novel here — no precedent in this repo, and each fails in ways a test suite does not obviously catch. |
+| `tier3` | implementer | 3 | Phase 2, Phase 3, Phase 4 | Multi-file orchestration over an engine that already exists: bucketing, wiring six root fields with their permissions and guards, and the HAVING/order layer. Established patterns, non-trivial branching. |
+| `tier2` | implementer | 2 | Phase 1, Phase 5 | Filter input types mirroring existing filter arguments, and an audit hook that consumes a plan object somebody else built. Pattern application against a fixed interface. |
 | `reviewer` | reviewer | 4 | — reviews every phase | Must sit at or above Phase 7, the hardest phase on the plan; a reviewer below it could never be picked for it. One reviewer covers the range. |
 
-Three implementers for a graph never wider than two. `senior` is there because Phases 0, 6 and 7 cannot be handed down. `mid` and `junior` are there for cheapness — without them the Tier 2 and Tier 3 phases would run on Opus — and they supply the concurrency in waves 1 and 4. A fourth implementer would add neither.
+Three implementers for a graph never wider than two. `tier4` is there because Phases 0, 6 and 7 cannot be handed down. `tier3` and `tier2` are there for cheapness — without them the Tier 2 and Tier 3 phases would run on Opus — and they supply the concurrency in waves 1 and 4. A fourth implementer would add neither.
 
 Tier-to-model ids come from [resources/ai-models.yaml](../ai-tools/skills/plan-feature/resources/ai-models.yaml), whose `last_verified` is 2026-07-13 — about two months old at time of writing. Worth a glance before the run.
 
@@ -268,16 +268,16 @@ Wave = how deep a phase sits in the dependency graph. Phases in the same wave ha
 
 | Wave | Phases | Agent | Depends on |
 |---|---|---|---|
-| 1 | Phase 0, Phase 1 | `senior`, `junior` | — |
-| 2 | Phase 2 | `mid` | Phase 0, Phase 1 |
-| 3 | Phase 3 | `mid` | Phase 2 |
-| 4 | Phase 4, Phase 5 | `mid`, `junior` | Phase 3 |
-| 5 | Phase 6 | `senior` | Phase 4 |
-| 6 | Phase 7 | `senior` | Phase 6 |
+| 1 | Phase 0, Phase 1 | `tier4`, `tier2` | — |
+| 2 | Phase 2 | `tier3` | Phase 0, Phase 1 |
+| 3 | Phase 3 | `tier3` | Phase 2 |
+| 4 | Phase 4, Phase 5 | `tier3`, `tier2` | Phase 3 |
+| 5 | Phase 6 | `tier4` | Phase 4 |
+| 6 | Phase 7 | `tier4` | Phase 6 |
 
 **File overlap:** Phase 0 and Phase 1 both create files under `public_api/aggregations/` but never the same one, and both export from its `__init__.py` — trivial merge. Phase 4 and Phase 5 are the pair worth watching: Phase 4 edits the executor's annotate/filter construction, Phase 5 adds an audit call at the resolver entry point. They meet only at a single registration line in `public_api/aggregations/fields.py`. That seam is why Phase 0 defines `AggregateQueryPlan` as a standalone dataclass — the audit hook consumes the plan, not the executor, so the two phases do not compete over execution logic.
 
-**Idle:** this plan is mostly a chain, and that is the direct cost of splitting by capability rather than by entity. `senior` is idle through waves 2, 3 and 4; `mid` and `junior` are idle through waves 5 and 6; `junior` is also idle in waves 2 and 3. Only waves 1 and 4 run two-wide. Splitting by entity instead would have put four phases in one wave, at the price of every capability landing four times — the trade was made deliberately, and this note is what it looks like at run time.
+**Idle:** this plan is mostly a chain, and that is the direct cost of splitting by capability rather than by entity. `tier4` is idle through waves 2, 3 and 4; `tier3` and `tier2` are idle through waves 5 and 6; `tier2` is also idle in waves 2 and 3. Only waves 1 and 4 run two-wide. Splitting by entity instead would have put four phases in one wave, at the price of every capability landing four times — the trade was made deliberately, and this note is what it looks like at run time.
 
 ### Phase 0 — Aggregate engine: metric + dimension primitives
 
@@ -301,7 +301,7 @@ Tests:
 - **Unit**: `@public_api/tests/aggregations/test_plan.py` — plan construction is deterministic and frozen; alias collisions between a dimension and a metric are rejected.
 - **Integration**: `@public_api/tests/aggregations/test_executor.py` — against real rows, asserts the generated queryset produces one row per distinct key with correct `sum`/`avg`/`min`/`max`/`count`; asserts a multi-relation count does **not** double-count under join fan-out (build two related rows per parent and assert the exact count); asserts the executor's SQL contains `GROUP BY` and that `len(connection.queries)` is 1.
 
-**Assigned to**: `senior` (Tier 4) — an entity-agnostic aggregation engine with no precedent in this repo, and the piece every later phase is built on. A wrong abstraction here is paid for six times.
+**Assigned to**: `tier4` (Tier 4) — an entity-agnostic aggregation engine with no precedent in this repo, and the piece every later phase is built on. A wrong abstraction here is paid for six times.
 
 **Reusable skills**: `write-unit-test`.
 
@@ -327,7 +327,7 @@ Tests:
 - **Unit**: `@public_api/tests/aggregations/test_filters.py` — a range exceeding `MAX_AGGREGATE_RANGE` raises the exact documented message; absent bounds fail at the type level.
 - **Integration**: `@public_api/tests/aggregations/test_filter_scoping.py` — a scoped system user's filter never returns rows outside its calendar scope; asserts the queryset a filter produces is still organization-scoped by building rows in two organizations and asserting the second tenant's rows are absent.
 
-**Assigned to**: `junior` (Tier 2) — six input types following one shape, against filter predicates that already exist as keyword arguments on the corresponding list fields. Exact precedent to mirror.
+**Assigned to**: `tier2` (Tier 2) — six input types following one shape, against filter predicates that already exist as keyword arguments on the corresponding list fields. Exact precedent to mirror.
 
 **Reusable skills**: `write-unit-test`.
 
@@ -354,7 +354,7 @@ Tests:
 - **Integration**: `@public_api/tests/aggregations/test_bucketing.py` — the load-bearing test. Events either side of a local midnight in `America/Sao_Paulo` land in different `DAY` buckets, and the *same* events bucketed in `UTC` land in the same one. Asserts a `WEEK` bucket boundary. Asserts a sparse result: a range covering a day with no events returns no row for it, rather than a zero.
 - **Integration**: `@public_api/tests/aggregations/test_multi_dimension.py` — grouping by `[START_TIME:DAY, CALENDAR_ID]` produces the cross-product of non-empty combinations only, in one query.
 
-**Assigned to**: `mid` (Tier 3) — multi-file work over an existing engine, with the genuinely subtle part being timezone-correct bucketing against a `GeneratedField`. Established ORM patterns, non-trivial branching.
+**Assigned to**: `tier3` (Tier 3) — multi-file work over an existing engine, with the genuinely subtle part being timezone-correct bucketing against a `GeneratedField`. Established ORM patterns, non-trivial branching.
 
 **Reusable skills**: `write-unit-test`.
 
@@ -383,7 +383,7 @@ Tests:
 - **Integration**: `@public_api/tests/aggregations/test_cost_guards.py` — `limit` of 0 and 101 both raise the documented message; an over-long range raises; a query without bounds fails validation.
 - **Integration**: `@public_api/tests/aggregations/test_aggregate_queries.py` — end-to-end through the schema for all six entities: `calendarEventAggregate` grouped by calendar returns correct `count` and `durationMinutes { sum avg }`; `title { concat(separator: "; ") }` returns the concatenated titles; asserts the whole document executes in one database query.
 
-**Assigned to**: `mid` (Tier 3) — six fields, their permission mappings and their guards, orchestrated across the schema, permissions and constants modules. The risk is coverage and correctness of wiring rather than novelty.
+**Assigned to**: `tier3` (Tier 3) — six fields, their permission mappings and their guards, orchestrated across the schema, permissions and constants modules. The risk is coverage and correctness of wiring rather than novelty.
 
 **Reusable skills**: `create-graphql-public-query`, `write-unit-test`.
 
@@ -411,7 +411,7 @@ Tests:
 - **Integration**: `@public_api/tests/aggregations/test_metric_ordering.py` — ordering by `count` descending with `limit: 3` returns exactly the three busiest calendars in the right order; ties break deterministically across repeated runs.
 - **Integration**: a regression case in `test_aggregate_queries.py` asserting a query with neither `having` nor `orderBy` returns byte-identical results to Phase 3.
 
-**Assigned to**: `mid` (Tier 3) — annotation-aware filtering and ordering across six entities, where the subtlety is which clause lands in `WHERE` versus `HAVING`. Same engine, established patterns.
+**Assigned to**: `tier3` (Tier 3) — annotation-aware filtering and ordering across six entities, where the subtlety is which clause lands in `WHERE` versus `HAVING`. Same engine, established patterns.
 
 **Reusable skills**: `write-unit-test`.
 
@@ -437,7 +437,7 @@ Tests:
 - **Unit**: `@public_api/tests/aggregations/test_audit_payload.py` — the load-bearing test. Builds a plan whose metrics include `title { concat }` and whose filter names a calendar, runs the hook, and asserts the serialized audit payload contains the metric *alias* and *operation* but **no** title value, no concatenated string and no free-text predicate. Asserts against the whole payload, not a substring check.
 - **Integration**: `@public_api/tests/aggregations/test_audit_integration.py` — running `calendarEventAggregate` through the schema writes exactly one audit record with action `AGGREGATE_QUERY`, the right actor and organization, and the correct row count; a query that returns zero rows still writes a record.
 
-**Assigned to**: `junior` (Tier 2) — consuming a plan object that Phase 0 defined through an audit service that already exists, with `actor_from_system_user` as exact precedent. The discipline is in what the test asserts is *absent*, which the test spells out.
+**Assigned to**: `tier2` (Tier 2) — consuming a plan object that Phase 0 defined through an audit service that already exists, with `actor_from_system_user` as exact precedent. The discipline is in what the test asserts is *absent*, which the test spells out.
 
 **Reusable skills**: `write-unit-test`.
 
@@ -465,7 +465,7 @@ Tests:
 - **Integration**: `partitionBy: [CALENDAR_ID]` keeps each calendar's running total independent — two calendars interleaved by date, asserting neither one's total leaks into the other.
 - **Integration**: a regression case asserting a query with no `window` argument returns byte-identical results to Phase 4.
 
-**Assigned to**: `senior` (Tier 4) — the window-over-subquery construction is the plan's largest technical risk: Django's `Window` does not compose with `.values().annotate()` grouping in the obvious way, and the workaround has to stay inside the ORM. Novel, and wrong answers here look plausible.
+**Assigned to**: `tier4` (Tier 4) — the window-over-subquery construction is the plan's largest technical risk: Django's `Window` does not compose with `.values().annotate()` grouping in the obvious way, and the workaround has to stay inside the ORM. Novel, and wrong answers here look plausible.
 
 **Review models**: reviewer Tier 4 — a running total that is subtly wrong (off-by-one frame bound, partition leaking across groups) returns confident numbers that no type check and no smoke test catches, and partners will build reporting on them. The review reads the frame construction against the emitted SQL regardless of the author's tier.
 
@@ -495,7 +495,7 @@ Tests:
 - **Integration**: `@public_api/tests/aggregations/test_nested_permissions.py` — a token with `CALENDAR` but not `CALENDAR_EVENT` is refused the nested `eventAggregate` while still reading the calendar itself.
 - **Integration**: nested and root aggregates over the same filter return identical numbers — the batched path and the direct path must not disagree.
 
-**Assigned to**: `senior` (Tier 4) — batching a `GROUP BY` across a parent level, coexisting with an existing query optimizer, is the hardest piece in the plan and the one with the least precedent anywhere in this repo.
+**Assigned to**: `tier4` (Tier 4) — batching a `GROUP BY` across a parent level, coexisting with an existing query optimizer, is the hardest piece in the plan and the one with the least precedent anywhere in this repo.
 
 **Review models**: reviewer Tier 4 — the failure mode is a silent N+1 that passes every functional test and only shows up as database load in production, so the review has to read the query-count assertions as carefully as the logic.
 
