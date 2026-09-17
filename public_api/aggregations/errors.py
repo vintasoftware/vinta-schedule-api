@@ -29,6 +29,8 @@ LIMIT_OUT_OF_RANGE_MESSAGE = "Limit must be between 1 and 100"
 OFFSET_NEGATIVE_MESSAGE = "Offset must be non-negative"
 UNKNOWN_TIMEZONE_MESSAGE = "Unknown timezone"
 QUERY_TIMEOUT_MESSAGE = "Aggregate query exceeded its time budget"
+AMBIGUOUS_GROUP_BY_MESSAGE = "Each groupBy entry must name exactly one of `scalar` or `temporal`"
+DUPLICATE_GROUP_KEY_TEMPLATE = "groupBy names {field} more than once"
 
 
 class AggregateError(GraphQLError):
@@ -66,6 +68,37 @@ class UnknownTimezoneError(AggregateError):
 
     def __init__(self) -> None:
         super().__init__(UNKNOWN_TIMEZONE_MESSAGE)
+
+
+class AmbiguousGroupByError(AggregateError):
+    """A ``groupBy`` entry named neither variant, or both.
+
+    GraphQL has no input unions, so "exactly one of scalar / temporal" is the
+    one part of the group-by contract the schema cannot carry. Everything else
+    it can: a granularity lives *inside* the temporal variant, whose enum holds
+    only temporal fields, so there is no shape in which a bucket size can be
+    attached to a scalar dimension.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(AMBIGUOUS_GROUP_BY_MESSAGE)
+
+
+class DuplicateGroupKeyFieldError(AggregateError):
+    """Two ``groupBy`` entries land on the same field of the group key.
+
+    The key type carries one field per dimension, so a second entry over the
+    same field has nowhere to go and the first one's value would be overwritten
+    on the way out. Grouping by the same column at two granularities is the way
+    to hit this, and it asks for nothing the coarser bucket does not already
+    give: refused rather than half-answered.
+
+    The field name is a schema enum member, not caller text, so naming it
+    discloses nothing the caller did not already have.
+    """
+
+    def __init__(self, field: str) -> None:
+        super().__init__(DUPLICATE_GROUP_KEY_TEMPLATE.format(field=field))
 
 
 class AggregateQueryTimeoutError(AggregateError):
