@@ -94,9 +94,9 @@ def test_audit_payload_omits_field_values_and_predicates(
         "metrics": [
             {
                 "alias": "count",
-                "field_path": None,
+                "field_path": "id",
                 "op": "count",
-                "options": {},
+                "options": {"distinct": False},
             },
             {
                 "alias": "title_concat",

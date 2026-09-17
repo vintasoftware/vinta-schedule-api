@@ -88,7 +88,7 @@ def test_aggregate_query_writes_audit_record(
     # Verify the record has the expected shape.
     assert record.action_key == AuditAction.AGGREGATE_QUERY
     assert record.scope.scope_key == str(organization.id)
-    assert record.actor.identity_key == system_user.id
+    assert record.actor.identity_key == str(system_user.id)
     assert (record.diff or {}).get("row_count") == 2
 
 
