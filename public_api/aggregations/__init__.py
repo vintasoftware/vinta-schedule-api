@@ -12,6 +12,10 @@ The pieces, in the order a request moves through them:
   at GraphQL validation, before a resolver runs.
 * :mod:`~public_api.aggregations.registry` -- the one table saying which fields
   of which entity are groupable and aggregatable, and as what.
+* :mod:`~public_api.aggregations.filters` -- the per-entity filter inputs that
+  narrow an entity's scoped queryset, with the bounded date range made
+  mandatory at the type level. This is what produces the base queryset the
+  executor aggregates over.
 * :mod:`~public_api.aggregations.plan` -- the frozen description of one
   request, built from a GraphQL selection before any ORM call.
 * :mod:`~public_api.aggregations.executor` -- the plan turned into a single
@@ -46,6 +50,15 @@ from public_api.aggregations.errors import (
     WindowNotSupportedError,
 )
 from public_api.aggregations.executor import build_aggregate_queryset, execute_plan
+from public_api.aggregations.filters import (
+    AggregateFilterValidationError,
+    AppointmentTypeAggregateFilterInput,
+    AvailableTimeAggregateFilterInput,
+    BlockedTimeAggregateFilterInput,
+    CalendarAggregateFilterInput,
+    CalendarEventAggregateFilterInput,
+    CalendarPoolAggregateFilterInput,
+)
 from public_api.aggregations.plan import (
     MAX_LIMIT,
     MIN_LIMIT,
@@ -94,13 +107,20 @@ __all__ = [
     "AggregatableField",
     "AggregateConfigurationError",
     "AggregateError",
+    "AggregateFilterValidationError",
     "AggregateKind",
     "AggregateOp",
     "AggregateQueryPlan",
     "AggregateQueryTimeoutError",
     "AggregateRegistrationError",
     "AliasCollisionError",
+    "AppointmentTypeAggregateFilterInput",
+    "AvailableTimeAggregateFilterInput",
+    "BlockedTimeAggregateFilterInput",
     "BooleanAggregate",
+    "CalendarAggregateFilterInput",
+    "CalendarEventAggregateFilterInput",
+    "CalendarPoolAggregateFilterInput",
     "ConcatArgumentsMismatchError",
     "DateRangeTooLargeError",
     "DateTimeAggregate",
