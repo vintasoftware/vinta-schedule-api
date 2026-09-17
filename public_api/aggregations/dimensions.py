@@ -31,6 +31,7 @@ import dataclasses
 import datetime
 import enum
 import zoneinfo
+from collections.abc import Sequence
 from typing import Any
 
 import strawberry
@@ -365,7 +366,7 @@ _GROUP_BY_ENUMS_BY_ENTITY: dict[
 
 def dimensions_from_group_by(
     entity: AggregatableEntity,
-    group_by: "list[AnyGroupByInput]",
+    group_by: "Sequence[AnyGroupByInput]",
     timezone_name: str,
 ) -> tuple[DimensionSpec, ...]:
     """Turn a field's ``groupBy`` argument into the plan's dimension tuple.
