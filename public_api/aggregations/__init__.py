@@ -40,8 +40,15 @@ The pieces, in the order a request moves through them:
   organization-scoped base.
 * :mod:`~public_api.aggregations.fields` -- the six root fields, built from the
   registry by one factory, and the cost guards that bound what one may ask for.
-  This is the only module here that touches the published schema.
+* :mod:`~public_api.aggregations.nested` -- the same aggregates reached under a
+  parent type, collected per level and run as one grouped query whose
+  ``GROUP BY`` carries the parent's own column. Without it, an aggregate under a
+  list of twenty-five parents is twenty-five queries that every functional test
+  passes.
 * :mod:`~public_api.aggregations.errors` -- every message these raise.
+
+``fields`` and ``nested`` are the two modules here that touch the published
+schema.
 """
 
 from public_api.aggregations.dimensions import (
@@ -112,16 +119,24 @@ from public_api.aggregations.errors import (
     WindowOrderingRequiredError,
     WindowSourceMissingError,
 )
-from public_api.aggregations.executor import build_aggregate_queryset, execute_plan
+from public_api.aggregations.executor import (
+    ROW_NUMBER_ALIAS,
+    build_aggregate_queryset,
+    execute_plan,
+)
 from public_api.aggregations.fields import (
     AGGREGATE_ATTRIBUTE_NAME_BY_ENTITY,
     AGGREGATE_FIELD_NAME_BY_ENTITY,
     AGGREGATE_RESOURCE_BY_ENTITY,
     AGGREGATE_ROW_TYPE_BY_ENTITY,
     FILTER_INPUT_TYPE_BY_ENTITY,
+    AggregateRequest,
     aggregate_field,
     aggregate_statement_timeout,
+    build_aggregate_request,
+    build_rows,
     entity_class_prefix,
+    execute_request,
 )
 from public_api.aggregations.filters import (
     AggregateFilterValidationError,
@@ -145,6 +160,19 @@ from public_api.aggregations.having import (
     having_from_input,
     having_input_type,
 )
+from public_api.aggregations.nested import (
+    NESTED_AGGREGATES,
+    NESTED_FIELD_NAMES,
+    NESTED_RESOURCE_BY_FIELD_NAME,
+    PARENT_KEY_ALIAS,
+    NestedAggregateCollector,
+    NestedAggregateExtension,
+    NestedAggregateSpec,
+    collector_for,
+    nested_aggregate_field,
+    nested_aggregate_spec,
+    response_path,
+)
 from public_api.aggregations.ordering import (
     METRIC_REF_ENUM_BY_ENTITY,
     METRIC_SPEC_BY_ALIAS_BY_ENTITY,
@@ -165,6 +193,7 @@ from public_api.aggregations.plan import (
     HavingSpec,
     MetricSpec,
     OrderSpec,
+    ParentKeySpec,
     WindowFunction,
     WindowMetricSpec,
     WindowSpec,
@@ -223,9 +252,14 @@ __all__ = [
     "METRIC_REF_ENUM_BY_ENTITY",
     "METRIC_SPEC_BY_ALIAS_BY_ENTITY",
     "MIN_LIMIT",
+    "NESTED_AGGREGATES",
+    "NESTED_FIELD_NAMES",
+    "NESTED_RESOURCE_BY_FIELD_NAME",
     "ORDER_INPUT_TYPE_BY_ENTITY",
     "ORDER_KEY_ENUM_BY_ENTITY",
+    "PARENT_KEY_ALIAS",
     "REGISTRY",
+    "ROW_NUMBER_ALIAS",
     "WINDOW_INPUT_TYPE_BY_ENTITY",
     "WINDOW_METRICS_TYPE_BY_ENTITY",
     "WINDOW_METRIC_DEFINITIONS_BY_ENTITY",
@@ -240,6 +274,7 @@ __all__ = [
     "AggregateQueryPlan",
     "AggregateQueryTimeoutError",
     "AggregateRegistrationError",
+    "AggregateRequest",
     "AliasCollisionError",
     "AmbiguousGroupByError",
     "AmbiguousOrderInputError",
@@ -299,11 +334,15 @@ __all__ = [
     "MetricSpec",
     "MisplacedFrameBoundError",
     "MissingBucketTimezoneError",
+    "NestedAggregateCollector",
+    "NestedAggregateExtension",
+    "NestedAggregateSpec",
     "NumericAggregate",
     "NumericAggregateComparison",
     "OffsetNegativeError",
     "OrderDirection",
     "OrderSpec",
+    "ParentKeySpec",
     "RelationCount",
     "ReservedAliasError",
     "StringAggregate",
@@ -334,20 +373,27 @@ __all__ = [
     "aggregate_kind_for_model_field",
     "aggregate_statement_timeout",
     "build_aggregate_queryset",
+    "build_aggregate_request",
     "build_group_key",
+    "build_rows",
     "build_window_metrics",
+    "collector_for",
     "concrete_output_field",
     "dimension_alias",
     "dimensions_from_group_by",
     "entity_class_prefix",
     "execute_plan",
+    "execute_request",
     "get_registration",
     "having_from_input",
     "having_input_type",
     "metric_alias",
+    "nested_aggregate_field",
+    "nested_aggregate_spec",
     "order_from_input",
     "order_input_type",
     "resolve_timezone",
+    "response_path",
     "validate_plan",
     "window_from_input",
     "window_input_type",

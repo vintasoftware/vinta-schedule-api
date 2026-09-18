@@ -174,6 +174,10 @@ class TestPlanConstructionIsDeterministic:
             "has_having": False,
             "order_by": [],
             "window": None,
+            # Null for every root aggregate. A nested one carries the column it
+            # batched on here -- the shape, never the parent ids, which reach
+            # the trail through `filter_bounds` like any other id predicate.
+            "parent_key": None,
             "limit": 25,
             "offset": 0,
         }

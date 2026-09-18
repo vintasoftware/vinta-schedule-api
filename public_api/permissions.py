@@ -125,6 +125,18 @@ class OrganizationResourceAccess(BasePermission):
         "appointmentTypeAggregate": PublicAPIResources.APPOINTMENT_TYPE,
         "calendarAggregate": PublicAPIResources.CALENDAR,
         "calendarPoolAggregate": PublicAPIResources.CALENDAR_POOL,
+        # The nested aggregate fields, gated by the resource of the entity they
+        # aggregate rather than the one that carries them: `eventAggregate` under
+        # a calendar is still a read of events, so a CALENDAR-only token is
+        # refused it while still reading the calendar. Built by
+        # `public_api/aggregations/nested.py`; that module's
+        # `NESTED_RESOURCE_BY_FIELD_NAME` is asserted to agree with this table in
+        # `public_api/tests/aggregations/test_nested_permissions.py`. Only one
+        # entry is new: the nested blocked-time aggregate is *called*
+        # `blockedTimeAggregate`, which is the root field's name, so it is gated
+        # by the entry already above -- the same resource either way, because
+        # this mapping is keyed by field name and both read blocked times.
+        "eventAggregate": PublicAPIResources.CALENDAR_EVENT,
         "bookingPolicies": PublicAPIResources.BOOKING_POLICY,
         "createBookingPolicy": PublicAPIResources.BOOKING_POLICY,
         "updateBookingPolicy": PublicAPIResources.BOOKING_POLICY,
@@ -146,4 +158,29 @@ class OrganizationResourceAccess(BasePermission):
         resource_name = self.FIELD_TO_RESOURCE_MAPPING.get(info.field_name, info.field_name)
 
         # check system_user has access to queried resources
-        return system_user.available_resources.filter(resource_name=resource_name).exists()
+        return self._has_resource(request, system_user, resource_name)
+
+    @staticmethod
+    def _has_resource(request: HttpRequest, system_user, resource_name: str) -> bool:
+        """Whether this token holds ``resource_name``, asked of the database once.
+
+        A grant cannot change inside one request, so the answer is memoized on
+        the request. This used to be one ``EXISTS`` per gated field, which is a
+        constant for a root field and a per-row cost for a field on an object
+        type: the nested aggregates in ``public_api/aggregations/nested.py``
+        resolve once per parent, so a list of twenty-five calendars selecting
+        ``eventAggregate`` asked the same question twenty-five times. The cache
+        is keyed by token as well as resource because nothing guarantees one
+        request resolves against one token.
+        """
+        cache = getattr(request, "_public_api_resource_access_cache", None)
+        if cache is None:
+            cache = {}
+            request._public_api_resource_access_cache = cache  # type: ignore[attr-defined]
+
+        key = (system_user.pk, resource_name)
+        if key not in cache:
+            cache[key] = system_user.available_resources.filter(
+                resource_name=resource_name
+            ).exists()
+        return cache[key]

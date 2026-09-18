@@ -372,6 +372,36 @@ def _frame_position(bound: str, offset: int | None) -> float:
 
 
 @dataclass(frozen=True)
+class ParentKeySpec:
+    """The parent column a nested aggregate folds into its ``GROUP BY``.
+
+    An aggregate selected under a list of parents is one grouped query per
+    parent if it is resolved literally. Grouping by the parent column as well
+    turns those into one query whose rows are dispatched back to the parent they
+    belong to, which is what
+    :mod:`public_api.aggregations.nested` does with this.
+
+    It is deliberately *not* a :class:`DimensionSpec`: a dimension is something
+    the caller named and gets back in the row's group key, and this is neither.
+    ``field_path`` is an ORM path on the aggregated model resolving to the
+    parent's key column, and ``alias`` is the row key it lands under -- read by
+    the collector, never published.
+    """
+
+    alias: str
+    field_path: str
+
+    def as_audit_dict(self) -> dict[str, Any]:
+        """A stable, value-free description of the batching key.
+
+        The parent *ids* are not here. They arrive as a filter on the queryset
+        the caller hands the executor, and land in the audit trail through
+        :class:`FilterBounds` like every other id predicate.
+        """
+        return {"alias": self.alias, "field_path": self.field_path}
+
+
+@dataclass(frozen=True)
 class AggregateQueryPlan:
     """The fully resolved request, built from the GraphQL selection before any
     ORM call. This is what the audit hook records and what the executor turns
@@ -385,6 +415,7 @@ class AggregateQueryPlan:
     having: HavingSpec | None = None
     order_by: tuple[OrderSpec, ...] = ()
     window: WindowSpec | None = None
+    parent_key: ParentKeySpec | None = None
     limit: int = MAX_LIMIT
     offset: int = 0
 
@@ -417,9 +448,12 @@ class AggregateQueryPlan:
     def _reject_duplicate_aliases(self) -> None:
         """One alias, one row key. A clash would overwrite, not merge."""
         seen: set[str] = set()
-        for alias in [spec.alias for spec in self.dimensions] + [
-            spec.alias for spec in self.metrics
-        ]:
+        parent_aliases = [self.parent_key.alias] if self.parent_key is not None else []
+        for alias in (
+            parent_aliases
+            + [spec.alias for spec in self.dimensions]
+            + [spec.alias for spec in self.metrics]
+        ):
             if alias in seen:
                 raise AliasCollisionError(alias)
             seen.add(alias)
@@ -446,8 +480,15 @@ class AggregateQueryPlan:
 
     @property
     def aliases(self) -> tuple[str, ...]:
-        """Every row key this plan produces."""
-        return self.dimension_aliases + self.metric_aliases
+        """Every row key this plan produces.
+
+        The parent key is one of them -- it is a column of the returned rows
+        even though no caller asked for it -- but it stays out of
+        :attr:`dimension_aliases`, which is what builds the group key the
+        response publishes.
+        """
+        parent = (self.parent_key.alias,) if self.parent_key is not None else ()
+        return parent + self.dimension_aliases + self.metric_aliases
 
     def as_audit_dict(self) -> dict[str, Any]:
         """A stable, value-free description of the whole request.
@@ -463,6 +504,7 @@ class AggregateQueryPlan:
             "has_having": self.having is not None,
             "order_by": [order.as_order_by() for order in self.order_by],
             "window": self.window.as_audit_dict() if self.window else None,
+            "parent_key": self.parent_key.as_audit_dict() if self.parent_key else None,
             "limit": self.limit,
             "offset": self.offset,
         }

@@ -30,6 +30,7 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
+from public_api.aggregations.nested import nested_aggregate_field, nested_aggregate_spec
 from public_api.constants import PublicAPIResources
 from public_api.scoping import scoped_calendar_ids
 from users.graphql import UserGraphQLType
@@ -330,6 +331,16 @@ class CalendarGraphQLType:
         # hint is what keeps `owners` constant-query. Measured, the relation form cost
         # 15 -> 36 queries on `TestCalendarOwnersField::test_owners_field_no_n_plus_1`.
         return list(root.ownerships.all())  # type: ignore[arg-type]
+
+    # Aggregates over this calendar's own rows. Built by the same factory as the
+    # root aggregate fields and batched across the calendars of one list, so
+    # selecting either under `calendars` costs one grouped query for the level
+    # rather than one per calendar -- see `public_api/aggregations/nested.py`.
+    # Each requires the *aggregated* entity's resource, not `CALENDAR`.
+    event_aggregate = nested_aggregate_field(nested_aggregate_spec(Calendar, "event_aggregate"))
+    blocked_time_aggregate = nested_aggregate_field(
+        nested_aggregate_spec(Calendar, "blocked_time_aggregate")
+    )
 
 
 @strawberry_django.type(RecurrenceRule)
@@ -962,6 +973,10 @@ class CalendarPoolGraphQLType:
             _owner_scoped_calendar_ids(info),
         )
 
+    # Events on the calendars this pool rosters, reached through the pool's
+    # membership rows. Requires `CALENDAR_EVENT`, not `CALENDAR_POOL`.
+    event_aggregate = nested_aggregate_field(nested_aggregate_spec(CalendarPool, "event_aggregate"))
+
 
 # ---------------------------------------------------------------------------
 # AppointmentType types
@@ -1029,6 +1044,12 @@ class AppointmentTypeGraphQLType:
     @staticmethod
     def is_private(root: AppointmentType) -> bool:
         return not root.accepts_public_scheduling
+
+    # Events booked against this appointment type. Requires `CALENDAR_EVENT`,
+    # not `APPOINTMENT_TYPE`.
+    event_aggregate = nested_aggregate_field(
+        nested_aggregate_spec(AppointmentType, "event_aggregate")
+    )
 
 
 # ---------------------------------------------------------------------------

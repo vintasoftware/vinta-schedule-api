@@ -24,6 +24,16 @@ Two constructions here are worth reading before changing them.
 counts. Each relation count is therefore computed per row as a correlated
 subquery *before* the grouping, and summed inside it -- the same shape
 ``childOrganizations`` uses in ``public_api/queries.py``.
+
+*The parent key.* A plan carrying a
+:class:`~public_api.aggregations.plan.ParentKeySpec` is one aggregate batched
+across many parents: the parent's column joins the ``GROUP BY`` ahead of the
+caller's dimensions, and everything downstream that would otherwise run across
+the whole result runs *within* one parent instead -- the caller's windows gain
+the parent as their first partition key, and ``offset`` / ``limit`` become a
+``ROW_NUMBER()`` filter rather than a slice. Batching has to be invisible in the
+answer: a nested aggregate must return what the same aggregate returns at the
+root, one parent at a time.
 """
 
 from collections.abc import Mapping
@@ -49,7 +59,14 @@ from django.db.models import (
     Window,
 )
 from django.db.models.expressions import Combinable, Func
-from django.db.models.functions import Coalesce, Rank, TruncDay, TruncMonth, TruncWeek
+from django.db.models.functions import (
+    Coalesce,
+    Rank,
+    RowNumber,
+    TruncDay,
+    TruncMonth,
+    TruncWeek,
+)
 
 from public_api.aggregations.errors import (
     AggregateRegistrationError,
@@ -93,6 +110,12 @@ _TRUNC_BY_GRANULARITY = {
 # row key: these are summed into the caller's alias and never selected.
 _RELATION_COUNT_PREFIX = "_aggregate_relation_"
 
+# The alias the per-parent row number lands under when a plan is batched. It is
+# selected -- Django has to name it to filter on it -- but nothing reads it: the
+# collector dispatches on the parent key, and row construction ignores keys it
+# was not told about.
+ROW_NUMBER_ALIAS = "aggregate_row_number"
+
 
 def build_aggregate_queryset(
     plan: AggregateQueryPlan, queryset: QuerySet
@@ -119,6 +142,17 @@ def build_aggregate_queryset(
     pre_annotations: dict[str, Combinable] = {}
     dimension_annotations: dict[str, Combinable] = {}
     group_by: list[str] = []
+
+    parent_alias: str | None = None
+    if plan.parent_key is not None:
+        # First in the GROUP BY, so the default ordering is parent-major and one
+        # parent's groups come back contiguous. The rows are dispatched by this
+        # column, not ordered by it, but a stable ordering is what makes the
+        # per-parent ``ROW_NUMBER()`` below pick the same groups every time.
+        parent_alias = plan.parent_key.alias
+        _reject_reserved_alias(registration, parent_alias, column_names)
+        dimension_annotations[parent_alias] = F(plan.parent_key.field_path)
+        group_by.append(parent_alias)
 
     for dimension in plan.dimensions:
         expression = _dimension_expression(registration, dimension)
@@ -167,13 +201,65 @@ def build_aggregate_queryset(
         # functions after ``HAVING`` anyway. Doing it in this order means the
         # running total runs over the groups that survived the filter, which is
         # the only reading of "a window over the filtered result".
-        window_annotations = _window_annotations(registration, plan.window, aggregates, group_by)
+        window_annotations = _window_annotations(
+            registration, plan.window, aggregates, group_by, parent_alias
+        )
         for alias in window_annotations:
             _reject_reserved_alias(registration, alias, column_names)
         grouped = grouped.annotate(**window_annotations)
 
-    grouped = grouped.order_by(*_order_by(plan, group_by))
+    ordering = _order_by(plan, group_by)
+    if parent_alias is not None:
+        return _per_parent_page(grouped, plan, ordering, parent_alias)
+
+    grouped = grouped.order_by(*ordering)
     return grouped[plan.offset : plan.offset + plan.limit]
+
+
+def _per_parent_page(
+    grouped: QuerySet[Any, dict[str, Any]],
+    plan: AggregateQueryPlan,
+    ordering: list[str],
+    parent_alias: str,
+) -> QuerySet[Any, dict[str, Any]]:
+    """Apply ``offset`` / ``limit`` once per parent rather than once per query.
+
+    Slicing a batched query would page the *concatenation* of every parent's
+    groups: with ``limit: 100`` over twenty-five parents, the first parent could
+    take the whole page and the rest come back empty, which reads as "this
+    calendar has no events" rather than as a paging artefact. Numbering the rows
+    within each parent's partition and keeping the caller's window of that
+    numbering gives every parent the page it would have got on its own, and
+    Django renders the filter as a wrapping ``QUALIFY``-style subquery -- still
+    one statement.
+    """
+    # Ordered inside the partition by whatever orders the result, minus the
+    # parent column itself: it is constant within a partition, so ordering on it
+    # here would say nothing, and `_order_by` has already appended the group key
+    # to make the rest of the ordering total.
+    inner = [alias for alias in ordering if alias.lstrip("-") != parent_alias]
+    numbered = grouped.annotate(
+        **{
+            ROW_NUMBER_ALIAS: _GroupBlindWindow(
+                RowNumber(),
+                partition_by=[F(parent_alias)],
+                order_by=[_as_order_expression(alias) for alias in inner],
+            )
+        }
+    )
+    return numbered.filter(
+        **{
+            f"{ROW_NUMBER_ALIAS}__gt": plan.offset,
+            f"{ROW_NUMBER_ALIAS}__lte": plan.offset + plan.limit,
+        }
+    ).order_by(*ordering)
+
+
+def _as_order_expression(alias: str) -> Any:
+    """One ``order_by`` string as the expression a ``Window`` wants."""
+    if alias.startswith("-"):
+        return F(alias[1:]).desc()
+    return F(alias).asc()
 
 
 def execute_plan(plan: AggregateQueryPlan, queryset: QuerySet) -> list[dict[str, Any]]:
@@ -333,6 +419,7 @@ def _window_annotations(
     spec: WindowSpec,
     aggregates: Mapping[str, Combinable],
     group_by: list[str],
+    parent_alias: str | None = None,
 ) -> dict[str, Combinable]:
     """One annotation per requested window metric.
 
@@ -343,20 +430,30 @@ def _window_annotations(
 
     Two orderings are built, and which one a metric gets depends on whether row
     *order* or only row *value* decides its answer. See ``_tiebroken`` below.
+
+    ``parent_alias`` is set when the plan is batched across parents, and becomes
+    the *first* partition key of every window here. Without it a running total
+    would accumulate straight through the end of one parent's rows and into the
+    next one's, so every parent but the first would read numbers that include
+    parents it cannot see -- the same query, run one parent at a time, would
+    disagree with it.
     """
     # A partition splits rows the query already grouped, so it can only address
     # a column those rows carry. Checked here as well as at the schema edge,
     # because the failure is a partition that silently widens the GROUP BY.
-    for alias in spec.partition_by:
+    partition_aliases = spec.partition_by
+    if parent_alias is not None:
+        partition_aliases = (parent_alias, *partition_aliases)
+    for alias in partition_aliases:
         if alias not in group_by:
             raise UngroupedPartitionKeyError(alias)
 
-    partition_by = [F(alias) for alias in spec.partition_by]
+    partition_by = [F(alias) for alias in partition_aliases]
     order_by = [
         F(order.alias).desc() if order.descending else F(order.alias).asc()
         for order in spec.order_by
     ]
-    tiebroken_order_by = order_by + _tiebreak(spec, group_by)
+    tiebroken_order_by = order_by + _tiebreak(spec, group_by, parent_alias)
     frame = _frame(spec)
 
     annotations: dict[str, Combinable] = {}
@@ -367,7 +464,7 @@ def _window_annotations(
     return annotations
 
 
-def _tiebreak(spec: WindowSpec, group_by: list[str]) -> list[Any]:
+def _tiebreak(spec: WindowSpec, group_by: list[str], parent_alias: str | None = None) -> list[Any]:
     """The group-key columns the caller's window ordering did not name.
 
     The mirror of what :func:`_order_by` does for the result ordering, and for
@@ -377,8 +474,15 @@ def _tiebreak(spec: WindowSpec, group_by: list[str]) -> list[Any]:
     query -- with a correct-looking final value and wrong intermediates.
     Appended ascending, in group-by order, so the sequence is the same every
     time.
+
+    The batching key is skipped: it is constant inside the partition every
+    batched window carries, so ordering on it breaks no tie, and leaving it out
+    keeps a batched window's ordering identical to the one the same query builds
+    unbatched.
     """
     named = {order.alias for order in spec.order_by}
+    if parent_alias is not None:
+        named.add(parent_alias)
     return [F(alias).asc() for alias in group_by if alias not in named]
 
 

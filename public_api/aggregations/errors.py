@@ -265,6 +265,22 @@ class UnknownDimensionError(AggregateConfigurationError):
         super().__init__(f"{field_path!r} is not a groupable field of {entity!r}")
 
 
+class UnknownNestedAggregateError(AggregateConfigurationError):
+    """A GraphQL type declared a nested aggregate that is not registered.
+
+    Raised at import time, like the registry's own checks: a field declared
+    without a registration has no parent key to group by, so it would resolve
+    once per parent -- the exact N+1 the nested collector exists to remove, and
+    one that no functional test would notice.
+    """
+
+    def __init__(self, parent_model: str, attribute_name: str) -> None:
+        super().__init__(
+            f"No nested aggregate registered for {parent_model}.{attribute_name}; "
+            f"add it to NESTED_AGGREGATES in public_api/aggregations/nested.py"
+        )
+
+
 class UnsupportedAggregateOperationError(AggregateConfigurationError):
     """The operation is not one the field's type offers.
 

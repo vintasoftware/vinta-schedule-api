@@ -44,7 +44,7 @@ Nothing here widens it.
 
 import contextlib
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
 
@@ -85,6 +85,7 @@ from public_api.aggregations.plan import (
     AggregateQueryPlan,
     FilterBounds,
     MetricSpec,
+    ParentKeySpec,
 )
 from public_api.aggregations.registry import (
     AggregateKind,
@@ -572,7 +573,30 @@ def _merge_metrics(
     return tuple(merged.values())
 
 
-def _resolve_aggregate(
+@dataclass(frozen=True)
+class AggregateRequest:
+    """Everything one aggregate field needs, resolved and not yet executed.
+
+    Built by :func:`build_aggregate_request` and consumed by
+    :func:`execute_request` / :func:`build_rows`. The three exist as separate
+    steps because :mod:`public_api.aggregations.nested` runs them apart: it
+    narrows the queryset to a batch of parents between the first and the second,
+    and splits the rows per parent between the second and the third. A root
+    field runs all three back to back.
+    """
+
+    plan: AggregateQueryPlan
+    queryset: Any
+    selected: tuple[_SelectedMetric, ...]
+    window_metric_names: tuple[str, ...]
+    row_type: type
+
+    def narrowed(self, queryset: Any) -> "AggregateRequest":
+        """The same request over a further-narrowed queryset."""
+        return replace(self, queryset=queryset)
+
+
+def build_aggregate_request(
     entity: AggregatableEntity,
     info: strawberry.Info,
     filter_input: Any,
@@ -583,8 +607,16 @@ def _resolve_aggregate(
     window: Any,
     limit: int,
     offset: int,
-) -> list[Any]:
-    """Resolve one aggregate field. Shared, unmodified, by all six."""
+    parent_key: ParentKeySpec | None = None,
+) -> AggregateRequest:
+    """Turn one aggregate field's arguments and selection into a request.
+
+    ``parent_key`` is set only by the nested collector, which folds the parent's
+    column into the ``GROUP BY`` so that one query answers for every parent at
+    that level. Everything else is identical whether the field sits at the root
+    or under a parent -- including all four cost guards, which is the point of
+    there being one of these functions rather than two.
+    """
     registration = get_registration(entity)
 
     # Cost guard 1, before anything touches the database.
@@ -637,13 +669,52 @@ def _resolve_aggregate(
         having=having_spec,
         order_by=order_specs,
         window=window_spec,
+        parent_key=parent_key,
         limit=limit,
         offset=offset,
     )
 
-    rows = _execute_within_budget(plan, queryset)
-    row_type = AGGREGATE_ROW_TYPE_BY_ENTITY[entity]
-    return [_build_row(row_type, plan, row, selected, window_metric_names) for row in rows]
+    return AggregateRequest(
+        plan=plan,
+        queryset=queryset,
+        selected=selected,
+        window_metric_names=window_metric_names,
+        row_type=AGGREGATE_ROW_TYPE_BY_ENTITY[entity],
+    )
+
+
+def execute_request(request: AggregateRequest) -> list[dict[str, Any]]:
+    """Run one request under the statement timeout, returning its raw rows."""
+    return _execute_within_budget(request.plan, request.queryset)
+
+
+def build_rows(request: AggregateRequest, rows: Sequence[Mapping[str, Any]]) -> list[Any]:
+    """Map raw grouped rows onto the entity's ``*AggregateRow`` type."""
+    return [
+        _build_row(
+            request.row_type, request.plan, row, request.selected, request.window_metric_names
+        )
+        for row in rows
+    ]
+
+
+def _resolve_aggregate(
+    entity: AggregatableEntity,
+    info: strawberry.Info,
+    filter_input: Any,
+    group_by: Sequence[Any],
+    timezone: str,
+    having: Any,
+    order_by: Sequence[Any] | None,
+    window: Any,
+    limit: int,
+    offset: int,
+) -> list[Any]:
+    """Resolve one aggregate root field. Shared, unmodified, by all six."""
+    request = build_aggregate_request(
+        entity, info, filter_input, group_by, timezone, having, order_by, window, limit, offset
+    )
+    return build_rows(request, execute_request(request))
 
 
 # ---------------------------------------------------------------------------
