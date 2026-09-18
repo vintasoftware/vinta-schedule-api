@@ -26,7 +26,9 @@ from public_api.aggregations.nested import (
     NestedAggregateCollector,
     _as_model_rows,
     _selected_field_names,
+    batch_key,
     nested_aggregate_spec,
+    parent_list_path,
     response_path,
 )
 from public_api.aggregations.plan import (
@@ -54,28 +56,62 @@ def _path(first: str, *rest: str | int) -> graphql.pyutils.Path:
 
 
 class TestResponsePath:
-    def test_list_indices_are_dropped_so_siblings_share_one_path(self):
+    def test_the_path_keeps_its_list_indices(self):
+        """Dropping them merged an inner list's occurrences into one batch."""
+        path = response_path(_FakeInfo(_path("calendarPools", 1, "calendars", 3, "x")))
+
+        assert path == ("calendarPools", 1, "calendars", 3, "x")
+
+    def test_siblings_of_one_list_share_one_batch(self):
         """The whole basis of batching: row 0 and row 24 name the same batch."""
-        first = response_path(_FakeInfo(_path("calendars", 0, "eventAggregate")))
-        last = response_path(_FakeInfo(_path("calendars", 24, "eventAggregate")))
+        first = batch_key(response_path(_FakeInfo(_path("calendars", 0, "eventAggregate"))))
+        last = batch_key(response_path(_FakeInfo(_path("calendars", 24, "eventAggregate"))))
 
         assert first == ("calendars", "eventAggregate")
         assert first == last
 
+    def test_the_same_field_under_two_outer_rows_is_two_batches(self):
+        """The blocker: one pool's roster must not answer for another's.
+
+        `calendarPools { calendars { eventAggregate } }` resolves `calendars`
+        once per pool. Keyed with the outer index dropped, both occurrences
+        named one batch, the second pool's calendars were never queried, and
+        every one of them reported no events.
+        """
+        first = batch_key(
+            response_path(_FakeInfo(_path("calendarPools", 0, "calendars", 0, "eventAggregate")))
+        )
+        second = batch_key(
+            response_path(_FakeInfo(_path("calendarPools", 1, "calendars", 0, "eventAggregate")))
+        )
+
+        assert first == ("calendarPools", 0, "calendars", "eventAggregate")
+        assert second == ("calendarPools", 1, "calendars", "eventAggregate")
+        assert first != second
+
     def test_two_aliases_of_one_field_are_two_batches(self):
         """Aliases may carry different arguments, so they must not be merged."""
-        march = response_path(_FakeInfo(_path("calendars", 0, "march")))
-        april = response_path(_FakeInfo(_path("calendars", 0, "april")))
+        march = batch_key(response_path(_FakeInfo(_path("calendars", 0, "march"))))
+        april = batch_key(response_path(_FakeInfo(_path("calendars", 0, "april"))))
 
         assert march == ("calendars", "march")
         assert april == ("calendars", "april")
         assert march != april
 
-    def test_the_parent_path_is_the_nested_path_minus_its_last_segment(self):
-        """How a batch finds the list that recorded its parents."""
-        nested = response_path(_FakeInfo(_path("calendars", 3, "eventAggregate")))
+    def test_the_parent_path_is_where_that_list_recorded_itself(self):
+        """How a batch finds the parents it is for, at either nesting depth."""
+        flat = response_path(_FakeInfo(_path("calendars", 3, "eventAggregate")))
+        deep = response_path(_FakeInfo(_path("calendarPools", 2, "calendars", 3, "eventAggregate")))
 
-        assert nested[:-1] == ("calendars",)
+        assert parent_list_path(flat) == ("calendars",)
+        assert parent_list_path(deep) == ("calendarPools", 2, "calendars")
+
+    def test_a_parent_that_is_not_a_list_item_keeps_its_whole_prefix(self):
+        """`calendarPool(poolId: 3) { eventAggregate }` has no index to drop."""
+        path = response_path(_FakeInfo(_path("calendarPool", "eventAggregate")))
+
+        assert parent_list_path(path) == ("calendarPool",)
+        assert batch_key(path) == ("calendarPool", "eventAggregate")
 
 
 class TestRegistrations:
@@ -209,16 +245,21 @@ class TestSelectionScanning:
 
 
 class TestParentRecording:
-    def test_a_path_records_once_and_keeps_the_first_list(self):
-        """A field resolves once; a second record would mean two lists in one key."""
+    def test_each_occurrence_of_an_inner_list_records_its_own_parents(self):
+        """Two pools, two rosters, two keys -- because the key carries the index.
+
+        The keys differ, so neither list has to win; the bug was that they did
+        not differ and the first one silently did.
+        """
         collector = NestedAggregateCollector()
-        first = [Calendar(id=1), Calendar(id=2)]
-        second = [Calendar(id=3)]
+        first_pool = ("calendarPools", 0, "calendars")
+        second_pool = ("calendarPools", 1, "calendars")
 
-        collector.record_parents(("calendars",), first)
-        collector.record_parents(("calendars",), second)
+        collector.record_parents(first_pool, [Calendar(id=10), Calendar(id=11)])
+        collector.record_parents(second_pool, [Calendar(id=20), Calendar(id=21)])
 
-        assert [calendar.id for calendar in collector._parents[("calendars",)]] == [1, 2]
+        assert [calendar.id for calendar in collector._parents[first_pool]] == [10, 11]
+        assert [calendar.id for calendar in collector._parents[second_pool]] == [20, 21]
 
     def test_only_model_rows_are_recorded(self):
         assert _as_model_rows(["a", "b"]) is None

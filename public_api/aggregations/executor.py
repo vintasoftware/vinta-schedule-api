@@ -232,6 +232,15 @@ def _per_parent_page(
     numbering gives every parent the page it would have got on its own, and
     Django renders the filter as a wrapping ``QUALIFY``-style subquery -- still
     one statement.
+
+    It does move the row ceiling, and the plan's cost story should be read with
+    that in mind: ``limit`` now bounds one parent's page rather than the
+    statement's result, so a batched query may return ``limit`` x the number of
+    parents -- ten thousand rows where a root aggregate returns a hundred.
+    Nothing here can bound that without reintroducing the starvation above. What
+    does bound it is the other two guards, which apply to a nested aggregate
+    exactly as they do to a root one: the mandatory bounded date range on every
+    aggregate filter, and the per-query statement timeout.
     """
     # Ordered inside the partition by whatever orders the result, minus the
     # parent column itself: it is constant within a partition, so ordering on it

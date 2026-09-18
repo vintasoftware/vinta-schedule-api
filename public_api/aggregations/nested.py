@@ -44,6 +44,27 @@ change if it were reversed.
 **A parent that is not a list** -- ``calendarPool(poolId: 3) { eventAggregate }``
 -- records nothing, and the collector falls back to a batch of one. That is the
 same query shape with one id in it, not a different path.
+
+**A list inside a list** -- ``calendarPools { calendars { eventAggregate } }``
+-- resolves its inner list once per outer row, so there is one batch per
+occurrence rather than one for the level: six pools of three calendars is six
+queries, not eighteen and not one. Coalescing those six is what a ``DataLoader``
+would do and a synchronous resolver cannot, because the second pool's roster
+does not exist yet when the first pool's aggregate has to return a value. One
+query per inner list is the real bound here, and it is reached by keying every
+path with its outer list indices intact -- dropping them made the six
+occurrences one key, and every pool after the first read the *first* pool's
+roster and reported no rows for calendars that had them.
+
+**What bounds the rows.** ``limit`` is per parent, so a level's result is
+bounded by ``limit`` x the number of parents rather than by ``limit`` alone:
+``calendars(limit: 100)`` each taking ``limit: 100`` is ten thousand rows, not a
+hundred. That is the correct semantics -- a shared slice would let the first
+parent take the page and leave the rest reading as empty -- but it does mean the
+plan's limit guard is not the whole cost story for a nested aggregate, and the
+mandatory bounded date range and the per-query statement timeout are what stand
+behind it. See ``_per_parent_page`` in
+:mod:`public_api.aggregations.executor`.
 """
 
 from collections.abc import Iterator, Mapping, Sequence
@@ -201,23 +222,50 @@ NESTED_RESOURCE_BY_FIELD_NAME: Mapping[str, str] = MappingProxyType(
 # ---------------------------------------------------------------------------
 
 
-def response_path(info: GraphQLResolveInfo | strawberry.Info) -> tuple[str, ...]:
-    """A field's response path with the list indices dropped.
+PathKey = tuple[str | int, ...]
 
-    ``calendars.0.eventAggregate`` and ``calendars.24.eventAggregate`` are the
-    same *selection* resolving against different rows, so dropping the index is
-    what makes them one batch. Two aliases of the same field keep different
-    paths and stay separate batches, which is right: they may carry different
-    arguments.
+
+def response_path(info: GraphQLResolveInfo | strawberry.Info) -> PathKey:
+    """A field's full response path, list indices included.
+
+    Indices are kept, and that is load-bearing. A list *inside* a list resolves
+    once per outer row -- ``calendarPools { calendars { ... } }`` runs the
+    ``calendars`` field once per pool -- so a key that dropped every index would
+    name all of those occurrences identically and let one pool's roster stand in
+    for every other pool's. :func:`batch_key` drops exactly the one index that
+    should be dropped instead.
     """
     raw = getattr(info, "path", None) or getattr(getattr(info, "_raw_info", None), "path", None)
-    parts: list[str] = []
+    parts: list[str | int] = []
     while raw is not None:
-        if isinstance(raw.key, str):
-            parts.append(raw.key)
+        parts.append(raw.key)
         raw = raw.prev
     parts.reverse()
     return tuple(parts)
+
+
+def parent_list_path(path: PathKey) -> PathKey:
+    """Where the parents of the field at ``path`` were recorded.
+
+    A nested aggregate sits at ``<list>.<index>.<field>`` when its parent came
+    out of a list, and at ``<object>.<field>`` when it did not. Dropping the
+    index -- and only when there is one -- lands on the parent field's own path,
+    which is the key that field recorded itself under.
+    """
+    if len(path) >= 2 and isinstance(path[-2], int):
+        return path[:-2]
+    return path[:-1]
+
+
+def batch_key(path: PathKey) -> PathKey:
+    """The batch a nested aggregate at ``path`` belongs to.
+
+    The parent list's own path plus this field's response key: every sibling
+    resolving against a row of *that* list shares it, and the same selection
+    under a different outer row does not. Two aliases of one field keep
+    different keys, which is right -- they may carry different arguments.
+    """
+    return (*parent_list_path(path), path[-1])
 
 
 # ---------------------------------------------------------------------------
@@ -225,28 +273,46 @@ def response_path(info: GraphQLResolveInfo | strawberry.Info) -> tuple[str, ...]
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _Batch:
+    """One level's answer: the rows found, and which parents were asked about.
+
+    ``covered`` is the second half and not an optimization. Without it, a parent
+    absent from ``rows_by_parent`` is ambiguous between "was in the query and
+    has no matching rows", which must answer ``[]``, and "was never in the
+    query", which must not -- and answering ``[]`` to the second is how a
+    calendar with events reports none.
+    """
+
+    rows_by_parent: dict[Any, list[Any]]
+    covered: set[Any]
+
+
 class NestedAggregateCollector:
     """One request's nested aggregates: the parents seen, the batches run.
 
-    Keyed by response path throughout. A parent list records itself under its
-    own path (``("calendars",)``); a nested aggregate under it asks for the
-    batch at its path (``("calendars", "eventAggregate")``) and finds its
-    parents one level up.
+    Keyed by response path throughout, indices included. A parent list records
+    itself under its own path (``("calendars",)``, or
+    ``("calendarPools", 1, "calendars")`` for the roster of the second pool); a
+    nested aggregate under it belongs to the batch at
+    :func:`batch_key` of its own path, which names that same parent list plus
+    the aggregate's response key.
     """
 
     def __init__(self) -> None:
-        self._parents: dict[tuple[str, ...], list[models.Model]] = {}
-        self._batches: dict[tuple[str, ...], dict[Any, list[Any]]] = {}
+        self._parents: dict[PathKey, list[models.Model]] = {}
+        self._batches: dict[PathKey, _Batch] = {}
 
     # -- recording -------------------------------------------------------
 
-    def record_parents(self, path: tuple[str, ...], parents: Sequence[models.Model]) -> None:
+    def record_parents(self, path: PathKey, parents: Sequence[models.Model]) -> None:
         """Remember the rows a parent list resolved to, for the batch below it.
 
-        Recorded once per path: a field resolves once, and a second call would
-        mean a different list under the same response key, which cannot happen.
+        ``path`` carries the outer list indices, so an inner list resolving once
+        per outer row records once per *occurrence* rather than overwriting --
+        or, as it was, being silently discarded after the first.
         """
-        self._parents.setdefault(path, list(parents))
+        self._parents[path] = list(parents)
 
     # -- resolving -------------------------------------------------------
 
@@ -257,32 +323,56 @@ class NestedAggregateCollector:
         info: strawberry.Info,
         arguments: Mapping[str, Any],
     ) -> list[Any]:
-        """This parent's rows, running the batch's single query if it has not run.
+        """This parent's rows, running the batch's query if it has not run.
 
-        The first parent under a given path pays for the whole level; the rest
-        read out of the dictionary it left behind. A parent with no matching
-        rows gets an empty list, which is what the same aggregate returns at the
-        root: buckets are sparse, so "no rows" and "no groups" are the same
-        answer.
+        The first parent under a given batch key pays for the whole level; the
+        rest read out of what it left behind. A parent the query covered but
+        found nothing for gets an empty list, which is what the same aggregate
+        returns at the root: buckets are sparse, so "no rows" and "no groups"
+        are the same answer.
+
+        A parent the query did *not* cover is a different thing, and gets its
+        own query rather than an empty list. That should not happen -- the batch
+        is built from the recorded list its parent came out of -- but the
+        alternative to spending a query here is returning a number that is
+        wrong, and the whole point of batching is that it cannot be noticed in
+        the answer.
         """
-        path = response_path(info)
-        batch = self._batches.get(path)
+        key = batch_key(response_path(info))
+        batch = self._batches.get(key)
         if batch is None:
-            batch = self._run_batch(spec, root, info, arguments, path)
-            self._batches[path] = batch
-        return batch.get(root.pk, [])
+            batch = self._new_batch(spec, root, info, arguments, key)
+            self._batches[key] = batch
+        elif root.pk not in batch.covered:
+            self._extend_batch(batch, spec, [root], info, arguments)
+        return batch.rows_by_parent.get(root.pk, [])
 
-    def _run_batch(
+    def _new_batch(
         self,
         spec: NestedAggregateSpec,
         root: models.Model,
         info: strawberry.Info,
         arguments: Mapping[str, Any],
-        path: tuple[str, ...],
-    ) -> dict[Any, list[Any]]:
-        """Execute one level's aggregate and split its rows by parent."""
-        parents = self._parents.get(path[:-1]) or [root]
-        parent_ids = [parent.pk for parent in parents]
+        key: PathKey,
+    ) -> _Batch:
+        """Start a batch from the parent list this aggregate resolves under."""
+        parents = self._parents.get(parent_list_path(response_path(info))) or [root]
+        batch = _Batch(rows_by_parent={}, covered=set())
+        self._extend_batch(batch, spec, parents, info, arguments)
+        return batch
+
+    def _extend_batch(
+        self,
+        batch: _Batch,
+        spec: NestedAggregateSpec,
+        parents: Sequence[models.Model],
+        info: strawberry.Info,
+        arguments: Mapping[str, Any],
+    ) -> None:
+        """Run one grouped query for ``parents`` and fold it into ``batch``."""
+        parent_ids = [parent.pk for parent in parents if parent.pk not in batch.covered]
+        if not parent_ids:
+            return
 
         request = build_aggregate_request(
             spec.entity,
@@ -309,7 +399,9 @@ class NestedAggregateCollector:
         for row in execute_request(request):
             rows_by_parent.setdefault(row[PARENT_KEY_ALIAS], []).append(row)
 
-        return {parent_id: build_rows(request, rows) for parent_id, rows in rows_by_parent.items()}
+        for parent_id, rows in rows_by_parent.items():
+            batch.rows_by_parent[parent_id] = build_rows(request, rows)
+        batch.covered.update(parent_ids)
 
 
 def collector_for(info: strawberry.Info | GraphQLResolveInfo) -> NestedAggregateCollector:

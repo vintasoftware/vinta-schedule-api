@@ -168,9 +168,11 @@ from public_api.aggregations.nested import (
     NestedAggregateCollector,
     NestedAggregateExtension,
     NestedAggregateSpec,
+    batch_key,
     collector_for,
     nested_aggregate_field,
     nested_aggregate_spec,
+    parent_list_path,
     response_path,
 )
 from public_api.aggregations.ordering import (
@@ -372,6 +374,7 @@ __all__ = [
     "aggregate_field",
     "aggregate_kind_for_model_field",
     "aggregate_statement_timeout",
+    "batch_key",
     "build_aggregate_queryset",
     "build_aggregate_request",
     "build_group_key",
@@ -392,6 +395,7 @@ __all__ = [
     "nested_aggregate_spec",
     "order_from_input",
     "order_input_type",
+    "parent_list_path",
     "resolve_timezone",
     "response_path",
     "validate_plan",

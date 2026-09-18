@@ -143,6 +143,23 @@ query Pools($start: DateTime!, $end: DateTime!) {
 """
 
 
+POOLS_THEN_CALENDARS_QUERY = """
+query PoolsThenCalendars($start: DateTime!, $end: DateTime!) {
+  calendarPools(limit: 100) {
+    id
+    calendars {
+      id
+      eventAggregate(
+        filter: {startDatetime: $start, endDatetime: $end}
+        groupBy: [{temporal: {field: START_TIME, granularity: DAY}}]
+        timezone: "UTC"
+      ) { count }
+    }
+  }
+}
+"""
+
+
 def _window() -> dict[str, str]:
     return {"start": WINDOW_START.isoformat(), "end": WINDOW_END.isoformat()}
 
@@ -413,6 +430,65 @@ class TestNestingUnderOtherParents:
             # rosters exactly that calendar.
             assert [row["count"] for row in by_id[str(pool.id)]] == [1] * index
         assert len(_grouped_sql(captured)) == 1, _grouped_sql(captured)
+
+    def test_a_list_inside_a_list_answers_for_every_outer_row(self, organization):
+        """An inner list resolves once per outer row, and each occurrence is its own batch.
+
+        `calendarPools { calendars { eventAggregate } }` resolves `calendars`
+        once per pool, so keying the recorded parents on a path with the outer
+        index stripped kept only the first pool's calendars -- and every
+        calendar under every later pool reported no events for a calendar that
+        has events. A wrong number, silently, with no error to notice.
+        """
+        system_user, token, auth = org_wide_token(
+            organization, [PublicAPIResources.CALENDAR_POOL, PublicAPIResources.CALENDAR_EVENT]
+        )
+        calendars = _calendars_with_events(organization, 3)
+        pools = []
+        for index, calendar in enumerate(calendars, start=1):
+            pool = CalendarPool.objects.create(organization=organization, name=f"nested-{index}")
+            CalendarPoolMembership.objects.create(
+                organization=organization, pool=pool, calendar=calendar
+            )
+            pools.append(pool)
+
+        response = post_graphql(POOLS_THEN_CALENDARS_QUERY, system_user, token, auth, _window())
+
+        rows = _payload(response)["calendarPools"]
+        assert len(rows) == 3
+        by_pool = {row["id"]: row["calendars"] for row in rows}
+        for index, pool in enumerate(pools, start=1):
+            # The nth pool rosters the nth calendar, which has n days of one event.
+            pool_calendars = by_pool[str(pool.id)]
+            assert len(pool_calendars) == 1
+            counts = [entry["count"] for entry in pool_calendars[0]["eventAggregate"]]
+            assert counts == [1] * index, f"pool {index} read {counts}"
+
+    def test_an_inner_list_costs_one_query_per_occurrence_not_per_row(self, organization):
+        """The bound without a DataLoader: one query per inner list, not per calendar.
+
+        Six pools of three calendars each is eighteen calendars and six inner
+        lists, so six grouped aggregate queries -- not eighteen.
+        """
+        system_user, token, auth = org_wide_token(
+            organization, [PublicAPIResources.CALENDAR_POOL, PublicAPIResources.CALENDAR_EVENT]
+        )
+        calendars = _calendars_with_events(organization, 18)
+        for index in range(6):
+            pool = CalendarPool.objects.create(organization=organization, name=f"wide-{index}")
+            for calendar in calendars[index * 3 : index * 3 + 3]:
+                CalendarPoolMembership.objects.create(
+                    organization=organization, pool=pool, calendar=calendar
+                )
+
+        with CaptureQueriesContext(connection) as captured:
+            response = post_graphql(POOLS_THEN_CALENDARS_QUERY, system_user, token, auth, _window())
+
+        pool_rows = _payload(response)["calendarPools"]
+        assert len(pool_rows) == 6
+        assert sum(len(row["calendars"]) for row in pool_rows) == 18
+        aggregate_queries = [sql for sql in _grouped_sql(captured) if "aggregate_parent_key" in sql]
+        assert len(aggregate_queries) == 6, len(aggregate_queries)
 
     def test_a_single_parent_still_runs_one_batched_query(self, organization):
         """A non-list parent records nothing; the batch is then a batch of one."""
