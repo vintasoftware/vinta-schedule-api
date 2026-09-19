@@ -10,8 +10,10 @@ import datetime
 from django.db.models import QuerySet
 
 import strawberry
+from graphql import GraphQLError
 
 from calendar_integration.models import Calendar
+from calendar_integration.querysets import AppointmentTypeQuerySet, CalendarPoolQuerySet
 from organizations.models import Organization
 from public_api.constants import MAX_AGGREGATE_RANGE
 from public_api.models import SystemUser
@@ -37,17 +39,17 @@ class AggregateFilterBase:
     ) -> None:
         """Validate a mandatory temporal range.
 
-        Raises ``ValueError`` if:
+        Raises ``GraphQLError`` if:
         - Either bound is None (required for temporal entities).
         - The range is backwards (end <= start).
         - The range exceeds MAX_AGGREGATE_RANGE.
         """
         if start_datetime is None or end_datetime is None:
-            raise ValueError("startDatetime and endDatetime are required.")
+            raise GraphQLError("startDatetime and endDatetime are required.")
         if end_datetime <= start_datetime:
-            raise ValueError("Invalid time range: endDatetime must be after startDatetime.")
+            raise GraphQLError("Invalid time range: endDatetime must be after startDatetime.")
         if (end_datetime - start_datetime) > MAX_AGGREGATE_RANGE:
-            raise ValueError("Requested time range is too large.")
+            raise GraphQLError("Requested time range is too large.")
 
 
 @strawberry.input
@@ -88,9 +90,14 @@ class CalendarEventAggregateFilterInput:
             )
             queryset = queryset.filter(calendar_id__in=calendar_ids)
 
+        if system_user is not None:
+            scoped_ids = scoped_calendar_ids(system_user, organization)
+            if scoped_ids is not None:
+                queryset = queryset.filter(calendar_id__in=scoped_ids)
+
         queryset = queryset.filter(
-            start_time_tz_unaware__gte=self.start_datetime,
-            start_time_tz_unaware__lt=self.end_datetime,
+            start_time__gte=self.start_datetime,
+            start_time__lt=self.end_datetime,
         )
 
         return queryset
@@ -134,9 +141,14 @@ class AvailableTimeAggregateFilterInput:
             )
             queryset = queryset.filter(calendar_id__in=calendar_ids)
 
+        if system_user is not None:
+            scoped_ids = scoped_calendar_ids(system_user, organization)
+            if scoped_ids is not None:
+                queryset = queryset.filter(calendar_id__in=scoped_ids)
+
         queryset = queryset.filter(
-            start_time_tz_unaware__gte=self.start_datetime,
-            start_time_tz_unaware__lt=self.end_datetime,
+            start_time__gte=self.start_datetime,
+            start_time__lt=self.end_datetime,
         )
 
         return queryset
@@ -180,9 +192,14 @@ class BlockedTimeAggregateFilterInput:
             )
             queryset = queryset.filter(calendar_id__in=calendar_ids)
 
+        if system_user is not None:
+            scoped_ids = scoped_calendar_ids(system_user, organization)
+            if scoped_ids is not None:
+                queryset = queryset.filter(calendar_id__in=scoped_ids)
+
         queryset = queryset.filter(
-            start_time_tz_unaware__gte=self.start_datetime,
-            start_time_tz_unaware__lt=self.end_datetime,
+            start_time__gte=self.start_datetime,
+            start_time__lt=self.end_datetime,
         )
 
         return queryset
@@ -199,10 +216,10 @@ class AppointmentTypeAggregateFilterInput:
 
     def apply(
         self,
-        queryset: QuerySet,
+        queryset: AppointmentTypeQuerySet,
         organization: Organization,
         system_user: SystemUser | None = None,
-    ) -> QuerySet:
+    ) -> AppointmentTypeQuerySet:
         """Apply this filter to a scoped AppointmentType queryset."""
         if self.name is not None:
             queryset = queryset.filter(name__icontains=self.name)
@@ -251,10 +268,10 @@ class CalendarPoolAggregateFilterInput:
 
     def apply(
         self,
-        queryset: QuerySet,
+        queryset: CalendarPoolQuerySet,
         organization: Organization,
         system_user: SystemUser | None = None,
-    ) -> QuerySet:
+    ) -> CalendarPoolQuerySet:
         """Apply this filter to a scoped CalendarPool queryset."""
         if self.name is not None:
             queryset = queryset.filter(name__icontains=self.name)

@@ -10,6 +10,7 @@ import datetime
 from django.utils import timezone as tz
 
 import pytest
+from graphql import GraphQLError
 
 from public_api.aggregations.filters import (
     AppointmentTypeAggregateFilterInput,
@@ -27,7 +28,7 @@ class TestTemporalFilterValidation:
     """Tests for mandatory date range validation on temporal entities."""
 
     def test_calendar_event_filter_rejects_backwards_range(self):
-        """end_datetime <= start_datetime raises ValueError in apply()."""
+        """end_datetime <= start_datetime raises GraphQLError in apply()."""
         now = tz.now()
         filter_input = CalendarEventAggregateFilterInput(
             start_datetime=now,
@@ -37,14 +38,14 @@ class TestTemporalFilterValidation:
 
         org = Organization.objects.create(name="Test Org")
 
-        with pytest.raises(ValueError, match="Invalid time range"):
+        with pytest.raises(GraphQLError, match="Invalid time range"):
             from calendar_integration.models import CalendarEvent
 
             qs = CalendarEvent.objects.filter_by_organization(org.id)
             filter_input.apply(qs, org)
 
     def test_calendar_event_filter_rejects_range_exceeding_max(self):
-        """Range exceeding MAX_AGGREGATE_RANGE raises ValueError."""
+        """Range exceeding MAX_AGGREGATE_RANGE raises GraphQLError."""
         now = tz.now()
         too_far = now + MAX_AGGREGATE_RANGE + datetime.timedelta(days=1)
         filter_input = CalendarEventAggregateFilterInput(
@@ -55,7 +56,7 @@ class TestTemporalFilterValidation:
 
         org = Organization.objects.create(name="Test Org 2")
 
-        with pytest.raises(ValueError, match="Requested time range is too large"):
+        with pytest.raises(GraphQLError, match="Requested time range is too large"):
             from calendar_integration.models import CalendarEvent
 
             qs = CalendarEvent.objects.filter_by_organization(org.id)
