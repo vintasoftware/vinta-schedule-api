@@ -122,10 +122,16 @@ class MetricSpec:
 class DimensionSpec:
     """One GROUP BY dimension.
 
+    ``field_path`` is the **ORM path** — ``calendar_fk_id``, ``start_time`` —
+    and not the registry name the GraphQL enum carries. That is the opposite of
+    ``MetricSpec.field_path``, which is the registry name; build both through
+    ``registry.build_dimension`` / ``registry.build_metric`` rather than by hand
+    and the difference never comes up.
+
     ``granularity`` and ``tzinfo`` are set only for a temporal dimension, and
     only together: bucketing by local day is meaningless without the timezone
-    whose day is meant. Phase 2 is what turns them into ``TruncDay`` and
-    friends; a plan built without them groups on the raw column.
+    whose day is meant. Together they become ``TruncDay`` and friends in the
+    executor; a dimension without them groups on the raw column.
     """
 
     alias: str

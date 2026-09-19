@@ -2,7 +2,10 @@
 
 The whole aggregate is one ``.values(...).annotate(...)`` over a base queryset
 the caller supplies, and the rows come back already grouped and already
-aggregated. Nothing here sums, sorts, buckets or synthesises a row in Python.
+aggregated. Nothing here sums, sorts or synthesises a row in Python, and a
+temporal bucket is a ``DATE_TRUNC`` in the statement rather than a loop after
+it — which also means buckets are sparse: a day with no matching rows produces
+no row at all.
 
 **Tenant scoping is the caller's queryset, not this module's business.** The
 base queryset arrives from the model's own ``OrganizationScopedManager`` (or
@@ -15,13 +18,21 @@ related model's ``objects`` for the same reason.
 """
 
 from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 from django.db import models
 from django.db.models.aggregates import StringAgg
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, TruncDay, TruncMonth, TruncWeek
+
+# ``TruncBase`` is the shared base of the three truncations below, and the type
+# the granularity map is keyed to. ``django.db.models.functions`` does not
+# re-export it, so it comes from the module that defines it.
+from django.db.models.functions.datetime import TruncBase
 
 from public_api.aggregations.errors import (
+    ALIAS_SHADOWS_FIELD_MESSAGE,
+    BUCKETING_NEEDS_TIMEZONE_MESSAGE,
     ENTITY_MISMATCH_MESSAGE,
     LIMIT_OUT_OF_RANGE_MESSAGE,
     OFFSET_NEGATIVE_MESSAGE,
@@ -46,6 +57,7 @@ from public_api.aggregations.registry import (
     RelationCountField,
     get_registration,
 )
+from public_api.aggregations.types import TemporalGranularity
 
 
 MAX_AGGREGATE_LIMIT = 100
@@ -69,30 +81,76 @@ def _check_slice(plan: AggregateQueryPlan) -> None:
 def _reject_unbuilt_features(plan: AggregateQueryPlan) -> None:
     """Refuse plan features this phase's executor does not build yet.
 
-    ``granularity`` arrives with Phase 2, ``having`` with Phase 4 and ``window``
-    with Phase 6. Each of them changes the answer, so dropping one silently
-    would return a confidently wrong number; raising keeps the failure loud
-    until the phase that implements it deletes the matching check. Nothing
-    reaches this module from the GraphQL schema yet, so no caller can trip it.
+    ``having`` arrives with Phase 4 and ``window`` with Phase 6. Each of them
+    changes the answer, so dropping one silently would return a confidently
+    wrong number; raising keeps the failure loud until the phase that implements
+    it deletes the matching check. Nothing reaches this module from the GraphQL
+    schema yet, so no caller can trip it.
     """
-    if any(dimension.granularity is not None for dimension in plan.dimensions):
-        raise NotImplementedError("Temporal bucketing lands with Phase 2 of this plan.")
     if plan.having is not None:
         raise NotImplementedError("HAVING lands with Phase 4 of this plan.")
     if plan.window is not None:
         raise NotImplementedError("Window functions land with Phase 6 of this plan.")
 
 
+TRUNCATION_FOR_GRANULARITY: Mapping[TemporalGranularity, type[TruncBase]] = MappingProxyType(
+    {
+        TemporalGranularity.DAY: TruncDay,
+        TemporalGranularity.WEEK: TruncWeek,
+        TemporalGranularity.MONTH: TruncMonth,
+    }
+)
+
+
+def _bucket_expression(dimension: DimensionSpec) -> models.Expression:
+    """The ``DATE_TRUNC`` for a bucketed temporal dimension.
+
+    Django renders this as ``DATE_TRUNC('day', "start_time" AT TIME ZONE 'x')``
+    and converts the result back to an aware datetime on that same zone, so a
+    ``DAY`` bucket is a local midnight in the caller's clock rather than a UTC
+    one. ``start_time`` is a ``GeneratedField`` holding a ``timestamptz``, which
+    is exactly the input that conversion expects.
+
+    ``WEEK`` starts on Monday — Postgres' ``DATE_TRUNC`` and Django's
+    ``TruncWeek`` agree on that, so no custom expression is needed.
+    """
+    if dimension.granularity is None or dimension.tzinfo is None:
+        # Unreachable through ``build_dimension``, which refuses both.
+        raise InvalidAggregatePlanError(BUCKETING_NEEDS_TIMEZONE_MESSAGE)
+    truncation = TRUNCATION_FOR_GRANULARITY[dimension.granularity]
+    return truncation(dimension.field_path, tzinfo=dimension.tzinfo)
+
+
 def _dimension_target(dimension: DimensionSpec) -> tuple[str, OrmExpression | None]:
     """Return what ``.values()`` should be given for this dimension.
 
-    A dimension whose alias is already the ORM path is passed positionally:
+    A bucketed dimension is always an expression. A plain dimension whose alias
+    is already the ORM path is passed positionally instead:
     ``values(calendar_fk_id=F("calendar_fk_id"))`` is rejected by Django as
-    conflicting with a model field. Anything else is an aliased expression.
+    conflicting with a model field. Anything else is an aliased column.
     """
+    if dimension.granularity is not None:
+        return dimension.alias, _bucket_expression(dimension)
     if dimension.alias == dimension.field_path:
         return dimension.alias, None
     return dimension.alias, models.F(dimension.field_path)
+
+
+def _model_field_names(model: type[models.Model]) -> set[str]:
+    """Every name Django will refuse as an expression alias on this model.
+
+    Mirrors the check in ``QuerySet._annotate``: both ``name`` and ``attname``
+    of every field. Computing it here turns what would be a bare ``ValueError``
+    — a 500 — into an ``AggregationError`` a resolver can let through as a
+    GraphQL error.
+    """
+    names: set[str] = set()
+    for field in model._meta.get_fields():
+        names.add(field.name)
+        attname = getattr(field, "attname", None)
+        if attname is not None:
+            names.add(attname)
+    return names
 
 
 def _metric_source(registered: AggregatableField) -> OrmExpression:
@@ -210,6 +268,8 @@ def build_aggregate_queryset(
     # and group on a column nobody decided was groupable.
     groupable_paths = {registered.field_path for registered in registration.groupable.values()}
 
+    reserved_names = _model_field_names(registration.model)
+
     plain_dimensions: list[str] = []
     aliased_dimensions: dict[str, OrmExpression] = {}
     for dimension in plan.dimensions:
@@ -218,10 +278,16 @@ def build_aggregate_queryset(
         alias, expression = _dimension_target(dimension)
         if expression is None:
             plain_dimensions.append(alias)
-        else:
-            aliased_dimensions[alias] = expression
+            continue
+        if alias in reserved_names:
+            raise InvalidAggregatePlanError(ALIAS_SHADOWS_FIELD_MESSAGE)
+        aliased_dimensions[alias] = expression
 
-    metrics = {metric.alias: _metric_expression(metric, registration) for metric in plan.metrics}
+    metrics: dict[str, models.Expression] = {}
+    for metric in plan.metrics:
+        if metric.alias in reserved_names:
+            raise InvalidAggregatePlanError(ALIAS_SHADOWS_FIELD_MESSAGE)
+        metrics[metric.alias] = _metric_expression(metric, registration)
 
     grouped = queryset.values(*plain_dimensions, **aliased_dimensions).annotate(**metrics)
     return grouped.order_by(*_ordering(plan))[plan.offset : plan.offset + plan.limit]

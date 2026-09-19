@@ -31,6 +31,8 @@ DUPLICATE_ALIAS_MESSAGE = "Aggregate aliases must be unique across dimensions an
 EMPTY_ALIAS_MESSAGE = "Aggregate aliases must not be empty"
 NO_DIMENSIONS_MESSAGE = "An aggregate query must group by at least one dimension"
 ENTITY_MISMATCH_MESSAGE = "Aggregate plan and queryset describe different entities"
+BUCKETING_NEEDS_TIMEZONE_MESSAGE = "A bucketed dimension must name the timezone it is bucketed in"
+ALIAS_SHADOWS_FIELD_MESSAGE = "A computed dimension may not be aliased to a model field name"
 
 
 def date_range_exceeded_message(max_days: int) -> str:
