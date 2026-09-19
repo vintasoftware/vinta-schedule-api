@@ -171,12 +171,19 @@ def _iter_fields(selections: Sequence[Selection]) -> Iterator[SelectedField]:
             yield from _iter_fields(selection.selections)
 
 
-def _root_selection(info: strawberry.Info) -> SelectedField | None:
-    """The document's selection of the aggregate field currently resolving."""
+def _root_selections(info: strawberry.Info) -> list[Selection]:
+    """Every selection made on the aggregate field currently resolving.
+
+    GraphQL merges field nodes that share a response key, so a document may name
+    this field more than once and expect one merged result object. All of those
+    nodes arrive here, and all of their selections count — taking only the first
+    would drop metrics the caller explicitly asked for.
+    """
+    merged: list[Selection] = []
     for selection in info.selected_fields:
         if isinstance(selection, SelectedField):
-            return selection
-    return None
+            merged.extend(selection.selections)
+    return merged
 
 
 def _concat_options(selection: SelectedField) -> tuple[str, bool]:
@@ -203,6 +210,13 @@ def collect_metrics(
     the query is already scanning, ``count`` is non-null on every row type, and
     a plan whose document selected only the group key would otherwise have no
     metrics at all.
+
+    A field name that appears more than once is **merged**, not skipped. GraphQL
+    merges selection sets sharing a response key, so ``a: title { concat }`` next
+    to ``b: title { min }``, or one ``title { concat }`` beside a fragment adding
+    ``title { min }``, is a single ``title`` in the response carrying both. Taking
+    only the first occurrence would hand the caller a null for a metric it named
+    — indistinguishable from "no rows", and wrong.
     """
     registration = get_registration(entity)
     metrics: list[MetricSpec] = [
@@ -217,13 +231,18 @@ def collect_metrics(
         for name in registration.relation_counts
     }
 
-    selected: list[SelectedMetric] = []
+    # Keyed by registry name and ordered by first appearance, so a repeat of a
+    # field accumulates into the entry the first one opened.
+    kinds: dict[str, FieldKind] = {}
+    op_aliases: dict[str, dict[AggregateOp, str]] = {}
+    concat_aliases: dict[str, dict[tuple[str, bool], str]] = {}
     relation_counts: dict[str, str] = {}
 
     for selection in _iter_fields(selections):
         if selection.name in relation_fields:
             relation_name = relation_fields[selection.name]
             if relation_name in relation_counts:
+                # Already counted; a second mention reads the same column.
                 continue
             alias = f"metric_{relation_name}_count"
             relation_counts[relation_name] = alias
@@ -235,14 +254,11 @@ def collect_metrics(
             # ``key``, ``count``, ``__typename`` or a field this entity does not
             # aggregate. The schema already refused anything genuinely unknown.
             continue
-        if any(one.field_name == field_name for one in selected):
-            # The same aggregate selected twice (two aliases, or a fragment that
-            # repeats it) is one set of columns, not two.
-            continue
 
         registered = registration.metric_field(field_name)
-        op_aliases: dict[AggregateOp, str] = {}
-        concat_aliases: dict[tuple[str, bool], str] = {}
+        kinds.setdefault(field_name, registered.kind)
+        field_ops = op_aliases.setdefault(field_name, {})
+        field_concats = concat_aliases.setdefault(field_name, {})
 
         for sub in _iter_fields(selection.selections):
             op = OP_FOR_SELECTION.get(sub.name)
@@ -250,10 +266,11 @@ def collect_metrics(
                 continue
             if op is AggregateOp.CONCAT:
                 options = _concat_options(sub)
-                if options in concat_aliases:
+                if options in field_concats:
+                    # The same separator and distinctness is the same column.
                     continue
-                alias = f"metric_{field_name}_concat_{len(concat_aliases)}"
-                concat_aliases[options] = alias
+                alias = f"metric_{field_name}_concat_{len(field_concats)}"
+                field_concats[options] = alias
                 metrics.append(
                     MetricSpec(
                         alias=alias,
@@ -263,23 +280,24 @@ def collect_metrics(
                     )
                 )
                 continue
-            if op in op_aliases:
+            if op in field_ops:
                 continue
             alias = f"metric_{field_name}_{op.value.lower()}"
-            op_aliases[op] = alias
+            field_ops[op] = alias
             metrics.append(MetricSpec(alias=alias, field_path=field_name, op=op))
 
-        if op_aliases or concat_aliases:
-            selected.append(
-                SelectedMetric(
-                    field_name=field_name,
-                    kind=registered.kind,
-                    op_aliases=op_aliases,
-                    concat_aliases=concat_aliases,
-                )
-            )
+    selected = tuple(
+        SelectedMetric(
+            field_name=field_name,
+            kind=kinds[field_name],
+            op_aliases=op_aliases[field_name],
+            concat_aliases=concat_aliases[field_name],
+        )
+        for field_name in kinds
+        if op_aliases[field_name] or concat_aliases[field_name]
+    )
 
-    return tuple(metrics), RowShape(metrics=tuple(selected), relation_counts=relation_counts)
+    return tuple(metrics), RowShape(metrics=selected, relation_counts=relation_counts)
 
 
 # ---------------------------------------------------------------------------
@@ -287,33 +305,43 @@ def collect_metrics(
 # ---------------------------------------------------------------------------
 
 
+def _operation_value(metric: SelectedMetric, op: AggregateOp, row: Mapping[str, Any]) -> Any:
+    """The row value for one operation, or ``None`` when it was not selected.
+
+    An operation the document did not name has no alias and therefore no column,
+    so there is nothing to read rather than a value that happens to be null.
+    """
+    alias = metric.op_aliases.get(op)
+    return row.get(alias) if alias is not None else None
+
+
 def _aggregate_value(metric: SelectedMetric, row: Mapping[str, Any]) -> object:
     """The aggregate object one selected field comes back as."""
     match metric.kind:
         case FieldKind.NUMERIC:
             return NumericAggregate(
-                sum=row.get(metric.op_aliases.get(AggregateOp.SUM, "")),
-                avg=row.get(metric.op_aliases.get(AggregateOp.AVG, "")),
-                min=row.get(metric.op_aliases.get(AggregateOp.MIN, "")),
-                max=row.get(metric.op_aliases.get(AggregateOp.MAX, "")),
+                sum=_operation_value(metric, AggregateOp.SUM, row),
+                avg=_operation_value(metric, AggregateOp.AVG, row),
+                min=_operation_value(metric, AggregateOp.MIN, row),
+                max=_operation_value(metric, AggregateOp.MAX, row),
             )
         case FieldKind.STRING:
             return StringAggregate(
-                min=row.get(metric.op_aliases.get(AggregateOp.MIN, "")),
-                max=row.get(metric.op_aliases.get(AggregateOp.MAX, "")),
+                min=_operation_value(metric, AggregateOp.MIN, row),
+                max=_operation_value(metric, AggregateOp.MAX, row),
                 concat_values={
                     options: row.get(alias) for options, alias in metric.concat_aliases.items()
                 },
             )
         case FieldKind.TEMPORAL:
             return DateTimeAggregate(
-                min=row.get(metric.op_aliases.get(AggregateOp.MIN, "")),
-                max=row.get(metric.op_aliases.get(AggregateOp.MAX, "")),
+                min=_operation_value(metric, AggregateOp.MIN, row),
+                max=_operation_value(metric, AggregateOp.MAX, row),
             )
         case FieldKind.BOOLEAN:
             return BooleanAggregate(
-                true_count=row.get(metric.op_aliases.get(AggregateOp.TRUE_COUNT, "")) or 0,
-                false_count=row.get(metric.op_aliases.get(AggregateOp.FALSE_COUNT, "")) or 0,
+                true_count=_operation_value(metric, AggregateOp.TRUE_COUNT, row) or 0,
+                false_count=_operation_value(metric, AggregateOp.FALSE_COUNT, row) or 0,
             )
 
 
@@ -446,8 +474,7 @@ def _resolve_aggregate(
     tzinfo = resolve_timezone(timezone)
     resolved = resolve_group_by_inputs(entity, group_by, tzinfo)
 
-    selection = _root_selection(info)
-    metrics, shape = collect_metrics(entity, selection.selections if selection else [])
+    metrics, shape = collect_metrics(entity, _root_selections(info))
 
     plan = AggregateQueryPlan(
         entity=entity,

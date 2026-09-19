@@ -74,6 +74,17 @@ def _rows_by_calendar(rows: list[dict]) -> dict[int, dict]:
     return {row["key"]["calendarId"]: row for row in rows}
 
 
+def _grouped_statement(captured: CaptureQueriesContext) -> str:
+    """The one grouped statement the aggregate ran, out of a request's queries."""
+    grouped = [
+        query["sql"]
+        for query in captured.captured_queries
+        if "GROUP BY" in query["sql"].upper() and CalendarEvent._meta.db_table in query["sql"]
+    ]
+    assert len(grouped) == 1, grouped
+    return grouped[0]
+
+
 @pytest.fixture
 def calendar_a(organization):
     return make_calendar(organization, "Calendar A")
@@ -133,10 +144,16 @@ class TestCalendarEventAggregate:
         }
         assert rows[calendar_b.id]["title"]["concat"] == "Delta"
 
-    def test_an_unselected_aggregate_is_null_rather_than_zero(
+    def test_only_the_selected_aggregates_reach_the_sql(
         self, api_client, organization, calendar_a, calendar_b, events
     ):
-        """Only what the document asked for is computed."""
+        """An unselected aggregate is not computed — visible only in the statement.
+
+        The response cannot show this: a field the document did not select is
+        never read off the row in the first place. So the assertion is on the
+        SQL, where an unasked-for ``AVG`` would be an extra column scanned for
+        nobody.
+        """
         query = """
         query Sparse($filter: CalendarEventAggregateFilterInput!) {
             calendarEventAggregate(
@@ -152,11 +169,19 @@ class TestCalendarEventAggregate:
         """
         credentials = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
 
-        response = post_graphql(api_client, query, credentials, event_window_variables())
+        with CaptureQueriesContext(connection) as captured:
+            response = post_graphql(api_client, query, credentials, event_window_variables())
 
         rows = assert_ok(response)["calendarEventAggregate"]
         assert all(row["durationMinutes"]["sum"] is not None for row in rows)
         assert all(row["title"]["min"] is not None for row in rows)
+
+        sql = _grouped_statement(captured).upper()
+        assert "SUM(" in sql
+        assert "MIN(" in sql
+        assert "AVG(" not in sql
+        assert "MAX(" not in sql
+        assert "STRING_AGG(" not in sql
 
     def test_grouped_by_day_in_a_named_timezone(
         self, api_client, organization, calendar_a, calendar_b, events
@@ -288,6 +313,177 @@ class TestCalendarEventAggregate:
         response = post_graphql(api_client, EVENTS_BY_CALENDAR, credentials, variables)
 
         assert assert_ok(response)["calendarEventAggregate"] == []
+
+
+@pytest.mark.django_db
+class TestMergedSelectionSets:
+    """GraphQL merges selections that share a response key; so must the reader.
+
+    Every case here used to return null for a metric the document named — which
+    a caller cannot tell apart from "no rows". A codegen'd client that keeps
+    shared fields in a fragment and adds one inline hits the fragment case as a
+    matter of course.
+    """
+
+    def test_two_aliases_of_the_same_field_both_get_their_aggregate(
+        self, api_client, organization, calendar_a, calendar_b, events
+    ):
+        query = """
+        query Aliased($filter: CalendarEventAggregateFilterInput!) {
+            calendarEventAggregate(
+                filter: $filter
+                groupBy: [{scalar: CALENDAR_ID}]
+                timezone: "UTC"
+            ) {
+                key { calendarId }
+                a: title { concat(separator: "; ") }
+                b: title { min }
+            }
+        }
+        """
+        credentials = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+
+        response = post_graphql(api_client, query, credentials, event_window_variables())
+
+        rows = _rows_by_calendar(assert_ok(response)["calendarEventAggregate"])
+        assert rows[calendar_a.id]["a"] == {"concat": "Alpha; Bravo; Charlie"}
+        assert rows[calendar_a.id]["b"] == {"min": "Alpha"}
+
+    def test_a_fragment_adds_to_a_field_selected_inline(
+        self, api_client, organization, calendar_a, calendar_b, events
+    ):
+        query = """
+        query WithFragment($filter: CalendarEventAggregateFilterInput!) {
+            calendarEventAggregate(
+                filter: $filter
+                groupBy: [{scalar: CALENDAR_ID}]
+                timezone: "UTC"
+            ) {
+                key { calendarId }
+                title { concat(separator: "; ") }
+                ...TitleBounds
+            }
+        }
+        fragment TitleBounds on CalendarEventAggregateRow {
+            title { min max }
+        }
+        """
+        credentials = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+
+        response = post_graphql(api_client, query, credentials, event_window_variables())
+
+        rows = _rows_by_calendar(assert_ok(response)["calendarEventAggregate"])
+        assert rows[calendar_a.id]["title"] == {
+            "concat": "Alpha; Bravo; Charlie",
+            "min": "Alpha",
+            "max": "Charlie",
+        }
+
+    def test_an_inline_fragment_adds_to_a_field_selected_inline(
+        self, api_client, organization, calendar_a, calendar_b, events
+    ):
+        query = """
+        query WithInlineFragment($filter: CalendarEventAggregateFilterInput!) {
+            calendarEventAggregate(
+                filter: $filter
+                groupBy: [{scalar: CALENDAR_ID}]
+                timezone: "UTC"
+            ) {
+                key { calendarId }
+                durationMinutes { sum }
+                ... on CalendarEventAggregateRow {
+                    durationMinutes { avg }
+                }
+            }
+        }
+        """
+        credentials = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+
+        response = post_graphql(api_client, query, credentials, event_window_variables())
+
+        rows = _rows_by_calendar(assert_ok(response)["calendarEventAggregate"])
+        assert rows[calendar_a.id]["durationMinutes"] == {"sum": 180.0, "avg": 60.0}
+
+    def test_two_concats_with_different_separators_are_two_columns(
+        self, api_client, organization, calendar_a, calendar_b, events
+    ):
+        """``concat`` carries arguments, so the arguments are part of its identity."""
+        query = """
+        query TwoConcats($filter: CalendarEventAggregateFilterInput!) {
+            calendarEventAggregate(
+                filter: $filter
+                groupBy: [{scalar: CALENDAR_ID}]
+                timezone: "UTC"
+            ) {
+                key { calendarId }
+                semicolons: title { concat(separator: "; ") }
+                commas: title { concat(separator: ",") }
+            }
+        }
+        """
+        credentials = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+
+        response = post_graphql(api_client, query, credentials, event_window_variables())
+
+        rows = _rows_by_calendar(assert_ok(response)["calendarEventAggregate"])
+        assert rows[calendar_a.id]["semicolons"] == {"concat": "Alpha; Bravo; Charlie"}
+        assert rows[calendar_a.id]["commas"] == {"concat": "Alpha,Bravo,Charlie"}
+
+    def test_the_same_root_field_named_twice_merges_into_one_result(
+        self, api_client, organization, calendar_a, calendar_b, events
+    ):
+        """Same response key, so GraphQL merges them — and both halves must run."""
+        query = """
+        query MergedRoot($filter: CalendarEventAggregateFilterInput!) {
+            calendarEventAggregate(
+                filter: $filter
+                groupBy: [{scalar: CALENDAR_ID}]
+                timezone: "UTC"
+            ) {
+                key { calendarId }
+                count
+            }
+            calendarEventAggregate(
+                filter: $filter
+                groupBy: [{scalar: CALENDAR_ID}]
+                timezone: "UTC"
+            ) {
+                title { min }
+            }
+        }
+        """
+        credentials = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+
+        response = post_graphql(api_client, query, credentials, event_window_variables())
+
+        rows = _rows_by_calendar(assert_ok(response)["calendarEventAggregate"])
+        assert rows[calendar_a.id]["count"] == 3
+        assert rows[calendar_a.id]["title"] == {"min": "Alpha"}
+
+    def test_a_repeated_selection_does_not_duplicate_the_column(
+        self, api_client, organization, calendar_a, calendar_b, events
+    ):
+        """Merging must not turn one aggregate into two identical ones."""
+        query = """
+        query Repeated($filter: CalendarEventAggregateFilterInput!) {
+            calendarEventAggregate(
+                filter: $filter
+                groupBy: [{scalar: CALENDAR_ID}]
+                timezone: "UTC"
+            ) {
+                a: durationMinutes { sum }
+                b: durationMinutes { sum }
+            }
+        }
+        """
+        credentials = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+
+        with CaptureQueriesContext(connection) as captured:
+            response = post_graphql(api_client, query, credentials, event_window_variables())
+
+        rows = assert_ok(response)["calendarEventAggregate"]
+        assert all(row["a"] == row["b"] for row in rows)
+        assert _grouped_statement(captured).upper().count("SUM(") == 1
 
 
 @pytest.mark.django_db
