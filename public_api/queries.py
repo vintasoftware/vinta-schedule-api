@@ -67,7 +67,14 @@ from organizations.models import (
     OrganizationMembership,
     resolve_branding_for_display,
 )
+from public_api.aggregations.fields import build_aggregate_field
+from public_api.aggregations.plan import AggregatableEntity
 from public_api.capabilities import assert_org_can_invite
+from public_api.constants import (
+    LIMIT_OUT_OF_RANGE_MESSAGE,
+    MAX_PAGE_SIZE,
+    OFFSET_NEGATIVE_MESSAGE,
+)
 from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
@@ -201,9 +208,9 @@ def _vinta_default_branding(request=None) -> PublicBrandingResult:
 
 def _slice_qs[TQuerySet: QuerySet](qs: TQuerySet, offset: int, limit: int) -> TQuerySet:
     if offset < 0:
-        raise GraphQLError("Offset must be non-negative")
-    if limit <= 0 or limit > 100:
-        raise GraphQLError("Limit must be between 1 and 100")
+        raise GraphQLError(OFFSET_NEGATIVE_MESSAGE)
+    if limit <= 0 or limit > MAX_PAGE_SIZE:
+        raise GraphQLError(LIMIT_OUT_OF_RANGE_MESSAGE)
     return qs[offset : offset + limit]
 
 
@@ -304,6 +311,18 @@ class DateTimeRangeInput:
 
 @strawberry.type
 class Query:
+    # The six aggregate root fields. Each is built from the registry by one
+    # factory, so they share a resolver body, their cost guards and their
+    # permission classes rather than each re-deriving them. Each requires the
+    # same resource as the entity's list field above, so an aggregate discloses
+    # nothing a caller could not already page for.
+    calendar_event_aggregate = build_aggregate_field(AggregatableEntity.CALENDAR_EVENT)
+    available_time_aggregate = build_aggregate_field(AggregatableEntity.AVAILABLE_TIME)
+    blocked_time_aggregate = build_aggregate_field(AggregatableEntity.BLOCKED_TIME)
+    appointment_type_aggregate = build_aggregate_field(AggregatableEntity.APPOINTMENT_TYPE)
+    calendar_aggregate = build_aggregate_field(AggregatableEntity.CALENDAR)
+    calendar_pool_aggregate = build_aggregate_field(AggregatableEntity.CALENDAR_POOL)
+
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def calendars(
         self,

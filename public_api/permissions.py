@@ -29,6 +29,16 @@ class OrganizationResourceAccess(BasePermission):
     FIELD_TO_RESOURCE_MAPPING: ClassVar[dict[str, str]] = {
         "calendars": PublicAPIResources.CALENDAR,
         "calendarEvents": PublicAPIResources.CALENDAR_EVENT,
+        # Aggregate root fields. Each maps to the SAME resource as the entity's
+        # list field, deliberately: the aggregate reads the same rows the list
+        # field already exposes, so it grants no new reach and needs no new
+        # grant path. A dedicated *_ANALYTICS resource would be exactly that.
+        "calendarEventAggregate": PublicAPIResources.CALENDAR_EVENT,
+        "availableTimeAggregate": PublicAPIResources.AVAILABLE_TIME,
+        "blockedTimeAggregate": PublicAPIResources.BLOCKED_TIME,
+        "appointmentTypeAggregate": PublicAPIResources.APPOINTMENT_TYPE,
+        "calendarAggregate": PublicAPIResources.CALENDAR,
+        "calendarPoolAggregate": PublicAPIResources.CALENDAR_POOL,
         "eventIcs": PublicAPIResources.CALENDAR_EVENT,
         "blockedTimes": PublicAPIResources.BLOCKED_TIME,
         "availableTimes": PublicAPIResources.AVAILABLE_TIME,

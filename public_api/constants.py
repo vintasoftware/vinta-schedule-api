@@ -5,6 +5,20 @@ from django.db.models import TextChoices
 
 MAX_AGGREGATE_RANGE = datetime.timedelta(days=366)
 
+#: Page size cap shared by every paged field on this surface, list and aggregate
+#: alike. Defined here rather than in ``queries.py`` so ``_slice_qs`` and the
+#: aggregation executor cannot drift apart on either the bound or its wording.
+MAX_PAGE_SIZE = 100
+LIMIT_OUT_OF_RANGE_MESSAGE = f"Limit must be between 1 and {MAX_PAGE_SIZE}"
+OFFSET_NEGATIVE_MESSAGE = "Offset must be non-negative"
+
+#: How long one aggregate statement may run before Postgres cancels it, in
+#: milliseconds. A grouped scan over a large tenant's history is the most
+#: expensive thing this API can do, and a timeout is the guard that bounds the
+#: damage a query the other three guards still let through can cause. Override
+#: with ``PUBLIC_API_AGGREGATE_STATEMENT_TIMEOUT_MS`` in settings.
+AGGREGATE_STATEMENT_TIMEOUT_MS = 10_000
+
 
 class PublicAPIResources(TextChoices):
     """
