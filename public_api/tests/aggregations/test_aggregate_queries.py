@@ -640,6 +640,87 @@ class TestTheOtherFiveEntities:
 
 
 @pytest.mark.django_db
+class TestOmittingTheOptionalArguments:
+    """``having`` and ``orderBy`` are additive: leaving them out changes nothing.
+
+    Every other test in this file was written before either argument existed and
+    still passes unchanged, which is most of the evidence. These assert the
+    remaining part — that supplying them as explicit nulls, or as the empty
+    objects a codegen'd client sends, is also the same query.
+    """
+
+    def test_a_query_with_neither_argument_matches_a_query_that_nulls_them(
+        self, api_client, organization, calendar_a, calendar_b, events
+    ):
+        with_arguments = """
+        query Nulled($filter: CalendarEventAggregateFilterInput!) {
+            calendarEventAggregate(
+                filter: $filter
+                groupBy: [{scalar: CALENDAR_ID}]
+                timezone: "UTC"
+                having: null
+                orderBy: null
+            ) {
+                key { calendarId }
+                count
+                durationMinutes { sum avg min max }
+            }
+        }
+        """
+        credentials = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+
+        without = assert_ok(
+            post_graphql(api_client, EVENTS_BY_CALENDAR, credentials, event_window_variables())
+        )
+        nulled = assert_ok(
+            post_graphql(api_client, with_arguments, credentials, event_window_variables())
+        )
+
+        assert nulled == without
+
+    def test_an_empty_having_object_does_not_change_the_result(
+        self, api_client, organization, calendar_a, calendar_b, events
+    ):
+        query = """
+        query EmptyHaving($filter: CalendarEventAggregateFilterInput!) {
+            calendarEventAggregate(
+                filter: $filter
+                groupBy: [{scalar: CALENDAR_ID}]
+                timezone: "UTC"
+                having: {}
+                orderBy: []
+            ) {
+                key { calendarId }
+                count
+                durationMinutes { sum avg min max }
+            }
+        }
+        """
+        credentials = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+
+        without = assert_ok(
+            post_graphql(api_client, EVENTS_BY_CALENDAR, credentials, event_window_variables())
+        )
+        empty = assert_ok(post_graphql(api_client, query, credentials, event_window_variables()))
+
+        assert empty == without
+
+    def test_the_statement_is_unchanged_too(
+        self, api_client, organization, calendar_a, calendar_b, events
+    ):
+        """Not just the same rows — the same SQL, with no HAVING bolted on."""
+        credentials = org_wide_token(organization, [PublicAPIResources.CALENDAR_EVENT])
+
+        with CaptureQueriesContext(connection) as captured:
+            post_graphql(api_client, EVENTS_BY_CALENDAR, credentials, event_window_variables())
+
+        sql = _grouped_statement(captured).upper()
+        assert "HAVING" not in sql
+        # One ORDER BY term, the group key, exactly as Phase 3 emitted it.
+        assert sql.split("ORDER BY")[1].count(",") == 0
+
+
+@pytest.mark.django_db
 class TestAggregatesAgreeWithTheListField:
     def test_the_count_matches_the_rows_a_list_read_would_return(
         self, api_client, organization, calendar_a, calendar_b, events

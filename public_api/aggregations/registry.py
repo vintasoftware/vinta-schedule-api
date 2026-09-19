@@ -96,6 +96,95 @@ OPERATIONS_FOR_KIND: Mapping[FieldKind, tuple[AggregateOp, ...]] = MappingProxyT
 #: Alias every group carries. Not a registered field — every aggregate row has it.
 COUNT_METRIC_NAME = "count"
 
+#: Every metric alias starts here, so no alias can collide with a dimension
+#: alias (a registry name, or one suffixed by a granularity) or a model field.
+METRIC_ALIAS_PREFIX = "metric_"
+
+#: The row-dict key the group's own ``COUNT(id)`` lands under.
+COUNT_ALIAS = f"{METRIC_ALIAS_PREFIX}{COUNT_METRIC_NAME}"
+
+
+def metric_alias(field_name: str, op: AggregateOp) -> str:
+    """The row-dict key one (field, operation) pair is computed under.
+
+    Canonical, so the selection set, a HAVING clause and an order-by all land on
+    the same column instead of annotating the same aggregate two or three times
+    under different names.
+    """
+    return f"{METRIC_ALIAS_PREFIX}{field_name}_{op.value.lower()}"
+
+
+def relation_count_alias(relation_name: str) -> str:
+    """The row-dict key a relation count is computed under."""
+    return f"{METRIC_ALIAS_PREFIX}{relation_name}_count"
+
+
+def concat_alias(field_name: str, index: int) -> str:
+    """The row-dict key one ``concat`` selection is computed under.
+
+    Indexed rather than named after its arguments: ``concat`` carries a
+    separator and a distinctness flag, and two selections differing in either
+    are two different columns on the same field.
+    """
+    return f"{METRIC_ALIAS_PREFIX}{field_name}_concat_{index}"
+
+
+@dataclass(frozen=True, slots=True)
+class MetricReference:
+    """One metric a HAVING clause or an order-by may name.
+
+    The referenceable set is deliberately the numbers: the group's own count,
+    the four operations over each numeric field, and each relation count. A
+    string or date-time aggregate is selectable but not referenceable — the
+    comparisons this engine offers compare numbers, and offering an ordering a
+    HAVING cannot express would be two notions of "a metric" rather than one.
+    """
+
+    name: str
+    field_name: str
+    op: AggregateOp
+    alias: str
+
+    def to_metric(self) -> MetricSpec:
+        """The ``MetricSpec`` that computes this reference's column."""
+        return MetricSpec(alias=self.alias, field_path=self.field_name, op=self.op)
+
+
+def referenceable_metrics(entity: AggregatableEntity) -> Mapping[str, MetricReference]:
+    """Every metric of an entity that a HAVING clause or an order-by may name.
+
+    Keyed by the snake_case name the GraphQL enums carry in upper case.
+    """
+    registration = get_registration(entity)
+    references: dict[str, MetricReference] = {
+        COUNT_METRIC_NAME: MetricReference(
+            name=COUNT_METRIC_NAME,
+            field_name=COUNT_METRIC_NAME,
+            op=AggregateOp.COUNT,
+            alias=COUNT_ALIAS,
+        )
+    }
+    for field_name, registered in registration.aggregatable.items():
+        if registered.kind is not FieldKind.NUMERIC:
+            continue
+        for op in registered.operations:
+            name = f"{field_name}_{op.value.lower()}"
+            references[name] = MetricReference(
+                name=name,
+                field_name=field_name,
+                op=op,
+                alias=metric_alias(field_name, op),
+            )
+    for relation_name in registration.relation_counts:
+        name = f"{relation_name}_count"
+        references[name] = MetricReference(
+            name=name,
+            field_name=relation_name,
+            op=AggregateOp.COUNT,
+            alias=relation_count_alias(relation_name),
+        )
+    return MappingProxyType(references)
+
 
 def _minutes_between(start_path: str, end_path: str) -> models.Expression:
     """Minutes from ``start_path`` to ``end_path`` as a float, computed in SQL.

@@ -64,6 +64,17 @@ from public_api.aggregations.filters import (
     CalendarEventAggregateFilterInput,
     CalendarPoolAggregateFilterInput,
 )
+from public_api.aggregations.having import (
+    HAVING_INPUT_TYPES,
+    AnyHavingInput,
+    having_is_empty,
+    resolve_having,
+)
+from public_api.aggregations.ordering import (
+    ORDER_INPUT_TYPES,
+    AnyOrderInput,
+    resolve_order_by,
+)
 from public_api.aggregations.plan import (
     AggregatableEntity,
     AggregateOp,
@@ -72,9 +83,13 @@ from public_api.aggregations.plan import (
     MetricSpec,
 )
 from public_api.aggregations.registry import (
+    COUNT_ALIAS,
     COUNT_METRIC_NAME,
     FieldKind,
+    concat_alias,
     get_registration,
+    metric_alias,
+    relation_count_alias,
 )
 from public_api.aggregations.rows import AGGREGATE_ROW_TYPES, relation_count_field_name
 from public_api.aggregations.timezone import resolve_timezone
@@ -117,9 +132,10 @@ OP_FOR_SELECTION: Mapping[str, AggregateOp] = {
 
 #: Row fields that are not metrics: the group key, and the group's own count,
 #: which is always computed whether or not the document asked for it.
+#: ``COUNT_ALIAS`` and its siblings live in the registry, so a HAVING clause and
+#: an order-by name the same columns the selection set does.
 GROUP_KEY_SELECTION = "key"
 COUNT_SELECTION = "count"
-COUNT_ALIAS = "metric_count"
 
 #: Scalar filter attributes safe to record on the plan's ``FilterBounds``. Record
 #: ids only — a filter's free-text ``name`` never goes on a plan, because
@@ -244,7 +260,7 @@ def collect_metrics(
             if relation_name in relation_counts:
                 # Already counted; a second mention reads the same column.
                 continue
-            alias = f"metric_{relation_name}_count"
+            alias = relation_count_alias(relation_name)
             relation_counts[relation_name] = alias
             metrics.append(MetricSpec(alias=alias, field_path=relation_name, op=AggregateOp.COUNT))
             continue
@@ -269,7 +285,7 @@ def collect_metrics(
                 if options in field_concats:
                     # The same separator and distinctness is the same column.
                     continue
-                alias = f"metric_{field_name}_concat_{len(field_concats)}"
+                alias = concat_alias(field_name, len(field_concats))
                 field_concats[options] = alias
                 metrics.append(
                     MetricSpec(
@@ -282,7 +298,7 @@ def collect_metrics(
                 continue
             if op in field_ops:
                 continue
-            alias = f"metric_{field_name}_{op.value.lower()}"
+            alias = metric_alias(field_name, op)
             field_ops[op] = alias
             metrics.append(MetricSpec(alias=alias, field_path=field_name, op=op))
 
@@ -453,12 +469,29 @@ def _base_queryset(entity: AggregatableEntity, organization: Organization) -> mo
     )
 
 
+def _merge_metrics(*groups: Sequence[MetricSpec]) -> tuple[MetricSpec, ...]:
+    """One metric per alias, in first-seen order.
+
+    A clause may name a metric the document did not select, and a document may
+    select one no clause names. Both end up in the ``SELECT``; the aliases are
+    canonical, so naming the same aggregate twice is one column rather than a
+    duplicate the plan's uniqueness check would reject.
+    """
+    merged: dict[str, MetricSpec] = {}
+    for group in groups:
+        for metric in group:
+            merged.setdefault(metric.alias, metric)
+    return tuple(merged.values())
+
+
 def _resolve_aggregate(
     entity: AggregatableEntity,
     info: strawberry.Info,
     filter_input: Any,
     group_by: Sequence[AnyGroupByInput],
     timezone: str,
+    having: AnyHavingInput | None,
+    order_by: Sequence[AnyOrderInput] | None,
     limit: int,
     offset: int,
 ) -> list[Any]:
@@ -474,13 +507,21 @@ def _resolve_aggregate(
     tzinfo = resolve_timezone(timezone)
     resolved = resolve_group_by_inputs(entity, group_by, tzinfo)
 
-    metrics, shape = collect_metrics(entity, _root_selections(info))
+    selected_metrics, shape = collect_metrics(entity, _root_selections(info))
+    having_spec, having_metrics = resolve_having(entity, having)
+    if having_spec is not None and having_is_empty(having_spec):
+        # ``having: {}`` is a legal document meaning "no constraint". Dropping it
+        # here keeps such a query identical to one that omitted the argument.
+        having_spec = None
+    order_specs, order_metrics = resolve_order_by(entity, order_by, resolved)
 
     plan = AggregateQueryPlan(
         entity=entity,
         dimensions=tuple(one.dimension for one in resolved),
-        metrics=metrics,
+        metrics=_merge_metrics(selected_metrics, having_metrics, order_metrics),
         filter_bounds=_filter_bounds(filter_input),
+        having=having_spec,
+        order_by=order_specs,
         limit=limit,
         offset=offset,
     )
@@ -506,6 +547,8 @@ def _make_resolver(entity: AggregatableEntity) -> Callable[..., list[Any]]:
     """
     filter_type = FILTER_INPUT_TYPES[entity]
     group_by_type = GROUP_BY_INPUT_TYPES[entity]
+    having_type = HAVING_INPUT_TYPES[entity]
+    order_type = ORDER_INPUT_TYPES[entity]
     row_type = AGGREGATE_ROW_TYPES[entity]
 
     def resolver(
@@ -513,10 +556,14 @@ def _make_resolver(entity: AggregatableEntity) -> Callable[..., list[Any]]:
         filter_: Any,
         group_by: Any,
         timezone: str,
+        having: Any = None,
+        order_by: Any = None,
         limit: int = MAX_PAGE_SIZE,
         offset: int = 0,
     ) -> list[Any]:
-        return _resolve_aggregate(entity, info, filter_, group_by, timezone, limit, offset)
+        return _resolve_aggregate(
+            entity, info, filter_, group_by, timezone, having, order_by, limit, offset
+        )
 
     resolver.__name__ = f"{entity.value.lower()}_aggregate"
     resolver.__annotations__ = {
@@ -526,6 +573,10 @@ def _make_resolver(entity: AggregatableEntity) -> Callable[..., list[Any]]:
         "filter_": Annotated[filter_type, strawberry.argument(name="filter")],
         "group_by": list[group_by_type],  # type: ignore[valid-type]
         "timezone": str,
+        # Both optional: omitting them leaves the field behaving exactly as it
+        # did before this phase.
+        "having": having_type | None,
+        "order_by": list[order_type] | None,  # type: ignore[valid-type]
         "limit": int,
         "offset": int,
         "return": list[row_type],  # type: ignore[valid-type]

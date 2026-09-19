@@ -38,7 +38,9 @@ from public_api.aggregations.plan import (
     AggregatableEntity,
     AggregateOp,
     AggregateQueryPlan,
+    ComparisonOperator,
     DimensionSpec,
+    HavingCondition,
     HavingSpec,
     MetricSpec,
     OrderSpec,
@@ -708,6 +710,152 @@ class TestExecutorValidation:
 
 
 @pytest.mark.django_db
+class TestHavingAtThePlanLevel:
+    """A hand-built ``HavingSpec``, straight through the executor.
+
+    The resolver always annotates whatever a clause names, so the guard against
+    a clause naming an unannotated column is only reachable from here.
+    """
+
+    def test_a_condition_filters_the_groups(self, organization, calendar_a, calendar_b, events):
+        plan = AggregateQueryPlan(
+            entity=AggregatableEntity.CALENDAR_EVENT,
+            dimensions=(build_dimension(AggregatableEntity.CALENDAR_EVENT, "calendar_id"),),
+            metrics=(
+                build_metric(
+                    AggregatableEntity.CALENDAR_EVENT, "count", AggregateOp.COUNT, alias="count"
+                ),
+            ),
+            having=HavingSpec(
+                conditions=(
+                    HavingCondition(alias="count", operator=ComparisonOperator.GT, value=1.0),
+                )
+            ),
+        )
+
+        with organization_context(organization):
+            rows = execute_aggregate_plan(plan, CalendarEvent.objects.all())
+
+        assert rows == [{"calendar_id": calendar_a.id, "count": 3}]
+
+    def test_an_or_branch_widens_what_a_single_condition_would_keep(
+        self, organization, calendar_a, calendar_b, events
+    ):
+        plan = AggregateQueryPlan(
+            entity=AggregatableEntity.CALENDAR_EVENT,
+            dimensions=(build_dimension(AggregatableEntity.CALENDAR_EVENT, "calendar_id"),),
+            metrics=(
+                build_metric(
+                    AggregatableEntity.CALENDAR_EVENT, "count", AggregateOp.COUNT, alias="count"
+                ),
+            ),
+            having=HavingSpec(
+                any_of=(
+                    HavingSpec(
+                        conditions=(
+                            HavingCondition(
+                                alias="count", operator=ComparisonOperator.GT, value=2.0
+                            ),
+                        )
+                    ),
+                    HavingSpec(
+                        conditions=(
+                            HavingCondition(
+                                alias="count", operator=ComparisonOperator.LT, value=2.0
+                            ),
+                        )
+                    ),
+                )
+            ),
+        )
+
+        with organization_context(organization):
+            rows = execute_aggregate_plan(plan, CalendarEvent.objects.all())
+
+        assert sorted(row["count"] for row in rows) == [1, 3]
+
+    def test_a_condition_naming_an_unannotated_alias_is_refused(self, organization):
+        plan = AggregateQueryPlan(
+            entity=AggregatableEntity.CALENDAR_EVENT,
+            dimensions=(build_dimension(AggregatableEntity.CALENDAR_EVENT, "calendar_id"),),
+            metrics=(
+                build_metric(
+                    AggregatableEntity.CALENDAR_EVENT, "count", AggregateOp.COUNT, alias="count"
+                ),
+            ),
+            having=HavingSpec(
+                conditions=(
+                    HavingCondition(
+                        alias="never_annotated", operator=ComparisonOperator.GT, value=1.0
+                    ),
+                )
+            ),
+        )
+
+        with organization_context(organization):
+            with pytest.raises(UnknownAggregateFieldError):
+                build_aggregate_queryset(plan, CalendarEvent.objects.all())
+
+    def test_an_empty_having_spec_filters_nothing(
+        self, organization, calendar_a, calendar_b, events
+    ):
+        plan = AggregateQueryPlan(
+            entity=AggregatableEntity.CALENDAR_EVENT,
+            dimensions=(build_dimension(AggregatableEntity.CALENDAR_EVENT, "calendar_id"),),
+            metrics=(
+                build_metric(
+                    AggregatableEntity.CALENDAR_EVENT, "count", AggregateOp.COUNT, alias="count"
+                ),
+            ),
+            having=HavingSpec(),
+        )
+
+        with organization_context(organization):
+            rows = execute_aggregate_plan(plan, CalendarEvent.objects.all())
+
+        assert sorted(row["count"] for row in rows) == [1, 3]
+
+
+@pytest.mark.django_db
+class TestOrderingTiebreak:
+    def test_an_explicit_ordering_still_ends_on_the_group_key(
+        self, organization, calendar_a, calendar_b, events
+    ):
+        """Two terms in the ORDER BY: what was asked for, then the key."""
+        plan = _event_plan(
+            build_metric(
+                AggregatableEntity.CALENDAR_EVENT, "count", AggregateOp.COUNT, alias="count"
+            ),
+            order_by=(OrderSpec(alias="count", descending=True),),
+        )
+
+        with organization_context(organization):
+            with CaptureQueriesContext(connection) as captured:
+                rows = execute_aggregate_plan(plan, CalendarEvent.objects.all())
+
+        assert [row["count"] for row in rows] == [3, 1]
+        order_clause = captured.captured_queries[0]["sql"].upper().split("ORDER BY")[1]
+        assert order_clause.count(",") == 1
+
+    def test_ordering_by_the_group_key_does_not_repeat_it(
+        self, organization, calendar_a, calendar_b, events
+    ):
+        plan = _event_plan(
+            build_metric(
+                AggregatableEntity.CALENDAR_EVENT, "count", AggregateOp.COUNT, alias="count"
+            ),
+            order_by=(OrderSpec(alias="calendar_id", descending=False),),
+        )
+
+        with organization_context(organization):
+            with CaptureQueriesContext(connection) as captured:
+                execute_aggregate_plan(plan, CalendarEvent.objects.all())
+
+        order_clause = captured.captured_queries[0]["sql"].upper().split("ORDER BY")[1]
+        assert order_clause.count(",") == 0
+
+
+@pytest.mark.django_db
 class TestFeaturesLaterPhasesBuild:
     """Plan features this phase does not execute must raise, not be dropped.
 
@@ -715,18 +863,6 @@ class TestFeaturesLaterPhasesBuild:
     confidently wrong number. The phase that implements the feature deletes the
     matching case.
     """
-
-    def test_a_having_clause_is_refused(self, organization):
-        plan = _event_plan(
-            build_metric(
-                AggregatableEntity.CALENDAR_EVENT, "count", AggregateOp.COUNT, alias="count"
-            ),
-            having=HavingSpec(),
-        )
-
-        with organization_context(organization):
-            with pytest.raises(NotImplementedError):
-                build_aggregate_queryset(plan, CalendarEvent.objects.all())
 
     def test_a_window_spec_is_refused(self, organization):
         plan = _event_plan(

@@ -12,6 +12,8 @@ from public_api.aggregations.fields import (
     FILTER_INPUT_TYPES,
     aggregate_field_name,
 )
+from public_api.aggregations.having import HAVING_INPUT_TYPES
+from public_api.aggregations.ordering import ORDER_INPUT_TYPES
 from public_api.aggregations.plan import AggregatableEntity
 from public_api.aggregations.registry import get_registration
 from public_api.aggregations.rows import AGGREGATE_ROW_TYPES, relation_count_field_name
@@ -54,12 +56,36 @@ class TestFieldsAreOnTheSchema:
     def test_the_field_takes_the_documented_arguments(self, entity, query_type):
         field = query_type.fields[aggregate_field_name(entity)]
 
-        assert set(field.args) == {"filter", "groupBy", "timezone", "limit", "offset"}
+        assert set(field.args) == {
+            "filter",
+            "groupBy",
+            "timezone",
+            "having",
+            "orderBy",
+            "limit",
+            "offset",
+        }
         # filter, groupBy and timezone are all non-null: an aggregate without a
         # bounded filter or without a dimension is the query this plan exists to
         # prevent, and "per day" has no answer without a clock.
         for required in ("filter", "groupBy", "timezone"):
             assert isinstance(field.args[required].type, GraphQLNonNull), required
+
+    @pytest.mark.parametrize("entity", ALL_ENTITIES)
+    def test_having_and_order_by_are_optional(self, entity, query_type):
+        """Omitting either leaves the field behaving as it did before Phase 4."""
+        field = query_type.fields[aggregate_field_name(entity)]
+
+        for optional in ("having", "orderBy"):
+            assert not isinstance(field.args[optional].type, GraphQLNonNull), optional
+            assert field.args[optional].default_value is None, optional
+
+    @pytest.mark.parametrize("entity", ALL_ENTITIES)
+    def test_having_and_order_by_take_the_entity_types(self, entity, query_type):
+        field = query_type.fields[aggregate_field_name(entity)]
+
+        assert HAVING_INPUT_TYPES[entity].__name__ in str(field.args["having"].type)
+        assert ORDER_INPUT_TYPES[entity].__name__ in str(field.args["orderBy"].type)
 
     @pytest.mark.parametrize("entity", ALL_ENTITIES)
     def test_limit_defaults_to_the_shared_page_size(self, entity, query_type):
