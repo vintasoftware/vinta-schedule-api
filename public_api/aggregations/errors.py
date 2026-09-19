@@ -22,9 +22,15 @@ error string is not an audited disclosure channel.
 
 from graphql import GraphQLError
 
+from public_api import constants
 
-LIMIT_OUT_OF_RANGE_MESSAGE = "Limit must be between 1 and 100"
-OFFSET_NEGATIVE_MESSAGE = "Offset must be non-negative"
+
+# The page-size bound and its two messages are shared with ``queries._slice_qs``
+# rather than restated, so the aggregate fields and the list fields cannot drift
+# apart on either the number or the wording.
+LIMIT_OUT_OF_RANGE_MESSAGE = constants.LIMIT_OUT_OF_RANGE_MESSAGE
+OFFSET_NEGATIVE_MESSAGE = constants.OFFSET_NEGATIVE_MESSAGE
+
 UNKNOWN_TIMEZONE_MESSAGE = "Unknown timezone"
 QUERY_TIMEOUT_MESSAGE = "Aggregate query exceeded its time budget"
 DUPLICATE_ALIAS_MESSAGE = "Aggregate aliases must be unique across dimensions and metrics"

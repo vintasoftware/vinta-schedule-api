@@ -58,9 +58,11 @@ from public_api.aggregations.registry import (
     get_registration,
 )
 from public_api.aggregations.types import TemporalGranularity
+from public_api.constants import MAX_PAGE_SIZE
 
 
-MAX_AGGREGATE_LIMIT = 100
+#: Shared with every paged field on this surface — see ``public_api.constants``.
+MAX_AGGREGATE_LIMIT = MAX_PAGE_SIZE
 
 #: What a dimension or a metric resolves to: a plain column reference, or a
 #: derived expression such as ``duration_minutes``.

@@ -19,12 +19,15 @@ The layers, in the order a request moves through them:
 * ``timezone`` — IANA name validation for the bucketing clock.
 * ``executor`` — the plan as ``.values(...).annotate(...)`` over a
   caller-supplied, already-scoped queryset.
+* ``rows`` — the per-entity ``*AggregateRow`` output types.
+* ``fields`` — the factory that builds the six root fields, their permission
+  classes and their cost guards from the registry.
 * ``types`` — the four aggregate output types and ``TemporalGranularity``.
 * ``errors`` — every message any phase of this feature shows a caller.
 
-Nothing here is reachable from the GraphQL schema yet; Phase 3 of
-``ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md`` registers the
-root fields.
+``public_api/queries.py`` hangs the six fields ``fields.build_aggregate_field``
+returns on ``Query``, and ``public_api/permissions.py`` maps each to the same
+resource as the entity's list field.
 """
 
 from public_api.aggregations.dimensions import (
@@ -64,6 +67,11 @@ from public_api.aggregations.executor import (
     build_aggregate_queryset,
     execute_aggregate_plan,
 )
+from public_api.aggregations.fields import (
+    FILTER_INPUT_TYPES,
+    aggregate_field_name,
+    build_aggregate_field,
+)
 from public_api.aggregations.filters import (
     AppointmentTypeAggregateFilterInput,
     AvailableTimeAggregateFilterInput,
@@ -100,6 +108,16 @@ from public_api.aggregations.registry import (
     build_metric,
     get_registration,
 )
+from public_api.aggregations.rows import (
+    AGGREGATE_ROW_TYPES,
+    AppointmentTypeAggregateRow,
+    AvailableTimeAggregateRow,
+    BlockedTimeAggregateRow,
+    CalendarAggregateRow,
+    CalendarEventAggregateRow,
+    CalendarPoolAggregateRow,
+    relation_count_field_name,
+)
 from public_api.aggregations.timezone import resolve_timezone
 from public_api.aggregations.types import (
     BooleanAggregate,
@@ -111,6 +129,8 @@ from public_api.aggregations.types import (
 
 
 __all__ = [
+    "AGGREGATE_ROW_TYPES",
+    "FILTER_INPUT_TYPES",
     "GROUP_BY_INPUT_TYPES",
     "GROUP_KEY_TYPES",
     "REGISTRY",
@@ -125,22 +145,28 @@ __all__ = [
     "AggregateTimeoutError",
     "AggregationError",
     "AppointmentTypeAggregateFilterInput",
+    "AppointmentTypeAggregateRow",
     "AppointmentTypeGroupByInput",
     "AppointmentTypeGroupKey",
     "AvailableTimeAggregateFilterInput",
+    "AvailableTimeAggregateRow",
     "AvailableTimeGroupByInput",
     "AvailableTimeGroupKey",
     "BlockedTimeAggregateFilterInput",
+    "BlockedTimeAggregateRow",
     "BlockedTimeGroupByInput",
     "BlockedTimeGroupKey",
     "BooleanAggregate",
     "CalendarAggregateFilterInput",
+    "CalendarAggregateRow",
     "CalendarEventAggregateFilterInput",
+    "CalendarEventAggregateRow",
     "CalendarEventGroupByInput",
     "CalendarEventGroupKey",
     "CalendarGroupByInput",
     "CalendarGroupKey",
     "CalendarPoolAggregateFilterInput",
+    "CalendarPoolAggregateRow",
     "CalendarPoolGroupByInput",
     "CalendarPoolGroupKey",
     "ComparisonOperator",
@@ -168,13 +194,16 @@ __all__ = [
     "WindowFrameSpec",
     "WindowFrameType",
     "WindowSpec",
+    "aggregate_field_name",
     "aggregate_type_for",
+    "build_aggregate_field",
     "build_aggregate_queryset",
     "build_dimension",
     "build_group_key",
     "build_metric",
     "execute_aggregate_plan",
     "get_registration",
+    "relation_count_field_name",
     "resolve_group_by",
     "resolve_group_by_inputs",
     "resolve_timezone",
