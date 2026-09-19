@@ -307,3 +307,176 @@ class TestScopedSystemUserFiltering:
 
         assert primary_calendar in filtered_qs
         assert other_calendar not in filtered_qs
+
+    def test_scoped_calendar_event_filter_respects_calendar_ownership(
+        self, auth_service, organization, primary_calendar
+    ):
+        """A scoped token's CalendarEvent filter only sees owned calendars."""
+        from calendar_integration.models import CalendarOwnership
+        from users.models import User
+
+        now = tz.now()
+        later = now + datetime.timedelta(days=10)
+        event_time = now + datetime.timedelta(days=2)
+
+        user = baker.make(User)
+        membership = OrganizationMembership.objects.create(
+            organization=organization,
+            user=user,
+            is_active=True,
+        )
+
+        other_calendar = baker.make(
+            Calendar, organization=organization, name="Other", external_id="other-scoped-cal"
+        )
+
+        owned_event = baker.make(
+            CalendarEvent,
+            calendar=primary_calendar,
+            start_time_tz_unaware=event_time,
+            timezone="UTC",
+            external_id="owned-event",
+        )
+        unowned_event = baker.make(
+            CalendarEvent,
+            calendar=other_calendar,
+            start_time_tz_unaware=event_time,
+            timezone="UTC",
+            external_id="unowned-event",
+        )
+
+        CalendarOwnership.objects.create(
+            calendar=primary_calendar,
+            membership=membership,
+        )
+
+        system_user, _ = auth_service.create_system_user(
+            integration_name="scoped-test",
+            organization=organization,
+            scoped_to_membership=membership,
+            bypass_limits=True,
+        )
+
+        filter_input = CalendarEventAggregateFilterInput(
+            start_datetime=now,
+            end_datetime=later,
+        )
+        qs = CalendarEvent.objects.filter_by_organization(organization.id)
+        filtered_qs = filter_input.apply(qs, organization, system_user)
+
+        assert owned_event in filtered_qs
+        assert unowned_event not in filtered_qs
+
+    def test_scoped_available_time_filter_respects_calendar_ownership(
+        self, auth_service, organization, primary_calendar
+    ):
+        """A scoped token's AvailableTime filter only sees owned calendars."""
+        from calendar_integration.models import CalendarOwnership
+        from users.models import User
+
+        now = tz.now()
+        later = now + datetime.timedelta(days=10)
+        event_time = now + datetime.timedelta(days=2)
+
+        user = baker.make(User)
+        membership = OrganizationMembership.objects.create(
+            organization=organization,
+            user=user,
+            is_active=True,
+        )
+
+        other_calendar = baker.make(
+            Calendar, organization=organization, name="Other", external_id="other-scoped-cal"
+        )
+
+        owned_at = baker.make(
+            AvailableTime,
+            calendar=primary_calendar,
+            start_time_tz_unaware=event_time,
+            timezone="UTC",
+        )
+        unowned_at = baker.make(
+            AvailableTime,
+            calendar=other_calendar,
+            start_time_tz_unaware=event_time,
+            timezone="UTC",
+        )
+
+        CalendarOwnership.objects.create(
+            calendar=primary_calendar,
+            membership=membership,
+        )
+
+        system_user, _ = auth_service.create_system_user(
+            integration_name="scoped-test",
+            organization=organization,
+            scoped_to_membership=membership,
+            bypass_limits=True,
+        )
+
+        filter_input = AvailableTimeAggregateFilterInput(
+            start_datetime=now,
+            end_datetime=later,
+        )
+        qs = AvailableTime.objects.filter_by_organization(organization.id)
+        filtered_qs = filter_input.apply(qs, organization, system_user)
+
+        assert owned_at in filtered_qs
+        assert unowned_at not in filtered_qs
+
+    def test_scoped_blocked_time_filter_respects_calendar_ownership(
+        self, auth_service, organization, primary_calendar
+    ):
+        """A scoped token's BlockedTime filter only sees owned calendars."""
+        from calendar_integration.models import CalendarOwnership
+        from users.models import User
+
+        now = tz.now()
+        later = now + datetime.timedelta(days=10)
+        event_time = now + datetime.timedelta(days=2)
+
+        user = baker.make(User)
+        membership = OrganizationMembership.objects.create(
+            organization=organization,
+            user=user,
+            is_active=True,
+        )
+
+        other_calendar = baker.make(
+            Calendar, organization=organization, name="Other", external_id="other-scoped-cal"
+        )
+
+        owned_bt = baker.make(
+            BlockedTime,
+            calendar=primary_calendar,
+            start_time_tz_unaware=event_time,
+            timezone="UTC",
+        )
+        unowned_bt = baker.make(
+            BlockedTime,
+            calendar=other_calendar,
+            start_time_tz_unaware=event_time,
+            timezone="UTC",
+        )
+
+        CalendarOwnership.objects.create(
+            calendar=primary_calendar,
+            membership=membership,
+        )
+
+        system_user, _ = auth_service.create_system_user(
+            integration_name="scoped-test",
+            organization=organization,
+            scoped_to_membership=membership,
+            bypass_limits=True,
+        )
+
+        filter_input = BlockedTimeAggregateFilterInput(
+            start_datetime=now,
+            end_datetime=later,
+        )
+        qs = BlockedTime.objects.filter_by_organization(organization.id)
+        filtered_qs = filter_input.apply(qs, organization, system_user)
+
+        assert owned_bt in filtered_qs
+        assert unowned_bt not in filtered_qs

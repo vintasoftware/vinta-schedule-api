@@ -24,32 +24,23 @@ from public_api.scoping import (
 )
 
 
-class AggregateFilterBase:
-    """Base class for aggregate filter inputs.
+def _validate_temporal_range(
+    start_datetime: datetime.datetime | None,
+    end_datetime: datetime.datetime | None,
+) -> None:
+    """Validate a mandatory temporal range for aggregate filters.
 
-    Subclasses must implement ``apply(queryset)`` to narrow the queryset
-    with the filter's predicates, and ``_validate_temporal_range`` for
-    entities with mandatory date bounds.
+    Raises ``GraphQLError`` if:
+    - Either bound is None (required for temporal entities).
+    - The range is backwards (end <= start).
+    - The range exceeds MAX_AGGREGATE_RANGE.
     """
-
-    @staticmethod
-    def _validate_temporal_range(
-        start_datetime: datetime.datetime | None,
-        end_datetime: datetime.datetime | None,
-    ) -> None:
-        """Validate a mandatory temporal range.
-
-        Raises ``GraphQLError`` if:
-        - Either bound is None (required for temporal entities).
-        - The range is backwards (end <= start).
-        - The range exceeds MAX_AGGREGATE_RANGE.
-        """
-        if start_datetime is None or end_datetime is None:
-            raise GraphQLError("startDatetime and endDatetime are required.")
-        if end_datetime <= start_datetime:
-            raise GraphQLError("Invalid time range: endDatetime must be after startDatetime.")
-        if (end_datetime - start_datetime) > MAX_AGGREGATE_RANGE:
-            raise GraphQLError("Requested time range is too large.")
+    if start_datetime is None or end_datetime is None:
+        raise GraphQLError("startDatetime and endDatetime are required.")
+    if end_datetime <= start_datetime:
+        raise GraphQLError("Invalid time range: endDatetime must be after startDatetime.")
+    if (end_datetime - start_datetime) > MAX_AGGREGATE_RANGE:
+        raise GraphQLError("Requested time range is too large.")
 
 
 @strawberry.input
@@ -77,10 +68,10 @@ class CalendarEventAggregateFilterInput:
         system_user: SystemUser | None = None,
     ) -> QuerySet:
         """Apply this filter to a scoped CalendarEvent queryset."""
-        AggregateFilterBase._validate_temporal_range(self.start_datetime, self.end_datetime)
+        _validate_temporal_range(self.start_datetime, self.end_datetime)
 
         if self.calendar_id is not None:
-            queryset = queryset.filter(calendar_id=self.calendar_id)
+            queryset = queryset.filter(calendar_fk_id=self.calendar_id)
 
         if self.user_id is not None:
             calendar_ids = (
@@ -88,12 +79,12 @@ class CalendarEventAggregateFilterInput:
                 .filter(ownerships__membership__user_id=self.user_id)
                 .values_list("id", flat=True)
             )
-            queryset = queryset.filter(calendar_id__in=calendar_ids)
+            queryset = queryset.filter(calendar_fk_id__in=calendar_ids)
 
         if system_user is not None:
             scoped_ids = scoped_calendar_ids(system_user, organization)
             if scoped_ids is not None:
-                queryset = queryset.filter(calendar_id__in=scoped_ids)
+                queryset = queryset.filter(calendar_fk_id__in=scoped_ids)
 
         queryset = queryset.filter(
             start_time__gte=self.start_datetime,
@@ -128,10 +119,10 @@ class AvailableTimeAggregateFilterInput:
         system_user: SystemUser | None = None,
     ) -> QuerySet:
         """Apply this filter to a scoped AvailableTime queryset."""
-        AggregateFilterBase._validate_temporal_range(self.start_datetime, self.end_datetime)
+        _validate_temporal_range(self.start_datetime, self.end_datetime)
 
         if self.calendar_id is not None:
-            queryset = queryset.filter(calendar_id=self.calendar_id)
+            queryset = queryset.filter(calendar_fk_id=self.calendar_id)
 
         if self.user_id is not None:
             calendar_ids = (
@@ -139,12 +130,12 @@ class AvailableTimeAggregateFilterInput:
                 .filter(ownerships__membership__user_id=self.user_id)
                 .values_list("id", flat=True)
             )
-            queryset = queryset.filter(calendar_id__in=calendar_ids)
+            queryset = queryset.filter(calendar_fk_id__in=calendar_ids)
 
         if system_user is not None:
             scoped_ids = scoped_calendar_ids(system_user, organization)
             if scoped_ids is not None:
-                queryset = queryset.filter(calendar_id__in=scoped_ids)
+                queryset = queryset.filter(calendar_fk_id__in=scoped_ids)
 
         queryset = queryset.filter(
             start_time__gte=self.start_datetime,
@@ -179,10 +170,10 @@ class BlockedTimeAggregateFilterInput:
         system_user: SystemUser | None = None,
     ) -> QuerySet:
         """Apply this filter to a scoped BlockedTime queryset."""
-        AggregateFilterBase._validate_temporal_range(self.start_datetime, self.end_datetime)
+        _validate_temporal_range(self.start_datetime, self.end_datetime)
 
         if self.calendar_id is not None:
-            queryset = queryset.filter(calendar_id=self.calendar_id)
+            queryset = queryset.filter(calendar_fk_id=self.calendar_id)
 
         if self.user_id is not None:
             calendar_ids = (
@@ -190,12 +181,12 @@ class BlockedTimeAggregateFilterInput:
                 .filter(ownerships__membership__user_id=self.user_id)
                 .values_list("id", flat=True)
             )
-            queryset = queryset.filter(calendar_id__in=calendar_ids)
+            queryset = queryset.filter(calendar_fk_id__in=calendar_ids)
 
         if system_user is not None:
             scoped_ids = scoped_calendar_ids(system_user, organization)
             if scoped_ids is not None:
-                queryset = queryset.filter(calendar_id__in=scoped_ids)
+                queryset = queryset.filter(calendar_fk_id__in=scoped_ids)
 
         queryset = queryset.filter(
             start_time__gte=self.start_datetime,
