@@ -87,7 +87,11 @@
       "cmd": "docker compose run --rm api uv run ruff check ./",
       "timeout_s": 300
     },
-    "types": {
+    "format": {
+      "cmd": "docker compose run --rm api uv run ruff format ./",
+      "timeout_s": 300
+    },
+    "django_checks": {
       "cmd": "docker compose run --rm api uv run python manage.py check --deploy",
       "timeout_s": 600
     },
@@ -96,7 +100,7 @@
       "timeout_s": 900
     },
     "unit": {
-      "cmd": "docker compose run --rm api uv run pytest public_api/tests -n auto",
+      "cmd": "docker compose run --rm api uv run pytest --reuse-db -n auto",
       "requires": [
         "test-suite"
       ],
@@ -123,7 +127,7 @@
       ],
       "gates": [
         "lint",
-        "types",
+        "django_checks",
         "typecheck",
         "unit"
       ],
@@ -144,7 +148,7 @@
       ],
       "gates": [
         "lint",
-        "types",
+        "django_checks",
         "typecheck",
         "unit"
       ],
@@ -175,7 +179,8 @@
       ],
       "gates": [
         "lint",
-        "types",
+        "format",
+        "django_checks",
         "typecheck",
         "unit"
       ],
@@ -203,6 +208,7 @@
       ],
       "gates": [
         "lint",
+        "format",
         "types",
         "typecheck",
         "unit"
@@ -232,7 +238,8 @@
       ],
       "gates": [
         "lint",
-        "types",
+        "format",
+        "django_checks",
         "typecheck",
         "unit"
       ],
@@ -258,7 +265,8 @@
       ],
       "gates": [
         "lint",
-        "types",
+        "format",
+        "django_checks",
         "typecheck",
         "unit"
       ],
@@ -284,7 +292,8 @@
       ],
       "gates": [
         "lint",
-        "types",
+        "format",
+        "django_checks",
         "typecheck",
         "unit"
       ],
@@ -311,7 +320,8 @@
       ],
       "gates": [
         "lint",
-        "types",
+        "format",
+        "django_checks",
         "typecheck",
         "unit"
       ],
