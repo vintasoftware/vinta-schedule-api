@@ -47,7 +47,9 @@ from public_api.aggregations.errors import (
 from public_api.aggregations.plan import (
     AggregateOp,
     AggregateQueryPlan,
+    ComparisonOperator,
     DimensionSpec,
+    HavingSpec,
     MetricSpec,
 )
 from public_api.aggregations.registry import (
@@ -83,16 +85,57 @@ def _check_slice(plan: AggregateQueryPlan) -> None:
 def _reject_unbuilt_features(plan: AggregateQueryPlan) -> None:
     """Refuse plan features this phase's executor does not build yet.
 
-    ``having`` arrives with Phase 4 and ``window`` with Phase 6. Each of them
-    changes the answer, so dropping one silently would return a confidently
-    wrong number; raising keeps the failure loud until the phase that implements
-    it deletes the matching check. Nothing reaches this module from the GraphQL
-    schema yet, so no caller can trip it.
+    ``window`` arrives with Phase 6. It changes the answer, so dropping it
+    silently would return a confidently wrong number; raising keeps the failure
+    loud until the phase that implements it deletes this check.
     """
-    if plan.having is not None:
-        raise NotImplementedError("HAVING lands with Phase 4 of this plan.")
     if plan.window is not None:
         raise NotImplementedError("Window functions land with Phase 6 of this plan.")
+
+
+#: Comparison to the ORM lookup that renders it. ``EQ`` is ``exact`` rather than
+#: a bare value so every condition reads the same way at the call site.
+LOOKUP_FOR_COMPARISON: Mapping[ComparisonOperator, str] = MappingProxyType(
+    {
+        ComparisonOperator.EQ: "exact",
+        ComparisonOperator.GT: "gt",
+        ComparisonOperator.GTE: "gte",
+        ComparisonOperator.LT: "lt",
+        ComparisonOperator.LTE: "lte",
+    }
+)
+
+
+def _having_q(spec: HavingSpec, annotated: Mapping[str, models.Expression]) -> models.Q:
+    """The ``Q`` one HAVING tree becomes.
+
+    Applied after ``.annotate()``, Django renders a filter on an aggregate alias
+    as ``HAVING`` rather than ``WHERE`` — which is the whole distinction this
+    carries: ``WHERE`` drops rows before they are grouped, ``HAVING`` drops
+    groups after they are aggregated.
+
+    Conditions and ``all_of`` are ANDed; ``any_of`` is ORed and then ANDed with
+    the rest.
+    """
+    combined = models.Q()
+    for condition in spec.conditions:
+        if condition.alias not in annotated:
+            # The resolver annotates whatever a clause names, so reaching this
+            # means a hand-built plan named a column it never asked for.
+            raise UnknownAggregateFieldError(unknown_aggregate_field_message(condition.alias))
+        lookup = LOOKUP_FOR_COMPARISON[condition.operator]
+        combined &= models.Q(**{f"{condition.alias}__{lookup}": condition.value})
+
+    for child in spec.all_of:
+        combined &= _having_q(child, annotated)
+
+    if spec.any_of:
+        alternatives = models.Q()
+        for child in spec.any_of:
+            alternatives |= _having_q(child, annotated)
+        combined &= alternatives
+
+    return combined
 
 
 TRUNCATION_FOR_GRANULARITY: Mapping[TemporalGranularity, type[TruncBase]] = MappingProxyType(
@@ -292,24 +335,35 @@ def build_aggregate_queryset(
         metrics[metric.alias] = _metric_expression(metric, registration)
 
     grouped = queryset.values(*plain_dimensions, **aliased_dimensions).annotate(**metrics)
+    if plan.having is not None:
+        grouped = grouped.filter(_having_q(plan.having, metrics))
     return grouped.order_by(*_ordering(plan))[plan.offset : plan.offset + plan.limit]
 
 
 def _ordering(plan: AggregateQueryPlan) -> tuple[str, ...]:
     """Deterministic ordering for the grouped rows.
 
-    Explicit ``order_by`` wins. Otherwise the group key orders the result, so a
-    caller paging with ``offset`` sees each group exactly once — an unordered
-    ``LIMIT``/``OFFSET`` over a ``GROUP BY`` is free to return a different
-    permutation on every page.
+    Explicit ``order_by`` comes first, then the group key as a tiebreak. Both
+    halves matter: without the explicit part a caller cannot ask for the busiest
+    calendars, and without the tiebreak ``ORDER BY count DESC LIMIT 3`` over
+    groups that tie is free to return a different three each call — so a caller
+    paging through would see some rows twice and miss others.
+
+    With no explicit ordering the group key alone orders the result, which is
+    what it did before this phase.
     """
-    if plan.order_by:
-        known = set(plan.dimension_aliases) | set(plan.metric_aliases)
-        unknown = [spec.alias for spec in plan.order_by if spec.alias not in known]
-        if unknown:
-            raise UnknownAggregateFieldError(unknown_aggregate_field_message(unknown[0]))
-        return tuple(f"-{spec.alias}" if spec.descending else spec.alias for spec in plan.order_by)
-    return plan.dimension_aliases
+    if not plan.order_by:
+        return plan.dimension_aliases
+
+    known = set(plan.dimension_aliases) | set(plan.metric_aliases)
+    unknown = [spec.alias for spec in plan.order_by if spec.alias not in known]
+    if unknown:
+        raise UnknownAggregateFieldError(unknown_aggregate_field_message(unknown[0]))
+
+    explicit = tuple(f"-{spec.alias}" if spec.descending else spec.alias for spec in plan.order_by)
+    named = {spec.alias for spec in plan.order_by}
+    tiebreak = tuple(alias for alias in plan.dimension_aliases if alias not in named)
+    return explicit + tiebreak
 
 
 def execute_aggregate_plan(

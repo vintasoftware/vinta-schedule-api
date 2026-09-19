@@ -39,6 +39,15 @@ NO_DIMENSIONS_MESSAGE = "An aggregate query must group by at least one dimension
 ENTITY_MISMATCH_MESSAGE = "Aggregate plan and queryset describe different entities"
 BUCKETING_NEEDS_TIMEZONE_MESSAGE = "A bucketed dimension must name the timezone it is bucketed in"
 ALIAS_SHADOWS_FIELD_MESSAGE = "A computed dimension may not be aliased to a model field name"
+ORDER_NEEDS_EXACTLY_ONE_TARGET_MESSAGE = "An order-by must set exactly one of key and metric"
+
+
+def order_by_ungrouped_dimension_message(field_name: str) -> str:
+    """Message for an order-by naming a dimension the query does not group by.
+
+    The name is an enum member, not caller free text.
+    """
+    return f"Cannot order by a dimension the query does not group by: {field_name}"
 
 
 def date_range_exceeded_message(max_days: int) -> str:
