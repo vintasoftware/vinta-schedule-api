@@ -11,6 +11,8 @@ The layers, in the order a request moves through them:
   Strawberry type each field kind is exposed as.
 * ``plan`` — the frozen ``AggregateQueryPlan`` built from the selection, before
   any ORM call. Audited as-is.
+* ``filters`` — the per-entity input types that narrow an entity's scoped
+  queryset, with the bounded date range required at the type level.
 * ``executor`` — the plan as ``.values(...).annotate(...)`` over a
   caller-supplied, already-scoped queryset.
 * ``types`` — the four aggregate output types and ``TemporalGranularity``.
@@ -35,6 +37,14 @@ from public_api.aggregations.errors import (
 from public_api.aggregations.executor import (
     build_aggregate_queryset,
     execute_aggregate_plan,
+)
+from public_api.aggregations.filters import (
+    AppointmentTypeAggregateFilterInput,
+    AvailableTimeAggregateFilterInput,
+    BlockedTimeAggregateFilterInput,
+    CalendarAggregateFilterInput,
+    CalendarEventAggregateFilterInput,
+    CalendarPoolAggregateFilterInput,
 )
 from public_api.aggregations.plan import (
     AggregatableEntity,
@@ -83,7 +93,13 @@ __all__ = [
     "AggregateRangeTooLargeError",
     "AggregateTimeoutError",
     "AggregationError",
+    "AppointmentTypeAggregateFilterInput",
+    "AvailableTimeAggregateFilterInput",
+    "BlockedTimeAggregateFilterInput",
     "BooleanAggregate",
+    "CalendarAggregateFilterInput",
+    "CalendarEventAggregateFilterInput",
+    "CalendarPoolAggregateFilterInput",
     "ComparisonOperator",
     "DateTimeAggregate",
     "DimensionSpec",
