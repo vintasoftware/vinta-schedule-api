@@ -13,6 +13,10 @@ The layers, in the order a request moves through them:
   any ORM call. Audited as-is.
 * ``filters`` — the per-entity input types that narrow an entity's scoped
   queryset, with the bounded date range required at the type level.
+* ``dimensions`` — the per-entity group-by inputs and ``*GroupKey`` output
+  types, split into a scalar and a temporal variant so a granularity on a
+  non-temporal field cannot be written down.
+* ``timezone`` — IANA name validation for the bucketing clock.
 * ``executor`` — the plan as ``.values(...).annotate(...)`` over a
   caller-supplied, already-scoped queryset.
 * ``types`` — the four aggregate output types and ``TemporalGranularity``.
@@ -23,6 +27,28 @@ Nothing here is reachable from the GraphQL schema yet; Phase 3 of
 root fields.
 """
 
+from public_api.aggregations.dimensions import (
+    GROUP_BY_INPUT_TYPES,
+    GROUP_KEY_TYPES,
+    SCALAR_GROUP_BY_ENUMS,
+    TEMPORAL_GROUP_BY_ENUMS,
+    AppointmentTypeGroupByInput,
+    AppointmentTypeGroupKey,
+    AvailableTimeGroupByInput,
+    AvailableTimeGroupKey,
+    BlockedTimeGroupByInput,
+    BlockedTimeGroupKey,
+    CalendarEventGroupByInput,
+    CalendarEventGroupKey,
+    CalendarGroupByInput,
+    CalendarGroupKey,
+    CalendarPoolGroupByInput,
+    CalendarPoolGroupKey,
+    ResolvedGroupBy,
+    build_group_key,
+    resolve_group_by,
+    resolve_group_by_inputs,
+)
 from public_api.aggregations.errors import (
     AggregateLimitError,
     AggregateRangeTooLargeError,
@@ -74,6 +100,7 @@ from public_api.aggregations.registry import (
     build_metric,
     get_registration,
 )
+from public_api.aggregations.timezone import resolve_timezone
 from public_api.aggregations.types import (
     BooleanAggregate,
     DateTimeAggregate,
@@ -84,7 +111,11 @@ from public_api.aggregations.types import (
 
 
 __all__ = [
+    "GROUP_BY_INPUT_TYPES",
+    "GROUP_KEY_TYPES",
     "REGISTRY",
+    "SCALAR_GROUP_BY_ENUMS",
+    "TEMPORAL_GROUP_BY_ENUMS",
     "AggregatableEntity",
     "AggregatableField",
     "AggregateLimitError",
@@ -94,12 +125,24 @@ __all__ = [
     "AggregateTimeoutError",
     "AggregationError",
     "AppointmentTypeAggregateFilterInput",
+    "AppointmentTypeGroupByInput",
+    "AppointmentTypeGroupKey",
     "AvailableTimeAggregateFilterInput",
+    "AvailableTimeGroupByInput",
+    "AvailableTimeGroupKey",
     "BlockedTimeAggregateFilterInput",
+    "BlockedTimeGroupByInput",
+    "BlockedTimeGroupKey",
     "BooleanAggregate",
     "CalendarAggregateFilterInput",
     "CalendarEventAggregateFilterInput",
+    "CalendarEventGroupByInput",
+    "CalendarEventGroupKey",
+    "CalendarGroupByInput",
+    "CalendarGroupKey",
     "CalendarPoolAggregateFilterInput",
+    "CalendarPoolGroupByInput",
+    "CalendarPoolGroupKey",
     "ComparisonOperator",
     "DateTimeAggregate",
     "DimensionSpec",
@@ -114,6 +157,7 @@ __all__ = [
     "NumericAggregate",
     "OrderSpec",
     "RelationCountField",
+    "ResolvedGroupBy",
     "StringAggregate",
     "TemporalGranularity",
     "UnknownAggregateEntityError",
@@ -127,7 +171,11 @@ __all__ = [
     "aggregate_type_for",
     "build_aggregate_queryset",
     "build_dimension",
+    "build_group_key",
     "build_metric",
     "execute_aggregate_plan",
     "get_registration",
+    "resolve_group_by",
+    "resolve_group_by_inputs",
+    "resolve_timezone",
 ]

@@ -41,6 +41,8 @@ from calendar_integration.models import (
     ResourceAllocation,
 )
 from public_api.aggregations.errors import (
+    BUCKETING_NEEDS_TIMEZONE_MESSAGE,
+    InvalidAggregatePlanError,
     UnknownAggregateEntityError,
     UnknownAggregateFieldError,
     UnsupportedAggregateOperationError,
@@ -497,6 +499,14 @@ def build_dimension(
 
     A granularity on a non-temporal field is refused here as well as by the
     schema, so a hand-built plan cannot ask for ``provider`` bucketed by week.
+    A granularity without a timezone is refused too: "per day" has no answer
+    until somebody names the clock, and defaulting to the process timezone would
+    give one silently.
+
+    A bucketed dimension gets a granularity-suffixed alias by default —
+    ``start_time`` at ``DAY`` becomes ``start_time_day``. That is not cosmetic:
+    the bucket is an expression, and Django refuses an expression alias that
+    collides with a concrete model field name, which ``start_time`` is.
     """
     registration = get_registration(entity)
     registered = registration.group_by_field(field_name)
@@ -504,8 +514,13 @@ def build_dimension(
         raise UnsupportedAggregateOperationError(
             unsupported_operation_message(field_name, "granularity")
         )
+    if granularity is not None and tzinfo is None:
+        raise InvalidAggregatePlanError(BUCKETING_NEEDS_TIMEZONE_MESSAGE)
+
+    if alias is None:
+        alias = field_name if granularity is None else f"{field_name}_{granularity.value.lower()}"
     return DimensionSpec(
-        alias=alias or field_name,
+        alias=alias,
         field_path=registered.field_path,
         granularity=granularity,
         tzinfo=tzinfo,

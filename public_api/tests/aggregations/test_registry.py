@@ -5,9 +5,12 @@ exactly one aggregate type, a numeric field never offers ``concat``, and an
 unknown field raises instead of returning no metric.
 """
 
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from public_api.aggregations.errors import (
+    InvalidAggregatePlanError,
     UnknownAggregateFieldError,
     UnsupportedAggregateOperationError,
 )
@@ -198,9 +201,33 @@ class TestDimensionBuilding:
             AggregatableEntity.CALENDAR_EVENT,
             "start_time",
             granularity=TemporalGranularity.DAY,
+            tzinfo=ZoneInfo("UTC"),
         )
 
         assert dimension.granularity is TemporalGranularity.DAY
+        assert dimension.tzinfo == ZoneInfo("UTC")
+
+    def test_a_bucketed_dimension_gets_a_granularity_suffixed_alias(self):
+        """``start_time`` is a model field, so a bucket cannot be aliased to it."""
+        dimension = build_dimension(
+            AggregatableEntity.CALENDAR_EVENT,
+            "start_time",
+            granularity=TemporalGranularity.MONTH,
+            tzinfo=ZoneInfo("UTC"),
+        )
+
+        assert dimension.alias == "start_time_month"
+        assert dimension.field_path == "start_time"
+
+    def test_granularity_without_a_timezone_raises(self):
+        with pytest.raises(InvalidAggregatePlanError) as excinfo:
+            build_dimension(
+                AggregatableEntity.CALENDAR_EVENT,
+                "start_time",
+                granularity=TemporalGranularity.DAY,
+            )
+
+        assert str(excinfo.value) == "A bucketed dimension must name the timezone it is bucketed in"
 
     def test_granularity_on_a_non_temporal_dimension_raises(self):
         with pytest.raises(UnsupportedAggregateOperationError):

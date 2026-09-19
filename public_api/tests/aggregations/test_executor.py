@@ -7,6 +7,7 @@ arithmetic right, a multi-relation count that does not double-count, a
 """
 
 import datetime
+from zoneinfo import ZoneInfo
 
 from django.db import connection
 from django.db.models import Count as DjangoCount
@@ -653,6 +654,58 @@ class TestExecutorValidation:
             with pytest.raises(UnknownAggregateFieldError):
                 build_aggregate_queryset(plan, CalendarEvent.objects.all())
 
+    def test_a_computed_dimension_aliased_to_a_model_field_is_refused(self, organization):
+        """Django raises a bare ``ValueError`` here; the engine must not leak one.
+
+        ``build_dimension`` never produces this — a bucket gets a suffixed
+        alias — but a hand-built plan can, and a 500 is the wrong answer.
+        """
+        plan = AggregateQueryPlan(
+            entity=AggregatableEntity.CALENDAR_EVENT,
+            dimensions=(
+                DimensionSpec(
+                    alias="title",
+                    field_path="start_time",
+                    granularity=TemporalGranularity.DAY,
+                    tzinfo=ZoneInfo("UTC"),
+                ),
+            ),
+            metrics=(),
+        )
+
+        with organization_context(organization):
+            with pytest.raises(InvalidAggregatePlanError) as excinfo:
+                build_aggregate_queryset(plan, CalendarEvent.objects.all())
+
+        assert str(excinfo.value) == "A computed dimension may not be aliased to a model field name"
+
+    def test_a_metric_aliased_to_a_model_field_is_refused(self, organization):
+        plan = _event_plan(MetricSpec(alias="title", field_path="count", op=AggregateOp.COUNT))
+
+        with organization_context(organization):
+            with pytest.raises(InvalidAggregatePlanError):
+                build_aggregate_queryset(plan, CalendarEvent.objects.all())
+
+    def test_a_bucket_without_a_timezone_is_refused(self, organization):
+        """Bucketing on the process timezone by accident is the failure to avoid."""
+        plan = AggregateQueryPlan(
+            entity=AggregatableEntity.CALENDAR_EVENT,
+            dimensions=(
+                DimensionSpec(
+                    alias="start_time_day",
+                    field_path="start_time",
+                    granularity=TemporalGranularity.DAY,
+                ),
+            ),
+            metrics=(),
+        )
+
+        with organization_context(organization):
+            with pytest.raises(InvalidAggregatePlanError) as excinfo:
+                build_aggregate_queryset(plan, CalendarEvent.objects.all())
+
+        assert str(excinfo.value) == "A bucketed dimension must name the timezone it is bucketed in"
+
 
 @pytest.mark.django_db
 class TestFeaturesLaterPhasesBuild:
@@ -662,28 +715,6 @@ class TestFeaturesLaterPhasesBuild:
     confidently wrong number. The phase that implements the feature deletes the
     matching case.
     """
-
-    def test_a_temporal_granularity_is_refused(self, organization):
-        plan = _event_plan(
-            build_metric(
-                AggregatableEntity.CALENDAR_EVENT, "count", AggregateOp.COUNT, alias="count"
-            ),
-        )
-        plan = AggregateQueryPlan(
-            entity=plan.entity,
-            dimensions=(
-                build_dimension(
-                    AggregatableEntity.CALENDAR_EVENT,
-                    "start_time",
-                    granularity=TemporalGranularity.DAY,
-                ),
-            ),
-            metrics=plan.metrics,
-        )
-
-        with organization_context(organization):
-            with pytest.raises(NotImplementedError):
-                build_aggregate_queryset(plan, CalendarEvent.objects.all())
 
     def test_a_having_clause_is_refused(self, organization):
         plan = _event_plan(
