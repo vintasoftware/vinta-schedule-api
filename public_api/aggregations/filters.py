@@ -66,10 +66,10 @@ class CalendarEventAggregateFilterInput:
         # Start from the scoped manager
         qs = CalendarEvent.objects.filter_by_organization(organization.id)
 
-        # Apply temporal bounds
+        # Apply temporal bounds using the timezone-aware generated field
         qs = qs.filter(
-            start_time_tz_unaware__gte=self.start_datetime,
-            start_time_tz_unaware__lt=self.end_datetime,
+            start_time__gte=self.start_datetime,
+            start_time__lt=self.end_datetime,
         )
 
         # Apply owner-scope filtering for scoped tokens
@@ -115,10 +115,10 @@ class AvailableTimeAggregateFilterInput:
         # Start from the scoped manager
         qs = AvailableTime.objects.filter_by_organization(organization.id)
 
-        # Apply temporal bounds
+        # Apply temporal bounds using the timezone-aware generated field
         qs = qs.filter(
-            start_time_tz_unaware__gte=self.start_datetime,
-            start_time_tz_unaware__lt=self.end_datetime,
+            start_time__gte=self.start_datetime,
+            start_time__lt=self.end_datetime,
         )
 
         # Apply owner-scope filtering for scoped tokens
@@ -164,10 +164,10 @@ class BlockedTimeAggregateFilterInput:
         # Start from the scoped manager
         qs = BlockedTime.objects.filter_by_organization(organization.id)
 
-        # Apply temporal bounds
+        # Apply temporal bounds using the timezone-aware generated field
         qs = qs.filter(
-            start_time_tz_unaware__gte=self.start_datetime,
-            start_time_tz_unaware__lt=self.end_datetime,
+            start_time__gte=self.start_datetime,
+            start_time__lt=self.end_datetime,
         )
 
         # Apply owner-scope filtering for scoped tokens
@@ -196,6 +196,8 @@ class AppointmentTypeAggregateFilterInput:
     Non-temporal entity without mandatory date bounds.
     """
 
+    accepts_public_scheduling: bool | None = None
+
     def apply(
         self, system_user: SystemUser | None, organization: Organization
     ) -> QuerySet[AppointmentType]:
@@ -210,6 +212,10 @@ class AppointmentTypeAggregateFilterInput:
         # Apply role-aware visibility scoping for scoped tokens
         qs = scoped_appointment_type_queryset(system_user, organization, qs)
 
+        # Apply public scheduling filter if provided
+        if self.accepts_public_scheduling is not None:
+            qs = qs.filter(accepts_public_scheduling=self.accepts_public_scheduling)
+
         return qs
 
 
@@ -219,6 +225,8 @@ class CalendarAggregateFilterInput:
 
     Non-temporal entity without mandatory date bounds.
     """
+
+    accepts_public_scheduling: bool | None = None
 
     def apply(
         self, system_user: SystemUser | None, organization: Organization
@@ -237,6 +245,10 @@ class CalendarAggregateFilterInput:
             if allowed_ids is not None:
                 qs = qs.filter(id__in=allowed_ids)
 
+        # Apply public scheduling filter if provided
+        if self.accepts_public_scheduling is not None:
+            qs = qs.filter(accepts_public_scheduling=self.accepts_public_scheduling)
+
         return qs
 
 
@@ -246,6 +258,8 @@ class CalendarPoolAggregateFilterInput:
 
     Non-temporal entity without mandatory date bounds.
     """
+
+    name_contains: str | None = None
 
     def apply(
         self, system_user: SystemUser | None, organization: Organization
@@ -260,5 +274,9 @@ class CalendarPoolAggregateFilterInput:
 
         # Apply role-aware visibility scoping for scoped tokens
         qs = scoped_calendar_pool_queryset(system_user, organization, qs)
+
+        # Apply name filter if provided
+        if self.name_contains is not None:
+            qs = qs.filter(name__icontains=self.name_contains)
 
         return qs

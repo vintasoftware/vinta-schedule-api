@@ -88,6 +88,29 @@ class TestFilterScoping:
     def test_calendar_event_filter_respects_organization_scope(self):
         """CalendarEvent filter applies organization scoping through querysets."""
         org1 = baker.make("organizations.Organization")
+        org2 = baker.make("organizations.Organization")
+
+        # Create calendars in both organizations
+        cal1 = baker.make("calendar_integration.Calendar", organization=org1)
+        cal2 = baker.make("calendar_integration.Calendar", organization=org2)
+
+        # Create events in both organizations with unique external_ids
+        event1 = baker.make(
+            "calendar_integration.CalendarEvent",
+            organization=org1,
+            calendar=cal1,
+            start_time_tz_unaware=datetime.datetime(2026, 1, 5),
+            timezone="UTC",
+            external_id="event1",
+        )
+        event2 = baker.make(
+            "calendar_integration.CalendarEvent",
+            organization=org2,
+            calendar=cal2,
+            start_time_tz_unaware=datetime.datetime(2026, 1, 5),
+            timezone="UTC",
+            external_id="event2",
+        )
 
         # Create a scoped system user for org1
         system_user = baker.make("public_api.SystemUser", organization=org1)
@@ -101,8 +124,9 @@ class TestFilterScoping:
         # The queryset should be organization-scoped
         # Verify by checking the model and organization filtering
         assert qs.model.__name__ == "CalendarEvent"
-        # The queryset is filtered by organization (internally)
-        # This ensures that no events outside org1 would be returned
+        # Ensure that only org1's events are returned, org2's are excluded
+        assert event1 in list(qs)
+        assert event2 not in list(qs)
 
     @freeze_time("2026-01-15 12:00:00 UTC")
     def test_calendar_event_filter_with_scoped_token_and_specific_calendar(self):
