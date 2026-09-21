@@ -88,10 +88,10 @@
       "timeout_s": 300
     },
     "format": {
-      "cmd": "docker compose run --rm api uv run ruff format ./",
+      "cmd": "docker compose run --rm api uv run ruff format --check ./",
       "timeout_s": 300
     },
-    "django_checks": {
+    "django-checks": {
       "cmd": "docker compose run --rm api uv run python manage.py check --deploy",
       "timeout_s": 600
     },
@@ -127,7 +127,8 @@
       ],
       "gates": [
         "lint",
-        "django_checks",
+        "format",
+        "django-checks",
         "typecheck",
         "unit"
       ],
@@ -148,7 +149,8 @@
       ],
       "gates": [
         "lint",
-        "django_checks",
+        "format",
+        "django-checks",
         "typecheck",
         "unit"
       ],
@@ -180,7 +182,7 @@
       "gates": [
         "lint",
         "format",
-        "django_checks",
+        "django-checks",
         "typecheck",
         "unit"
       ],
@@ -209,7 +211,7 @@
       "gates": [
         "lint",
         "format",
-        "types",
+        "django-checks",
         "typecheck",
         "unit"
       ],
@@ -239,7 +241,7 @@
       "gates": [
         "lint",
         "format",
-        "django_checks",
+        "django-checks",
         "typecheck",
         "unit"
       ],
@@ -266,7 +268,7 @@
       "gates": [
         "lint",
         "format",
-        "django_checks",
+        "django-checks",
         "typecheck",
         "unit"
       ],
@@ -293,7 +295,7 @@
       "gates": [
         "lint",
         "format",
-        "django_checks",
+        "django-checks",
         "typecheck",
         "unit"
       ],
@@ -321,7 +323,7 @@
       "gates": [
         "lint",
         "format",
-        "django_checks",
+        "django-checks",
         "typecheck",
         "unit"
       ],
