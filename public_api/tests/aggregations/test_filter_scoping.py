@@ -20,12 +20,8 @@ class TestFilterScoping:
         org1 = baker.make("organizations.Organization")
         org2 = baker.make("organizations.Organization")
 
-        cal1 = baker.make(
-            "calendar_integration.Calendar", organization=org1, external_id="cal1"
-        )
-        cal2 = baker.make(
-            "calendar_integration.Calendar", organization=org2, external_id="cal2"
-        )
+        cal1 = baker.make("calendar_integration.Calendar", organization=org1, external_id="cal1")
+        cal2 = baker.make("calendar_integration.Calendar", organization=org2, external_id="cal2")
 
         # Create a system user for org1
         system_user = baker.make("public_api.SystemUser", organization=org1)
@@ -59,12 +55,8 @@ class TestFilterScoping:
             is_active=True,
         )
 
-        cal1 = baker.make(
-            "calendar_integration.Calendar", organization=org, external_id="cal1"
-        )
-        cal2 = baker.make(
-            "calendar_integration.Calendar", organization=org, external_id="cal2"
-        )
+        cal1 = baker.make("calendar_integration.Calendar", organization=org, external_id="cal1")
+        cal2 = baker.make("calendar_integration.Calendar", organization=org, external_id="cal2")
 
         baker.make(
             "calendar_integration.CalendarOwnership",
@@ -103,9 +95,7 @@ class TestFilterScoping:
         # Apply filter with system_user scoped to org1
         start = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
         end = datetime.datetime(2026, 1, 20, tzinfo=datetime.UTC)
-        filter_input = CalendarEventAggregateFilterInput(
-            start_datetime=start, end_datetime=end
-        )
+        filter_input = CalendarEventAggregateFilterInput(start_datetime=start, end_datetime=end)
         qs = filter_input.apply(system_user=system_user, organization=org1)
 
         # The queryset should be organization-scoped
@@ -135,12 +125,8 @@ class TestFilterScoping:
             is_active=True,
         )
 
-        cal1 = baker.make(
-            "calendar_integration.Calendar", organization=org, external_id="cal1"
-        )
-        cal2 = baker.make(
-            "calendar_integration.Calendar", organization=org, external_id="cal2"
-        )
+        cal1 = baker.make("calendar_integration.Calendar", organization=org, external_id="cal1")
+        cal2 = baker.make("calendar_integration.Calendar", organization=org, external_id="cal2")
 
         baker.make(
             "calendar_integration.CalendarOwnership",

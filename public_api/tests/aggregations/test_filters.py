@@ -33,9 +33,7 @@ class TestTemporalFilterValidation:
         start = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
         end = datetime.datetime(2026, 1, 15, tzinfo=datetime.UTC)
 
-        filter_input = CalendarEventAggregateFilterInput(
-            start_datetime=start, end_datetime=end
-        )
+        filter_input = CalendarEventAggregateFilterInput(start_datetime=start, end_datetime=end)
         qs = filter_input.apply(system_user=None, organization=organization)
 
         # Should not raise and should return a valid queryset
@@ -48,9 +46,7 @@ class TestTemporalFilterValidation:
         start = datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
         end = datetime.datetime(2026, 1, 15, tzinfo=datetime.UTC)
 
-        filter_input = CalendarEventAggregateFilterInput(
-            start_datetime=start, end_datetime=end
-        )
+        filter_input = CalendarEventAggregateFilterInput(start_datetime=start, end_datetime=end)
 
         with pytest.raises(GraphQLError, match="Requested time range is too large"):
             filter_input.apply(system_user=None, organization=organization)
@@ -62,9 +58,7 @@ class TestTemporalFilterValidation:
         start = datetime.datetime(2026, 1, 15, tzinfo=datetime.UTC)
         end = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
 
-        filter_input = CalendarEventAggregateFilterInput(
-            start_datetime=start, end_datetime=end
-        )
+        filter_input = CalendarEventAggregateFilterInput(start_datetime=start, end_datetime=end)
 
         with pytest.raises(GraphQLError, match="Invalid time range"):
             filter_input.apply(system_user=None, organization=organization)
@@ -76,9 +70,7 @@ class TestTemporalFilterValidation:
         start = datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
         end = datetime.datetime(2026, 1, 15, tzinfo=datetime.UTC)
 
-        filter_input = AvailableTimeAggregateFilterInput(
-            start_datetime=start, end_datetime=end
-        )
+        filter_input = AvailableTimeAggregateFilterInput(start_datetime=start, end_datetime=end)
 
         with pytest.raises(GraphQLError, match="Requested time range is too large"):
             filter_input.apply(system_user=None, organization=organization)
@@ -90,9 +82,7 @@ class TestTemporalFilterValidation:
         start = datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
         end = datetime.datetime(2026, 1, 15, tzinfo=datetime.UTC)
 
-        filter_input = BlockedTimeAggregateFilterInput(
-            start_datetime=start, end_datetime=end
-        )
+        filter_input = BlockedTimeAggregateFilterInput(start_datetime=start, end_datetime=end)
 
         with pytest.raises(GraphQLError, match="Requested time range is too large"):
             filter_input.apply(system_user=None, organization=organization)
@@ -104,9 +94,7 @@ class TestTemporalFilterValidation:
         start = datetime.datetime(2025, 1, 15, tzinfo=datetime.UTC)
         end = start + MAX_AGGREGATE_RANGE
 
-        filter_input = CalendarEventAggregateFilterInput(
-            start_datetime=start, end_datetime=end
-        )
+        filter_input = CalendarEventAggregateFilterInput(start_datetime=start, end_datetime=end)
         qs = filter_input.apply(system_user=None, organization=organization)
 
         # Should not raise
