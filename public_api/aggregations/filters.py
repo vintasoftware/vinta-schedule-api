@@ -66,27 +66,24 @@ class CalendarEventAggregateFilterInput:
         # Start from the scoped manager
         qs = CalendarEvent.objects.filter_by_organization(organization.id)
 
-        # Apply temporal bounds using the timezone-aware generated field
+        # Apply temporal bounds using interval overlap to match existing readers
+        # (availability_service, etc.). This catches events that overlap the range,
+        # including events that start before and extend into the window.
         qs = qs.filter(
-            start_time__gte=self.start_datetime,
             start_time__lt=self.end_datetime,
+            end_time__gt=self.start_datetime,
         )
 
-        # Apply owner-scope filtering for scoped tokens
-        if system_user is not None:
-            allowed_ids = scoped_calendar_ids(system_user, organization)
-            if allowed_ids is not None:
-                if self.calendar_id is not None:
-                    # If a specific calendar was requested, verify it is in scope
-                    if self.calendar_id not in allowed_ids:
-                        return qs.none()
-                    qs = qs.filter(calendar_fk=self.calendar_id)
-                else:
-                    qs = qs.filter(calendar_fk__in=allowed_ids)
-            elif self.calendar_id is not None:
-                qs = qs.filter(calendar_fk=self.calendar_id)
-        elif self.calendar_id is not None:
+        # Apply owner-scope and calendar filtering
+        allowed_ids = (
+            scoped_calendar_ids(system_user, organization) if system_user is not None else None
+        )
+        if self.calendar_id is not None:
+            if allowed_ids is not None and self.calendar_id not in allowed_ids:
+                return qs.none()
             qs = qs.filter(calendar_fk=self.calendar_id)
+        elif allowed_ids is not None:
+            qs = qs.filter(calendar_fk__in=allowed_ids)
 
         return qs
 
@@ -115,27 +112,24 @@ class AvailableTimeAggregateFilterInput:
         # Start from the scoped manager
         qs = AvailableTime.objects.filter_by_organization(organization.id)
 
-        # Apply temporal bounds using the timezone-aware generated field
+        # Apply temporal bounds using interval overlap to match existing readers
+        # (availability_service, etc.). This catches events that overlap the range,
+        # including events that start before and extend into the window.
         qs = qs.filter(
-            start_time__gte=self.start_datetime,
             start_time__lt=self.end_datetime,
+            end_time__gt=self.start_datetime,
         )
 
-        # Apply owner-scope filtering for scoped tokens
-        if system_user is not None:
-            allowed_ids = scoped_calendar_ids(system_user, organization)
-            if allowed_ids is not None:
-                if self.calendar_id is not None:
-                    # If a specific calendar was requested, verify it is in scope
-                    if self.calendar_id not in allowed_ids:
-                        return qs.none()
-                    qs = qs.filter(calendar_fk=self.calendar_id)
-                else:
-                    qs = qs.filter(calendar_fk__in=allowed_ids)
-            elif self.calendar_id is not None:
-                qs = qs.filter(calendar_fk=self.calendar_id)
-        elif self.calendar_id is not None:
+        # Apply owner-scope and calendar filtering
+        allowed_ids = (
+            scoped_calendar_ids(system_user, organization) if system_user is not None else None
+        )
+        if self.calendar_id is not None:
+            if allowed_ids is not None and self.calendar_id not in allowed_ids:
+                return qs.none()
             qs = qs.filter(calendar_fk=self.calendar_id)
+        elif allowed_ids is not None:
+            qs = qs.filter(calendar_fk__in=allowed_ids)
 
         return qs
 
@@ -164,27 +158,24 @@ class BlockedTimeAggregateFilterInput:
         # Start from the scoped manager
         qs = BlockedTime.objects.filter_by_organization(organization.id)
 
-        # Apply temporal bounds using the timezone-aware generated field
+        # Apply temporal bounds using interval overlap to match existing readers
+        # (availability_service, etc.). This catches events that overlap the range,
+        # including events that start before and extend into the window.
         qs = qs.filter(
-            start_time__gte=self.start_datetime,
             start_time__lt=self.end_datetime,
+            end_time__gt=self.start_datetime,
         )
 
-        # Apply owner-scope filtering for scoped tokens
-        if system_user is not None:
-            allowed_ids = scoped_calendar_ids(system_user, organization)
-            if allowed_ids is not None:
-                if self.calendar_id is not None:
-                    # If a specific calendar was requested, verify it is in scope
-                    if self.calendar_id not in allowed_ids:
-                        return qs.none()
-                    qs = qs.filter(calendar_fk=self.calendar_id)
-                else:
-                    qs = qs.filter(calendar_fk__in=allowed_ids)
-            elif self.calendar_id is not None:
-                qs = qs.filter(calendar_fk=self.calendar_id)
-        elif self.calendar_id is not None:
+        # Apply owner-scope and calendar filtering
+        allowed_ids = (
+            scoped_calendar_ids(system_user, organization) if system_user is not None else None
+        )
+        if self.calendar_id is not None:
+            if allowed_ids is not None and self.calendar_id not in allowed_ids:
+                return qs.none()
             qs = qs.filter(calendar_fk=self.calendar_id)
+        elif allowed_ids is not None:
+            qs = qs.filter(calendar_fk__in=allowed_ids)
 
         return qs
 
@@ -238,6 +229,9 @@ class CalendarAggregateFilterInput:
         """
         # Start from the scoped manager
         qs = Calendar.objects.filter_by_organization(organization.id)
+
+        # Apply visibility filtering to match the `calendars` list field
+        qs = qs.only_listed()
 
         # Apply owner-scope filtering for scoped tokens
         if system_user is not None:
