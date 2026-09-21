@@ -10,10 +10,14 @@ Which fields an entity may be grouped by or aggregated over, and which
 operations each field's type accepts, is decided in
 :mod:`public_api.aggregations.registry` and nowhere else.
 
+The base queryset itself comes from a per-entity filter input in
+:mod:`public_api.aggregations.filters`, which starts from the model's scoped
+manager and narrows it to the caller's bounded date range.
+
 Nothing here is on the schema yet. Later phases of
-``ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md`` add the
-filter inputs, temporal bucketing, the six root fields, HAVING, audit
-logging, window functions and nested batching on top.
+``ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md`` add
+temporal bucketing, the six root fields, HAVING, audit logging, window
+functions and nested batching on top.
 """
 
 from public_api.aggregations.errors import (
@@ -33,6 +37,14 @@ from public_api.aggregations.errors import (
     UnsupportedPlanFeatureError,
 )
 from public_api.aggregations.executor import build_aggregate_queryset
+from public_api.aggregations.filters import (
+    AppointmentTypeAggregateFilterInput,
+    AvailableTimeAggregateFilterInput,
+    BlockedTimeAggregateFilterInput,
+    CalendarAggregateFilterInput,
+    CalendarEventAggregateFilterInput,
+    CalendarPoolAggregateFilterInput,
+)
 from public_api.aggregations.plan import (
     MAX_AGGREGATE_LIMIT,
     MIN_AGGREGATE_LIMIT,
@@ -84,7 +96,13 @@ __all__ = [
     "AggregationError",
     "AggregationRequestError",
     "AliasCollisionError",
+    "AppointmentTypeAggregateFilterInput",
+    "AvailableTimeAggregateFilterInput",
+    "BlockedTimeAggregateFilterInput",
     "BooleanAggregate",
+    "CalendarAggregateFilterInput",
+    "CalendarEventAggregateFilterInput",
+    "CalendarPoolAggregateFilterInput",
     "DateRangeExceededError",
     "DateTimeAggregate",
     "DimensionSpec",
