@@ -128,3 +128,51 @@ class TestNonTemporalFilterValidation:
         qs = filter_input.apply(system_user=None, organization=organization)
 
         assert qs.model == CalendarPool
+
+
+class TestFilterTypeLevelValidation:
+    """Test type-level constraints on aggregate filter inputs."""
+
+    def test_calendar_event_filter_requires_start_datetime(self):
+        """CalendarEvent filter requires non-null start_datetime at the type level."""
+        # Check that the class has start_datetime and end_datetime as required fields
+        annotations = CalendarEventAggregateFilterInput.__annotations__
+        assert "start_datetime" in annotations
+        # The annotation should be datetime.datetime (not Optional)
+        assert annotations["start_datetime"] == datetime.datetime
+
+    def test_calendar_event_filter_requires_end_datetime(self):
+        """CalendarEvent filter requires non-null end_datetime at the type level."""
+        annotations = CalendarEventAggregateFilterInput.__annotations__
+        assert "end_datetime" in annotations
+        assert annotations["end_datetime"] == datetime.datetime
+
+    def test_available_time_filter_requires_bounds(self):
+        """AvailableTime filter requires non-null start/end datetime at the type level."""
+        annotations = AvailableTimeAggregateFilterInput.__annotations__
+        assert "start_datetime" in annotations
+        assert "end_datetime" in annotations
+        assert annotations["start_datetime"] == datetime.datetime
+        assert annotations["end_datetime"] == datetime.datetime
+
+    def test_blocked_time_filter_requires_bounds(self):
+        """BlockedTime filter requires non-null start/end datetime at the type level."""
+        annotations = BlockedTimeAggregateFilterInput.__annotations__
+        assert "start_datetime" in annotations
+        assert "end_datetime" in annotations
+        assert annotations["start_datetime"] == datetime.datetime
+        assert annotations["end_datetime"] == datetime.datetime
+
+    def test_non_temporal_filters_have_no_required_datetime(self):
+        """Non-temporal filters do not require datetime fields."""
+        apt_annotations = AppointmentTypeAggregateFilterInput.__annotations__
+        assert "start_datetime" not in apt_annotations
+        assert "end_datetime" not in apt_annotations
+
+        cal_annotations = CalendarAggregateFilterInput.__annotations__
+        assert "start_datetime" not in cal_annotations
+        assert "end_datetime" not in cal_annotations
+
+        pool_annotations = CalendarPoolAggregateFilterInput.__annotations__
+        assert "start_datetime" not in pool_annotations
+        assert "end_datetime" not in pool_annotations
