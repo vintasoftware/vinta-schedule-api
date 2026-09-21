@@ -95,6 +95,13 @@ class MetricSpec:
             raise InvalidPlanError("A metric needs a non-empty alias")
         object.__setattr__(self, "options", MappingProxyType(dict(self.options)))
 
+    def __hash__(self) -> int:
+        # The generated ``__hash__`` would hash ``options``, and a mapping
+        # proxy is unhashable however immutable it is. Everything else about
+        # this object says "value", so it hashes like one, over the same
+        # fields the generated ``__eq__`` compares.
+        return hash((self.alias, self.field_path, self.op, tuple(sorted(self.options.items()))))
+
 
 @dataclass(frozen=True)
 class DimensionSpec:
@@ -137,6 +144,11 @@ class FilterBounds:
             "predicates",
             MappingProxyType({key: tuple(value) for key, value in self.predicates.items()}),
         )
+
+    def __hash__(self) -> int:
+        # Same reason as :meth:`MetricSpec.__hash__`: the mapping proxy the
+        # generated hash would reach for is unhashable.
+        return hash((self.start, self.end, tuple(sorted(self.predicates.items()))))
 
 
 @dataclass(frozen=True)
@@ -186,19 +198,28 @@ class AggregateQueryPlan:
 
     def __post_init__(self) -> None:
         self._validate_dimensions()
+        self._validate_metrics()
         self._validate_aliases()
         self._validate_order_by()
         self._validate_slice()
 
     # -- validation ------------------------------------------------------
+    #
+    # The first two rules are the same rule seen from either end: Django only
+    # emits a ``GROUP BY`` when ``.values()`` names something *and*
+    # ``.annotate()`` adds an aggregate over it. Drop either half and the
+    # query still runs, still returns rows, and is no longer grouped -- one
+    # row per source row, with the group keys repeating. Nothing about the
+    # result's shape says so, which is why both halves are refused here
+    # rather than discovered downstream.
 
     def _validate_dimensions(self) -> None:
-        # ``.values()`` with no arguments followed by ``.annotate()`` does not
-        # group at all -- it annotates every row. That failure is invisible in
-        # the result shape and expensive in the database, so a plan with no
-        # dimension is refused instead.
         if not self.dimensions:
             raise InvalidPlanError("An aggregate plan needs at least one group-by dimension")
+
+    def _validate_metrics(self) -> None:
+        if not self.metrics:
+            raise InvalidPlanError("An aggregate plan needs at least one metric")
 
     def _all_aliases(self) -> tuple[str, ...]:
         """Every alias the row dict will carry, dimensions before metrics."""

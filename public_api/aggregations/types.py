@@ -66,7 +66,9 @@ class StringAggregate:
 
     @strawberry.field(
         description=(
-            "Postgres string_agg over the group. Ordered by the group's ordering for determinism."
+            "Postgres string_agg over the group, ordered by the aggregated "
+            "value itself so the same group concatenates the same way on "
+            "every run."
         )
     )
     def concat(self, separator: str = ",", distinct: bool = False) -> str | None:

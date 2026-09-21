@@ -108,6 +108,32 @@ class TestPlanConstruction:
     def test_two_identically_built_plans_are_equal(self):
         assert _plan() == _plan()
 
+    def test_plans_and_their_parts_are_hashable(self):
+        """Values, so they can key a dict or land in a set.
+
+        Every one of these holds a mapping internally, and the hash a frozen
+        dataclass generates would try to hash the mapping.
+        """
+        metric = MetricSpec(
+            alias="title_concat",
+            field_path="title",
+            op=AggregateOp.CONCAT,
+            options={"separator": "; "},
+        )
+        bounds = FilterBounds(predicates={"calendar_fk_id": (1, 2)})
+        plan = _plan(metrics=(metric,), filter_bounds=bounds)
+
+        assert hash(metric) == hash(
+            MetricSpec(
+                alias="title_concat",
+                field_path="title",
+                op=AggregateOp.CONCAT,
+                options={"separator": "; "},
+            )
+        )
+        assert hash(bounds) == hash(FilterBounds(predicates={"calendar_fk_id": (1, 2)}))
+        assert len({plan, _plan(metrics=(metric,), filter_bounds=bounds)}) == 1
+
     def test_a_plan_cannot_be_mutated(self):
         plan = _plan()
         with pytest.raises(AttributeError):
@@ -172,6 +198,16 @@ class TestPlanValidation:
     def test_a_plan_with_no_dimension_is_rejected(self):
         with pytest.raises(InvalidPlanError):
             _plan(dimensions=())
+
+    def test_a_plan_with_no_metric_is_rejected(self):
+        """The mirror of the empty-dimensions rule, and the same failure.
+
+        ``.values("calendar_fk_id")`` with no aggregate after it is not a
+        ``GROUP BY``: it returns one row per source row with the key
+        repeating, and nothing about the result says so.
+        """
+        with pytest.raises(InvalidPlanError):
+            _plan(metrics=())
 
     def test_ordering_by_an_unknown_alias_is_rejected(self):
         with pytest.raises(InvalidPlanError) as excinfo:

@@ -253,7 +253,10 @@ class TestGroupedAggregates:
         assert len(rows) == 1
         assert rows[0]["title_min"] == "Alfa"
         assert rows[0]["title_max"] == "Charlie"
-        assert sorted(rows[0]["title_concat"].split("; ")) == ["Alfa", "Bravo", "Charlie"]
+        # Asserted in full rather than sorted: the aggregate carries its own
+        # ORDER BY, so the order is part of the contract and not an accident
+        # of insertion order. The rows were inserted B, A, C.
+        assert rows[0]["title_concat"] == "Alfa; Bravo; Charlie"
 
     def test_distinct_concat_collapses_repeats(self, org):
         with organization_context(org):
@@ -273,7 +276,28 @@ class TestGroupedAggregates:
             )
             rows = _rows(plan, CalendarEvent.objects.all())
 
-        assert sorted(rows[0]["title_concat"].split("|")) == ["Alfa", "Bravo"]
+        assert rows[0]["title_concat"] == "Alfa|Bravo"
+
+    def test_concat_emits_an_order_by_so_the_result_is_reproducible(self, org):
+        with organization_context(org):
+            calendar = _make_calendar(org, "Only")
+            for title in ("Charlie", "Alfa", "Bravo"):
+                _make_event(org, calendar, title=title, start=BASE_START, minutes=30)
+
+            plan = _event_plan(
+                metrics=(
+                    MetricSpec(alias="title_concat", field_path="title", op=AggregateOp.CONCAT),
+                ),
+            )
+            queryset = build_aggregate_queryset(plan, CalendarEvent.objects.all())
+            with CaptureQueriesContext(connection) as captured:
+                rows = list(queryset)
+
+        assert rows[0]["title_concat"] == "Alfa,Bravo,Charlie"
+        # The ordering is Postgres', inside the aggregate -- a Python sort
+        # after the fact would satisfy the assertion above but not this one.
+        assert "STRING_AGG" in captured.captured_queries[0]["sql"].upper()
+        assert "ORDER BY" in captured.captured_queries[0]["sql"].upper()
 
     def test_datetime_aggregates_come_back_as_instants(self, org):
         with organization_context(org):

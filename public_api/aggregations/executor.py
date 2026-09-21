@@ -66,8 +66,10 @@ from public_api.aggregations.registry import EntityRegistration, RelationCount, 
 
 
 #: Prefix for the per-row relation-count annotations the executor adds to the
-#: base queryset before grouping. Underscored so it cannot collide with a
-#: caller-chosen alias, which the plan validates are dimension/metric names.
+#: base queryset before grouping. Nothing constrains a caller's alias to avoid
+#: it -- a metric aliased ``_relation_count_x`` would collide -- but Django
+#: refuses a duplicate annotation name outright, so the collision is a loud
+#: error rather than a wrong number, and the prefix makes it implausible.
 _RELATION_COUNT_PREFIX = "_relation_count_"
 
 
@@ -292,10 +294,17 @@ def _metric_expression(
         case AggregateOp.MAX:
             return Max(target)
         case AggregateOp.CONCAT:
+            # ``order_by`` on the aggregated value itself, which is what makes
+            # the result reproducible: Postgres leaves an unordered
+            # ``string_agg`` in whatever order the rows happened to arrive, so
+            # the same group can concatenate differently between runs. Ordering
+            # by the same expression the aggregate is over is also the form
+            # Postgres requires alongside ``DISTINCT``.
             return StringAgg(
                 target,
                 delimiter=Value(str(metric.options.get("separator", ","))),
                 distinct=bool(metric.options.get("distinct", False)),
+                order_by=target,
             )
         case AggregateOp.TRUE_COUNT:
             return Count(ROW_COUNT_FIELD_PATH, filter=Q(**{aggregatable.field_path: True}))
