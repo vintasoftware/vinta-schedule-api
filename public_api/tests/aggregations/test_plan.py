@@ -1,0 +1,201 @@
+"""A plan is a value: frozen, comparable, and validated at construction.
+
+The audit hook and the executor both read the same object, so a plan that
+can be mutated after it is recorded would let the two disagree about what
+ran.
+"""
+
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from public_api.aggregations import (
+    MAX_AGGREGATE_LIMIT,
+    MIN_AGGREGATE_LIMIT,
+    AggregatableEntity,
+    AggregateOp,
+    AggregateQueryPlan,
+    AliasCollisionError,
+    DimensionSpec,
+    FilterBounds,
+    HavingSpec,
+    InvalidPlanError,
+    MetricSpec,
+    OrderDirection,
+    OrderSpec,
+    TemporalGranularity,
+    WindowSpec,
+)
+
+
+def _plan(**overrides):
+    defaults = {
+        "entity": AggregatableEntity.CALENDAR_EVENT,
+        "dimensions": (DimensionSpec(alias="calendar_id", field_path="calendar_fk_id"),),
+        "metrics": (MetricSpec(alias="count", field_path="id", op=AggregateOp.COUNT),),
+    }
+    return AggregateQueryPlan(**{**defaults, **overrides})
+
+
+class TestMetricSpec:
+    def test_options_default_to_empty_and_are_immutable(self):
+        metric = MetricSpec(alias="count", field_path="id", op=AggregateOp.COUNT)
+        assert dict(metric.options) == {}
+        with pytest.raises(TypeError):
+            metric.options["distinct"] = True  # type: ignore[index]
+
+    def test_options_are_copied_so_the_caller_cannot_mutate_them_later(self):
+        supplied = {"separator": "; "}
+        metric = MetricSpec(
+            alias="title_concat", field_path="title", op=AggregateOp.CONCAT, options=supplied
+        )
+        supplied["separator"] = "|"
+        assert metric.options["separator"] == "; "
+
+    def test_attributes_cannot_be_reassigned(self):
+        metric = MetricSpec(alias="count", field_path="id", op=AggregateOp.COUNT)
+        with pytest.raises(AttributeError):
+            metric.alias = "other"  # type: ignore[misc]
+
+    def test_an_empty_alias_is_rejected(self):
+        with pytest.raises(InvalidPlanError):
+            MetricSpec(alias="", field_path="id", op=AggregateOp.COUNT)
+
+
+class TestDimensionSpec:
+    def test_attributes_cannot_be_reassigned(self):
+        dimension = DimensionSpec(alias="calendar_id", field_path="calendar_fk_id")
+        with pytest.raises(AttributeError):
+            dimension.field_path = "id"  # type: ignore[misc]
+
+    def test_an_empty_alias_is_rejected(self):
+        with pytest.raises(InvalidPlanError):
+            DimensionSpec(alias="", field_path="calendar_fk_id")
+
+    def test_a_granularity_without_a_timezone_is_rejected(self):
+        with pytest.raises(InvalidPlanError):
+            DimensionSpec(alias="day", field_path="start_time", granularity=TemporalGranularity.DAY)
+
+    def test_a_timezone_without_a_granularity_is_rejected(self):
+        with pytest.raises(InvalidPlanError):
+            DimensionSpec(alias="day", field_path="start_time", tzinfo=ZoneInfo("UTC"))
+
+    def test_a_granularity_with_a_timezone_is_accepted(self):
+        dimension = DimensionSpec(
+            alias="day",
+            field_path="start_time",
+            granularity=TemporalGranularity.DAY,
+            tzinfo=ZoneInfo("UTC"),
+        )
+        assert dimension.granularity is TemporalGranularity.DAY
+
+
+class TestFilterBounds:
+    def test_predicates_hold_only_tuples_of_ids_and_are_immutable(self):
+        bounds = FilterBounds(predicates={"calendar_fk_id": [3, 1, 2]})
+        assert bounds.predicates == {"calendar_fk_id": (3, 1, 2)}
+        with pytest.raises(TypeError):
+            bounds.predicates["calendar_fk_id"] = ()  # type: ignore[index]
+
+    def test_bounds_default_to_unset(self):
+        bounds = FilterBounds()
+        assert bounds.start is None
+        assert bounds.end is None
+        assert dict(bounds.predicates) == {}
+
+
+class TestPlanConstruction:
+    def test_two_identically_built_plans_are_equal(self):
+        assert _plan() == _plan()
+
+    def test_a_plan_cannot_be_mutated(self):
+        plan = _plan()
+        with pytest.raises(AttributeError):
+            plan.limit = 5  # type: ignore[misc]
+
+    def test_defaults_are_the_documented_ones(self):
+        plan = _plan()
+        assert plan.limit == MAX_AGGREGATE_LIMIT
+        assert plan.offset == 0
+        assert plan.having is None
+        assert plan.window is None
+        assert plan.order_by == ()
+        assert plan.filter_bounds == FilterBounds()
+
+    def test_alias_helpers_preserve_request_order(self):
+        plan = _plan(
+            dimensions=(
+                DimensionSpec(alias="calendar_id", field_path="calendar_fk_id"),
+                DimensionSpec(alias="timezone", field_path="timezone"),
+            ),
+            metrics=(
+                MetricSpec(alias="count", field_path="id", op=AggregateOp.COUNT),
+                MetricSpec(alias="duration_sum", field_path="duration_minutes", op=AggregateOp.SUM),
+            ),
+        )
+        assert plan.dimension_aliases == ("calendar_id", "timezone")
+        assert plan.metric_aliases == ("count", "duration_sum")
+
+    def test_having_and_window_slots_carry_their_placeholder_objects(self):
+        plan = _plan(having=HavingSpec(), window=WindowSpec())
+        assert plan.having == HavingSpec()
+        assert plan.window == WindowSpec()
+
+
+class TestPlanValidation:
+    def test_a_dimension_and_a_metric_cannot_share_an_alias(self):
+        with pytest.raises(AliasCollisionError) as excinfo:
+            _plan(
+                dimensions=(DimensionSpec(alias="total", field_path="calendar_fk_id"),),
+                metrics=(MetricSpec(alias="total", field_path="id", op=AggregateOp.COUNT),),
+            )
+        assert "total" in str(excinfo.value)
+
+    def test_two_metrics_cannot_share_an_alias(self):
+        with pytest.raises(AliasCollisionError):
+            _plan(
+                metrics=(
+                    MetricSpec(alias="agg", field_path="duration_minutes", op=AggregateOp.SUM),
+                    MetricSpec(alias="agg", field_path="duration_minutes", op=AggregateOp.AVG),
+                )
+            )
+
+    def test_two_dimensions_cannot_share_an_alias(self):
+        with pytest.raises(AliasCollisionError):
+            _plan(
+                dimensions=(
+                    DimensionSpec(alias="key", field_path="calendar_fk_id"),
+                    DimensionSpec(alias="key", field_path="timezone"),
+                )
+            )
+
+    def test_a_plan_with_no_dimension_is_rejected(self):
+        with pytest.raises(InvalidPlanError):
+            _plan(dimensions=())
+
+    def test_ordering_by_an_unknown_alias_is_rejected(self):
+        with pytest.raises(InvalidPlanError) as excinfo:
+            _plan(order_by=(OrderSpec(alias="nope"),))
+        assert "nope" in str(excinfo.value)
+
+    def test_ordering_by_a_dimension_or_a_metric_alias_is_accepted(self):
+        plan = _plan(
+            order_by=(
+                OrderSpec(alias="count", direction=OrderDirection.DESC),
+                OrderSpec(alias="calendar_id", direction=OrderDirection.ASC),
+            )
+        )
+        assert [order.alias for order in plan.order_by] == ["count", "calendar_id"]
+
+    @pytest.mark.parametrize("limit", [0, -1, MAX_AGGREGATE_LIMIT + 1])
+    def test_a_limit_outside_the_band_is_rejected(self, limit):
+        with pytest.raises(InvalidPlanError):
+            _plan(limit=limit)
+
+    @pytest.mark.parametrize("limit", [MIN_AGGREGATE_LIMIT, 50, MAX_AGGREGATE_LIMIT])
+    def test_a_limit_inside_the_band_is_accepted(self, limit):
+        assert _plan(limit=limit).limit == limit
+
+    def test_a_negative_offset_is_rejected(self):
+        with pytest.raises(InvalidPlanError):
+            _plan(offset=-1)
