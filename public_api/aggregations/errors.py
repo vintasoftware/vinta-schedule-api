@@ -36,6 +36,12 @@ UNKNOWN_TIMEZONE_MESSAGE = "Unknown timezone"
 #: plan that was running, so a caller cannot probe cost by timing queries.
 STATEMENT_TIMEOUT_MESSAGE = "Aggregate query exceeded its time budget"
 
+#: Raised when one entry of ``groupBy`` sets neither its scalar field nor its
+#: temporal field, or sets both. GraphQL has no input unions, so the wrapper
+#: input carries one nullable slot per variant and this is the residual check
+#: the schema cannot make. Names neither slot's value.
+GROUP_BY_VARIANT_MESSAGE = "Each groupBy entry must set exactly one of 'field' or 'temporal'"
+
 
 def date_range_exceeded_message(max_days: int) -> str:
     """Wording for a filter whose datetime range is wider than the maximum."""
@@ -78,6 +84,13 @@ class UnknownTimezoneError(AggregationRequestError):
 
     def __init__(self) -> None:
         super().__init__(UNKNOWN_TIMEZONE_MESSAGE)
+
+
+class GroupByVariantError(AggregationRequestError):
+    """A ``groupBy`` entry set both of its variant slots, or neither."""
+
+    def __init__(self) -> None:
+        super().__init__(GROUP_BY_VARIANT_MESSAGE)
 
 
 class AggregateTimeoutError(AggregationRequestError):
@@ -148,6 +161,17 @@ class AliasCollisionError(AggregationError):
 
 class InvalidPlanError(AggregationError):
     """The plan is internally inconsistent and cannot be executed."""
+
+
+class NonTemporalGranularityError(AggregationError):
+    """A granularity was set on a dimension the registry does not call temporal.
+
+    A GraphQL caller cannot reach this: the scalar and temporal group-by
+    enums are disjoint, so asking to bucket a foreign key fails schema
+    validation. It catches a plan built in code, where nothing else would --
+    ``DATE_TRUNC`` over a non-timestamp column is a database error at best
+    and a meaningless bucket at worst.
+    """
 
 
 class UnsupportedPlanFeatureError(AggregationError):

@@ -803,7 +803,13 @@ class TestRefusals:
 class TestFeaturesLaterPhasesOwn:
     """Refused loudly, never dropped silently -- see the executor's docstring."""
 
-    def test_a_temporal_granularity_is_refused_for_now(self, org):
+    def test_a_temporal_granularity_is_no_longer_refused(self, org):
+        """Bucketing landed with the group-by dimensions phase.
+
+        The behaviour it now has is covered by ``test_bucketing.py``; this
+        only records that the refusal was removed rather than relaxed
+        elsewhere.
+        """
         plan = _event_plan(
             dimensions=(
                 DimensionSpec(
@@ -814,7 +820,7 @@ class TestFeaturesLaterPhasesOwn:
                 ),
             )
         )
-        with organization_context(org), pytest.raises(UnsupportedPlanFeatureError):
+        with organization_context(org):
             build_aggregate_queryset(plan, CalendarEvent.objects.all())
 
     def test_a_having_clause_is_refused_for_now(self, org):

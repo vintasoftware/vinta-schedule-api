@@ -21,12 +21,21 @@ than rediscovering the bug. The subquery is annotated on the base queryset,
 makes Django add the subquery itself to the ``GROUP BY``, which splits groups
 on the count instead of aggregating them.
 
-**A feature this phase does not build is refused, never ignored.** Temporal
-bucketing (Phase 2), ``HAVING`` (Phase 4) and window functions (Phase 6)
-each raise here until their phase lands. A window clause that is silently
-dropped returns confident numbers that are not the ones asked for.
+**Temporal dimensions truncate in the caller's timezone.** A dimension
+carrying a granularity becomes ``DATE_TRUNC(<width>, col AT TIME ZONE <tz>)``
+and groups on that, so one wall clock measures every bucket in the result
+regardless of what timezone each row stores. Buckets are sparse: the query
+groups the rows that exist, so a day with none produces no row at all rather
+than a zero.
+
+**A feature this phase does not build is refused, never ignored.**
+``HAVING`` (Phase 4) and window functions (Phase 6) each raise here until
+their phase lands. A window clause that is silently dropped returns
+confident numbers that are not the ones asked for.
 """
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 from django.db.models import (
@@ -45,11 +54,13 @@ from django.db.models import (
 )
 from django.db.models.aggregates import StringAgg
 from django.db.models.expressions import BaseExpression, Combinable
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, TruncDay, TruncMonth, TruncWeek
+from django.db.models.functions.datetime import TruncBase
 
 from public_api.aggregations.errors import (
     AliasCollisionError,
     InvalidPlanError,
+    NonTemporalGranularityError,
     QuerysetModelMismatchError,
     UnsupportedOperationError,
     UnsupportedPlanFeatureError,
@@ -63,6 +74,7 @@ from public_api.aggregations.plan import (
     OrderDirection,
 )
 from public_api.aggregations.registry import EntityRegistration, RelationCount, get_registration
+from public_api.aggregations.types import TemporalGranularity
 
 
 #: Prefix for the per-row relation-count annotations the executor adds to the
@@ -126,10 +138,6 @@ def build_aggregate_queryset(
 
 def _reject_unbuilt_features(plan: AggregateQueryPlan) -> None:
     """Refuse the parts of a plan later phases of the engine own."""
-    if any(dimension.granularity is not None for dimension in plan.dimensions):
-        raise UnsupportedPlanFeatureError(
-            "Temporal bucketing is not built yet; it lands with the group-by dimensions phase"
-        )
     if plan.having is not None:
         raise UnsupportedPlanFeatureError(
             "HAVING is not built yet; it lands with the having and metric-ordering phase"
@@ -172,7 +180,7 @@ def _reject_shadowing_aliases(
     alias of its own, ``title_min``.
     """
     for dimension in plan.dimensions:
-        if dimension.alias == dimension.field_path:
+        if _is_pass_through(dimension):
             continue
         if dimension.alias in model_field_names:
             raise AliasCollisionError(
@@ -201,8 +209,13 @@ def _group_by_terms(
     aliased: dict[str, Combinable] = {}
 
     for dimension in plan.dimensions:
-        registration.dimension(dimension.field_path)
-        if dimension.alias == dimension.field_path:
+        registered = registration.dimension(dimension.field_path)
+        if dimension.granularity is not None and not registered.temporal:
+            raise NonTemporalGranularityError(
+                f"{dimension.field_path!r} is not a temporal dimension of "
+                f"{registration.model.__name__} and cannot carry a granularity"
+            )
+        if _is_pass_through(dimension):
             positional.append(dimension.field_path)
         else:
             aliased[dimension.alias] = _dimension_expression(dimension)
@@ -210,13 +223,43 @@ def _group_by_terms(
     return tuple(positional), aliased
 
 
+def _is_pass_through(dimension: DimensionSpec) -> bool:
+    """Whether this dimension can go straight into ``.values()`` by name.
+
+    Only when it is untruncated *and* already named after its column. A
+    bucketed dimension is always an expression, so it is always aliased --
+    passing ``start_time`` positionally because its alias happened to match
+    would drop the truncation and group on the raw timestamp, which is one
+    group per row.
+    """
+    return dimension.granularity is None and dimension.alias == dimension.field_path
+
+
+#: Granularity to the ORM function that truncates to it. ``TruncWeek`` starts
+#: weeks on Monday, which is Django's own convention and the one
+#: ``TemporalGranularity.WEEK`` documents.
+_TRUNC_BY_GRANULARITY: Mapping[TemporalGranularity, type[TruncBase]] = MappingProxyType(
+    {
+        TemporalGranularity.DAY: TruncDay,
+        TemporalGranularity.WEEK: TruncWeek,
+        TemporalGranularity.MONTH: TruncMonth,
+    }
+)
+
+
 def _dimension_expression(dimension: DimensionSpec) -> Combinable:
     """The grouped expression for one dimension.
 
-    Only the pass-through case exists at this phase -- a granularity is
-    refused by :func:`_reject_unbuilt_features` before this runs.
+    Untruncated dimensions pass their column through. A bucketed one becomes
+    ``DATE_TRUNC(<width>, col AT TIME ZONE <tz>)``: the timezone is the
+    caller's, taken from the plan rather than from Django's ambient
+    ``TIME_ZONE``, so the buckets do not silently follow the server's idea of
+    a day.
     """
-    return F(dimension.field_path)
+    if dimension.granularity is None:
+        return F(dimension.field_path)
+    trunc = _TRUNC_BY_GRANULARITY[dimension.granularity]
+    return trunc(dimension.field_path, tzinfo=dimension.tzinfo)
 
 
 def _relation_count_metrics(
