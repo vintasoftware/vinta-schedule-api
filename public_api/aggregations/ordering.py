@@ -54,6 +54,7 @@ from public_api.aggregations.plan import (
     default_metric_alias,
 )
 from public_api.aggregations.plan import OrderDirection as PlanOrderDirection
+from public_api.aggregations.registry import get_registration
 
 
 @strawberry.enum(description="Sort direction for one ordering term.")
@@ -236,36 +237,20 @@ ORDER_INPUT_BY_ENTITY: MappingProxyType[AggregatableEntity, type] = MappingProxy
     }
 )
 
-#: Every entity's count-like orderable-metric aliases -- the row count plus
-#: its relation counts -- as the set :func:`_metric_spec_for` checks against.
-_COUNT_LIKE_ALIASES_BY_ENTITY: MappingProxyType[AggregatableEntity, frozenset[str]] = (
-    MappingProxyType(
-        {
-            AggregatableEntity.CALENDAR_EVENT: frozenset(
-                {
-                    ROW_COUNT_ALIAS,
-                    "attendance_count",
-                    "external_attendance_count",
-                    "resource_allocation_count",
-                }
-            ),
-            AggregatableEntity.AVAILABLE_TIME: frozenset({ROW_COUNT_ALIAS}),
-            AggregatableEntity.BLOCKED_TIME: frozenset({ROW_COUNT_ALIAS}),
-            AggregatableEntity.APPOINTMENT_TYPE: frozenset(
-                {ROW_COUNT_ALIAS, "event_count", "slot_count"}
-            ),
-            AggregatableEntity.CALENDAR: frozenset(
-                {
-                    ROW_COUNT_ALIAS,
-                    "event_count",
-                    "blocked_time_count",
-                    "available_time_count",
-                }
-            ),
-            AggregatableEntity.CALENDAR_POOL: frozenset({ROW_COUNT_ALIAS, "calendar_count"}),
-        }
-    )
-)
+
+def _count_like_aliases(entity: AggregatableEntity) -> frozenset[str]:
+    """Every count-like orderable-metric alias for ``entity`` -- the row count
+    plus its relation counts -- as the set :func:`_metric_spec_for` checks
+    against.
+
+    Read off ``registry.get_registration`` rather than tabled by hand here:
+    a relation count that is renamed or removed in the registry would
+    otherwise leave a stale alias behind that still parses as count-like,
+    resolves to a ``MetricSpec`` over a field path the registry no longer
+    recognises, and only surfaces as an engine-internal ``InvalidPlanError``
+    once a query actually orders by it.
+    """
+    return frozenset({ROW_COUNT_ALIAS, *get_registration(entity).relation_counts})
 
 
 class OrderEntry(Protocol):
@@ -305,7 +290,7 @@ def resolve_order_by(
     the same mistake reached through a real query, so it is refused here,
     before a plan is ever built, with :class:`OrderKeyNotGroupedError`.
     """
-    count_like = _COUNT_LIKE_ALIASES_BY_ENTITY[entity]
+    count_like = _count_like_aliases(entity)
     known_dimension_aliases = set(dimension_aliases)
     order_specs: list[OrderSpec] = []
     extra_metrics: list[MetricSpec] = []

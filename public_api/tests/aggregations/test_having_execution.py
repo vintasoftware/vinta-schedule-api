@@ -197,6 +197,31 @@ class TestHavingExecution:
         rows = data["data"]["calendarEventAggregate"]
         assert [row["key"]["calendarId"] for row in rows] == [long_events_calendar.id]
 
+    def test_ne_excludes_the_matching_group_via_a_negated_filter(self):
+        """``ne`` is the one comparison the executor builds as a negated
+        ``Q()`` rather than a plain lookup (see executor.py's ``_having_q``);
+        this is what exercises that path end-to-end."""
+        org = self._org()
+        matches = self._make_calendar(org)
+        excluded = self._make_calendar(org)
+        self._make_events(org, matches, 3)
+        self._make_events(org, excluded, 2)
+        system_user, token, auth = self._token(org)
+
+        response = self._post(
+            CALENDAR_EVENT_HAVING_QUERY,
+            system_user,
+            token,
+            auth,
+            self._variables(having={"count": {"ne": 2}}),
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        rows = data["data"]["calendarEventAggregate"]
+        assert [row["key"]["calendarId"] for row in rows] == [matches.id]
+
     def test_and_or_composition_matches_the_documented_semantics(self):
         org = self._org()
         matches_both = self._make_calendar(org)

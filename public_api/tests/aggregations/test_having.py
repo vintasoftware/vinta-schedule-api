@@ -8,6 +8,8 @@ input resolves into the plan's own types (``HavingSpec`` / ``OrderSpec`` /
 ``test_having_execution.py`` and ``test_metric_ordering.py`` for that.
 """
 
+import dataclasses
+
 import pytest
 
 from public_api.aggregations.errors import (
@@ -17,6 +19,7 @@ from public_api.aggregations.errors import (
     OrderVariantError,
 )
 from public_api.aggregations.having import (
+    HAVING_INPUT_BY_ENTITY,
     CalendarEventHavingInput,
     IntComparison,
     NumericAggregateComparison,
@@ -29,6 +32,7 @@ from public_api.aggregations.ordering import (
     resolve_order_by,
 )
 from public_api.aggregations.plan import AggregatableEntity, AggregateOp, ComparisonOp
+from public_api.aggregations.registry import FieldKind, get_registration
 
 
 class TestResolveHaving:
@@ -171,6 +175,36 @@ class TestResolveHaving:
     def test_an_empty_nested_and_child_is_rejected(self):
         with pytest.raises(EmptyHavingInputError):
             resolve_having(CalendarEventHavingInput(and_=[CalendarEventHavingInput()]))
+
+
+class TestHavingInputFieldsMatchRegistry:
+    """``resolve_having``'s whole resolution scheme rests on a convention
+    nothing enforces at import time or at schema build: a ``*HavingInput``
+    attribute name IS the registry field path it filters (see having.py's
+    module docstring). A field that drifts from the registry -- renamed or
+    removed as a relation count or numeric metric -- would not fail loudly;
+    it would reach ``executor.py``'s ``_relation_count_metrics`` empty-handed
+    and raise ``InvalidPlanError``, an engine-internal exception a caller
+    sees only as a masked "Unexpected error". This pins the convention for
+    all six entities instead.
+    """
+
+    @pytest.mark.parametrize("entity", list(AggregatableEntity))
+    def test_every_having_field_is_a_registered_relation_count_or_numeric_metric(self, entity):
+        registration = get_registration(entity)
+        numeric_metric_names = {
+            name
+            for name, aggregatable in registration.metrics.items()
+            if aggregatable.kind is FieldKind.NUMERIC
+        }
+        allowed = {"count", *registration.relation_counts, *numeric_metric_names}
+
+        having_input_cls = HAVING_INPUT_BY_ENTITY[entity]
+        field_names = {
+            f.name for f in dataclasses.fields(having_input_cls) if f.name not in ("and_", "or_")
+        }
+
+        assert field_names <= allowed
 
 
 class TestResolveOrderBy:
