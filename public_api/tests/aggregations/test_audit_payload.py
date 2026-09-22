@@ -74,38 +74,44 @@ def test_audit_payload_contains_metrics_and_dimensions_but_no_values():
     mock_audit_service.record.assert_called_once()
     call_kwargs = mock_audit_service.record.call_args[1]
 
+    # Get the diff payload which contains the metadata
+    diff = call_kwargs["diff"]
     subject = call_kwargs["subject"]
-    assert subject["entity"] == "calendar_event"
-    assert subject["model"] == "AggregateQuery"
-    assert subject["row_count"] == 3
-    assert subject["limit"] == 10
-    assert subject["offset"] == 0
+
+    # Verify subject is correctly formed
+    assert subject.subject_id == "calendar_event"
+    assert subject.subject_type == "public_api.aggregations.aggregate_query"
+
+    # Verify row count, limit, offset in diff
+    assert diff["row_count"] == 3
+    assert diff["limit"] == 10
+    assert diff["offset"] == 0
 
     # Verify dimensions are recorded
-    assert len(subject["dimensions"]) == 1
-    assert subject["dimensions"][0]["alias"] == "event_date"
-    assert subject["dimensions"][0]["field_path"] == "start_time"
-    assert subject["dimensions"][0]["granularity"] == "DAY"
-    assert subject["dimensions"][0]["timezone"] == "America/New_York"
+    assert len(diff["dimensions"]) == 1
+    assert diff["dimensions"][0]["alias"] == "event_date"
+    assert diff["dimensions"][0]["field_path"] == "start_time"
+    assert diff["dimensions"][0]["granularity"] == "DAY"
+    assert diff["dimensions"][0]["timezone"] == "America/New_York"
 
     # Verify metrics are recorded
-    assert len(subject["metrics"]) == 2
-    assert subject["metrics"][0]["alias"] == "event_count"
-    assert subject["metrics"][0]["field_path"] == "id"
-    assert subject["metrics"][0]["operation"] == "COUNT"
-    assert subject["metrics"][1]["alias"] == "concatenated_titles"
-    assert subject["metrics"][1]["field_path"] == "title"
-    assert subject["metrics"][1]["operation"] == "CONCAT"
+    assert len(diff["metrics"]) == 2
+    assert diff["metrics"][0]["alias"] == "event_count"
+    assert diff["metrics"][0]["field_path"] == "id"
+    assert diff["metrics"][0]["operation"] == "COUNT"
+    assert diff["metrics"][1]["alias"] == "concatenated_titles"
+    assert diff["metrics"][1]["field_path"] == "title"
+    assert diff["metrics"][1]["operation"] == "CONCAT"
 
     # Verify filter bounds are recorded
-    assert subject["filter_bounds"]["predicates"]["calendar_ids"] == [1, 2, 3]
+    assert diff["filter_bounds"]["predicates"]["calendar_ids"] == [1, 2, 3]
 
     # Most important: verify that no field values are recorded
     # Convert to JSON to ensure it's serializable and contains no non-opaque data
-    json_str = json.dumps(subject, default=str)
+    json_str = json.dumps(diff, default=str)
 
     # Assert that no title values appear
-    assert "title" not in json_str or json_str.count("title") == 2  # Only field_path
+    assert "title" not in json_str or json_str.count("title") == 1  # Only field_path
 
     # Assert that no concatenated string appears
     # (The separator would not appear in the payload)
@@ -161,8 +167,8 @@ def test_audit_payload_with_date_bounds():
             )
 
     call_kwargs = mock_audit_service.record.call_args[1]
-    subject = call_kwargs["subject"]
+    diff = call_kwargs["diff"]
 
-    assert subject["filter_bounds"]["start"] == "2024-01-01T00:00:00"
-    assert subject["filter_bounds"]["end"] == "2024-12-31T23:59:59"
-    assert subject["row_count"] == 0
+    assert diff["filter_bounds"]["start"] == "2024-01-01T00:00:00"
+    assert diff["filter_bounds"]["end"] == "2024-12-31T23:59:59"
+    assert diff["row_count"] == 0

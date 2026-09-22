@@ -45,7 +45,7 @@ from psycopg.errors import QueryCanceled
 from strawberry.types.nodes import FragmentSpread, InlineFragment, SelectedField, Selection
 
 from organizations.models import Organization
-from public_api.aggregations.audit import record_aggregate_query
+from public_api.aggregations.audit import get_audit_service, record_aggregate_query
 from public_api.aggregations.dimensions import (
     AppointmentTypeGroupByInput,
     AvailableTimeGroupByInput,
@@ -438,11 +438,13 @@ def _execute_aggregate(
 
     output_rows = [_row_to_output(entity, registration, row, metrics) for row in rows]
 
+    audit_service = get_audit_service()
     record_aggregate_query(
         plan=plan,
         organization_id=organization.id,
         system_user=system_user,
         row_count=len(output_rows),
+        audit_service=audit_service,
     )
 
     return output_rows

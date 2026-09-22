@@ -8,7 +8,7 @@ values, group key values, or concatenated strings.
 
 from typing import Annotated, Any
 
-from dependency_injector.wiring import Provide, inject
+from dependency_injector.wiring import Provide
 from vinta_audit_logs.types import SubjectRef
 
 from audit_integration.constants import AuditAction
@@ -16,13 +16,22 @@ from audit_integration.services import OrganizationAuditService
 from public_api.aggregations.plan import AggregateQueryPlan
 
 
-@inject
+def get_audit_service(
+    audit_service: Annotated["OrganizationAuditService | None", Provide["audit_service"]] = None,
+) -> "OrganizationAuditService | None":
+    """Resolve the OrganizationAuditService from the DI container.
+
+    Returns None if not configured, allowing callers to handle gracefully.
+    """
+    return audit_service
+
+
 def record_aggregate_query(
     plan: AggregateQueryPlan,
     organization_id: int,
     system_user: Any,
     row_count: int,
-    audit_service: Annotated[OrganizationAuditService | None, Provide["audit_service"]] = None,
+    audit_service: OrganizationAuditService | None = None,
 ) -> None:
     """Record an aggregate query to the audit trail.
 
