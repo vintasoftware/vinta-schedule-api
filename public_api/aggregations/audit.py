@@ -8,7 +8,7 @@ values, group key values, or concatenated strings.
 
 from typing import Annotated, Any
 
-from dependency_injector.wiring import Provide
+from dependency_injector.wiring import Provide, inject
 from vinta_audit_logs.types import SubjectRef
 
 from audit_integration.constants import AuditAction
@@ -16,6 +16,7 @@ from audit_integration.services import OrganizationAuditService
 from public_api.aggregations.plan import AggregateQueryPlan
 
 
+@inject
 def get_audit_service(
     audit_service: Annotated["OrganizationAuditService | None", Provide["audit_service"]] = None,
 ) -> "OrganizationAuditService | None":
