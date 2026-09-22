@@ -6,7 +6,7 @@ requested limit/offset, and the returned row count. Never records aggregated
 values, group key values, or concatenated strings.
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from dependency_injector.wiring import Provide, inject
 
@@ -19,7 +19,7 @@ from public_api.aggregations.plan import AggregateQueryPlan
 def record_aggregate_query(
     plan: AggregateQueryPlan,
     organization_id: int,
-    system_user: any,
+    system_user: Any,
     row_count: int,
     audit_service: Annotated[OrganizationAuditService | None, Provide["audit_service"]] = None,
 ) -> None:
@@ -73,6 +73,6 @@ def record_aggregate_query(
     audit_service.record(
         action=AuditAction.AGGREGATE_QUERY,
         actor=actor,
-        subject=subject,
+        subject=subject,  # type: ignore[arg-type]
         scope=scope,
     )
