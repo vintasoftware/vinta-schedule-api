@@ -460,6 +460,42 @@ class WindowSpec:
         )
 
 
+#: The alias a nested aggregate's parent key lands under in the row dict.
+#: Prefixed the same way the executor's relation counts and the window
+#: columns are, and for the same reason: nothing stops a caller aliasing a
+#: metric this way, but Django refuses a duplicate annotation name outright,
+#: so a collision is a loud error rather than a wrong number.
+PARENT_KEY_ALIAS = "_parent_key"
+
+
+@dataclass(frozen=True)
+class ParentKeySpec:
+    """The parent column a nested aggregate folds into its ``GROUP BY``.
+
+    Set only when an aggregate is resolved *under* a parent object -- a
+    calendar's ``eventAggregate``, say. One grouped query then covers every
+    parent at that level at once, and the rows are handed back to the parent
+    each belongs to; see :mod:`public_api.aggregations.nested`.
+
+    ``field_path`` is a path on the *aggregated* model that reaches the
+    parent's primary key, so it may traverse relations
+    (``calendar__pool_memberships__pool_fk_id``) rather than naming a column.
+    That is why it is not a :class:`DimensionSpec` and is not held to the
+    registry's dimensions: a caller can never ask for it, the engine supplies
+    it from a closed set in ``nested.py``, and it is a join key rather than a
+    dimension a partner may group by.
+    """
+
+    alias: str
+    field_path: str
+
+    def __post_init__(self) -> None:
+        if not self.alias:
+            raise InvalidPlanError("A parent key needs a non-empty alias")
+        if not self.field_path:
+            raise InvalidPlanError("A parent key needs a non-empty field path")
+
+
 @dataclass(frozen=True)
 class AggregateQueryPlan:
     """The fully resolved request, built from the GraphQL selection before any
@@ -475,6 +511,10 @@ class AggregateQueryPlan:
     window: WindowSpec | None = None
     limit: int = MAX_AGGREGATE_LIMIT
     offset: int = 0
+    #: Set only for a nested aggregate. ``limit`` / ``offset`` then page each
+    #: parent's own groups rather than the result as a whole -- see
+    #: ``executor._sliced_per_parent``.
+    parent_key: ParentKeySpec | None = None
 
     def __post_init__(self) -> None:
         self._validate_dimensions()
@@ -518,6 +558,13 @@ class AggregateQueryPlan:
                     f"Alias {alias!r} is used by more than one dimension or metric"
                 )
             seen.add(alias)
+        # The parent key is a group-by column too, so it has to be distinct
+        # from every caller-facing alias even though no caller can name it.
+        if self.parent_key is not None and self.parent_key.alias in seen:
+            raise AliasCollisionError(
+                f"Alias {self.parent_key.alias!r} is used by both the parent key "
+                f"and a dimension or metric"
+            )
 
     def _validate_order_by(self) -> None:
         known = set(self._all_aliases())
