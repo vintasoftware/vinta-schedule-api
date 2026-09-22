@@ -158,6 +158,73 @@ class TestAggregateQueriesEndToEnd:
 
         assert _count_data_queries(ctx, "calendar_integration_calendarevent") == 1
 
+    def test_omitting_having_and_order_by_is_byte_identical_to_phase_3(self):
+        """This phase's new ``having`` / ``orderBy`` arguments are additive.
+
+        A document that never mentions them -- exactly what every query
+        written against Phase 3's schema still is -- must return the exact
+        same response it did before this phase landed. ``CALENDAR_EVENT_QUERY``
+        itself never sends either argument, so this asserts that running it
+        twice, and running the explicit-``null`` form of the same query,
+        produce byte-identical results.
+        """
+        org = self._org()
+        calendar = self._make_calendar(org)
+        baker.make(
+            "calendar_integration.CalendarEvent",
+            organization=org,
+            calendar=calendar,
+            start_time_tz_unaware=datetime.datetime(2026, 1, 5, 10, 0, 0),
+            end_time_tz_unaware=datetime.datetime(2026, 1, 5, 11, 0, 0),
+            timezone="UTC",
+            external_id=f"e-{uuid.uuid4().hex[:8]}",
+            title="Event A",
+        )
+        system_user, token, auth = self._token(org, PublicAPIResources.CALENDAR_EVENT)
+        variables = {
+            "filter": {**self._bounds(), "calendarId": None},
+            "groupBy": [{"field": "CALENDAR_ID"}],
+        }
+
+        without_the_new_arguments = self._post(
+            self.CALENDAR_EVENT_QUERY, system_user, token, auth, variables
+        )
+
+        query_with_explicit_nulls = """
+        query Agg(
+            $filter: CalendarEventAggregateFilterInput!
+            $groupBy: [CalendarEventGroupByInput!]!
+        ) {
+            calendarEventAggregate(
+                filter: $filter
+                groupBy: $groupBy
+                timezone: "UTC"
+                having: null
+                orderBy: null
+            ) {
+                key { calendarId }
+                count
+                durationMinutes { sum avg }
+                title { concat(separator: "; ") }
+            }
+        }
+        """
+        with_explicit_nulls = self._post(
+            query_with_explicit_nulls, system_user, token, auth, variables
+        )
+
+        assert without_the_new_arguments.status_code == 200
+        assert with_explicit_nulls.status_code == 200
+        assert without_the_new_arguments.json() == with_explicit_nulls.json()
+        assert without_the_new_arguments.json()["data"]["calendarEventAggregate"] == [
+            {
+                "key": {"calendarId": calendar.id},
+                "count": 1,
+                "durationMinutes": {"sum": 60.0, "avg": 60.0},
+                "title": {"concat": "Event A"},
+            }
+        ]
+
     def test_calendar_event_aggregate_separator_argument_reaches_sql(self):
         """A different separator produces a different string -- proof the
         argument was read off the selection and baked into the query,
