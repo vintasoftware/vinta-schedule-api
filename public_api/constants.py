@@ -116,3 +116,11 @@ PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
 )
 
 MAX_AGGREGATE_RANGE = datetime.timedelta(days=366)
+
+#: Postgres ``statement_timeout``, in milliseconds, applied around one
+#: aggregate query's execution and nothing else -- see
+#: ``public_api.aggregations.fields``. A grouped scan over a large tenant's
+#: history is the most expensive thing this API can be asked to do; the
+#: timeout is the last of the plan's four independent cost guards (bounded
+#: date range, capped ``limit``, deterministic ordering, this).
+AGGREGATE_STATEMENT_TIMEOUT_MS = 5000

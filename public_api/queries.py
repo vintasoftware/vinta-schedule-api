@@ -67,6 +67,24 @@ from organizations.models import (
     OrganizationMembership,
     resolve_branding_for_display,
 )
+from public_api.aggregations.fields import (
+    appointment_type_aggregate as _appointment_type_aggregate_resolver,
+)
+from public_api.aggregations.fields import (
+    available_time_aggregate as _available_time_aggregate_resolver,
+)
+from public_api.aggregations.fields import (
+    blocked_time_aggregate as _blocked_time_aggregate_resolver,
+)
+from public_api.aggregations.fields import (
+    calendar_aggregate as _calendar_aggregate_resolver,
+)
+from public_api.aggregations.fields import (
+    calendar_event_aggregate as _calendar_event_aggregate_resolver,
+)
+from public_api.aggregations.fields import (
+    calendar_pool_aggregate as _calendar_pool_aggregate_resolver,
+)
 from public_api.capabilities import assert_org_can_invite
 from public_api.permissions import (
     IsAuthenticated,
@@ -1858,3 +1876,39 @@ class Query:
             primary_color=branding.primary_color,
             secondary_color=branding.secondary_color,
         )
+
+    # ------------------------------------------------------------------
+    # Aggregate root fields (see public_api/aggregations/fields.py)
+    # ------------------------------------------------------------------
+    #
+    # Each wraps the same resolver body; the six wrappers only differ in
+    # their filter / groupBy / row types, which Strawberry needs statically
+    # per field. Resource scoping matches the entity's existing list field
+    # exactly (see FIELD_TO_RESOURCE_MAPPING in public_api/permissions.py) --
+    # an aggregate discloses nothing a caller could not already page one row
+    # at a time.
+
+    calendar_event_aggregate = strawberry_django.field(
+        resolver=_calendar_event_aggregate_resolver,
+        permission_classes=[IsAuthenticated, OrganizationResourceAccess],
+    )
+    available_time_aggregate = strawberry_django.field(
+        resolver=_available_time_aggregate_resolver,
+        permission_classes=[IsAuthenticated, OrganizationResourceAccess],
+    )
+    blocked_time_aggregate = strawberry_django.field(
+        resolver=_blocked_time_aggregate_resolver,
+        permission_classes=[IsAuthenticated, OrganizationResourceAccess],
+    )
+    appointment_type_aggregate = strawberry_django.field(
+        resolver=_appointment_type_aggregate_resolver,
+        permission_classes=[IsAuthenticated, OrganizationResourceAccess],
+    )
+    calendar_aggregate = strawberry_django.field(
+        resolver=_calendar_aggregate_resolver,
+        permission_classes=[IsAuthenticated, OrganizationResourceAccess],
+    )
+    calendar_pool_aggregate = strawberry_django.field(
+        resolver=_calendar_pool_aggregate_resolver,
+        permission_classes=[IsAuthenticated, OrganizationResourceAccess],
+    )

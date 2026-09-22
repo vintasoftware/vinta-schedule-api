@@ -20,7 +20,12 @@ from types import MappingProxyType
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from public_api.aggregations.errors import AliasCollisionError, InvalidPlanError
+from public_api.aggregations.errors import (
+    OFFSET_NEGATIVE_MESSAGE,
+    AliasCollisionError,
+    InvalidPlanError,
+    limit_out_of_range_message,
+)
 from public_api.aggregations.types import TemporalGranularity
 
 
@@ -246,12 +251,19 @@ class AggregateQueryPlan:
                 )
 
     def _validate_slice(self) -> None:
+        # Wording matches ``public_api.queries._slice_qs`` (and this engine's
+        # own caller-visible ``LimitOutOfRangeError`` / ``OffsetOutOfRangeError``)
+        # exactly. A resolver is expected to validate ``limit``/``offset`` before
+        # ever building a plan -- see ``public_api.aggregations.fields`` -- so
+        # this branch is a defensive invariant that should not normally fire.
+        # Still, if it ever does, it must not invent a third wording for the
+        # same refusal.
         if not MIN_AGGREGATE_LIMIT <= self.limit <= MAX_AGGREGATE_LIMIT:
             raise InvalidPlanError(
-                f"limit must be between {MIN_AGGREGATE_LIMIT} and {MAX_AGGREGATE_LIMIT}"
+                limit_out_of_range_message(MIN_AGGREGATE_LIMIT, MAX_AGGREGATE_LIMIT)
             )
         if self.offset < 0:
-            raise InvalidPlanError("offset cannot be negative")
+            raise InvalidPlanError(OFFSET_NEGATIVE_MESSAGE)
 
     # -- read helpers ----------------------------------------------------
 

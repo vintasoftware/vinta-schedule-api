@@ -42,6 +42,11 @@ STATEMENT_TIMEOUT_MESSAGE = "Aggregate query exceeded its time budget"
 #: the schema cannot make. Names neither slot's value.
 GROUP_BY_VARIANT_MESSAGE = "Each groupBy entry must set exactly one of 'field' or 'temporal'"
 
+#: Raised when ``offset`` is negative. Matches ``public_api.queries._slice_qs``'s
+#: wording exactly -- aggregate fields reuse this text rather than inventing a
+#: second one for the same refusal (see ``LimitOutOfRangeError``).
+OFFSET_NEGATIVE_MESSAGE = "Offset must be non-negative"
+
 
 def date_range_exceeded_message(max_days: int) -> str:
     """Wording for a filter whose datetime range is wider than the maximum."""
@@ -49,7 +54,11 @@ def date_range_exceeded_message(max_days: int) -> str:
 
 
 def limit_out_of_range_message(minimum: int, maximum: int) -> str:
-    """Wording for a ``limit`` argument outside the allowed band."""
+    """Wording for a ``limit`` argument outside the allowed band.
+
+    Matches ``public_api.queries._slice_qs``'s wording exactly for the same
+    ``minimum``/``maximum`` -- see ``LimitOutOfRangeError``.
+    """
     return f"Limit must be between {minimum} and {maximum}"
 
 
@@ -77,6 +86,13 @@ class LimitOutOfRangeError(AggregationRequestError):
         super().__init__(limit_out_of_range_message(minimum, maximum))
         self.minimum = minimum
         self.maximum = maximum
+
+
+class OffsetOutOfRangeError(AggregationRequestError):
+    """``offset`` was negative."""
+
+    def __init__(self) -> None:
+        super().__init__(OFFSET_NEGATIVE_MESSAGE)
 
 
 class UnknownTimezoneError(AggregationRequestError):
