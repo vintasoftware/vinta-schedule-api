@@ -116,7 +116,9 @@ class TestAggregateAuditIntegration:
         assert record.diff is not None
         assert record.diff["aggregate_query"]["new"]["row_count"] == row_count
 
-    def test_aggregate_query_with_zero_rows_writes_audit_record(self, django_capture_on_commit_callbacks):
+    def test_aggregate_query_with_zero_rows_writes_audit_record(
+        self, django_capture_on_commit_callbacks
+    ):
         """Audit record is written even when the aggregate returns zero rows."""
         org = self._org()
         system_user, token, auth_service = self._token(org, PublicAPIResources.CALENDAR_EVENT)
