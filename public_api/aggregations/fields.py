@@ -22,10 +22,16 @@ generic function. Everything past argument shape is one function,
    arguments reach the plan: they are read off the selection, not resolved
    later, because the ``string_agg`` they shape is emitted by the same query
    this function builds;
-6. build the plan and hand it to the executor, which supplies the
+6. resolve ``having`` and ``orderBy`` (Phase 4). Both can reference a metric
+   the row selection never asked for -- ``orderBy: [{metric: COUNT}]`` when
+   the caller only wants ``durationMinutes`` in the output, say -- so
+   whatever they need is folded into the metric list here, deduplicated the
+   same way a doubly-selected row field already is, before the plan is ever
+   built. This is what lets such a metric be annotated rather than raising;
+7. build the plan and hand it to the executor, which supplies the
    deterministic group-key ``ORDER BY`` cost guard on its own (see its
    ``_ordering_terms``);
-7. run the query inside a Postgres statement timeout scoped to this query
+8. run the query inside a Postgres statement timeout scoped to this query
    alone -- the last of the plan's four cost guards -- and map each row dict
    onto the entity's ``*AggregateRow`` type.
 
@@ -70,6 +76,24 @@ from public_api.aggregations.filters import (
     CalendarEventAggregateFilterInput,
     CalendarPoolAggregateFilterInput,
 )
+from public_api.aggregations.having import (
+    AppointmentTypeHavingInput,
+    AvailableTimeHavingInput,
+    BlockedTimeHavingInput,
+    CalendarEventHavingInput,
+    CalendarHavingInput,
+    CalendarPoolHavingInput,
+    resolve_having,
+)
+from public_api.aggregations.ordering import (
+    AppointmentTypeAggregateOrderInput,
+    AvailableTimeAggregateOrderInput,
+    BlockedTimeAggregateOrderInput,
+    CalendarAggregateOrderInput,
+    CalendarEventAggregateOrderInput,
+    CalendarPoolAggregateOrderInput,
+    resolve_order_by,
+)
 from public_api.aggregations.output_types import (
     ROW_TYPE_BY_ENTITY,
     AppointmentTypeAggregateRow,
@@ -82,12 +106,14 @@ from public_api.aggregations.output_types import (
 from public_api.aggregations.plan import (
     MAX_AGGREGATE_LIMIT,
     MIN_AGGREGATE_LIMIT,
+    ROW_COUNT_ALIAS,
     ROW_COUNT_FIELD_PATH,
     AggregatableEntity,
     AggregateOp,
     AggregateQueryPlan,
     FilterBounds,
     MetricSpec,
+    default_metric_alias,
 )
 from public_api.aggregations.registry import EntityRegistration, FieldKind, get_registration
 from public_api.aggregations.types import (
@@ -134,7 +160,9 @@ _SELECTION_OPS_BY_KIND: dict[FieldKind, dict[str, AggregateOp]] = {
 
 #: The mandatory row-count metric every row carries, regardless of selection
 #: -- ``*AggregateRow.count`` is non-null in every entity's output type.
-_COUNT_METRIC = MetricSpec(alias="count", field_path=ROW_COUNT_FIELD_PATH, op=AggregateOp.COUNT)
+_COUNT_METRIC = MetricSpec(
+    alias=ROW_COUNT_ALIAS, field_path=ROW_COUNT_FIELD_PATH, op=AggregateOp.COUNT
+)
 
 
 def _get_organization(info: strawberry.Info) -> Organization:
@@ -277,7 +305,7 @@ def _build_metrics(
             if op is AggregateOp.CONCAT:
                 options["separator"] = sub_selection.arguments.get("separator", ",")
                 options["distinct"] = sub_selection.arguments.get("distinct", False)
-            alias = f"{field_path}__{op.value.lower()}"
+            alias = default_metric_alias(field_path, op)
             _add_metric(
                 metrics,
                 seen,
@@ -341,12 +369,12 @@ def _row_to_output(
     row_type = ROW_TYPE_BY_ENTITY[entity]
     kwargs: dict[str, Any] = {
         "key": build_group_key(entity, row),
-        "count": row.get("count", 0),
+        "count": row.get(ROW_COUNT_ALIAS, 0),
     }
 
     grouped: dict[str, dict[AggregateOp, Any]] = {}
     for metric in metrics:
-        if metric.alias == "count":
+        if metric.alias == ROW_COUNT_ALIAS:
             continue
         if metric.field_path in registration.relation_counts:
             kwargs[metric.field_path] = row.get(metric.alias)
@@ -409,6 +437,8 @@ def _execute_aggregate(
     timezone: str,
     limit: int,
     offset: int,
+    having: Any,
+    order_by: Sequence[Any] | None,
 ) -> list[Any]:
     """The one resolver body every aggregate root field shares."""
     _validate_slice(limit, offset)
@@ -421,13 +451,32 @@ def _execute_aggregate(
     dimensions = resolve_dimensions(group_by, timezone)
 
     registration = get_registration(entity)
-    metrics = _build_metrics(registration, _row_selections(info))
+
+    metrics_list: list[MetricSpec] = []
+    seen: dict[str, MetricSpec] = {}
+    for metric in _build_metrics(registration, _row_selections(info)):
+        _add_metric(metrics_list, seen, metric)
+
+    having_spec, having_metrics = resolve_having(having)
+    for metric in having_metrics:
+        _add_metric(metrics_list, seen, metric)
+
+    dimension_aliases = tuple(dimension.alias for dimension in dimensions)
+    order_specs, order_metrics = resolve_order_by(
+        entity, order_by or (), timezone, dimension_aliases
+    )
+    for metric in order_metrics:
+        _add_metric(metrics_list, seen, metric)
+
+    metrics = tuple(metrics_list)
 
     plan = AggregateQueryPlan(
         entity=entity,
         dimensions=dimensions,
         metrics=metrics,
         filter_bounds=_filter_bounds(filter_input),
+        having=having_spec,
+        order_by=order_specs,
         limit=limit,
         offset=offset,
     )
@@ -457,10 +506,20 @@ def calendar_event_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: CalendarEventHavingInput | None = None,
+    order_by: list[CalendarEventAggregateOrderInput] | None = None,
 ) -> list[CalendarEventAggregateRow]:
     """Group and aggregate ``CalendarEvent`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.CALENDAR_EVENT, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.CALENDAR_EVENT,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
     )
 
 
@@ -471,10 +530,20 @@ def available_time_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: AvailableTimeHavingInput | None = None,
+    order_by: list[AvailableTimeAggregateOrderInput] | None = None,
 ) -> list[AvailableTimeAggregateRow]:
     """Group and aggregate ``AvailableTime`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.AVAILABLE_TIME, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.AVAILABLE_TIME,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
     )
 
 
@@ -485,10 +554,20 @@ def blocked_time_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: BlockedTimeHavingInput | None = None,
+    order_by: list[BlockedTimeAggregateOrderInput] | None = None,
 ) -> list[BlockedTimeAggregateRow]:
     """Group and aggregate ``BlockedTime`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.BLOCKED_TIME, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.BLOCKED_TIME,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
     )
 
 
@@ -501,10 +580,20 @@ def appointment_type_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: AppointmentTypeHavingInput | None = None,
+    order_by: list[AppointmentTypeAggregateOrderInput] | None = None,
 ) -> list[AppointmentTypeAggregateRow]:
     """Group and aggregate ``AppointmentType`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.APPOINTMENT_TYPE, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.APPOINTMENT_TYPE,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
     )
 
 
@@ -515,10 +604,20 @@ def calendar_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: CalendarHavingInput | None = None,
+    order_by: list[CalendarAggregateOrderInput] | None = None,
 ) -> list[CalendarAggregateRow]:
     """Group and aggregate ``Calendar`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.CALENDAR, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.CALENDAR,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
     )
 
 
@@ -529,8 +628,18 @@ def calendar_pool_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: CalendarPoolHavingInput | None = None,
+    order_by: list[CalendarPoolAggregateOrderInput] | None = None,
 ) -> list[CalendarPoolAggregateRow]:
     """Group and aggregate ``CalendarPool`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.CALENDAR_POOL, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.CALENDAR_POOL,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
     )

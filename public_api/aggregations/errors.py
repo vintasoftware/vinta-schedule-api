@@ -47,6 +47,26 @@ GROUP_BY_VARIANT_MESSAGE = "Each groupBy entry must set exactly one of 'field' o
 #: second one for the same refusal (see ``LimitOutOfRangeError``).
 OFFSET_NEGATIVE_MESSAGE = "Offset must be non-negative"
 
+#: Raised when an ``orderBy`` entry sets neither its scalar ``key`` slot nor
+#: its ``metric`` slot, or sets both -- the same "exactly one variant" shape
+#: ``groupBy`` uses, for the same reason: GraphQL has no input unions.
+ORDER_VARIANT_MESSAGE = "Each orderBy entry must set exactly one of 'key' or 'metric'"
+
+#: Raised when an ``orderBy`` entry's ``key`` names a dimension this query did
+#: not actually group by. Names neither the dimension asked for nor the ones
+#: available, per the module docstring.
+ORDER_KEY_NOT_GROUPED_MESSAGE = "orderBy.key must be one of this query's groupBy dimensions"
+
+#: Raised when an ``IntComparison`` / ``FloatComparison`` sets none of its
+#: operators -- a comparison with nothing to compare would match every group,
+#: which is never what a caller who wrote a HAVING clause meant.
+EMPTY_HAVING_COMPARISON_MESSAGE = "A having comparison must set at least one operator"
+
+#: Raised when a ``*HavingInput`` node sets none of its metric fields and
+#: neither of 'and' / 'or' -- the same "nothing to compare" refusal, one
+#: level up the tree.
+EMPTY_HAVING_INPUT_MESSAGE = "A having input must set at least one field, or 'and' / 'or'"
+
 
 def date_range_exceeded_message(max_days: int) -> str:
     """Wording for a filter whose datetime range is wider than the maximum."""
@@ -114,6 +134,34 @@ class AggregateTimeoutError(AggregationRequestError):
 
     def __init__(self) -> None:
         super().__init__(STATEMENT_TIMEOUT_MESSAGE)
+
+
+class OrderVariantError(AggregationRequestError):
+    """An ``orderBy`` entry set both of its variant slots, or neither."""
+
+    def __init__(self) -> None:
+        super().__init__(ORDER_VARIANT_MESSAGE)
+
+
+class OrderKeyNotGroupedError(AggregationRequestError):
+    """An ``orderBy`` entry's ``key`` names a dimension this query did not group by."""
+
+    def __init__(self) -> None:
+        super().__init__(ORDER_KEY_NOT_GROUPED_MESSAGE)
+
+
+class EmptyHavingComparisonError(AggregationRequestError):
+    """An ``IntComparison`` / ``FloatComparison`` set no operator."""
+
+    def __init__(self) -> None:
+        super().__init__(EMPTY_HAVING_COMPARISON_MESSAGE)
+
+
+class EmptyHavingInputError(AggregationRequestError):
+    """A ``*HavingInput`` node set no field and neither of 'and' / 'or'."""
+
+    def __init__(self) -> None:
+        super().__init__(EMPTY_HAVING_INPUT_MESSAGE)
 
 
 # ---------------------------------------------------------------------------

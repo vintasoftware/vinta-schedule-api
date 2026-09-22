@@ -16,8 +16,10 @@ from public_api.aggregations import (
     AggregateOp,
     AggregateQueryPlan,
     AliasCollisionError,
+    ComparisonOp,
     DimensionSpec,
     FilterBounds,
+    HavingComparison,
     HavingSpec,
     InvalidPlanError,
     MetricSpec,
@@ -104,6 +106,56 @@ class TestFilterBounds:
         assert dict(bounds.predicates) == {}
 
 
+class TestHavingSpec:
+    def test_a_leaf_comparison_is_accepted(self):
+        spec = HavingSpec(
+            comparison=HavingComparison(alias="count", comparison=ComparisonOp.GT, value=2)
+        )
+        assert spec.referenced_aliases() == ("count",)
+
+    def test_setting_nothing_is_rejected(self):
+        with pytest.raises(InvalidPlanError):
+            HavingSpec()
+
+    def test_setting_comparison_and_all_of_together_is_rejected(self):
+        leaf = HavingSpec(
+            comparison=HavingComparison(alias="count", comparison=ComparisonOp.GT, value=2)
+        )
+        with pytest.raises(InvalidPlanError):
+            HavingSpec(comparison=leaf.comparison, all_of=(leaf,))
+
+    def test_setting_all_of_and_any_of_together_is_rejected(self):
+        leaf = HavingSpec(
+            comparison=HavingComparison(alias="count", comparison=ComparisonOp.GT, value=2)
+        )
+        with pytest.raises(InvalidPlanError):
+            HavingSpec(all_of=(leaf,), any_of=(leaf,))
+
+    def test_referenced_aliases_collects_every_leaf_in_the_tree(self):
+        spec = HavingSpec(
+            all_of=(
+                HavingSpec(
+                    comparison=HavingComparison(alias="count", comparison=ComparisonOp.GT, value=2)
+                ),
+                HavingSpec(
+                    any_of=(
+                        HavingSpec(
+                            comparison=HavingComparison(
+                                alias="duration_sum", comparison=ComparisonOp.LT, value=100
+                            )
+                        ),
+                        HavingSpec(
+                            comparison=HavingComparison(
+                                alias="calendar_id", comparison=ComparisonOp.NE, value=1
+                            )
+                        ),
+                    )
+                ),
+            )
+        )
+        assert set(spec.referenced_aliases()) == {"count", "duration_sum", "calendar_id"}
+
+
 class TestPlanConstruction:
     def test_two_identically_built_plans_are_equal(self):
         assert _plan() == _plan()
@@ -162,10 +214,21 @@ class TestPlanConstruction:
         assert plan.dimension_aliases == ("calendar_id", "timezone")
         assert plan.metric_aliases == ("count", "duration_sum")
 
-    def test_having_and_window_slots_carry_their_placeholder_objects(self):
-        plan = _plan(having=HavingSpec(), window=WindowSpec())
-        assert plan.having == HavingSpec()
+    def test_window_slot_still_carries_its_placeholder_object(self):
+        """Phase 6 owns ``WindowSpec``'s shape; until then it stays an empty
+        marker, unlike ``HavingSpec``, which this phase gives real fields."""
+        plan = _plan(window=WindowSpec())
         assert plan.window == WindowSpec()
+
+    def test_a_having_clause_referencing_a_known_metric_is_accepted(self):
+        plan = _plan(
+            having=HavingSpec(
+                comparison=HavingComparison(alias="count", comparison=ComparisonOp.GT, value=2)
+            )
+        )
+        assert plan.having is not None
+        assert plan.having.comparison is not None
+        assert plan.having.comparison.alias == "count"
 
 
 class TestPlanValidation:
@@ -222,6 +285,39 @@ class TestPlanValidation:
             )
         )
         assert [order.alias for order in plan.order_by] == ["count", "calendar_id"]
+
+    def test_filtering_on_an_unknown_alias_is_rejected(self):
+        with pytest.raises(InvalidPlanError) as excinfo:
+            _plan(
+                having=HavingSpec(
+                    comparison=HavingComparison(alias="nope", comparison=ComparisonOp.GT, value=1)
+                )
+            )
+        assert "nope" in str(excinfo.value)
+
+    def test_filtering_on_a_known_alias_inside_an_and_or_tree_is_accepted(self):
+        plan = _plan(
+            having=HavingSpec(
+                all_of=(
+                    HavingSpec(
+                        comparison=HavingComparison(
+                            alias="count", comparison=ComparisonOp.GT, value=1
+                        )
+                    ),
+                    HavingSpec(
+                        any_of=(
+                            HavingSpec(
+                                comparison=HavingComparison(
+                                    alias="calendar_id", comparison=ComparisonOp.EQ, value=5
+                                )
+                            ),
+                        )
+                    ),
+                )
+            )
+        )
+        assert plan.having is not None
+        assert set(plan.having.referenced_aliases()) == {"count", "calendar_id"}
 
     @pytest.mark.parametrize("limit", [0, -1, MAX_AGGREGATE_LIMIT + 1])
     def test_a_limit_outside_the_band_is_rejected(self, limit):

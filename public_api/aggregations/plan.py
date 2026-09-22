@@ -34,6 +34,13 @@ from public_api.aggregations.types import TemporalGranularity
 #: as a constant so a plan builder does not have to know the column name.
 ROW_COUNT_FIELD_PATH = "id"
 
+#: The alias every row's mandatory count lands under -- see
+#: ``public_api.aggregations.fields``'s ``_COUNT_METRIC``, which every row
+#: carries under this name regardless of what else a query selected. HAVING
+#: and ORDER BY resolution reuse it so a caller can filter or sort on
+#: ``count`` without a second name for the same thing.
+ROW_COUNT_ALIAS = "count"
+
 #: The band ``limit`` must fall in. Matches every other list field on this
 #: API; a warehouse consumer that needs more wants a paged export, not a
 #: bigger live query.
@@ -80,6 +87,31 @@ class OrderDirection(enum.Enum):
 
     ASC = "ASC"
     DESC = "DESC"
+
+
+class ComparisonOp(enum.Enum):
+    """One comparison a HAVING leaf can make against a metric or dimension alias."""
+
+    EQ = "EQ"
+    NE = "NE"
+    GT = "GT"
+    GTE = "GTE"
+    LT = "LT"
+    LTE = "LTE"
+
+
+def default_metric_alias(field_path: str, op: AggregateOp) -> str:
+    """The alias a metric gets when nothing else names one for it.
+
+    ``public_api.aggregations.fields`` uses this for every metric it builds
+    from a GraphQL row selection, and HAVING / ORDER BY resolution reuse it
+    so a caller can filter or sort on a value it did not select for
+    output -- the alias lines up with one the row selection would have
+    produced, so referencing an unselected metric this way still lands on
+    exactly one annotation rather than a second, differently-named one for
+    the same aggregate.
+    """
+    return f"{field_path}__{op.value.lower()}"
 
 
 @dataclass(frozen=True)
@@ -165,15 +197,61 @@ class OrderSpec:
 
 
 @dataclass(frozen=True)
-class HavingSpec:
-    """Post-aggregation predicate tree.
+class HavingComparison:
+    """One leaf predicate: ``<alias> <comparison> <value>``.
 
-    Phase 4 of the plan owns the shape of this and the executor's handling of
-    it. It is declared here, empty, because ``AggregateQueryPlan`` is what
-    Phase 5's audit hook reads: giving the slot a name now means the audit
-    record does not change shape when HAVING lands. Until then the executor
-    refuses a plan that sets it rather than dropping it silently.
+    ``alias`` names a dimension or metric alias the same way
+    :class:`OrderSpec` does -- see
+    ``AggregateQueryPlan._validate_having``, which checks it against the
+    same known-alias set ``_validate_order_by`` already checks
+    ``OrderSpec.alias`` against. HAVING can filter on a metric the caller
+    never asked to see in the row selection; the resolver layer
+    (``public_api.aggregations.having``) is what makes sure such a metric is
+    still in ``AggregateQueryPlan.metrics`` under this same alias, so the
+    executor never has to treat this leaf specially.
     """
+
+    alias: str
+    comparison: ComparisonOp
+    value: float | int
+
+
+@dataclass(frozen=True)
+class HavingSpec:
+    """Post-aggregation predicate tree. Exactly one of the three slots is set:
+    ``comparison`` for a leaf, ``all_of`` / ``any_of`` to combine child specs
+    with AND / OR.
+
+    ``AggregateQueryPlan`` is what Phase 5's audit hook reads, so giving this
+    a real shape (rather than the empty placeholder earlier phases carried)
+    is what lets the audit record describe a HAVING clause's shape -- aliases
+    and comparisons, never the values a metric held for one group.
+    """
+
+    comparison: HavingComparison | None = None
+    all_of: tuple["HavingSpec", ...] = ()
+    any_of: tuple["HavingSpec", ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "all_of", tuple(self.all_of))
+        object.__setattr__(self, "any_of", tuple(self.any_of))
+        set_slots = sum([self.comparison is not None, bool(self.all_of), bool(self.any_of)])
+        if set_slots != 1:
+            raise InvalidPlanError(
+                "A having node must set exactly one of comparison, all_of, or any_of"
+            )
+
+    def referenced_aliases(self) -> tuple[str, ...]:
+        """Every alias this node or its children compare against.
+
+        Used by ``AggregateQueryPlan._validate_having`` to confirm each one
+        is a dimension or metric the plan actually carries.
+        """
+        if self.comparison is not None:
+            return (self.comparison.alias,)
+        return tuple(
+            alias for child in (*self.all_of, *self.any_of) for alias in child.referenced_aliases()
+        )
 
 
 @dataclass(frozen=True)
@@ -206,6 +284,7 @@ class AggregateQueryPlan:
         self._validate_metrics()
         self._validate_aliases()
         self._validate_order_by()
+        self._validate_having()
         self._validate_slice()
 
     # -- validation ------------------------------------------------------
@@ -248,6 +327,16 @@ class AggregateQueryPlan:
             if order.alias not in known:
                 raise InvalidPlanError(
                     f"Cannot order by {order.alias!r}: no dimension or metric carries that alias"
+                )
+
+    def _validate_having(self) -> None:
+        if self.having is None:
+            return
+        known = set(self._all_aliases())
+        for alias in self.having.referenced_aliases():
+            if alias not in known:
+                raise InvalidPlanError(
+                    f"Cannot filter on {alias!r}: no dimension or metric carries that alias"
                 )
 
     def _validate_slice(self) -> None:

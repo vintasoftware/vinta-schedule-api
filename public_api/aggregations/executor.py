@@ -28,10 +28,20 @@ regardless of what timezone each row stores. Buckets are sparse: the query
 groups the rows that exist, so a day with none produces no row at all rather
 than a zero.
 
-**A feature this phase does not build is refused, never ignored.**
-``HAVING`` (Phase 4) and window functions (Phase 6) each raise here until
-their phase lands. A window clause that is silently dropped returns
-confident numbers that are not the ones asked for.
+**A feature this phase does not build is refused, never ignored.** Window
+functions (Phase 6) raise here until that phase lands. A window clause that
+is silently dropped returns confident numbers that are not the ones asked
+for.
+
+**HAVING is a ``.filter()`` after the ``.annotate()``, nothing more.**
+Django renders a post-``GROUP BY`` ``.filter()`` referencing an aggregate
+alias as SQL ``HAVING`` on its own; this module only has to turn a
+:class:`~public_api.aggregations.plan.HavingSpec` tree into the matching
+``Q()`` tree. Every alias a ``HavingSpec`` leaf names is guaranteed to
+already be one of ``plan.metrics`` or ``plan.dimensions`` -- the resolver
+layer (``public_api.aggregations.having``) is what adds a metric HAVING
+references but the row selection did not, before the plan is ever built --
+so this module never needs to annotate anything on ``HavingSpec``'s behalf.
 """
 
 from collections.abc import Mapping
@@ -69,7 +79,9 @@ from public_api.aggregations.plan import (
     ROW_COUNT_FIELD_PATH,
     AggregateOp,
     AggregateQueryPlan,
+    ComparisonOp,
     DimensionSpec,
+    HavingSpec,
     MetricSpec,
     OrderDirection,
 )
@@ -127,6 +139,9 @@ def build_aggregate_queryset(
         }
     )
 
+    if plan.having is not None:
+        queryset = queryset.filter(_having_q(plan.having))
+
     # Always explicit, for two reasons: it clears any model-level default
     # ordering, which would otherwise add its columns to the GROUP BY and
     # split groups; and paging over an unordered grouped query returns
@@ -138,10 +153,6 @@ def build_aggregate_queryset(
 
 def _reject_unbuilt_features(plan: AggregateQueryPlan) -> None:
     """Refuse the parts of a plan later phases of the engine own."""
-    if plan.having is not None:
-        raise UnsupportedPlanFeatureError(
-            "HAVING is not built yet; it lands with the having and metric-ordering phase"
-        )
     if plan.window is not None:
         raise UnsupportedPlanFeatureError(
             "Window functions are not built yet; they land with the window-function phase"
@@ -371,3 +382,43 @@ def _ordering_terms(plan: AggregateQueryPlan) -> tuple[str, ...]:
     ordered_aliases = {order.alias for order in plan.order_by}
     tiebreak = tuple(alias for alias in plan.dimension_aliases if alias not in ordered_aliases)
     return requested + tiebreak
+
+
+#: ``ComparisonOp`` to the Django field lookup it filters an annotated alias
+#: with. ``NE`` is absent: it is a negated ``exact``, built separately in
+#: :func:`_having_q` rather than forced into this table as a fake lookup name.
+_COMPARISON_LOOKUP: Mapping[ComparisonOp, str] = MappingProxyType(
+    {
+        ComparisonOp.EQ: "exact",
+        ComparisonOp.GT: "gt",
+        ComparisonOp.GTE: "gte",
+        ComparisonOp.LT: "lt",
+        ComparisonOp.LTE: "lte",
+    }
+)
+
+
+def _having_q(node: HavingSpec) -> Q:
+    """One ``HavingSpec`` node, as the ``Q()`` Django filters the annotated
+    queryset with. Every alias a leaf names is already one of ``plan.metrics``
+    or ``plan.dimensions`` by the time a plan reaches here -- see the
+    resolver layer's ``having.py`` -- so this never has to annotate anything
+    itself; it only has to walk the tree.
+    """
+    if node.comparison is not None:
+        comparison = node.comparison
+        if comparison.comparison is ComparisonOp.NE:
+            return ~Q(**{comparison.alias: comparison.value})
+        lookup = _COMPARISON_LOOKUP[comparison.comparison]
+        return Q(**{f"{comparison.alias}__{lookup}": comparison.value})
+
+    if node.all_of:
+        combined = Q()
+        for child in node.all_of:
+            combined &= _having_q(child)
+        return combined
+
+    combined = Q()
+    for index, child in enumerate(node.any_of):
+        combined = _having_q(child) if index == 0 else combined | _having_q(child)
+    return combined

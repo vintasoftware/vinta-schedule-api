@@ -39,7 +39,9 @@ from public_api.aggregations import (
     AggregateOp,
     AggregateQueryPlan,
     AliasCollisionError,
+    ComparisonOp,
     DimensionSpec,
+    HavingComparison,
     HavingSpec,
     InvalidPlanError,
     MetricSpec,
@@ -823,9 +825,20 @@ class TestFeaturesLaterPhasesOwn:
         with organization_context(org):
             build_aggregate_queryset(plan, CalendarEvent.objects.all())
 
-    def test_a_having_clause_is_refused_for_now(self, org):
-        with organization_context(org), pytest.raises(UnsupportedPlanFeatureError):
-            build_aggregate_queryset(_event_plan(having=HavingSpec()), CalendarEvent.objects.all())
+    def test_a_having_clause_is_no_longer_refused(self, org):
+        """HAVING landed with this phase.
+
+        The behaviour it now has is covered by ``test_having_execution.py``;
+        this only records that the refusal was removed rather than relaxed
+        elsewhere.
+        """
+        plan = _event_plan(
+            having=HavingSpec(
+                comparison=HavingComparison(alias="count", comparison=ComparisonOp.GT, value=0)
+            )
+        )
+        with organization_context(org):
+            build_aggregate_queryset(plan, CalendarEvent.objects.all())
 
     def test_a_window_clause_is_refused_for_now(self, org):
         with organization_context(org), pytest.raises(UnsupportedPlanFeatureError):
