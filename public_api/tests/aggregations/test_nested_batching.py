@@ -25,10 +25,12 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import Calendar
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
+from public_api.aggregations import fields as fields_module
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
+from users.models import User
 
 
 _EVENT_TABLE = "calendar_integration_calendarevent"
@@ -168,6 +170,45 @@ class TestNestedAggregateBatching:
         assert payload.get("errors", []) == []
         return payload["data"]["calendars"], ctx
 
+    def _run_scoped_nested(self, calendar_count: int) -> CaptureQueriesContext:
+        """The same document, run by a token scoped to one membership.
+
+        The owner owns every calendar, so the aggregate's numbers are the
+        org-wide ones -- what differs is that ``scoped_calendar_ids`` now
+        costs queries, which is the point.
+        """
+        org = self._org()
+        user: User = baker.make("users.User")
+        membership: OrganizationMembership = baker.make(
+            "organizations.OrganizationMembership",
+            organization=org,
+            user=user,
+            is_active=True,
+        )
+        for calendar in self._world(org, calendar_count):
+            baker.make(
+                "calendar_integration.CalendarOwnership",
+                calendar=calendar,
+                membership=membership,
+            )
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name=f"scoped_{uuid.uuid4().hex[:8]}", organization=org
+        )
+        system_user.scoped_to_membership_user_id = user.id
+        system_user.save(update_fields=["scoped_to_membership_user_id"])
+        for resource in (PublicAPIResources.CALENDAR, PublicAPIResources.CALENDAR_EVENT):
+            baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self._post(
+                self.NESTED_QUERY, system_user, token, auth_service, self._nested_variables()
+            )
+        payload = response.json()
+        assert payload.get("errors", []) == []
+        assert len(payload["data"]["calendars"]) == calendar_count
+        return ctx
+
     # -- the load-bearing assertions -----------------------------------
 
     def test_the_event_query_count_does_not_grow_with_the_calendar_count(self):
@@ -200,6 +241,26 @@ class TestNestedAggregateBatching:
         _, twenty_five_ctx = self._run_nested(self._org(), 25)
 
         assert len(five_ctx.captured_queries) == len(twenty_five_ctx.captured_queries)
+
+    def test_a_scoped_token_pays_the_same_flat_cost(self):
+        """The org-wide token is the one case where scoping is free.
+
+        ``filter_input.apply()`` calls ``scoped_calendar_ids``, which for an
+        org-wide token short-circuits without touching the database -- so a
+        suite that only ever mints org-wide tokens cannot see whether that
+        call runs once per level or once per parent. A token carrying
+        ``scoped_to_membership_user_id`` resolves its membership and
+        materializes the owner's calendar ids, two or three statements, and
+        those statements name neither the aggregated table nor anything
+        ``_count_data_queries`` filters on. Comparing the whole document's
+        cost at five parents and at twenty-five is what catches it.
+        """
+        five_ctx = self._run_scoped_nested(5)
+        twenty_five_ctx = self._run_scoped_nested(25)
+
+        assert len(five_ctx.captured_queries) == len(twenty_five_ctx.captured_queries)
+        assert _count_data_queries(five_ctx, _EVENT_TABLE) == 1
+        assert _count_data_queries(twenty_five_ctx, _EVENT_TABLE) == 1
 
     def test_two_nested_aggregates_under_one_list_are_two_queries_not_fifty(self):
         """Sibling aggregates each get their own batch, and only one each."""
@@ -454,6 +515,269 @@ class TestNestedAggregateBatching:
         for calendar in payload["data"]["calendars"]:
             assert len(calendar["eventAggregate"]) == 1
             assert calendar["eventAggregate"][0]["key"]["startTimeBucket"].startswith("2026-01-06")
+
+    # -- the qualify rewrite -------------------------------------------
+    #
+    # The per-parent slice makes the nested path a genuinely different
+    # statement from the root path: filtering on the row-number window makes
+    # Django wrap the whole grouped query in ``SELECT * FROM ( ... ) qualify
+    # WHERE ...``, which relocates the ``WHERE`` *and the ``HAVING``* into the
+    # inner query and re-emits the ``ORDER BY`` on the outer one. Nothing
+    # about that rewrite is this module's to control, so each clause that
+    # rides through it is asserted against real rows rather than assumed.
+
+    def test_having_filters_each_parents_groups_through_the_qualify_wrap(self):
+        """``HAVING`` lands in the inner query and still filters correctly.
+
+        Two calendars, each with a two-event day and a one-event day.
+        ``count >= 2`` has to drop exactly the one-event day, per calendar --
+        a ``HAVING`` that survived the rewrite but lost its place would either
+        filter nothing or filter the batch.
+        """
+        org = self._org()
+        for _ in range(2):
+            calendar = self._make_calendar(org)
+            self._make_event(org, calendar, day=5, start_hour=10, end_hour=11, title="A")
+            self._make_event(org, calendar, day=5, start_hour=12, end_hour=13, title="B")
+            self._make_event(org, calendar, day=6, start_hour=10, end_hour=11, title="C")
+        system_user, token, auth = self._token(
+            org, PublicAPIResources.CALENDAR, PublicAPIResources.CALENDAR_EVENT
+        )
+        query = """
+        query Having(
+            $filter: CalendarEventAggregateFilterInput!
+            $groupBy: [CalendarEventGroupByInput!]!
+            $having: CalendarEventHavingInput
+        ) {
+            calendars(limit: 100) {
+                eventAggregate(
+                    filter: $filter
+                    groupBy: $groupBy
+                    timezone: "UTC"
+                    having: $having
+                ) {
+                    key { startTimeBucket }
+                    count
+                }
+            }
+        }
+        """
+        variables = {
+            "filter": {**self._bounds(), "calendarId": None},
+            "groupBy": [{"temporal": {"field": "START_TIME", "granularity": "DAY"}}],
+            "having": {"count": {"gte": 2}},
+        }
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self._post(query, system_user, token, auth, variables)
+
+        payload = response.json()
+        assert payload.get("errors", []) == []
+        calendars = payload["data"]["calendars"]
+        assert len(calendars) == 2
+        for calendar in calendars:
+            rows = calendar["eventAggregate"]
+            assert len(rows) == 1
+            assert rows[0]["count"] == 2
+            assert rows[0]["key"]["startTimeBucket"].startswith("2026-01-05")
+        assert _count_data_queries(ctx, _EVENT_TABLE) == 1
+        # The rewrite really did happen -- otherwise this test would be
+        # asserting HAVING through the ordinary single-level statement.
+        (sql,) = [q["sql"] for q in ctx.captured_queries if _EVENT_TABLE in q["sql"]]
+        assert "qualify" in sql
+        assert "HAVING" in sql
+
+    def test_order_by_a_metric_orders_within_each_parent(self):
+        """``ORDER BY`` is re-emitted outside the wrap and still holds.
+
+        Each calendar's busiest day must come first, and the per-parent
+        ``limit: 1`` then has to cut *that* day -- which is only true if the
+        window's own ordering and the outer ordering agree after the rewrite.
+        """
+        org = self._org()
+        calendars = []
+        for _ in range(3):
+            calendar = self._make_calendar(org)
+            # The 6th is the busy day; the 5th has one event.
+            self._make_event(org, calendar, day=5, start_hour=10, end_hour=11, title="A")
+            self._make_event(org, calendar, day=6, start_hour=10, end_hour=11, title="B")
+            self._make_event(org, calendar, day=6, start_hour=12, end_hour=13, title="C")
+            self._make_event(org, calendar, day=6, start_hour=14, end_hour=15, title="D")
+            calendars.append(calendar)
+        system_user, token, auth = self._token(
+            org, PublicAPIResources.CALENDAR, PublicAPIResources.CALENDAR_EVENT
+        )
+        query = """
+        query Ordered(
+            $filter: CalendarEventAggregateFilterInput!
+            $groupBy: [CalendarEventGroupByInput!]!
+            $orderBy: [CalendarEventAggregateOrderInput!]
+        ) {
+            calendars(limit: 100) {
+                eventAggregate(
+                    filter: $filter
+                    groupBy: $groupBy
+                    timezone: "UTC"
+                    orderBy: $orderBy
+                    limit: 1
+                ) {
+                    key { startTimeBucket }
+                    count
+                }
+            }
+        }
+        """
+        variables = {
+            "filter": {**self._bounds(), "calendarId": None},
+            "groupBy": [{"temporal": {"field": "START_TIME", "granularity": "DAY"}}],
+            "orderBy": [{"metric": "COUNT", "direction": "DESC"}],
+        }
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self._post(query, system_user, token, auth, variables)
+
+        payload = response.json()
+        assert payload.get("errors", []) == []
+        calendars_out = payload["data"]["calendars"]
+        assert len(calendars_out) == 3
+        for calendar in calendars_out:
+            rows = calendar["eventAggregate"]
+            assert len(rows) == 1
+            # The busy day, not the first day -- the ordering decided the page.
+            assert rows[0]["count"] == 3
+            assert rows[0]["key"]["startTimeBucket"].startswith("2026-01-06")
+        assert _count_data_queries(ctx, _EVENT_TABLE) == 1
+
+    def test_having_and_order_by_together_agree_with_the_root_field(self):
+        """The two clauses through the rewrite, checked against the root path.
+
+        The root field answers the same question with the ordinary
+        single-level statement, so agreeing with it is the strongest
+        available statement that the wrap changed nothing but the paging.
+        """
+        org = self._org()
+        calendars = []
+        for index in range(3):
+            calendar = self._make_calendar(org)
+            self._make_event(org, calendar, day=5, start_hour=10, end_hour=11, title="A")
+            self._make_event(org, calendar, day=6, start_hour=10, end_hour=11, title="B")
+            if index == 0:
+                self._make_event(org, calendar, day=6, start_hour=12, end_hour=13, title="C")
+            calendars.append(calendar)
+        system_user, token, auth = self._token(
+            org, PublicAPIResources.CALENDAR, PublicAPIResources.CALENDAR_EVENT
+        )
+        nested = """
+        query Nested(
+            $filter: CalendarEventAggregateFilterInput!
+            $groupBy: [CalendarEventGroupByInput!]!
+            $having: CalendarEventHavingInput
+            $orderBy: [CalendarEventAggregateOrderInput!]
+        ) {
+            calendars(limit: 100) {
+                eventAggregate(
+                    filter: $filter
+                    groupBy: $groupBy
+                    timezone: "UTC"
+                    having: $having
+                    orderBy: $orderBy
+                ) {
+                    key { calendarId }
+                    count
+                }
+            }
+        }
+        """
+        root = """
+        query Root(
+            $filter: CalendarEventAggregateFilterInput!
+            $groupBy: [CalendarEventGroupByInput!]!
+            $having: CalendarEventHavingInput
+            $orderBy: [CalendarEventAggregateOrderInput!]
+        ) {
+            calendarEventAggregate(
+                filter: $filter
+                groupBy: $groupBy
+                timezone: "UTC"
+                having: $having
+                orderBy: $orderBy
+            ) {
+                key { calendarId }
+                count
+            }
+        }
+        """
+        variables = {
+            "filter": {**self._bounds(), "calendarId": None},
+            "groupBy": [{"field": "CALENDAR_ID"}],
+            "having": {"count": {"gte": 3}},
+            "orderBy": [{"metric": "COUNT", "direction": "DESC"}],
+        }
+
+        nested_payload = self._post(nested, system_user, token, auth, variables).json()
+        root_payload = self._post(root, system_user, token, auth, variables).json()
+
+        assert nested_payload.get("errors", []) == []
+        assert root_payload.get("errors", []) == []
+        nested_rows = [
+            row
+            for calendar in nested_payload["data"]["calendars"]
+            for row in calendar["eventAggregate"]
+        ]
+        root_rows = root_payload["data"]["calendarEventAggregate"]
+        # Only the first calendar clears `count >= 3`; the HAVING has to drop
+        # the other two through both paths.
+        assert nested_rows == root_rows
+        assert nested_rows == [{"key": {"calendarId": calendars[0].id}, "count": 3}]
+
+    # -- the batch's own bound -----------------------------------------
+
+    def test_a_batch_over_the_row_cap_is_refused_rather_than_truncated(self, monkeypatch):
+        """The cap that bounds the batch's total, not its groups per parent.
+
+        The per-parent ``ROW_NUMBER`` band bounds each parent's groups and
+        says nothing about their product: one query covers every parent in
+        the organization at this level, whatever page of parents is being
+        rendered. Refusing is the point -- rows arrive parent by parent, so
+        truncating would hand the last calendars an empty list, which reads
+        as "no events" rather than as a limit.
+        """
+        monkeypatch.setattr(fields_module, "MAX_BATCHED_AGGREGATE_ROWS", 2)
+        org = self._org()
+        # Three calendars, one group each: three rows against a cap of two.
+        self._world(org, 3)
+        system_user, token, auth = self._token(
+            org, PublicAPIResources.CALENDAR, PublicAPIResources.CALENDAR_EVENT
+        )
+
+        response = self._post(self.NESTED_QUERY, system_user, token, auth, self._nested_variables())
+
+        payload = response.json()
+        assert payload.get("errors")
+        assert any(
+            "narrow the filter or the parent list" in error["message"]
+            for error in payload["errors"]
+        )
+
+    def test_a_batch_exactly_at_the_row_cap_is_allowed(self):
+        """The boundary is inclusive -- the cap is what fits, not what fails."""
+        org = self._org()
+        calendar_count = 3
+        self._world(org, calendar_count)
+        system_user, token, auth = self._token(
+            org, PublicAPIResources.CALENDAR, PublicAPIResources.CALENDAR_EVENT
+        )
+
+        with pytest.MonkeyPatch.context() as patch:
+            # One row per calendar, since the group key is the calendar.
+            patch.setattr(fields_module, "MAX_BATCHED_AGGREGATE_ROWS", calendar_count)
+            response = self._post(
+                self.NESTED_QUERY, system_user, token, auth, self._nested_variables()
+            )
+
+        payload = response.json()
+        assert payload.get("errors", []) == []
+        assert len(payload["data"]["calendars"]) == calendar_count
 
     # -- the other two parents -----------------------------------------
 

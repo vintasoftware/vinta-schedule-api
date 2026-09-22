@@ -47,6 +47,14 @@ GROUP_BY_VARIANT_MESSAGE = "Each groupBy entry must set exactly one of 'field' o
 #: second one for the same refusal (see ``LimitOutOfRangeError``).
 OFFSET_NEGATIVE_MESSAGE = "Offset must be non-negative"
 
+#: Raised when a nested aggregate's one batched query would return more rows
+#: than the engine will hold. Says nothing about the cap or the level that hit
+#: it -- the same reasoning as ``STATEMENT_TIMEOUT_MESSAGE``, and a caller acts
+#: on this by narrowing the filter or the parent list either way.
+BATCH_TOO_LARGE_MESSAGE = (
+    "Nested aggregate matched too many groups; narrow the filter or the parent list"
+)
+
 #: Raised when an ``orderBy`` entry sets neither its scalar ``key`` slot nor
 #: its ``metric`` slot, or sets both -- the same "exactly one variant" shape
 #: ``groupBy`` uses, for the same reason: GraphQL has no input unions.
@@ -187,6 +195,19 @@ class AggregateTimeoutError(AggregationRequestError):
 
     def __init__(self) -> None:
         super().__init__(STATEMENT_TIMEOUT_MESSAGE)
+
+
+class BatchTooLargeError(AggregationRequestError):
+    """One level's batched nested aggregate matched more groups than the cap.
+
+    A refusal rather than a truncation on purpose. The batch's rows arrive
+    parent by parent, so dropping the tail would quietly hand the last parents
+    on the level an empty list -- a wrong answer that looks like "this calendar
+    has no events" rather than like a limit being hit.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(BATCH_TOO_LARGE_MESSAGE)
 
 
 class OrderVariantError(AggregationRequestError):

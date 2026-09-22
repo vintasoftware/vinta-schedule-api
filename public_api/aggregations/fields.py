@@ -75,6 +75,7 @@ from public_api.aggregations.dimensions import (
 from public_api.aggregations.errors import (
     AggregateTimeoutError,
     AliasCollisionError,
+    BatchTooLargeError,
     LimitOutOfRangeError,
     OffsetOutOfRangeError,
 )
@@ -159,7 +160,7 @@ from public_api.aggregations.windows import (
     resolve_window,
     selected_window_kinds,
 )
-from public_api.constants import AGGREGATE_STATEMENT_TIMEOUT_MS
+from public_api.constants import AGGREGATE_STATEMENT_TIMEOUT_MS, MAX_BATCHED_AGGREGATE_ROWS
 from public_api.types import PublicApiHttpRequest
 
 
@@ -596,6 +597,25 @@ def _execute_aggregate(
     return [_row_to_output(entity, registration, row, metrics, window_spec) for row in rows]
 
 
+def _batched_rows(queryset: Any) -> dict[Any, list[dict[str, Any]]]:
+    """Run one level's batched query and bucket its rows by parent.
+
+    The batch covers every parent at its level, not the parents on the page
+    being rendered -- a sync GraphQL execution resolves list items one at a
+    time, so there is no moment when the page's parent ids are known and no
+    query has run yet (see :mod:`public_api.aggregations.nested`). The
+    caller's ``limit`` bounds the groups *per parent*; this is what bounds
+    their product, by asking for one row more than the cap and refusing if it
+    arrives. ``LIMIT`` is what keeps that cheap: Postgres stops there rather
+    than materializing the rest.
+    """
+    capped = queryset[: MAX_BATCHED_AGGREGATE_ROWS + 1]
+    rows = _execute_with_statement_timeout(capped)
+    if len(rows) > MAX_BATCHED_AGGREGATE_ROWS:
+        raise BatchTooLargeError()
+    return group_rows_by_parent(rows, PARENT_KEY_ALIAS)
+
+
 def _execute_nested_aggregate(
     link: NestedAggregateLink,
     info: strawberry.Info,
@@ -628,7 +648,6 @@ def _execute_nested_aggregate(
     request: PublicApiHttpRequest = info.context.request
     system_user = request.public_api_system_user
 
-    base_queryset = filter_input.apply(system_user, organization)
     registration = get_registration(link.entity)
 
     plan, metrics, _ = _build_plan(
@@ -646,8 +665,16 @@ def _execute_nested_aggregate(
     )
 
     def execute() -> dict[Any, list[dict[str, Any]]]:
+        # ``apply()`` is inside the closure, not beside the plan, because it is
+        # not free: for a token carrying ``scoped_to_membership_user_id`` it
+        # resolves the membership and materializes the owner's calendar ids,
+        # which is two or three statements. Called once per parent that would
+        # be the same per-parent N+1 this phase exists to remove, just moved
+        # off the aggregated table where the query-count tests could not see
+        # it. The batch runs once per level, so this does too.
+        base_queryset = filter_input.apply(system_user, organization)
         queryset = build_aggregate_queryset(plan, base_queryset)
-        return group_rows_by_parent(_execute_with_statement_timeout(queryset), PARENT_KEY_ALIAS)
+        return _batched_rows(queryset)
 
     rows = collector_for(request).rows_for(batch_key(level_key(info), plan), parent_id, execute)
 

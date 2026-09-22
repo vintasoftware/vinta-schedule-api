@@ -32,9 +32,22 @@ matching the filter, grouped by parent, and a parent that asked for nothing is
 simply never looked up. That discloses nothing new: the base queryset is the
 same one ``public_api.aggregations.filters`` builds for the root-level field,
 so the batch is exactly the root-level aggregate grouped by one more column.
-The per-parent ``LIMIT`` rides in the same statement as a ``ROW_NUMBER``
-window (see ``executor._sliced_per_parent``), so the batch is bounded by the
-caller's own limit times the parents that have data, not by the level's size.
+
+**What that costs, and what bounds it.** The batch covers every parent in the
+organization at that level, *not* the parents on the page being rendered:
+``calendars(limit: 5) { eventAggregate }`` against an organization holding ten
+thousand calendars groups all ten thousand, and 9,995 of the buckets are
+thrown away. The per-parent ``LIMIT`` rides in the same statement as a
+``ROW_NUMBER`` window (see ``executor._sliced_per_parent``), which bounds the
+groups *per parent* and bounds nothing about their product. So the product is
+bounded separately, by ``MAX_BATCHED_AGGREGATE_ROWS`` in
+``public_api.constants``: ``fields._batched_rows`` asks for one row more than
+the cap and raises ``BatchTooLargeError`` if it arrives. Refusing rather than
+truncating is the point -- rows arrive parent by parent, so dropping the tail
+would hand the last parents on the level an empty list, which reads as "this
+calendar has no events" rather than as a limit being hit. Bounding by the
+page's own parent ids would be tighter and is not available for the reason the
+paragraph above gives.
 
 **Interaction with ``DjangoOptimizerExtension``.** None, deliberately. The
 collector never touches the parent queryset, never adds a ``select_related``
