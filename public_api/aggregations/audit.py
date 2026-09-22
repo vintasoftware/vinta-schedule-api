@@ -6,8 +6,10 @@ requested limit/offset, and the returned row count. Never records aggregated
 values, group key values, or concatenated strings.
 """
 
-from typing import Any
+from typing import Annotated, Any
 
+from dependency_injector.wiring import Provide, inject
+from graphql import GraphQLError
 from vinta_audit_logs.types import SubjectRef
 
 from audit_integration.constants import AuditAction
@@ -15,24 +17,13 @@ from audit_integration.services import OrganizationAuditService
 from public_api.aggregations.plan import AggregateQueryPlan
 
 
-def get_audit_service() -> OrganizationAuditService:
-    """Resolve the OrganizationAuditService from the DI container.
-
-    Raises RuntimeError if the container is not initialized or is None.
-    """
-    from di_core.containers import container
-
-    if container is None:
-        raise RuntimeError(
-            "DI container is not wired; the aggregate query audit hook cannot resolve "
-            "audit_service before di_core.apps.DICoreConfig.ready() runs."
-        )
-
-    audit_service = container.audit_service()
+@inject
+def get_audit_service(
+    audit_service: Annotated["OrganizationAuditService | None", Provide["audit_service"]] = None,
+) -> OrganizationAuditService:
+    """Resolve the OrganizationAuditService from the DI container."""
     if audit_service is None:
-        raise RuntimeError(
-            "audit_service provider returned None; check that audit_integration is properly configured."
-        )
+        raise GraphQLError("Missing required dependency: audit_service")
     return audit_service
 
 
