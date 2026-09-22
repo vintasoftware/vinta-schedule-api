@@ -9,6 +9,7 @@ values, group key values, or concatenated strings.
 from typing import Annotated, Any
 
 from dependency_injector.wiring import Provide, inject
+from vinta_audit_logs.types import SubjectRef
 
 from audit_integration.constants import AuditAction
 from audit_integration.services import OrganizationAuditService
@@ -59,9 +60,7 @@ def record_aggregate_query(
         "predicates": {key: list(value) for key, value in plan.filter_bounds.predicates.items()},
     }
 
-    subject = {
-        "model": "AggregateQuery",
-        "entity": plan.entity.value,
+    query_metadata = {
         "dimensions": dimensions_metadata,
         "metrics": metrics_metadata,
         "filter_bounds": filter_bounds_metadata,
@@ -73,6 +72,10 @@ def record_aggregate_query(
     audit_service.record(
         action=AuditAction.AGGREGATE_QUERY,
         actor=actor,
-        subject=subject,  # type: ignore[arg-type]
+        subject=SubjectRef(
+            subject_type="public_api.aggregations.aggregate_query",
+            subject_id=plan.entity.value,
+        ),
         scope=scope,
+        diff=query_metadata,
     )

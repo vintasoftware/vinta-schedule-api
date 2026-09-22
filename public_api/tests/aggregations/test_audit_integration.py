@@ -2,12 +2,13 @@
 
 import datetime
 import uuid
-from unittest.mock import MagicMock, patch
 
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
+from vinta_audit_logs.models import Audit
 
+from audit_integration.constants import AuditAction
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import Calendar, CalendarEvent
 from organizations.models import Organization
@@ -54,8 +55,8 @@ class TestAggregateAuditIntegration:
                 headers={"authorization": f"Bearer {system_user.id}:{token}"},
             )
 
-    def test_aggregate_query_audit_called(self):
-        """Verify that running an aggregate query calls the audit hook."""
+    def test_aggregate_query_writes_audit_record(self):
+        """Running an aggregate query writes exactly one audit record."""
         org = self._org()
         system_user, token, auth_service = self._token(org, PublicAPIResources.CALENDAR_EVENT)
 
@@ -89,12 +90,7 @@ class TestAggregateAuditIntegration:
             "groupBy": [{"field": "ID"}],
         }
 
-        # Mock the audit service to verify it's called
-        with patch("public_api.aggregations.audit.Provide") as mock_provide:
-            mock_audit_service = MagicMock()
-            mock_provide.return_value = mock_audit_service
-
-            response = self._post_graphql(query, system_user, token, auth_service, variables)
+        response = self._post_graphql(query, system_user, token, auth_service, variables)
 
         # Verify no GraphQL errors
         assert response.status_code == 200
@@ -103,8 +99,22 @@ class TestAggregateAuditIntegration:
 
         # Verify the query returned data
         assert len(data["data"]["calendarEventAggregate"]) > 0
+        row_count = len(data["data"]["calendarEventAggregate"])
 
-    def test_aggregate_query_with_zero_rows(self):
+        # Verify exactly one audit record was written
+        audit_records = Audit.objects.filter(
+            action_key=AuditAction.AGGREGATE_QUERY.value, scope__organization_id=org.id
+        )
+        assert audit_records.count() == 1
+
+        record = audit_records.first()
+        assert record is not None
+        assert record.action_key == AuditAction.AGGREGATE_QUERY.value
+        assert record.subject_id == "calendar_event"
+        assert record.diff is not None
+        assert record.diff["row_count"] == row_count
+
+    def test_aggregate_query_with_zero_rows_writes_audit_record(self):
         """Audit record is written even when the aggregate returns zero rows."""
         org = self._org()
         system_user, token, auth_service = self._token(org, PublicAPIResources.CALENDAR_EVENT)
@@ -137,3 +147,16 @@ class TestAggregateAuditIntegration:
         data = response.json()
         assert data.get("errors") is None
         assert data["data"]["calendarEventAggregate"] == []
+
+        # Verify exactly one audit record was written with row_count = 0
+        audit_records = Audit.objects.filter(
+            action_key=AuditAction.AGGREGATE_QUERY.value, scope__organization_id=org.id
+        )
+        assert audit_records.count() == 1
+
+        record = audit_records.first()
+        assert record is not None
+        assert record.action_key == AuditAction.AGGREGATE_QUERY.value
+        assert record.subject_id == "calendar_event"
+        assert record.diff is not None
+        assert record.diff["row_count"] == 0
