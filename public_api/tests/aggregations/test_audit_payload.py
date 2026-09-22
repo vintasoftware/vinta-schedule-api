@@ -107,15 +107,17 @@ def test_audit_payload_contains_metrics_and_dimensions_but_no_values():
     assert diff["filter_bounds"]["predicates"]["calendar_ids"] == [1, 2, 3]
 
     # Most important: verify that no field values are recorded
-    # Convert to JSON to ensure it's serializable and contains no non-opaque data
-    json_str = json.dumps(diff, default=str)
+    # The payload should only contain field paths, aliases, and operations — no data values.
 
-    # Assert that no title values appear
-    assert "title" not in json_str or json_str.count("title") == 1  # Only field_path
+    # Verify no separator appears in the payload
+    assert ";" not in json.dumps(diff, default=str)
 
-    # Assert that no concatenated string appears
-    # (The separator would not appear in the payload)
-    assert ";" not in json_str
+    # Verify no actual field value would appear
+    # (e.g., if title was a field value, it would be a string. We only see it as a field_path key)
+    diff_json = json.dumps(diff, default=str)
+    # "title" appears in field_path and in alias "concatenated_titles" but not as a value
+    assert '"title"' in diff_json  # field_path of the concatenation metric
+    assert diff_json.count('"title"') == 1  # Only in the field_path
 
 
 def test_audit_payload_with_date_bounds():
