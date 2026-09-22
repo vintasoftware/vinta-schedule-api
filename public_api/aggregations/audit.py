@@ -18,11 +18,22 @@ from public_api.aggregations.plan import AggregateQueryPlan
 def get_audit_service() -> OrganizationAuditService:
     """Resolve the OrganizationAuditService from the DI container.
 
-    Raises RuntimeError if the container is not initialized.
+    Raises RuntimeError if the container is not initialized or is None.
     """
-    from di_core.containers import get_container
+    from di_core.containers import container
 
-    return get_container().audit_service()
+    if container is None:
+        raise RuntimeError(
+            "DI container is not wired; the aggregate query audit hook cannot resolve "
+            "audit_service before di_core.apps.DICoreConfig.ready() runs."
+        )
+
+    audit_service = container.audit_service()
+    if audit_service is None:
+        raise RuntimeError(
+            "audit_service provider returned None; check that audit_integration is properly configured."
+        )
+    return audit_service
 
 
 def record_aggregate_query(
