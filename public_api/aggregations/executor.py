@@ -49,6 +49,16 @@ Staying at one level is what keeps ``HAVING``, the ``OVER`` clauses and
 ``LIMIT`` in a single statement. The plan records the divergence in its
 Guiding Decisions.
 
+**A nested aggregate folds its parent's key into the same GROUP BY.** When
+``plan.parent_key`` is set, the parent column joins the group key and one
+query covers every parent at that level at once -- which is what keeps a
+document over 25 calendars costing the same as one over 5. ``LIMIT`` then has
+to page each parent rather than the batch, so it becomes a
+``ROW_NUMBER() OVER (PARTITION BY <parent key>)`` filtered to the requested
+band; see :func:`_sliced_per_parent`. Collecting the siblings and handing the
+rows back to the parent each belongs to is
+:mod:`public_api.aggregations.nested`'s job, not this module's.
+
 **HAVING is a ``.filter()`` after the ``.annotate()``, nothing more.**
 Django renders a post-``GROUP BY`` ``.filter()`` referencing an aggregate
 alias as SQL ``HAVING`` on its own; this module only has to turn a
@@ -85,7 +95,15 @@ from django.db.models import (
 from django.db.models.aggregates import StringAgg
 from django.db.models.expressions import BaseExpression, Combinable, OrderBy, RowRange, ValueRange
 from django.db.models.expressions import WindowFrame as DjangoWindowFrame
-from django.db.models.functions import Coalesce, NullIf, Rank, TruncDay, TruncMonth, TruncWeek
+from django.db.models.functions import (
+    Coalesce,
+    NullIf,
+    Rank,
+    RowNumber,
+    TruncDay,
+    TruncMonth,
+    TruncWeek,
+)
 from django.db.models.functions.datetime import TruncBase
 
 from public_api.aggregations.errors import (
@@ -104,6 +122,7 @@ from public_api.aggregations.plan import (
     HavingSpec,
     MetricSpec,
     OrderDirection,
+    ParentKeySpec,
     WindowFrameSpec,
     WindowFrameType,
     WindowFunctionKind,
@@ -178,6 +197,12 @@ def build_aggregate_queryset(
     # arbitrary rows per page.
     queryset = queryset.order_by(*_ordering_terms(plan))
 
+    # A nested aggregate's LIMIT is per parent, not per result: the one query
+    # carries every parent at this level, so slicing the result would hand the
+    # first parent every row and the rest none.
+    if plan.parent_key is not None:
+        return _sliced_per_parent(queryset, plan, plan.parent_key)
+
     return queryset[plan.offset : plan.offset + plan.limit]
 
 
@@ -228,6 +253,15 @@ def _reject_shadowing_aliases(
                 f"{registration.model.__name__}; give the aggregate its own alias"
             )
 
+    # Held to the metric rule rather than the dimension one: a parent key is
+    # always an aliased ``.values()`` term, never a positional pass-through,
+    # because its field path may traverse relations.
+    if plan.parent_key is not None and plan.parent_key.alias in model_field_names:
+        raise AliasCollisionError(
+            f"Parent key alias {plan.parent_key.alias!r} shadows a column on "
+            f"{registration.model.__name__}"
+        )
+
 
 def _group_by_terms(
     registration: EntityRegistration, plan: AggregateQueryPlan
@@ -252,6 +286,12 @@ def _group_by_terms(
             positional.append(dimension.field_path)
         else:
             aliased[dimension.alias] = _dimension_expression(dimension)
+
+    # Always aliased, and never checked against the registry: a parent key is
+    # the engine's own join key, not a dimension a caller may name. See
+    # :class:`~public_api.aggregations.plan.ParentKeySpec`.
+    if plan.parent_key is not None:
+        aliased[plan.parent_key.alias] = F(plan.parent_key.field_path)
 
     return tuple(positional), aliased
 
@@ -586,11 +626,12 @@ def _window_annotations(plan: AggregateQueryPlan) -> dict[str, BaseExpression]:
     return {window_alias(kind): _window_expression(spec, plan, kind) for kind in spec.functions}
 
 
-def _ordering_terms(plan: AggregateQueryPlan) -> tuple[str, ...]:
-    """The ``.order_by()`` terms, with the group key appended as a tiebreak.
+def _within_parent_ordering_terms(plan: AggregateQueryPlan) -> tuple[str, ...]:
+    """The ``.order_by()`` terms one parent's own groups are ordered by.
 
-    Two groups that tie on the requested ordering would otherwise come back
-    in whatever order Postgres chose that run, which makes paging drop and
+    The requested ordering, with the group key appended as a tiebreak. Two
+    groups that tie on the requested ordering would otherwise come back in
+    whatever order Postgres chose that run, which makes paging drop and
     repeat rows between pages.
     """
     requested = tuple(
@@ -600,6 +641,73 @@ def _ordering_terms(plan: AggregateQueryPlan) -> tuple[str, ...]:
     ordered_aliases = {order.alias for order in plan.order_by}
     tiebreak = tuple(alias for alias in plan.dimension_aliases if alias not in ordered_aliases)
     return requested + tiebreak
+
+
+def _ordering_terms(plan: AggregateQueryPlan) -> tuple[str, ...]:
+    """The whole result's ``.order_by()`` terms.
+
+    For a nested aggregate the parent key comes first, so one batched query's
+    rows arrive parent by parent; the caller's own ordering then decides the
+    order *inside* each parent, which is the order its page is cut from. A
+    root-level aggregate has no parent key and this is just
+    :func:`_within_parent_ordering_terms`.
+    """
+    within = _within_parent_ordering_terms(plan)
+    if plan.parent_key is None or plan.parent_key.alias in {
+        term.removeprefix("-") for term in within
+    }:
+        return within
+    return (plan.parent_key.alias, *within)
+
+
+def _order_expression(term: str) -> OrderBy:
+    """One ``.order_by()`` string term as the expression a window's
+    ``order_by`` takes."""
+    if term.startswith("-"):
+        return F(term.removeprefix("-")).desc()
+    return F(term).asc()
+
+
+#: The alias the per-parent row number lands under. Never read by a caller --
+#: it exists only to be filtered on -- and prefixed like every other alias
+#: this engine supplies itself.
+_PARENT_SLICE_ALIAS = "_parent_slice_row_number"
+
+
+def _sliced_per_parent(
+    queryset: QuerySet[Any, dict[str, Any]], plan: AggregateQueryPlan, parent_key: ParentKeySpec
+) -> QuerySet[Any, dict[str, Any]]:
+    """Page each parent's own groups, in SQL, in the same statement.
+
+    ``ROW_NUMBER() OVER (PARTITION BY <parent key> ORDER BY <the caller's
+    ordering>)`` numbers every parent's groups from one, and filtering that
+    number to the requested band is the per-parent ``LIMIT``/``OFFSET``.
+    Django turns a filter against a window into a wrapping ``qualify``
+    subquery on its own, so this is still one statement and still no raw SQL.
+
+    Doing it any other way loses something real: a plain ``LIMIT`` would cut
+    the batch rather than each parent, and truncating in Python after the
+    fetch would read every group of every parent at this level -- the
+    unbounded scan the plan's cost guards exist to prevent.
+    """
+    ordering = [
+        _order_expression(term)
+        for term in _within_parent_ordering_terms(plan)
+        if term.removeprefix("-") != parent_key.alias
+    ]
+    queryset = queryset.annotate(
+        **{
+            _PARENT_SLICE_ALIAS: GroupedWindow(
+                RowNumber(), partition_by=[F(parent_key.alias)], order_by=ordering
+            )
+        }
+    )
+    return queryset.filter(
+        **{
+            f"{_PARENT_SLICE_ALIAS}__gt": plan.offset,
+            f"{_PARENT_SLICE_ALIAS}__lte": plan.offset + plan.limit,
+        }
+    )
 
 
 #: ``ComparisonOp`` to the Django field lookup it filters an annotated alias
