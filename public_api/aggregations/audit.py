@@ -56,9 +56,7 @@ def record_aggregate_query(
     filter_bounds_metadata = {
         "start": plan.filter_bounds.start.isoformat() if plan.filter_bounds.start else None,
         "end": plan.filter_bounds.end.isoformat() if plan.filter_bounds.end else None,
-        "predicates": {
-            key: list(value) for key, value in plan.filter_bounds.predicates.items()
-        },
+        "predicates": {key: list(value) for key, value in plan.filter_bounds.predicates.items()},
     }
 
     subject = {

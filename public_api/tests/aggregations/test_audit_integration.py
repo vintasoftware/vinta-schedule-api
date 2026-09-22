@@ -57,9 +57,7 @@ class TestAggregateAuditIntegration:
     def test_aggregate_query_audit_called(self):
         """Verify that running an aggregate query calls the audit hook."""
         org = self._org()
-        system_user, token, auth_service = self._token(
-            org, PublicAPIResources.CALENDAR_EVENT
-        )
+        system_user, token, auth_service = self._token(org, PublicAPIResources.CALENDAR_EVENT)
 
         calendar = self._make_calendar(org)
         baker.make(
@@ -92,15 +90,11 @@ class TestAggregateAuditIntegration:
         }
 
         # Mock the audit service to verify it's called
-        with patch(
-            "public_api.aggregations.audit.Provide"
-        ) as mock_provide:
+        with patch("public_api.aggregations.audit.Provide") as mock_provide:
             mock_audit_service = MagicMock()
             mock_provide.return_value = mock_audit_service
 
-            response = self._post_graphql(
-                query, system_user, token, auth_service, variables
-            )
+            response = self._post_graphql(query, system_user, token, auth_service, variables)
 
         # Verify no GraphQL errors
         assert response.status_code == 200
@@ -113,9 +107,7 @@ class TestAggregateAuditIntegration:
     def test_aggregate_query_with_zero_rows(self):
         """Audit record is written even when the aggregate returns zero rows."""
         org = self._org()
-        system_user, token, auth_service = self._token(
-            org, PublicAPIResources.CALENDAR_EVENT
-        )
+        system_user, token, auth_service = self._token(org, PublicAPIResources.CALENDAR_EVENT)
 
         # Create a calendar but no events
         self._make_calendar(org)
@@ -138,9 +130,7 @@ class TestAggregateAuditIntegration:
             "groupBy": [{"field": "ID"}],
         }
 
-        response = self._post_graphql(
-            query, system_user, token, auth_service, variables
-        )
+        response = self._post_graphql(query, system_user, token, auth_service, variables)
 
         # Query should succeed with empty result
         assert response.status_code == 200
