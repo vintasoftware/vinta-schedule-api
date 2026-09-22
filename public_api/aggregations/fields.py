@@ -22,12 +22,16 @@ generic function. Everything past argument shape is one function,
    arguments reach the plan: they are read off the selection, not resolved
    later, because the ``string_agg`` they shape is emitted by the same query
    this function builds;
-6. resolve ``having`` and ``orderBy`` (Phase 4). Both can reference a metric
-   the row selection never asked for -- ``orderBy: [{metric: COUNT}]`` when
-   the caller only wants ``durationMinutes`` in the output, say -- so
-   whatever they need is folded into the metric list here, deduplicated the
-   same way a doubly-selected row field already is, before the plan is ever
-   built. This is what lets such a metric be annotated rather than raising;
+6. resolve ``having`` and ``orderBy`` (Phase 4), then ``window`` (Phase 6).
+   All three can reference a metric the row selection never asked for --
+   ``orderBy: [{metric: COUNT}]`` when the caller only wants
+   ``durationMinutes`` in the output, say -- so whatever they need is folded
+   into the metric list here, deduplicated the same way a doubly-selected row
+   field already is, before the plan is ever built. This is what lets such a
+   metric be annotated rather than raising. ``window`` additionally reads its
+   own ``window { ... }`` sub-selection, for the same reason step 5 reads the
+   row selection: a function nobody asked for is a column nobody should pay
+   for;
 7. build the plan and hand it to the executor, which supplies the
    deterministic group-key ``ORDER BY`` cost guard on its own (see its
    ``_ordering_terms``);
@@ -113,6 +117,8 @@ from public_api.aggregations.plan import (
     AggregateQueryPlan,
     FilterBounds,
     MetricSpec,
+    WindowFunctionKind,
+    WindowSpec,
     default_metric_alias,
 )
 from public_api.aggregations.registry import EntityRegistration, FieldKind, get_registration
@@ -121,6 +127,17 @@ from public_api.aggregations.types import (
     DateTimeAggregate,
     NumericAggregate,
     StringAggregate,
+)
+from public_api.aggregations.windows import (
+    AppointmentTypeWindowInput,
+    AvailableTimeWindowInput,
+    BlockedTimeWindowInput,
+    CalendarEventWindowInput,
+    CalendarPoolWindowInput,
+    CalendarWindowInput,
+    build_window_metrics,
+    resolve_window,
+    selected_window_kinds,
 )
 from public_api.constants import AGGREGATE_STATEMENT_TIMEOUT_MS
 from public_api.types import PublicApiHttpRequest
@@ -315,6 +332,27 @@ def _build_metrics(
     return tuple(metrics)
 
 
+#: The row-type field the window functions come back under. Skipped by
+#: :func:`_build_metrics` on its own -- it is not a registry field path -- and
+#: read separately by :func:`_window_kinds`.
+_WINDOW_SELECTION_NAME = "window"
+
+
+def _window_kinds(row_selections: Sequence[SelectedField]) -> tuple[WindowFunctionKind, ...]:
+    """The window functions this document's ``window { ... }`` asked for.
+
+    Read the same way the metrics are: a caller who selects
+    ``window { runningTotal }`` gets one ``OVER`` clause, not all four.
+    """
+    names = [
+        sub_selection.name
+        for selection in row_selections
+        if selection.name == _WINDOW_SELECTION_NAME
+        for sub_selection in _flatten_selections(selection.selections)
+    ]
+    return selected_window_kinds(names)
+
+
 def _to_camel_case(name: str) -> str:
     """The GraphQL field name Strawberry exposes ``name`` as.
 
@@ -364,6 +402,7 @@ def _row_to_output(
     registration: EntityRegistration,
     row: dict[str, Any],
     metrics: tuple[MetricSpec, ...],
+    window: WindowSpec | None,
 ) -> Any:
     """One executor row dict, mapped onto the entity's ``*AggregateRow`` type."""
     row_type = ROW_TYPE_BY_ENTITY[entity]
@@ -371,6 +410,8 @@ def _row_to_output(
         "key": build_group_key(entity, row),
         "count": row.get(ROW_COUNT_ALIAS, 0),
     }
+    if window is not None:
+        kwargs["window"] = build_window_metrics(entity, row, window)
 
     grouped: dict[str, dict[AggregateOp, Any]] = {}
     for metric in metrics:
@@ -439,6 +480,7 @@ def _execute_aggregate(
     offset: int,
     having: Any,
     order_by: Sequence[Any] | None,
+    window: Any,
 ) -> list[Any]:
     """The one resolver body every aggregate root field shares."""
     _validate_slice(limit, offset)
@@ -451,10 +493,11 @@ def _execute_aggregate(
     dimensions = resolve_dimensions(group_by, timezone)
 
     registration = get_registration(entity)
+    row_selections = _row_selections(info)
 
     metrics_list: list[MetricSpec] = []
     seen: dict[str, MetricSpec] = {}
-    for metric in _build_metrics(registration, _row_selections(info)):
+    for metric in _build_metrics(registration, row_selections):
         _add_metric(metrics_list, seen, metric)
 
     having_spec, having_metrics = resolve_having(having)
@@ -468,6 +511,12 @@ def _execute_aggregate(
     for metric in order_metrics:
         _add_metric(metrics_list, seen, metric)
 
+    window_spec, window_metrics = resolve_window(
+        entity, window, timezone, dimensions, _window_kinds(row_selections)
+    )
+    for metric in window_metrics:
+        _add_metric(metrics_list, seen, metric)
+
     metrics = tuple(metrics_list)
 
     plan = AggregateQueryPlan(
@@ -477,6 +526,7 @@ def _execute_aggregate(
         filter_bounds=_filter_bounds(filter_input),
         having=having_spec,
         order_by=order_specs,
+        window=window_spec,
         limit=limit,
         offset=offset,
     )
@@ -484,7 +534,7 @@ def _execute_aggregate(
     queryset = build_aggregate_queryset(plan, base_queryset)
     rows = _execute_with_statement_timeout(queryset)
 
-    return [_row_to_output(entity, registration, row, metrics) for row in rows]
+    return [_row_to_output(entity, registration, row, metrics, window_spec) for row in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +558,7 @@ def calendar_event_aggregate(
     offset: int = 0,
     having: CalendarEventHavingInput | None = None,
     order_by: list[CalendarEventAggregateOrderInput] | None = None,
+    window: CalendarEventWindowInput | None = None,
 ) -> list[CalendarEventAggregateRow]:
     """Group and aggregate ``CalendarEvent`` rows visible to the caller's token."""
     return _execute_aggregate(
@@ -520,6 +571,7 @@ def calendar_event_aggregate(
         offset,
         having,
         order_by,
+        window,
     )
 
 
@@ -532,6 +584,7 @@ def available_time_aggregate(
     offset: int = 0,
     having: AvailableTimeHavingInput | None = None,
     order_by: list[AvailableTimeAggregateOrderInput] | None = None,
+    window: AvailableTimeWindowInput | None = None,
 ) -> list[AvailableTimeAggregateRow]:
     """Group and aggregate ``AvailableTime`` rows visible to the caller's token."""
     return _execute_aggregate(
@@ -544,6 +597,7 @@ def available_time_aggregate(
         offset,
         having,
         order_by,
+        window,
     )
 
 
@@ -556,6 +610,7 @@ def blocked_time_aggregate(
     offset: int = 0,
     having: BlockedTimeHavingInput | None = None,
     order_by: list[BlockedTimeAggregateOrderInput] | None = None,
+    window: BlockedTimeWindowInput | None = None,
 ) -> list[BlockedTimeAggregateRow]:
     """Group and aggregate ``BlockedTime`` rows visible to the caller's token."""
     return _execute_aggregate(
@@ -568,6 +623,7 @@ def blocked_time_aggregate(
         offset,
         having,
         order_by,
+        window,
     )
 
 
@@ -582,6 +638,7 @@ def appointment_type_aggregate(
     offset: int = 0,
     having: AppointmentTypeHavingInput | None = None,
     order_by: list[AppointmentTypeAggregateOrderInput] | None = None,
+    window: AppointmentTypeWindowInput | None = None,
 ) -> list[AppointmentTypeAggregateRow]:
     """Group and aggregate ``AppointmentType`` rows visible to the caller's token."""
     return _execute_aggregate(
@@ -594,6 +651,7 @@ def appointment_type_aggregate(
         offset,
         having,
         order_by,
+        window,
     )
 
 
@@ -606,6 +664,7 @@ def calendar_aggregate(
     offset: int = 0,
     having: CalendarHavingInput | None = None,
     order_by: list[CalendarAggregateOrderInput] | None = None,
+    window: CalendarWindowInput | None = None,
 ) -> list[CalendarAggregateRow]:
     """Group and aggregate ``Calendar`` rows visible to the caller's token."""
     return _execute_aggregate(
@@ -618,6 +677,7 @@ def calendar_aggregate(
         offset,
         having,
         order_by,
+        window,
     )
 
 
@@ -630,6 +690,7 @@ def calendar_pool_aggregate(
     offset: int = 0,
     having: CalendarPoolHavingInput | None = None,
     order_by: list[CalendarPoolAggregateOrderInput] | None = None,
+    window: CalendarPoolWindowInput | None = None,
 ) -> list[CalendarPoolAggregateRow]:
     """Group and aggregate ``CalendarPool`` rows visible to the caller's token."""
     return _execute_aggregate(
@@ -642,4 +703,5 @@ def calendar_pool_aggregate(
         offset,
         having,
         order_by,
+        window,
     )

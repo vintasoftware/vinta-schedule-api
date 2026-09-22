@@ -26,6 +26,7 @@ from public_api.aggregations import (
     OrderDirection,
     OrderSpec,
     TemporalGranularity,
+    WindowFunctionKind,
     WindowSpec,
 )
 
@@ -214,11 +215,14 @@ class TestPlanConstruction:
         assert plan.dimension_aliases == ("calendar_id", "timezone")
         assert plan.metric_aliases == ("count", "duration_sum")
 
-    def test_window_slot_still_carries_its_placeholder_object(self):
-        """Phase 6 owns ``WindowSpec``'s shape; until then it stays an empty
-        marker, unlike ``HavingSpec``, which this phase gives real fields."""
-        plan = _plan(window=WindowSpec())
-        assert plan.window == WindowSpec()
+    def test_a_window_over_a_known_metric_is_accepted(self):
+        window = WindowSpec(
+            metric_alias="count",
+            order_by=(OrderSpec(alias="count"),),
+            functions=(WindowFunctionKind.RUNNING_TOTAL,),
+        )
+        plan = _plan(window=window)
+        assert plan.window == window
 
     def test_a_having_clause_referencing_a_known_metric_is_accepted(self):
         plan = _plan(

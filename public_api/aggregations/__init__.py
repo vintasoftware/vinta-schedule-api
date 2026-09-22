@@ -23,9 +23,12 @@ The six root fields are on the schema (:mod:`public_api.aggregations.fields`),
 scoped by :mod:`public_api.aggregations.filters`'s mandatory bounded date
 range. Post-aggregation filtering and metric ordering are typed per entity in
 :mod:`public_api.aggregations.having` and
-:mod:`public_api.aggregations.ordering`. Later phases of
+:mod:`public_api.aggregations.ordering`; running totals, moving averages, rank
+and share-of-partition over those grouped rows are in
+:mod:`public_api.aggregations.windows`, computed by Postgres in the same
+statement. Later phases of
 ``ai-plans/2026-09-11-GRAPHQL_AGGREGATIONS_IMPLEMENTATION_PLAN.md`` add audit
-logging, window functions and nested batching on top.
+logging and nested batching on top.
 """
 
 from public_api.aggregations.dimensions import (
@@ -90,6 +93,11 @@ from public_api.aggregations.errors import (
     UnknownTimezoneError,
     UnsupportedOperationError,
     UnsupportedPlanFeatureError,
+    WindowFrameError,
+    WindowOrderByRequiredError,
+    WindowOrderKeyNotGroupedError,
+    WindowOrderVariantError,
+    WindowPartitionNotGroupedError,
 )
 from public_api.aggregations.executor import build_aggregate_queryset
 from public_api.aggregations.fields import (
@@ -136,6 +144,7 @@ from public_api.aggregations.ordering import (
     CalendarOrderableMetric,
     CalendarPoolAggregateOrderInput,
     CalendarPoolOrderableMetric,
+    resolve_metric_reference,
     resolve_order_by,
 )
 from public_api.aggregations.output_types import (
@@ -163,8 +172,13 @@ from public_api.aggregations.plan import (
     MetricSpec,
     OrderDirection,
     OrderSpec,
+    WindowBound,
+    WindowFrameSpec,
+    WindowFrameType,
+    WindowFunctionKind,
     WindowSpec,
     default_metric_alias,
+    window_alias,
 )
 from public_api.aggregations.registry import (
     AGGREGATE_TYPE_BY_KIND,
@@ -187,6 +201,33 @@ from public_api.aggregations.types import (
     StringAggregate,
     TemporalGranularity,
 )
+from public_api.aggregations.windows import (
+    WINDOW_INPUT_BY_ENTITY,
+    WINDOW_METRICS_TYPE_BY_ENTITY,
+    AppointmentTypeWindowInput,
+    AppointmentTypeWindowMetrics,
+    AppointmentTypeWindowOrderInput,
+    AvailableTimeWindowInput,
+    AvailableTimeWindowMetrics,
+    AvailableTimeWindowOrderInput,
+    BlockedTimeWindowInput,
+    BlockedTimeWindowMetrics,
+    BlockedTimeWindowOrderInput,
+    CalendarEventWindowInput,
+    CalendarEventWindowMetrics,
+    CalendarEventWindowOrderInput,
+    CalendarPoolWindowInput,
+    CalendarPoolWindowMetrics,
+    CalendarPoolWindowOrderInput,
+    CalendarWindowInput,
+    CalendarWindowMetrics,
+    CalendarWindowOrderInput,
+    WindowFrameInput,
+    build_window_metrics,
+    resolve_frame,
+    resolve_window,
+    selected_window_kinds,
+)
 
 
 __all__ = [
@@ -203,6 +244,8 @@ __all__ = [
     "ROW_TYPE_BY_ENTITY",
     "SCALAR_GROUP_BY_FIELD_BY_ENTITY",
     "TEMPORAL_GROUP_BY_FIELD_BY_ENTITY",
+    "WINDOW_INPUT_BY_ENTITY",
+    "WINDOW_METRICS_TYPE_BY_ENTITY",
     "AggregatableEntity",
     "AggregatableField",
     "AggregateOp",
@@ -222,6 +265,9 @@ __all__ = [
     "AppointmentTypeScalarGroupByField",
     "AppointmentTypeTemporalGroupByField",
     "AppointmentTypeTemporalGroupByInput",
+    "AppointmentTypeWindowInput",
+    "AppointmentTypeWindowMetrics",
+    "AppointmentTypeWindowOrderInput",
     "AvailableTimeAggregateFilterInput",
     "AvailableTimeAggregateOrderInput",
     "AvailableTimeAggregateRow",
@@ -232,6 +278,9 @@ __all__ = [
     "AvailableTimeScalarGroupByField",
     "AvailableTimeTemporalGroupByField",
     "AvailableTimeTemporalGroupByInput",
+    "AvailableTimeWindowInput",
+    "AvailableTimeWindowMetrics",
+    "AvailableTimeWindowOrderInput",
     "BlockedTimeAggregateFilterInput",
     "BlockedTimeAggregateOrderInput",
     "BlockedTimeAggregateRow",
@@ -242,6 +291,9 @@ __all__ = [
     "BlockedTimeScalarGroupByField",
     "BlockedTimeTemporalGroupByField",
     "BlockedTimeTemporalGroupByInput",
+    "BlockedTimeWindowInput",
+    "BlockedTimeWindowMetrics",
+    "BlockedTimeWindowOrderInput",
     "BooleanAggregate",
     "CalendarAggregateFilterInput",
     "CalendarAggregateOrderInput",
@@ -256,6 +308,9 @@ __all__ = [
     "CalendarEventScalarGroupByField",
     "CalendarEventTemporalGroupByField",
     "CalendarEventTemporalGroupByInput",
+    "CalendarEventWindowInput",
+    "CalendarEventWindowMetrics",
+    "CalendarEventWindowOrderInput",
     "CalendarGroupByInput",
     "CalendarGroupKey",
     "CalendarHavingInput",
@@ -270,9 +325,15 @@ __all__ = [
     "CalendarPoolScalarGroupByField",
     "CalendarPoolTemporalGroupByField",
     "CalendarPoolTemporalGroupByInput",
+    "CalendarPoolWindowInput",
+    "CalendarPoolWindowMetrics",
+    "CalendarPoolWindowOrderInput",
     "CalendarScalarGroupByField",
     "CalendarTemporalGroupByField",
     "CalendarTemporalGroupByInput",
+    "CalendarWindowInput",
+    "CalendarWindowMetrics",
+    "CalendarWindowOrderInput",
     "ComparisonOp",
     "DateRangeExceededError",
     "DateTimeAggregate",
@@ -309,6 +370,16 @@ __all__ = [
     "UnknownTimezoneError",
     "UnsupportedOperationError",
     "UnsupportedPlanFeatureError",
+    "WindowBound",
+    "WindowFrameError",
+    "WindowFrameInput",
+    "WindowFrameSpec",
+    "WindowFrameType",
+    "WindowFunctionKind",
+    "WindowOrderByRequiredError",
+    "WindowOrderKeyNotGroupedError",
+    "WindowOrderVariantError",
+    "WindowPartitionNotGroupedError",
     "WindowSpec",
     "aggregate_type_for",
     "appointment_type_aggregate",
@@ -316,6 +387,7 @@ __all__ = [
     "blocked_time_aggregate",
     "build_aggregate_queryset",
     "build_group_key",
+    "build_window_metrics",
     "calendar_aggregate",
     "calendar_event_aggregate",
     "calendar_pool_aggregate",
@@ -324,9 +396,14 @@ __all__ = [
     "registered_entities",
     "resolve_bucketing_timezone",
     "resolve_dimensions",
+    "resolve_frame",
     "resolve_having",
+    "resolve_metric_reference",
     "resolve_order_by",
+    "resolve_window",
     "scalar_alias",
+    "selected_window_kinds",
     "supported_ops",
     "temporal_alias",
+    "window_alias",
 ]
