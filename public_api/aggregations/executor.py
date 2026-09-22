@@ -38,6 +38,17 @@ carries the reason it exists. ``LIMIT`` is applied after the windows are
 computed, which is what lets a top-N page carry a running total over the whole
 result rather than over the page.
 
+This supersedes the plan's "window functions are applied over a subquery, not
+beside the aggregation" decision, which had the grouped queryset wrapped and
+the window applied on the outside. The wrapping turned out to be unnecessary:
+what Django refuses is ``Sum(Count(...))`` -- a guard on ``Aggregate``, not on
+the SQL, and one a ``Func`` carrying ``window_compatible`` does not trip -- and
+a window annotation landing in the ``GROUP BY``, which
+``GroupedWindow.get_group_by_cols`` answers truthfully rather than by wrapping.
+Staying at one level is what keeps ``HAVING``, the ``OVER`` clauses and
+``LIMIT`` in a single statement. The plan records the divergence in its
+Guiding Decisions.
+
 **HAVING is a ``.filter()`` after the ``.annotate()``, nothing more.**
 Django renders a post-``GROUP BY`` ``.filter()`` referencing an aggregate
 alias as SQL ``HAVING`` on its own; this module only has to turn a
@@ -460,12 +471,42 @@ def _window_partition(spec: WindowSpec) -> list[F] | None:
     return [F(alias) for alias in spec.partition_by] or None
 
 
-def _window_ordering(spec: WindowSpec) -> list[OrderBy]:
-    """The window's own ``ORDER BY``, which is not the result's."""
-    return [
+def _window_ordering(
+    spec: WindowSpec, plan: AggregateQueryPlan, *, tiebreak: bool
+) -> list[OrderBy]:
+    """The window's own ``ORDER BY``, which is not the result's.
+
+    ``tiebreak`` appends the group-key dimensions the window does not already
+    order or partition by, exactly as :func:`_ordering_terms` does for the
+    result. The reason is the same one and it bites harder here. Rows that tie
+    on the window's ordering are *peers*, and ``ROWS BETWEEN UNBOUNDED
+    PRECEDING AND CURRENT ROW`` cuts the frame somewhere inside a peer group at
+    a position Postgres does not define -- so a running total over a result
+    grouped by calendar and day but ordered only by day gives each of a day's
+    calendars whichever partial sum that run's physical row order produced.
+    The numbers move between runs of the same query, which is the failure the
+    mandatory ``orderBy`` exists to prevent; requiring *an* ordering only rules
+    out the unordered case, not the partially-ordered one. Ordering by every
+    dimension makes the order total, because a group key is unique per row.
+
+    Not every function wants it: a rank's peers are *supposed* to share a rank,
+    so breaking their tie would silently turn ``RANK`` into ``ROW_NUMBER``.
+    Only the two frame-sensitive functions ask for it.
+    """
+    ordering = [
         F(order.alias).desc() if order.direction is OrderDirection.DESC else F(order.alias).asc()
         for order in spec.order_by
     ]
+    if not tiebreak:
+        return ordering
+
+    # Partition columns are constant within a partition, so they can never
+    # break a tie inside one.
+    already_ordered = {order.alias for order in spec.order_by} | set(spec.partition_by)
+    ordering.extend(
+        F(alias).asc() for alias in plan.dimension_aliases if alias not in already_ordered
+    )
+    return ordering
 
 
 def _window_frame(frame: WindowFrameSpec) -> DjangoWindowFrame:
@@ -475,10 +516,11 @@ def _window_frame(frame: WindowFrameSpec) -> DjangoWindowFrame:
     return frame_class(start=start, end=end)
 
 
-def _window_expression(spec: WindowSpec, kind: WindowFunctionKind) -> BaseExpression:
+def _window_expression(
+    spec: WindowSpec, plan: AggregateQueryPlan, kind: WindowFunctionKind
+) -> BaseExpression:
     """The ORM expression one window function becomes."""
     partition = _window_partition(spec)
-    ordering = _window_ordering(spec)
 
     match kind:
         case WindowFunctionKind.RUNNING_TOTAL:
@@ -490,7 +532,7 @@ def _window_expression(spec: WindowSpec, kind: WindowFunctionKind) -> BaseExpres
             return GroupedWindow(
                 _window_metric(spec, _WINDOW_SUM),
                 partition_by=partition,
-                order_by=ordering,
+                order_by=_window_ordering(spec, plan, tiebreak=True),
                 frame=_window_frame(_DEFAULT_WINDOW_FRAME),
             )
         case WindowFunctionKind.MOVING_AVERAGE:
@@ -499,13 +541,20 @@ def _window_expression(spec: WindowSpec, kind: WindowFunctionKind) -> BaseExpres
             return GroupedWindow(
                 _window_metric(spec, _WINDOW_AVG),
                 partition_by=partition,
-                order_by=ordering,
+                order_by=_window_ordering(spec, plan, tiebreak=True),
                 frame=_window_frame(spec.frame or _DEFAULT_WINDOW_FRAME),
             )
         case WindowFunctionKind.RANK:
             # No frame: a rank is a position in the ordering, and a frame would
             # describe rows it does not read. Postgres refuses one here anyway.
-            return GroupedWindow(Rank(), partition_by=partition, order_by=ordering)
+            # No tiebreak either: rows tied on the window's ordering are meant
+            # to share a rank, and breaking the tie would make this
+            # ``ROW_NUMBER`` under another name.
+            return GroupedWindow(
+                Rank(),
+                partition_by=partition,
+                order_by=_window_ordering(spec, plan, tiebreak=False),
+            )
         case WindowFunctionKind.PERCENT_OF_TOTAL:
             # Neither ordering nor frame, deliberately: either would turn this
             # into a share of the rows so far, which does not sum to 100 across
@@ -534,7 +583,7 @@ def _window_annotations(plan: AggregateQueryPlan) -> dict[str, BaseExpression]:
     spec = plan.window
     if spec is None or not spec.functions:
         return {}
-    return {window_alias(kind): _window_expression(spec, kind) for kind in spec.functions}
+    return {window_alias(kind): _window_expression(spec, plan, kind) for kind in spec.functions}
 
 
 def _ordering_terms(plan: AggregateQueryPlan) -> tuple[str, ...]:

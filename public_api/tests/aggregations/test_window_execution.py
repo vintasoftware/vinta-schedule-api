@@ -75,6 +75,27 @@ query Agg(
 
 BY_DAY = [{"temporal": {"field": "START_TIME", "granularity": "DAY"}}]
 
+
+def _over_clause(sql: str, function_prefix: str) -> str:
+    """The text inside the ``OVER (...)`` of the first call to ``function_prefix``.
+
+    Scanned with a depth counter rather than matched with a regex: a window's
+    ordering holds ``DATE_TRUNC(...)`` calls of its own, so the first ``)``
+    after the clause opens is not the end of it.
+    """
+    start = sql.index(function_prefix)
+    opened = sql.index("OVER (", start) + len("OVER (")
+    depth = 1
+    for index in range(opened, len(sql)):
+        if sql[index] == "(":
+            depth += 1
+        elif sql[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return sql[opened:index]
+    raise AssertionError(f"unbalanced OVER clause after {function_prefix!r}")
+
+
 #: Five consecutive days, and how many events each carries. Deliberately not
 #: monotonic, so a running total that accidentally reported the day's own
 #: count would not pass for one.
@@ -474,6 +495,109 @@ class TestWindowExecution:
         assert moving[second.id] == pytest.approx([1.0, 1.0, 4.0])
 
         self._assert_one_query_with_an_over_clause(ctx)
+
+    def test_a_running_total_over_tied_rows_is_stable_across_runs(self):
+        """Rows tying on the window's ordering are peers, and Postgres does not
+        define where inside a peer group ``UNBOUNDED PRECEDING AND CURRENT ROW``
+        cuts. Without a tiebreak each tied row's running total is whichever
+        partial sum that run's physical row order produced -- the same query
+        returning different numbers on different runs, which is the failure the
+        mandatory ``orderBy`` exists to prevent.
+
+        Three calendars share every day and the window orders by day alone, so
+        every row has two peers.
+        """
+        org = self._org()
+        calendars = [self._make_calendar(org) for _ in range(3)]
+        for day in (1, 2, 3):
+            for index, calendar in enumerate(calendars):
+                self._make_events(org, calendar, day, index + 1)
+        system_user, token, auth = self._token(org)
+
+        variables = self._variables(
+            groupBy=[
+                {"field": "CALENDAR_ID"},
+                {"temporal": {"field": "START_TIME", "granularity": "DAY"}},
+            ],
+            window={
+                "metric": "COUNT",
+                "orderBy": [
+                    {
+                        "key": {"temporal": {"field": "START_TIME", "granularity": "DAY"}},
+                        "direction": "ASC",
+                    }
+                ],
+            },
+            orderBy=[
+                {"key": {"field": "CALENDAR_ID"}, "direction": "ASC"},
+                {
+                    "key": {"temporal": {"field": "START_TIME", "granularity": "DAY"}},
+                    "direction": "ASC",
+                },
+            ],
+        )
+
+        def _totals() -> list[tuple]:
+            rows = self._rows(
+                self._post(CALENDAR_EVENT_WINDOW_QUERY, system_user, token, auth, variables)
+            )
+            return [
+                (row["key"]["calendarId"], row["key"]["startTimeBucket"], row["window"][name])
+                for row in rows
+                for name in ("runningTotal", "movingAverage")
+            ]
+
+        first_run = _totals()
+        assert first_run == _totals() == _totals()
+
+        # Repeating three times would also pass by luck, so assert the reason
+        # directly: the window's own ORDER BY carries the group key the
+        # caller's ordering left out, which makes the order total.
+        with CaptureQueriesContext(connection) as ctx:
+            rows = self._rows(
+                self._post(CALENDAR_EVENT_WINDOW_QUERY, system_user, token, auth, variables)
+            )
+        sql = self._aggregate_queries(ctx)[0]["sql"]
+        assert "calendar_fk_id" in _over_clause(sql, "SUM(COUNT(")
+        # And the rank's ordering is deliberately left alone, so its peers
+        # still share a rank rather than becoming a row number.
+        assert "calendar_fk_id" not in _over_clause(sql, "RANK()")
+
+        # With no partition the running total accumulates across every group,
+        # so the last row of that total order carries the whole result's count.
+        assert max(row["window"]["runningTotal"] for row in rows) == sum(
+            row["count"] for row in rows
+        )
+
+    def test_rank_still_lets_tied_rows_share_a_rank(self):
+        """The tiebreak is for the frame-sensitive functions only. A rank's
+        peers are meant to share a rank -- breaking their tie would make this
+        ``ROW_NUMBER`` under another name."""
+        org = self._org()
+        calendars = [self._make_calendar(org) for _ in range(3)]
+        # Every calendar has the same count, so all three tie on the window's
+        # ordering and all three should rank 1.
+        for calendar in calendars:
+            self._make_events(org, calendar, 1, 2)
+        system_user, token, auth = self._token(org)
+
+        response = self._post(
+            CALENDAR_EVENT_WINDOW_QUERY,
+            system_user,
+            token,
+            auth,
+            self._variables(
+                groupBy=[{"field": "CALENDAR_ID"}],
+                window={
+                    "metric": "COUNT",
+                    "orderBy": [{"metric": "COUNT", "direction": "DESC"}],
+                },
+            ),
+        )
+
+        rows = self._rows(response)
+        assert [row["count"] for row in rows] == [2, 2, 2]
+        assert [row["window"]["rank"] for row in rows] == [1, 1, 1]
 
     # -- refusals, as a caller sees them ---------------------------------
 
