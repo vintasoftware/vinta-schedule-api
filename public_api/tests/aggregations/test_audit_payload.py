@@ -1,7 +1,7 @@
 """Unit tests for the aggregate query audit payload."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 from public_api.aggregations.audit import record_aggregate_query
@@ -52,72 +52,79 @@ def test_audit_payload_contains_metrics_and_dimensions_but_no_values():
     mock_system_user = MagicMock()
     organization_id = 42
 
-    with patch.object(
-        mock_audit_service,
-        "actor_from_system_user",
-        return_value={"actor": "test"},
-    ):
-        with patch.object(
-            mock_audit_service,
-            "scope_from_organization_id",
-            return_value={"scope": "test"},
-        ):
-            record_aggregate_query(
-                plan=plan,
-                organization_id=organization_id,
-                system_user=mock_system_user,
-                row_count=3,
-                audit_service=mock_audit_service,
-            )
+    mock_audit_service.actor_from_system_user.return_value = {"actor": "test"}
+    mock_audit_service.scope_from_organization_id.return_value = {"scope": "test"}
+
+    record_aggregate_query(
+        plan=plan,
+        organization_id=organization_id,
+        system_user=mock_system_user,
+        row_count=3,
+        audit_service=mock_audit_service,
+    )
 
     # Assert that record was called
     mock_audit_service.record.assert_called_once()
     call_kwargs = mock_audit_service.record.call_args[1]
 
     # Get the diff payload which contains the metadata
-    diff = call_kwargs["diff"]
+    full_diff = call_kwargs["diff"]
     subject = call_kwargs["subject"]
 
     # Verify subject is correctly formed
     assert subject.subject_id == "calendar_event"
     assert subject.subject_type == "public_api.aggregations.aggregate_query"
 
-    # Verify row count, limit, offset in diff
-    assert diff["row_count"] == 3
-    assert diff["limit"] == 10
-    assert diff["offset"] == 0
+    # Extract the nested query_metadata
+    query_metadata = full_diff["aggregate_query"]["new"]
 
-    # Verify dimensions are recorded
-    assert len(diff["dimensions"]) == 1
-    assert diff["dimensions"][0]["alias"] == "event_date"
-    assert diff["dimensions"][0]["field_path"] == "start_time"
-    assert diff["dimensions"][0]["granularity"] == "DAY"
-    assert diff["dimensions"][0]["timezone"] == "America/New_York"
+    # Verify the entire payload structure
+    expected_payload = {
+        "dimensions": [
+            {
+                "alias": "event_date",
+                "field_path": "start_time",
+                "granularity": "DAY",
+                "timezone": "America/New_York",
+            }
+        ],
+        "metrics": [
+            {
+                "alias": "event_count",
+                "field_path": "id",
+                "operation": "COUNT",
+            },
+            {
+                "alias": "concatenated_titles",
+                "field_path": "title",
+                "operation": "CONCAT",
+            },
+        ],
+        "filter_bounds": {
+            "start": None,
+            "end": None,
+            "predicates": {"calendar_ids": [1, 2, 3]},
+        },
+        "limit": 10,
+        "offset": 0,
+        "row_count": 3,
+    }
 
-    # Verify metrics are recorded
-    assert len(diff["metrics"]) == 2
-    assert diff["metrics"][0]["alias"] == "event_count"
-    assert diff["metrics"][0]["field_path"] == "id"
-    assert diff["metrics"][0]["operation"] == "COUNT"
-    assert diff["metrics"][1]["alias"] == "concatenated_titles"
-    assert diff["metrics"][1]["field_path"] == "title"
-    assert diff["metrics"][1]["operation"] == "CONCAT"
-
-    # Verify filter bounds are recorded
-    assert diff["filter_bounds"]["predicates"]["calendar_ids"] == [1, 2, 3]
+    # Assert the entire payload matches
+    assert query_metadata == expected_payload
 
     # Most important: verify that no field values are recorded
     # The payload should only contain field paths, aliases, and operations — no data values.
 
     # Verify no separator appears in the payload
-    assert ";" not in json.dumps(diff, default=str)
+    assert ";" not in json.dumps(query_metadata, default=str)
 
     # Verify no actual field value would appear
     # (e.g., if title was a field value, it would be a string. We only see it as a field_path key)
-    diff_json = json.dumps(diff, default=str)
+    payload_json = json.dumps(query_metadata, default=str)
     # "title" appears in field_path and in alias "concatenated_titles" but not as a value
-    assert '"title"' in diff_json  # field_path of the concatenation metric
-    assert diff_json.count('"title"') == 1  # Only in the field_path
+    assert '"title"' in payload_json  # field_path of the concatenation metric
+    assert payload_json.count('"title"') == 1  # Only in the field_path
 
 
 def test_audit_payload_with_date_bounds():
@@ -150,27 +157,21 @@ def test_audit_payload_with_date_bounds():
     mock_audit_service = MagicMock()
     mock_system_user = MagicMock()
 
-    with patch.object(
-        mock_audit_service,
-        "actor_from_system_user",
-        return_value={"actor": "test"},
-    ):
-        with patch.object(
-            mock_audit_service,
-            "scope_from_organization_id",
-            return_value={"scope": "test"},
-        ):
-            record_aggregate_query(
-                plan=plan,
-                organization_id=99,
-                system_user=mock_system_user,
-                row_count=0,
-                audit_service=mock_audit_service,
-            )
+    mock_audit_service.actor_from_system_user.return_value = {"actor": "test"}
+    mock_audit_service.scope_from_organization_id.return_value = {"scope": "test"}
+
+    record_aggregate_query(
+        plan=plan,
+        organization_id=99,
+        system_user=mock_system_user,
+        row_count=0,
+        audit_service=mock_audit_service,
+    )
 
     call_kwargs = mock_audit_service.record.call_args[1]
-    diff = call_kwargs["diff"]
+    full_diff = call_kwargs["diff"]
+    query_metadata = full_diff["aggregate_query"]["new"]
 
-    assert diff["filter_bounds"]["start"] == "2024-01-01T00:00:00"
-    assert diff["filter_bounds"]["end"] == "2024-12-31T23:59:59"
-    assert diff["row_count"] == 0
+    assert query_metadata["filter_bounds"]["start"] == "2024-01-01T00:00:00"
+    assert query_metadata["filter_bounds"]["end"] == "2024-12-31T23:59:59"
+    assert query_metadata["row_count"] == 0

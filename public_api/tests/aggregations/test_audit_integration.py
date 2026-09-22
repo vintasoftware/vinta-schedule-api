@@ -55,7 +55,7 @@ class TestAggregateAuditIntegration:
                 headers={"authorization": f"Bearer {system_user.id}:{token}"},
             )
 
-    def test_aggregate_query_writes_audit_record(self):
+    def test_aggregate_query_writes_audit_record(self, django_capture_on_commit_callbacks):
         """Running an aggregate query writes exactly one audit record."""
         org = self._org()
         system_user, token, auth_service = self._token(org, PublicAPIResources.CALENDAR_EVENT)
@@ -90,7 +90,8 @@ class TestAggregateAuditIntegration:
             "groupBy": [{"field": "ID"}],
         }
 
-        response = self._post_graphql(query, system_user, token, auth_service, variables)
+        with django_capture_on_commit_callbacks(execute=True):
+            response = self._post_graphql(query, system_user, token, auth_service, variables)
 
         # Verify no GraphQL errors
         assert response.status_code == 200
@@ -111,10 +112,11 @@ class TestAggregateAuditIntegration:
         assert record is not None
         assert record.action_key == AuditAction.AGGREGATE_QUERY.value
         assert record.subject_pk == "calendar_event"
+        assert record.actor.identity_key == str(system_user.id)
         assert record.diff is not None
-        assert record.diff["row_count"] == row_count
+        assert record.diff["aggregate_query"]["new"]["row_count"] == row_count
 
-    def test_aggregate_query_with_zero_rows_writes_audit_record(self):
+    def test_aggregate_query_with_zero_rows_writes_audit_record(self, django_capture_on_commit_callbacks):
         """Audit record is written even when the aggregate returns zero rows."""
         org = self._org()
         system_user, token, auth_service = self._token(org, PublicAPIResources.CALENDAR_EVENT)
@@ -140,7 +142,8 @@ class TestAggregateAuditIntegration:
             "groupBy": [{"field": "ID"}],
         }
 
-        response = self._post_graphql(query, system_user, token, auth_service, variables)
+        with django_capture_on_commit_callbacks(execute=True):
+            response = self._post_graphql(query, system_user, token, auth_service, variables)
 
         # Query should succeed with empty result
         assert response.status_code == 200
@@ -158,5 +161,6 @@ class TestAggregateAuditIntegration:
         assert record is not None
         assert record.action_key == AuditAction.AGGREGATE_QUERY.value
         assert record.subject_pk == "calendar_event"
+        assert record.actor.identity_key == str(system_user.id)
         assert record.diff is not None
-        assert record.diff["row_count"] == 0
+        assert record.diff["aggregate_query"]["new"]["row_count"] == 0

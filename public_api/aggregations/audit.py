@@ -94,5 +94,5 @@ def record_aggregate_query(
             subject_id=plan.entity.value,
         ),
         scope=scope,
-        diff=query_metadata,
+        diff={"aggregate_query": {"new": query_metadata}},
     )
