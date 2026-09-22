@@ -110,7 +110,7 @@ class TestAggregateAuditIntegration:
         record = audit_records.first()
         assert record is not None
         assert record.action_key == AuditAction.AGGREGATE_QUERY.value
-        assert record.subject_id == "calendar_event"
+        assert record.subject_pk == "calendar_event"
         assert record.diff is not None
         assert record.diff["row_count"] == row_count
 
@@ -157,6 +157,6 @@ class TestAggregateAuditIntegration:
         record = audit_records.first()
         assert record is not None
         assert record.action_key == AuditAction.AGGREGATE_QUERY.value
-        assert record.subject_id == "calendar_event"
+        assert record.subject_pk == "calendar_event"
         assert record.diff is not None
         assert record.diff["row_count"] == 0

@@ -6,9 +6,8 @@ requested limit/offset, and the returned row count. Never records aggregated
 values, group key values, or concatenated strings.
 """
 
-from typing import Annotated, Any
+from typing import Any
 
-from dependency_injector.wiring import Provide, inject
 from vinta_audit_logs.types import SubjectRef
 
 from audit_integration.constants import AuditAction
@@ -16,15 +15,19 @@ from audit_integration.services import OrganizationAuditService
 from public_api.aggregations.plan import AggregateQueryPlan
 
 
-@inject
-def get_audit_service(
-    audit_service: Annotated["OrganizationAuditService | None", Provide["audit_service"]] = None,
-) -> "OrganizationAuditService | None":
+def get_audit_service() -> OrganizationAuditService:
     """Resolve the OrganizationAuditService from the DI container.
 
-    Returns None if not configured, allowing callers to handle gracefully.
+    Raises RuntimeError if the container is not initialized.
     """
-    return audit_service
+    from di_core.containers import container
+
+    if container is None:
+        raise RuntimeError(
+            "DI container is not wired; the aggregate query audit hook cannot resolve "
+            "audit_service before di_core.apps.DICoreConfig.ready() runs."
+        )
+    return container.audit_service()
 
 
 def record_aggregate_query(
@@ -32,15 +35,13 @@ def record_aggregate_query(
     organization_id: int,
     system_user: Any,
     row_count: int,
-    audit_service: OrganizationAuditService | None = None,
+    audit_service: OrganizationAuditService,
 ) -> None:
     """Record an aggregate query to the audit trail.
 
     Captures what was queried — entity, dimensions, metrics, filters — without
     capturing any values. Called by the resolver after the query executes.
     """
-    if audit_service is None:
-        return
 
     actor = audit_service.actor_from_system_user(system_user)
     scope = audit_service.scope_from_organization_id(organization_id)

@@ -438,13 +438,12 @@ def _execute_aggregate(
 
     output_rows = [_row_to_output(entity, registration, row, metrics) for row in rows]
 
-    audit_service = get_audit_service()
     record_aggregate_query(
         plan=plan,
         organization_id=organization.id,
         system_user=system_user,
         row_count=len(output_rows),
-        audit_service=audit_service,
+        audit_service=get_audit_service(),
     )
 
     return output_rows
