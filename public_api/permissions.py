@@ -116,6 +116,17 @@ class OrganizationResourceAccess(BasePermission):
         "createBookingPolicy": PublicAPIResources.BOOKING_POLICY,
         "updateBookingPolicy": PublicAPIResources.BOOKING_POLICY,
         "deleteBookingPolicy": PublicAPIResources.BOOKING_POLICY,
+        # Aggregate root fields (public_api/aggregations/fields.py). Each one
+        # requires the same resource as the entity's existing list field --
+        # an aggregate discloses nothing a caller could not already read one
+        # row at a time. See "Aggregate fields require the same resource
+        # scope as the entity's list field" in the plan's Guiding Decisions.
+        "calendarEventAggregate": PublicAPIResources.CALENDAR_EVENT,
+        "availableTimeAggregate": PublicAPIResources.AVAILABLE_TIME,
+        "blockedTimeAggregate": PublicAPIResources.BLOCKED_TIME,
+        "appointmentTypeAggregate": PublicAPIResources.APPOINTMENT_TYPE,
+        "calendarAggregate": PublicAPIResources.CALENDAR,
+        "calendarPoolAggregate": PublicAPIResources.CALENDAR_POOL,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
