@@ -11,6 +11,22 @@ equality cannot.
 The other half is agreement: the batched path and the root-level path have to
 return the same numbers for the same rows, or the batching would be a second
 implementation of the aggregation with its own bugs.
+
+Three things make that harder than comparing two numbers, and each has its own
+section below:
+
+* **The org-wide token is the cheap case.** ``scoped_calendar_ids`` short
+  circuits without a query for it, so a suite that only ever mints org-wide
+  tokens cannot see whether the scoping call runs once per level or once per
+  parent. One test mints a scoped token for exactly that reason.
+* **``limit`` pages each parent, not the batch.** A plain ``LIMIT`` over the
+  batched query would look right for the first parent and be silently empty
+  for the rest.
+* **The nested path is a different statement.** Filtering on the per-parent
+  row number makes Django wrap everything in ``SELECT * FROM ( ... ) qualify
+  WHERE ...``, which moves ``WHERE`` and ``HAVING`` inward and re-emits
+  ``ORDER BY`` outside, so both clauses are asserted against real rows rather
+  than assumed to survive.
 """
 
 import datetime
