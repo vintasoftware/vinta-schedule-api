@@ -1,3 +1,5 @@
+import datetime
+
 from django.db.models import TextChoices
 
 
@@ -112,3 +114,5 @@ PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
         PublicAPIResources.BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_QUOTA_RULES,
     ]
 )
+
+MAX_AGGREGATE_RANGE = datetime.timedelta(days=366)
