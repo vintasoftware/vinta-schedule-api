@@ -5,8 +5,6 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
-from django.db import connection
-from django.test.utils import CaptureQueriesContext
 from model_bakery import baker
 from rest_framework.test import APIClient
 
