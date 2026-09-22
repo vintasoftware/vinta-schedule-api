@@ -51,7 +51,7 @@ from public_api.aggregations import (
     TemporalGranularity,
     UnknownMetricFieldError,
     UnsupportedOperationError,
-    UnsupportedPlanFeatureError,
+    WindowFunctionKind,
     WindowSpec,
     build_aggregate_queryset,
 )
@@ -840,6 +840,21 @@ class TestFeaturesLaterPhasesOwn:
         with organization_context(org):
             build_aggregate_queryset(plan, CalendarEvent.objects.all())
 
-    def test_a_window_clause_is_refused_for_now(self, org):
-        with organization_context(org), pytest.raises(UnsupportedPlanFeatureError):
-            build_aggregate_queryset(_event_plan(window=WindowSpec()), CalendarEvent.objects.all())
+    def test_a_window_clause_is_built_rather_than_refused(self, org):
+        """The executor used to refuse a window outright; the window-function
+        phase replaced that refusal with the ``OVER`` clause itself.
+
+        The behaviour it now has is covered by ``test_window_execution.py``;
+        this only records that the refusal was removed rather than relaxed
+        elsewhere.
+        """
+        plan = _event_plan(
+            window=WindowSpec(
+                metric_alias="count",
+                order_by=(OrderSpec(alias="count", direction=OrderDirection.ASC),),
+                functions=(WindowFunctionKind.RUNNING_TOTAL,),
+            )
+        )
+        with organization_context(org):
+            queryset = build_aggregate_queryset(plan, CalendarEvent.objects.all())
+            assert "OVER (" in str(queryset.query)

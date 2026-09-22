@@ -99,8 +99,14 @@ class TestAggregateRowTypesMatchTheRegistry:
             row_type = ROW_TYPE_BY_ENTITY[entity]
             row_field_names = {f.name for f in dataclasses.fields(row_type)}
 
+            # ``key``, ``count`` and ``window`` are the three fields a row
+            # carries that no registration mentions: the group key, the
+            # mandatory row count, and the window columns, which are computed
+            # over a metric rather than being one.
             expected = (
-                {"key", "count"} | set(registration.metrics) | set(registration.relation_counts)
+                {"key", "count", "window"}
+                | set(registration.metrics)
+                | set(registration.relation_counts)
             )
             assert row_field_names == expected, (
                 f"{row_type.__name__} fields {row_field_names} do not match "

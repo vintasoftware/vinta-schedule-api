@@ -253,6 +253,18 @@ def _count_like_aliases(entity: AggregatableEntity) -> frozenset[str]:
     return frozenset({ROW_COUNT_ALIAS, *get_registration(entity).relation_counts})
 
 
+def resolve_metric_reference(entity: AggregatableEntity, member: enum.Enum) -> MetricSpec:
+    """The :class:`MetricSpec` one orderable-metric enum member names.
+
+    Public because ``windows.py`` names metrics with these same enums -- the
+    question "which metrics may this entity's aggregate reference by name" has
+    one answer, and a second copy of the alias-parsing rule beside it is a
+    second thing to drift.
+    """
+    alias, field_path, op = _metric_spec_for(member, _count_like_aliases(entity))
+    return MetricSpec(alias=alias, field_path=field_path, op=op)
+
+
 class OrderEntry(Protocol):
     """The shape every entity's order-by wrapper input has.
 
@@ -290,7 +302,6 @@ def resolve_order_by(
     the same mistake reached through a real query, so it is refused here,
     before a plan is ever built, with :class:`OrderKeyNotGroupedError`.
     """
-    count_like = _count_like_aliases(entity)
     known_dimension_aliases = set(dimension_aliases)
     order_specs: list[OrderSpec] = []
     extra_metrics: list[MetricSpec] = []
@@ -308,8 +319,8 @@ def resolve_order_by(
             order_specs.append(OrderSpec(alias=alias, direction=direction))
             continue
 
-        alias, field_path, op = _metric_spec_for(entry.metric, count_like)
-        extra_metrics.append(MetricSpec(alias=alias, field_path=field_path, op=op))
-        order_specs.append(OrderSpec(alias=alias, direction=direction))
+        metric = resolve_metric_reference(entity, entry.metric)
+        extra_metrics.append(metric)
+        order_specs.append(OrderSpec(alias=metric.alias, direction=direction))
 
     return tuple(order_specs), tuple(extra_metrics)

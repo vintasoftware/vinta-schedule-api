@@ -22,6 +22,13 @@ from zoneinfo import ZoneInfo
 
 from public_api.aggregations.errors import (
     OFFSET_NEGATIVE_MESSAGE,
+    WINDOW_FRAME_END_BOUND_MESSAGE,
+    WINDOW_FRAME_OFFSET_REQUIRED_MESSAGE,
+    WINDOW_FRAME_OFFSET_UNEXPECTED_MESSAGE,
+    WINDOW_FRAME_ORDER_MESSAGE,
+    WINDOW_FRAME_RANGE_OFFSET_MESSAGE,
+    WINDOW_FRAME_START_BOUND_MESSAGE,
+    WINDOW_NEEDS_ORDER_BY_MESSAGE,
     AliasCollisionError,
     InvalidPlanError,
     limit_out_of_range_message,
@@ -254,13 +261,203 @@ class HavingSpec:
         )
 
 
+class WindowFunctionKind(enum.Enum):
+    """One window function computed over the grouped rows.
+
+    Every member reads the same column -- :attr:`WindowSpec.metric_alias` --
+    and differs only in what it does with it, so a caller picks the metric
+    once and selects as many of these as it wants.
+    """
+
+    RUNNING_TOTAL = "RUNNING_TOTAL"
+    MOVING_AVERAGE = "MOVING_AVERAGE"
+    RANK = "RANK"
+    PERCENT_OF_TOTAL = "PERCENT_OF_TOTAL"
+
+
+class WindowFrameType(enum.Enum):
+    """The unit a frame's bounds are counted in.
+
+    ``ROWS`` counts rows. ``RANGE`` counts *peers* -- every row sharing the
+    window's ordering value counts as one step -- so a three-step ``RANGE``
+    frame over a day bucket with ties reads more rows than a three-row
+    ``ROWS`` frame does.
+    """
+
+    ROWS = "ROWS"
+    RANGE = "RANGE"
+
+
+class WindowBound(enum.Enum):
+    """One end of a window frame."""
+
+    UNBOUNDED_PRECEDING = "UNBOUNDED_PRECEDING"
+    PRECEDING = "PRECEDING"
+    CURRENT_ROW = "CURRENT_ROW"
+    FOLLOWING = "FOLLOWING"
+    UNBOUNDED_FOLLOWING = "UNBOUNDED_FOLLOWING"
+
+
+#: The bounds that may open a frame. ``UNBOUNDED_FOLLOWING`` is absent: a
+#: frame starting after every row of its partition contains nothing.
+_START_BOUNDS = frozenset(
+    {
+        WindowBound.UNBOUNDED_PRECEDING,
+        WindowBound.PRECEDING,
+        WindowBound.CURRENT_ROW,
+        WindowBound.FOLLOWING,
+    }
+)
+
+#: The bounds that may close a frame, by the mirror image of the same rule.
+_END_BOUNDS = frozenset(
+    {
+        WindowBound.PRECEDING,
+        WindowBound.CURRENT_ROW,
+        WindowBound.FOLLOWING,
+        WindowBound.UNBOUNDED_FOLLOWING,
+    }
+)
+
+#: The two bounds that measure a distance, and so need an offset. The other
+#: three name a fixed position and must not carry one.
+_OFFSET_BOUNDS = frozenset({WindowBound.PRECEDING, WindowBound.FOLLOWING})
+
+
+@dataclass(frozen=True)
+class WindowFrameSpec:
+    """Which rows around the current one a window function reads.
+
+    The defaults are what makes a running total run: every row of the
+    partition from its start up to and including this one.
+
+    :meth:`bounds` returns the pair Django's ``RowRange`` / ``ValueRange``
+    take -- ``None`` for unbounded, ``0`` for the current row, a negative
+    number for *preceding* and a positive one for *following*. That encoding
+    is Django's, not this module's, which is why the offsets a caller
+    supplies are always positive and the sign is applied here.
+    """
+
+    frame_type: WindowFrameType = WindowFrameType.ROWS
+    start: WindowBound = WindowBound.UNBOUNDED_PRECEDING
+    start_offset: int | None = None
+    end: WindowBound = WindowBound.CURRENT_ROW
+    end_offset: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.start not in _START_BOUNDS:
+            raise InvalidPlanError(WINDOW_FRAME_START_BOUND_MESSAGE)
+        if self.end not in _END_BOUNDS:
+            raise InvalidPlanError(WINDOW_FRAME_END_BOUND_MESSAGE)
+        self._validate_offset(self.start, self.start_offset)
+        self._validate_offset(self.end, self.end_offset)
+        # Postgres accepts ``RANGE <n> PRECEDING`` only over exactly one
+        # ordering column whose type an integer can offset. A window here
+        # routinely orders by a bucketed timestamp, or by two terms, and both
+        # are refused by the database rather than by the schema -- so the
+        # combination is refused here, in this engine's own words.
+        if self.frame_type is WindowFrameType.RANGE and (
+            self.start in _OFFSET_BOUNDS or self.end in _OFFSET_BOUNDS
+        ):
+            raise InvalidPlanError(WINDOW_FRAME_RANGE_OFFSET_MESSAGE)
+        start, end = self.bounds()
+        # Only when both ends are finite: an unbounded end is an infinity on
+        # the correct side of the other by construction.
+        if start is not None and end is not None and start > end:
+            raise InvalidPlanError(WINDOW_FRAME_ORDER_MESSAGE)
+
+    @staticmethod
+    def _validate_offset(bound: WindowBound, offset: int | None) -> None:
+        """Refuse an offset on a bound that has no distance to measure, and a
+        missing or non-positive one on a bound that does.
+
+        Zero is refused rather than read as the current row: ``0 PRECEDING``
+        and ``CURRENT ROW`` are the same frame said two ways, and accepting
+        both would mean two spellings of one thing.
+        """
+        if bound in _OFFSET_BOUNDS:
+            if offset is None or offset < 1:
+                raise InvalidPlanError(WINDOW_FRAME_OFFSET_REQUIRED_MESSAGE)
+            return
+        if offset is not None:
+            raise InvalidPlanError(WINDOW_FRAME_OFFSET_UNEXPECTED_MESSAGE)
+
+    def bounds(self) -> tuple[int | None, int | None]:
+        """``(start, end)`` in the encoding Django's window frames take."""
+        return _bound_value(self.start, self.start_offset), _bound_value(self.end, self.end_offset)
+
+
+def _bound_value(bound: WindowBound, offset: int | None) -> int | None:
+    """One bound as the number Django's ``RowRange`` / ``ValueRange`` want."""
+    match bound:
+        case WindowBound.UNBOUNDED_PRECEDING | WindowBound.UNBOUNDED_FOLLOWING:
+            return None
+        case WindowBound.CURRENT_ROW:
+            return 0
+        case WindowBound.PRECEDING:
+            # ``offset`` is not None here: ``_validate_offset`` ran first.
+            return -int(offset or 0)
+        case WindowBound.FOLLOWING:
+            return int(offset or 0)
+    raise InvalidPlanError(WINDOW_FRAME_START_BOUND_MESSAGE)  # pragma: no cover
+
+
+#: Prefix every window column's alias carries in the row dict. Nothing stops
+#: a caller aliasing a metric this way, but Django refuses a duplicate
+#: annotation name outright, so a collision is a loud error rather than a
+#: wrong number -- the same reasoning as the executor's relation-count prefix.
+WINDOW_ALIAS_PREFIX = "_window_"
+
+
+def window_alias(kind: WindowFunctionKind) -> str:
+    """The row-dict key one window function's value lands under."""
+    return WINDOW_ALIAS_PREFIX + kind.value.lower()
+
+
 @dataclass(frozen=True)
 class WindowSpec:
     """Window-function clause applied over the grouped result.
 
-    Declared here for the same reason as :class:`HavingSpec`; Phase 6 owns
-    the shape and the window-over-subquery construction.
+    One metric, one partitioning, one ordering, one frame, and the set of
+    functions to compute over them. The functions share everything else
+    because they answer the same question about the same column -- asking for
+    a running total and a moving average of two different metrics is two
+    queries, not one window.
+
+    ``order_by`` is the *window's* ordering, which is not the result's: the
+    field's own ``orderBy`` decides what order the caller reads rows in, this
+    decides what order a running total accumulates in, and a query that wants
+    "the ten busiest days, each carrying its running total in date order"
+    needs them to differ. It is mandatory -- an unordered running total is not
+    a loose definition, it is no definition at all, and Postgres would pick an
+    order and return numbers that move between runs.
     """
+
+    metric_alias: str
+    order_by: tuple[OrderSpec, ...]
+    functions: tuple[WindowFunctionKind, ...] = ()
+    partition_by: tuple[str, ...] = ()
+    frame: WindowFrameSpec | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "order_by", tuple(self.order_by))
+        object.__setattr__(self, "functions", tuple(self.functions))
+        object.__setattr__(self, "partition_by", tuple(self.partition_by))
+        if not self.metric_alias:
+            raise InvalidPlanError("A window needs a metric alias to read")
+        if not self.order_by:
+            raise InvalidPlanError(WINDOW_NEEDS_ORDER_BY_MESSAGE)
+
+    def referenced_aliases(self) -> tuple[str, ...]:
+        """Every alias this window reads -- its metric, its partitioning and
+        its ordering. Used by ``AggregateQueryPlan._validate_window`` to
+        confirm each one is something the plan actually carries.
+        """
+        return (
+            self.metric_alias,
+            *self.partition_by,
+            *(order.alias for order in self.order_by),
+        )
 
 
 @dataclass(frozen=True)
@@ -285,6 +482,7 @@ class AggregateQueryPlan:
         self._validate_aliases()
         self._validate_order_by()
         self._validate_having()
+        self._validate_window()
         self._validate_slice()
 
     # -- validation ------------------------------------------------------
@@ -337,6 +535,36 @@ class AggregateQueryPlan:
             if alias not in known:
                 raise InvalidPlanError(
                     f"Cannot filter on {alias!r}: no dimension or metric carries that alias"
+                )
+
+    def _validate_window(self) -> None:
+        """Refuse a window that reads something the plan does not carry.
+
+        ``partition_by`` is held to the dimensions alone, not to every alias:
+        partitioning on a metric would mean a partition per distinct value of
+        a number that the window is meant to be reading *across*, and there
+        is no ``GROUP BY`` column for it either. Ordering, by contrast, may
+        name a metric -- "running total in descending count order" is a
+        reasonable thing to ask for.
+        """
+        if self.window is None:
+            return
+        if self.window.metric_alias not in set(self.metric_aliases):
+            raise InvalidPlanError(
+                f"Cannot window over {self.window.metric_alias!r}: no metric carries that alias"
+            )
+        dimension_aliases = set(self.dimension_aliases)
+        for alias in self.window.partition_by:
+            if alias not in dimension_aliases:
+                raise InvalidPlanError(
+                    f"Cannot partition by {alias!r}: no dimension carries that alias"
+                )
+        known = set(self._all_aliases())
+        for order in self.window.order_by:
+            if order.alias not in known:
+                raise InvalidPlanError(
+                    f"Cannot order a window by {order.alias!r}: "
+                    f"no dimension or metric carries that alias"
                 )
 
     def _validate_slice(self) -> None:
