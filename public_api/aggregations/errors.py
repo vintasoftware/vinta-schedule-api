@@ -47,6 +47,87 @@ GROUP_BY_VARIANT_MESSAGE = "Each groupBy entry must set exactly one of 'field' o
 #: second one for the same refusal (see ``LimitOutOfRangeError``).
 OFFSET_NEGATIVE_MESSAGE = "Offset must be non-negative"
 
+#: Raised when a nested aggregate's one batched query would return more rows
+#: than the engine will hold. Says nothing about the cap or the level that hit
+#: it -- the same reasoning as ``STATEMENT_TIMEOUT_MESSAGE``, and a caller acts
+#: on this by narrowing the filter or the parent list either way.
+BATCH_TOO_LARGE_MESSAGE = (
+    "Nested aggregate matched too many groups; narrow the filter or the parent list"
+)
+
+#: Raised when an ``orderBy`` entry sets neither its scalar ``key`` slot nor
+#: its ``metric`` slot, or sets both -- the same "exactly one variant" shape
+#: ``groupBy`` uses, for the same reason: GraphQL has no input unions.
+ORDER_VARIANT_MESSAGE = "Each orderBy entry must set exactly one of 'key' or 'metric'"
+
+#: Raised when an ``orderBy`` entry's ``key`` names a dimension this query did
+#: not actually group by. Names neither the dimension asked for nor the ones
+#: available, per the module docstring.
+ORDER_KEY_NOT_GROUPED_MESSAGE = "orderBy.key must be one of this query's groupBy dimensions"
+
+#: Raised when an ``IntComparison`` / ``FloatComparison`` sets none of its
+#: operators -- a comparison with nothing to compare would match every group,
+#: which is never what a caller who wrote a HAVING clause meant.
+EMPTY_HAVING_COMPARISON_MESSAGE = "A having comparison must set at least one operator"
+
+#: Raised when a ``*HavingInput`` node sets none of its metric fields and
+#: neither of 'and' / 'or' -- the same "nothing to compare" refusal, one
+#: level up the tree.
+EMPTY_HAVING_INPUT_MESSAGE = "A having input must set at least one field, or 'and' / 'or'"
+
+#: Raised when a ``window`` argument carries no ``orderBy``. A running total
+#: over an unordered set has no definition at all -- Postgres would pick an
+#: order and return numbers that move between runs -- so this is refused
+#: rather than defaulted.
+WINDOW_NEEDS_ORDER_BY_MESSAGE = "A window needs at least one orderBy entry"
+
+#: Raised when a ``window`` entry's ``partitionBy`` names a dimension this
+#: query did not group by. Names neither the dimension asked for nor the ones
+#: available, per the module docstring.
+WINDOW_PARTITION_NOT_GROUPED_MESSAGE = (
+    "window.partitionBy must name only this query's groupBy dimensions"
+)
+
+#: Raised when a ``window.orderBy`` entry sets neither its ``key`` slot nor
+#: its ``metric`` slot, or sets both -- the same "exactly one variant" shape
+#: the field's own ``orderBy`` uses.
+WINDOW_ORDER_VARIANT_MESSAGE = "Each window orderBy entry must set exactly one of 'key' or 'metric'"
+
+#: Raised when a ``window.orderBy`` entry's ``key`` names a dimension this
+#: query did not group by -- the same refusal as ``partitionBy``'s, for the
+#: same reason: there is no such column in the grouped result to read.
+WINDOW_ORDER_KEY_NOT_GROUPED_MESSAGE = (
+    "window.orderBy.key must be one of this query's groupBy dimensions"
+)
+
+#: Raised when a frame bound that measures a distance (``PRECEDING`` /
+#: ``FOLLOWING``) carries no offset, or a non-positive one.
+WINDOW_FRAME_OFFSET_REQUIRED_MESSAGE = "PRECEDING and FOLLOWING frame bounds need a positive offset"
+
+#: Raised when a frame bound that names a fixed position carries an offset,
+#: which it has no distance to measure with.
+WINDOW_FRAME_OFFSET_UNEXPECTED_MESSAGE = "Only PRECEDING and FOLLOWING frame bounds take an offset"
+
+#: Raised when a frame opens at ``UNBOUNDED_FOLLOWING`` -- a frame starting
+#: after every row of its partition contains nothing.
+WINDOW_FRAME_START_BOUND_MESSAGE = "A frame cannot start at UNBOUNDED_FOLLOWING"
+
+#: The mirror image: a frame cannot close at ``UNBOUNDED_PRECEDING``.
+WINDOW_FRAME_END_BOUND_MESSAGE = "A frame cannot end at UNBOUNDED_PRECEDING"
+
+#: Raised when a frame's two bounds are in the wrong order -- ``2 FOLLOWING``
+#: to ``2 PRECEDING``, say, which describes no rows.
+WINDOW_FRAME_ORDER_MESSAGE = "A frame's start must not come after its end"
+
+#: Raised when a ``RANGE`` frame carries an offset. Postgres accepts
+#: ``RANGE <n> PRECEDING`` only over exactly one ordering column whose type
+#: can be offset by an integer -- not over the timestamp a bucketed dimension
+#: orders by, and not over two ordering terms at all. Rather than accept the
+#: one shape that happens to work and let the database refuse the rest in its
+#: own words, the whole combination is refused here. ``RANGE`` without an
+#: offset still means what it says: peers share a frame.
+WINDOW_FRAME_RANGE_OFFSET_MESSAGE = "RANGE frames take no offset; use ROWS to count a fixed number"
+
 
 def date_range_exceeded_message(max_days: int) -> str:
     """Wording for a filter whose datetime range is wider than the maximum."""
@@ -114,6 +195,84 @@ class AggregateTimeoutError(AggregationRequestError):
 
     def __init__(self) -> None:
         super().__init__(STATEMENT_TIMEOUT_MESSAGE)
+
+
+class BatchTooLargeError(AggregationRequestError):
+    """One level's batched nested aggregate matched more groups than the cap.
+
+    A refusal rather than a truncation on purpose. The batch's rows arrive
+    parent by parent, so dropping the tail would quietly hand the last parents
+    on the level an empty list -- a wrong answer that looks like "this calendar
+    has no events" rather than like a limit being hit.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(BATCH_TOO_LARGE_MESSAGE)
+
+
+class OrderVariantError(AggregationRequestError):
+    """An ``orderBy`` entry set both of its variant slots, or neither."""
+
+    def __init__(self) -> None:
+        super().__init__(ORDER_VARIANT_MESSAGE)
+
+
+class OrderKeyNotGroupedError(AggregationRequestError):
+    """An ``orderBy`` entry's ``key`` names a dimension this query did not group by."""
+
+    def __init__(self) -> None:
+        super().__init__(ORDER_KEY_NOT_GROUPED_MESSAGE)
+
+
+class EmptyHavingComparisonError(AggregationRequestError):
+    """An ``IntComparison`` / ``FloatComparison`` set no operator."""
+
+    def __init__(self) -> None:
+        super().__init__(EMPTY_HAVING_COMPARISON_MESSAGE)
+
+
+class EmptyHavingInputError(AggregationRequestError):
+    """A ``*HavingInput`` node set no field and neither of 'and' / 'or'."""
+
+    def __init__(self) -> None:
+        super().__init__(EMPTY_HAVING_INPUT_MESSAGE)
+
+
+class WindowOrderByRequiredError(AggregationRequestError):
+    """A ``window`` argument carried no ``orderBy``."""
+
+    def __init__(self) -> None:
+        super().__init__(WINDOW_NEEDS_ORDER_BY_MESSAGE)
+
+
+class WindowPartitionNotGroupedError(AggregationRequestError):
+    """A ``window.partitionBy`` named a dimension this query did not group by."""
+
+    def __init__(self) -> None:
+        super().__init__(WINDOW_PARTITION_NOT_GROUPED_MESSAGE)
+
+
+class WindowOrderVariantError(AggregationRequestError):
+    """A ``window.orderBy`` entry set both of its variant slots, or neither."""
+
+    def __init__(self) -> None:
+        super().__init__(WINDOW_ORDER_VARIANT_MESSAGE)
+
+
+class WindowOrderKeyNotGroupedError(AggregationRequestError):
+    """A ``window.orderBy`` entry's ``key`` named an ungrouped dimension."""
+
+    def __init__(self) -> None:
+        super().__init__(WINDOW_ORDER_KEY_NOT_GROUPED_MESSAGE)
+
+
+class WindowFrameError(AggregationRequestError):
+    """A frame Postgres would refuse, or one that describes no rows.
+
+    Carries the wording rather than fixing it, because the five ways a frame
+    can be wrong are five different sentences and one class per sentence
+    would say nothing the message does not.
+    """
 
 
 # ---------------------------------------------------------------------------

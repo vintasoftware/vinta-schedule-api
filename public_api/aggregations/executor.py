@@ -28,10 +28,46 @@ regardless of what timezone each row stores. Buckets are sparse: the query
 groups the rows that exist, so a day with none produces no row at all rather
 than a zero.
 
-**A feature this phase does not build is refused, never ignored.**
-``HAVING`` (Phase 4) and window functions (Phase 6) each raise here until
-their phase lands. A window clause that is silently dropped returns
-confident numbers that are not the ones asked for.
+**Window functions ride in the same statement as the grouping.** Postgres
+evaluates an ``OVER`` clause after ``GROUP BY`` and after ``HAVING``, so a
+running total over grouped rows is ``SUM(COUNT("id")) OVER (...)`` at this one
+query level -- no second query, no subquery, nothing accumulated in Python.
+Django will not build that through ``Sum(Count(...))``; :class:`WindowAggregate`
+and :class:`GroupedWindow` below are what make the ORM say it, and each
+carries the reason it exists. ``LIMIT`` is applied after the windows are
+computed, which is what lets a top-N page carry a running total over the whole
+result rather than over the page.
+
+This supersedes the plan's "window functions are applied over a subquery, not
+beside the aggregation" decision, which had the grouped queryset wrapped and
+the window applied on the outside. The wrapping turned out to be unnecessary:
+what Django refuses is ``Sum(Count(...))`` -- a guard on ``Aggregate``, not on
+the SQL, and one a ``Func`` carrying ``window_compatible`` does not trip -- and
+a window annotation landing in the ``GROUP BY``, which
+``GroupedWindow.get_group_by_cols`` answers truthfully rather than by wrapping.
+Staying at one level is what keeps ``HAVING``, the ``OVER`` clauses and
+``LIMIT`` in a single statement. The plan records the divergence in its
+Guiding Decisions.
+
+**A nested aggregate folds its parent's key into the same GROUP BY.** When
+``plan.parent_key`` is set, the parent column joins the group key and one
+query covers every parent at that level at once -- which is what keeps a
+document over 25 calendars costing the same as one over 5. ``LIMIT`` then has
+to page each parent rather than the batch, so it becomes a
+``ROW_NUMBER() OVER (PARTITION BY <parent key>)`` filtered to the requested
+band; see :func:`_sliced_per_parent`. Collecting the siblings and handing the
+rows back to the parent each belongs to is
+:mod:`public_api.aggregations.nested`'s job, not this module's.
+
+**HAVING is a ``.filter()`` after the ``.annotate()``, nothing more.**
+Django renders a post-``GROUP BY`` ``.filter()`` referencing an aggregate
+alias as SQL ``HAVING`` on its own; this module only has to turn a
+:class:`~public_api.aggregations.plan.HavingSpec` tree into the matching
+``Q()`` tree. Every alias a ``HavingSpec`` leaf names is guaranteed to
+already be one of ``plan.metrics`` or ``plan.dimensions`` -- the resolver
+layer (``public_api.aggregations.having``) is what adds a metric HAVING
+references but the row selection did not, before the plan is ever built --
+so this module never needs to annotate anything on ``HavingSpec``'s behalf.
 """
 
 from collections.abc import Mapping
@@ -41,7 +77,10 @@ from typing import Any
 from django.db.models import (
     Avg,
     Count,
+    ExpressionWrapper,
     F,
+    FloatField,
+    Func,
     IntegerField,
     Max,
     Min,
@@ -51,10 +90,20 @@ from django.db.models import (
     Subquery,
     Sum,
     Value,
+    Window,
 )
 from django.db.models.aggregates import StringAgg
-from django.db.models.expressions import BaseExpression, Combinable
-from django.db.models.functions import Coalesce, TruncDay, TruncMonth, TruncWeek
+from django.db.models.expressions import BaseExpression, Combinable, OrderBy, RowRange, ValueRange
+from django.db.models.expressions import WindowFrame as DjangoWindowFrame
+from django.db.models.functions import (
+    Coalesce,
+    NullIf,
+    Rank,
+    RowNumber,
+    TruncDay,
+    TruncMonth,
+    TruncWeek,
+)
 from django.db.models.functions.datetime import TruncBase
 
 from public_api.aggregations.errors import (
@@ -63,15 +112,22 @@ from public_api.aggregations.errors import (
     NonTemporalGranularityError,
     QuerysetModelMismatchError,
     UnsupportedOperationError,
-    UnsupportedPlanFeatureError,
 )
 from public_api.aggregations.plan import (
     ROW_COUNT_FIELD_PATH,
     AggregateOp,
     AggregateQueryPlan,
+    ComparisonOp,
     DimensionSpec,
+    HavingSpec,
     MetricSpec,
     OrderDirection,
+    ParentKeySpec,
+    WindowFrameSpec,
+    WindowFrameType,
+    WindowFunctionKind,
+    WindowSpec,
+    window_alias,
 )
 from public_api.aggregations.registry import EntityRegistration, RelationCount, get_registration
 from public_api.aggregations.types import TemporalGranularity
@@ -102,8 +158,6 @@ def build_aggregate_queryset(
     if base_queryset.model is not registration.model:
         raise QuerysetModelMismatchError(registration.model, base_queryset.model)
 
-    _reject_unbuilt_features(plan)
-
     model_field_names = _model_field_names(registration)
     _reject_shadowing_aliases(registration, plan, model_field_names)
 
@@ -127,25 +181,29 @@ def build_aggregate_queryset(
         }
     )
 
+    if plan.having is not None:
+        queryset = queryset.filter(_having_q(plan.having))
+
+    # After the HAVING, because Postgres computes a window over the groups
+    # that survived it -- a running total counting groups the caller filtered
+    # out would not agree with the rows printed beside it.
+    window_annotations = _window_annotations(plan)
+    if window_annotations:
+        queryset = queryset.annotate(**window_annotations)
+
     # Always explicit, for two reasons: it clears any model-level default
     # ordering, which would otherwise add its columns to the GROUP BY and
     # split groups; and paging over an unordered grouped query returns
     # arbitrary rows per page.
     queryset = queryset.order_by(*_ordering_terms(plan))
 
+    # A nested aggregate's LIMIT is per parent, not per result: the one query
+    # carries every parent at this level, so slicing the result would hand the
+    # first parent every row and the rest none.
+    if plan.parent_key is not None:
+        return _sliced_per_parent(queryset, plan, plan.parent_key)
+
     return queryset[plan.offset : plan.offset + plan.limit]
-
-
-def _reject_unbuilt_features(plan: AggregateQueryPlan) -> None:
-    """Refuse the parts of a plan later phases of the engine own."""
-    if plan.having is not None:
-        raise UnsupportedPlanFeatureError(
-            "HAVING is not built yet; it lands with the having and metric-ordering phase"
-        )
-    if plan.window is not None:
-        raise UnsupportedPlanFeatureError(
-            "Window functions are not built yet; they land with the window-function phase"
-        )
 
 
 def _model_field_names(registration: EntityRegistration) -> frozenset[str]:
@@ -195,6 +253,15 @@ def _reject_shadowing_aliases(
                 f"{registration.model.__name__}; give the aggregate its own alias"
             )
 
+    # Held to the metric rule rather than the dimension one: a parent key is
+    # always an aliased ``.values()`` term, never a positional pass-through,
+    # because its field path may traverse relations.
+    if plan.parent_key is not None and plan.parent_key.alias in model_field_names:
+        raise AliasCollisionError(
+            f"Parent key alias {plan.parent_key.alias!r} shadows a column on "
+            f"{registration.model.__name__}"
+        )
+
 
 def _group_by_terms(
     registration: EntityRegistration, plan: AggregateQueryPlan
@@ -219,6 +286,12 @@ def _group_by_terms(
             positional.append(dimension.field_path)
         else:
             aliased[dimension.alias] = _dimension_expression(dimension)
+
+    # Always aliased, and never checked against the registry: a parent key is
+    # the engine's own join key, not a dimension a caller may name. See
+    # :class:`~public_api.aggregations.plan.ParentKeySpec`.
+    if plan.parent_key is not None:
+        aliased[plan.parent_key.alias] = F(plan.parent_key.field_path)
 
     return tuple(positional), aliased
 
@@ -357,11 +430,208 @@ def _metric_expression(
     raise UnsupportedOperationError(metric.op, metric.field_path, aggregatable.kind)
 
 
-def _ordering_terms(plan: AggregateQueryPlan) -> tuple[str, ...]:
-    """The ``.order_by()`` terms, with the group key appended as a tiebreak.
+# ---------------------------------------------------------------------------
+# Window functions over the grouped rows
+# ---------------------------------------------------------------------------
 
-    Two groups that tie on the requested ordering would otherwise come back
-    in whatever order Postgres chose that run, which makes paging drop and
+
+class WindowAggregate(Func):
+    """A plain SQL function call that ``Window`` accepts as its expression.
+
+    The point is to say ``SUM(COUNT("id")) OVER (...)``, which is what a
+    running total over a grouped result *is* in Postgres: window functions are
+    evaluated after ``GROUP BY`` and after ``HAVING``, so the thing being
+    summed is the group's own aggregate. Django refuses to build that through
+    ``Sum(Count(...))`` -- ``Aggregate.resolve_expression`` raises "Cannot
+    compute Sum('Count'): 'Count' is an aggregate" -- because an aggregate of
+    an aggregate is meaningless anywhere except inside an ``OVER`` clause.
+
+    ``Func`` carries no such guard, and ``window_compatible`` is the whole of
+    what ``Window`` asks of its expression. This stays inside the ORM's public
+    expression classes: no raw SQL, and the function name is one of this
+    module's own two constants rather than anything a caller supplies.
+    """
+
+    window_compatible = True
+
+
+class GroupedWindow(Window):
+    """A ``Window`` that is never itself a ``GROUP BY`` term.
+
+    Django's ``Window.get_group_by_cols`` returns its partition and ordering
+    columns, and ``Query.set_group_by`` turns a non-empty result for a
+    non-aggregate annotation into ``GROUP BY <that annotation>``. Adding an
+    annotation that *does* contain an aggregate -- ``percentOfTotal`` divides
+    the row's own metric by a window -- re-runs ``set_group_by``, and every
+    window annotation then lands in the ``GROUP BY``, which Postgres rejects
+    outright.
+
+    Returning nothing is the truth rather than a workaround: a window is
+    computed after grouping, so it can never be a grouping key, and the
+    columns it reads are already group keys -- ``partition_by`` is validated
+    against the plan's own dimensions, and the ordering names either a
+    dimension or an annotated metric.
+    """
+
+    def get_group_by_cols(self) -> list[BaseExpression]:
+        return []
+
+
+class WindowRatio(ExpressionWrapper):
+    """Arithmetic around an ``OVER`` clause, for the same reason as
+    :class:`GroupedWindow`: it reads a window, so it belongs after the
+    grouping rather than in it."""
+
+    def get_group_by_cols(self) -> list[BaseExpression]:
+        return []
+
+
+#: The frame a running total always uses, and the one a moving average falls
+#: back to: the whole partition up to and including the current row.
+_DEFAULT_WINDOW_FRAME = WindowFrameSpec()
+
+#: The two SQL aggregates a window may apply to its metric. Named here so the
+#: string that reaches ``Func(function=...)`` is always one of these two.
+_WINDOW_SUM = "SUM"
+_WINDOW_AVG = "AVG"
+
+
+def _window_metric(spec: WindowSpec, function: str) -> WindowAggregate:
+    """``SUM`` or ``AVG`` over the one metric this window reads.
+
+    ``F(alias)`` resolves to the metric's own aggregate expression, which is
+    what puts the aggregate inside the function call rather than beside it.
+    """
+    return WindowAggregate(F(spec.metric_alias), function=function, output_field=FloatField())
+
+
+def _window_partition(spec: WindowSpec) -> list[F] | None:
+    """The ``PARTITION BY`` terms, or ``None`` for one partition over the whole
+    result -- which is what ``Window`` reads as "no PARTITION BY clause"."""
+    return [F(alias) for alias in spec.partition_by] or None
+
+
+def _window_ordering(
+    spec: WindowSpec, plan: AggregateQueryPlan, *, tiebreak: bool
+) -> list[OrderBy]:
+    """The window's own ``ORDER BY``, which is not the result's.
+
+    ``tiebreak`` appends the group-key dimensions the window does not already
+    order or partition by, exactly as :func:`_ordering_terms` does for the
+    result. The reason is the same one and it bites harder here. Rows that tie
+    on the window's ordering are *peers*, and ``ROWS BETWEEN UNBOUNDED
+    PRECEDING AND CURRENT ROW`` cuts the frame somewhere inside a peer group at
+    a position Postgres does not define -- so a running total over a result
+    grouped by calendar and day but ordered only by day gives each of a day's
+    calendars whichever partial sum that run's physical row order produced.
+    The numbers move between runs of the same query, which is the failure the
+    mandatory ``orderBy`` exists to prevent; requiring *an* ordering only rules
+    out the unordered case, not the partially-ordered one. Ordering by every
+    dimension makes the order total, because a group key is unique per row.
+
+    Not every function wants it: a rank's peers are *supposed* to share a rank,
+    so breaking their tie would silently turn ``RANK`` into ``ROW_NUMBER``.
+    Only the two frame-sensitive functions ask for it.
+    """
+    ordering = [
+        F(order.alias).desc() if order.direction is OrderDirection.DESC else F(order.alias).asc()
+        for order in spec.order_by
+    ]
+    if not tiebreak:
+        return ordering
+
+    # Partition columns are constant within a partition, so they can never
+    # break a tie inside one.
+    already_ordered = {order.alias for order in spec.order_by} | set(spec.partition_by)
+    ordering.extend(
+        F(alias).asc() for alias in plan.dimension_aliases if alias not in already_ordered
+    )
+    return ordering
+
+
+def _window_frame(frame: WindowFrameSpec) -> DjangoWindowFrame:
+    """One frame clause, counted in rows or in peers as the caller asked."""
+    start, end = frame.bounds()
+    frame_class = ValueRange if frame.frame_type is WindowFrameType.RANGE else RowRange
+    return frame_class(start=start, end=end)
+
+
+def _window_expression(
+    spec: WindowSpec, plan: AggregateQueryPlan, kind: WindowFunctionKind
+) -> BaseExpression:
+    """The ORM expression one window function becomes."""
+    partition = _window_partition(spec)
+
+    match kind:
+        case WindowFunctionKind.RUNNING_TOTAL:
+            # Always cumulative from the start of the partition, and
+            # deliberately not the caller's frame: a running total that read
+            # only the last three rows would be a rolling sum wearing the
+            # wrong name, and one query can carry this *and* a framed moving
+            # average only if the two do not share a frame.
+            return GroupedWindow(
+                _window_metric(spec, _WINDOW_SUM),
+                partition_by=partition,
+                order_by=_window_ordering(spec, plan, tiebreak=True),
+                frame=_window_frame(_DEFAULT_WINDOW_FRAME),
+            )
+        case WindowFunctionKind.MOVING_AVERAGE:
+            # The one function the frame shapes. Without one it averages the
+            # same rows the running total sums, which is a cumulative average.
+            return GroupedWindow(
+                _window_metric(spec, _WINDOW_AVG),
+                partition_by=partition,
+                order_by=_window_ordering(spec, plan, tiebreak=True),
+                frame=_window_frame(spec.frame or _DEFAULT_WINDOW_FRAME),
+            )
+        case WindowFunctionKind.RANK:
+            # No frame: a rank is a position in the ordering, and a frame would
+            # describe rows it does not read. Postgres refuses one here anyway.
+            # No tiebreak either: rows tied on the window's ordering are meant
+            # to share a rank, and breaking the tie would make this
+            # ``ROW_NUMBER`` under another name.
+            return GroupedWindow(
+                Rank(),
+                partition_by=partition,
+                order_by=_window_ordering(spec, plan, tiebreak=False),
+            )
+        case WindowFunctionKind.PERCENT_OF_TOTAL:
+            # Neither ordering nor frame, deliberately: either would turn this
+            # into a share of the rows so far, which does not sum to 100 across
+            # the partition. ``NULLIF`` keeps a partition whose metric sums to
+            # zero from aborting the statement on a division by zero -- the
+            # share of nothing is not a number, and ``null`` says so.
+            partition_total = GroupedWindow(
+                _window_metric(spec, _WINDOW_SUM), partition_by=partition
+            )
+            return WindowRatio(
+                Value(100.0) * F(spec.metric_alias) / NullIf(partition_total, Value(0.0)),
+                output_field=FloatField(),
+            )
+
+    raise InvalidPlanError(f"Unknown window function {kind!r}")  # pragma: no cover
+
+
+def _window_annotations(plan: AggregateQueryPlan) -> dict[str, BaseExpression]:
+    """Every window column the plan asks for, keyed by the alias it lands under.
+
+    Empty when the plan has no window, and also when it has one whose
+    functions are empty -- a ``window`` argument the caller never read any
+    function out of is still validated, but there is nothing to compute for
+    it.
+    """
+    spec = plan.window
+    if spec is None or not spec.functions:
+        return {}
+    return {window_alias(kind): _window_expression(spec, plan, kind) for kind in spec.functions}
+
+
+def _within_parent_ordering_terms(plan: AggregateQueryPlan) -> tuple[str, ...]:
+    """The ``.order_by()`` terms one parent's own groups are ordered by.
+
+    The requested ordering, with the group key appended as a tiebreak. Two
+    groups that tie on the requested ordering would otherwise come back in
+    whatever order Postgres chose that run, which makes paging drop and
     repeat rows between pages.
     """
     requested = tuple(
@@ -371,3 +641,110 @@ def _ordering_terms(plan: AggregateQueryPlan) -> tuple[str, ...]:
     ordered_aliases = {order.alias for order in plan.order_by}
     tiebreak = tuple(alias for alias in plan.dimension_aliases if alias not in ordered_aliases)
     return requested + tiebreak
+
+
+def _ordering_terms(plan: AggregateQueryPlan) -> tuple[str, ...]:
+    """The whole result's ``.order_by()`` terms.
+
+    For a nested aggregate the parent key comes first, so one batched query's
+    rows arrive parent by parent; the caller's own ordering then decides the
+    order *inside* each parent, which is the order its page is cut from. A
+    root-level aggregate has no parent key and this is just
+    :func:`_within_parent_ordering_terms`.
+    """
+    within = _within_parent_ordering_terms(plan)
+    if plan.parent_key is None or plan.parent_key.alias in {
+        term.removeprefix("-") for term in within
+    }:
+        return within
+    return (plan.parent_key.alias, *within)
+
+
+def _order_expression(term: str) -> OrderBy:
+    """One ``.order_by()`` string term as the expression a window's
+    ``order_by`` takes."""
+    if term.startswith("-"):
+        return F(term.removeprefix("-")).desc()
+    return F(term).asc()
+
+
+#: The alias the per-parent row number lands under. Never read by a caller --
+#: it exists only to be filtered on -- and prefixed like every other alias
+#: this engine supplies itself.
+_PARENT_SLICE_ALIAS = "_parent_slice_row_number"
+
+
+def _sliced_per_parent(
+    queryset: QuerySet[Any, dict[str, Any]], plan: AggregateQueryPlan, parent_key: ParentKeySpec
+) -> QuerySet[Any, dict[str, Any]]:
+    """Page each parent's own groups, in SQL, in the same statement.
+
+    ``ROW_NUMBER() OVER (PARTITION BY <parent key> ORDER BY <the caller's
+    ordering>)`` numbers every parent's groups from one, and filtering that
+    number to the requested band is the per-parent ``LIMIT``/``OFFSET``.
+    Django turns a filter against a window into a wrapping ``qualify``
+    subquery on its own, so this is still one statement and still no raw SQL.
+
+    Doing it any other way loses something real: a plain ``LIMIT`` would cut
+    the batch rather than each parent, and truncating in Python after the
+    fetch would read every group of every parent at this level -- the
+    unbounded scan the plan's cost guards exist to prevent.
+    """
+    ordering = [
+        _order_expression(term)
+        for term in _within_parent_ordering_terms(plan)
+        if term.removeprefix("-") != parent_key.alias
+    ]
+    queryset = queryset.annotate(
+        **{
+            _PARENT_SLICE_ALIAS: GroupedWindow(
+                RowNumber(), partition_by=[F(parent_key.alias)], order_by=ordering
+            )
+        }
+    )
+    return queryset.filter(
+        **{
+            f"{_PARENT_SLICE_ALIAS}__gt": plan.offset,
+            f"{_PARENT_SLICE_ALIAS}__lte": plan.offset + plan.limit,
+        }
+    )
+
+
+#: ``ComparisonOp`` to the Django field lookup it filters an annotated alias
+#: with. ``NE`` is absent: it is a negated ``exact``, built separately in
+#: :func:`_having_q` rather than forced into this table as a fake lookup name.
+_COMPARISON_LOOKUP: Mapping[ComparisonOp, str] = MappingProxyType(
+    {
+        ComparisonOp.EQ: "exact",
+        ComparisonOp.GT: "gt",
+        ComparisonOp.GTE: "gte",
+        ComparisonOp.LT: "lt",
+        ComparisonOp.LTE: "lte",
+    }
+)
+
+
+def _having_q(node: HavingSpec) -> Q:
+    """One ``HavingSpec`` node, as the ``Q()`` Django filters the annotated
+    queryset with. Every alias a leaf names is already one of ``plan.metrics``
+    or ``plan.dimensions`` by the time a plan reaches here -- see the
+    resolver layer's ``having.py`` -- so this never has to annotate anything
+    itself; it only has to walk the tree.
+    """
+    if node.comparison is not None:
+        comparison = node.comparison
+        if comparison.comparison is ComparisonOp.NE:
+            return ~Q(**{comparison.alias: comparison.value})
+        lookup = _COMPARISON_LOOKUP[comparison.comparison]
+        return Q(**{f"{comparison.alias}__{lookup}": comparison.value})
+
+    if node.all_of:
+        combined = Q()
+        for child in node.all_of:
+            combined &= _having_q(child)
+        return combined
+
+    combined = Q()
+    for index, child in enumerate(node.any_of):
+        combined = _having_q(child) if index == 0 else combined | _having_q(child)
+    return combined

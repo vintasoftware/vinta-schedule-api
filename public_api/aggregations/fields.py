@@ -22,15 +22,32 @@ generic function. Everything past argument shape is one function,
    arguments reach the plan: they are read off the selection, not resolved
    later, because the ``string_agg`` they shape is emitted by the same query
    this function builds;
-6. build the plan and hand it to the executor, which supplies the
+6. resolve ``having`` and ``orderBy`` (Phase 4), then ``window`` (Phase 6).
+   All three can reference a metric the row selection never asked for --
+   ``orderBy: [{metric: COUNT}]`` when the caller only wants
+   ``durationMinutes`` in the output, say -- so whatever they need is folded
+   into the metric list here, deduplicated the same way a doubly-selected row
+   field already is, before the plan is ever built. This is what lets such a
+   metric be annotated rather than raising. ``window`` additionally reads its
+   own ``window { ... }`` sub-selection, for the same reason step 5 reads the
+   row selection: a function nobody asked for is a column nobody should pay
+   for;
+7. build the plan and hand it to the executor, which supplies the
    deterministic group-key ``ORDER BY`` cost guard on its own (see its
    ``_ordering_terms``);
-7. run the query inside a Postgres statement timeout scoped to this query
+8. run the query inside a Postgres statement timeout scoped to this query
    alone -- the last of the plan's four cost guards -- and map each row dict
    onto the entity's ``*AggregateRow`` type.
 
 Tenant scoping is entirely the filter input's job (step 3); nothing here
 calls ``unscoped()`` or ``original_manager``.
+
+The same steps build the *nested* fields at the bottom of this module -- a
+calendar's ``eventAggregate``, and the three like it -- with the plan
+carrying the parent's key as well. The query then covers every parent at that
+level at once and each resolver reads its own parent's rows back out of
+:mod:`public_api.aggregations.nested`'s per-request collector, so a document
+over twenty-five calendars costs the same one query as a document over five.
 """
 
 from collections.abc import Sequence
@@ -59,6 +76,7 @@ from public_api.aggregations.dimensions import (
 from public_api.aggregations.errors import (
     AggregateTimeoutError,
     AliasCollisionError,
+    BatchTooLargeError,
     LimitOutOfRangeError,
     OffsetOutOfRangeError,
 )
@@ -70,6 +88,35 @@ from public_api.aggregations.filters import (
     CalendarAggregateFilterInput,
     CalendarEventAggregateFilterInput,
     CalendarPoolAggregateFilterInput,
+)
+from public_api.aggregations.having import (
+    AppointmentTypeHavingInput,
+    AvailableTimeHavingInput,
+    BlockedTimeHavingInput,
+    CalendarEventHavingInput,
+    CalendarHavingInput,
+    CalendarPoolHavingInput,
+    resolve_having,
+)
+from public_api.aggregations.nested import (
+    APPOINTMENT_TYPE_EVENTS,
+    CALENDAR_BLOCKED_TIMES,
+    CALENDAR_EVENTS,
+    CALENDAR_POOL_EVENTS,
+    NestedAggregateLink,
+    batch_key,
+    collector_for,
+    group_rows_by_parent,
+    level_key,
+)
+from public_api.aggregations.ordering import (
+    AppointmentTypeAggregateOrderInput,
+    AvailableTimeAggregateOrderInput,
+    BlockedTimeAggregateOrderInput,
+    CalendarAggregateOrderInput,
+    CalendarEventAggregateOrderInput,
+    CalendarPoolAggregateOrderInput,
+    resolve_order_by,
 )
 from public_api.aggregations.output_types import (
     ROW_TYPE_BY_ENTITY,
@@ -83,12 +130,18 @@ from public_api.aggregations.output_types import (
 from public_api.aggregations.plan import (
     MAX_AGGREGATE_LIMIT,
     MIN_AGGREGATE_LIMIT,
+    PARENT_KEY_ALIAS,
+    ROW_COUNT_ALIAS,
     ROW_COUNT_FIELD_PATH,
     AggregatableEntity,
     AggregateOp,
     AggregateQueryPlan,
     FilterBounds,
     MetricSpec,
+    ParentKeySpec,
+    WindowFunctionKind,
+    WindowSpec,
+    default_metric_alias,
 )
 from public_api.aggregations.registry import EntityRegistration, FieldKind, get_registration
 from public_api.aggregations.types import (
@@ -97,7 +150,18 @@ from public_api.aggregations.types import (
     NumericAggregate,
     StringAggregate,
 )
-from public_api.constants import AGGREGATE_STATEMENT_TIMEOUT_MS
+from public_api.aggregations.windows import (
+    AppointmentTypeWindowInput,
+    AvailableTimeWindowInput,
+    BlockedTimeWindowInput,
+    CalendarEventWindowInput,
+    CalendarPoolWindowInput,
+    CalendarWindowInput,
+    build_window_metrics,
+    resolve_window,
+    selected_window_kinds,
+)
+from public_api.constants import AGGREGATE_STATEMENT_TIMEOUT_MS, MAX_BATCHED_AGGREGATE_ROWS
 from public_api.types import PublicApiHttpRequest
 
 
@@ -135,7 +199,9 @@ _SELECTION_OPS_BY_KIND: dict[FieldKind, dict[str, AggregateOp]] = {
 
 #: The mandatory row-count metric every row carries, regardless of selection
 #: -- ``*AggregateRow.count`` is non-null in every entity's output type.
-_COUNT_METRIC = MetricSpec(alias="count", field_path=ROW_COUNT_FIELD_PATH, op=AggregateOp.COUNT)
+_COUNT_METRIC = MetricSpec(
+    alias=ROW_COUNT_ALIAS, field_path=ROW_COUNT_FIELD_PATH, op=AggregateOp.COUNT
+)
 
 
 def _get_organization(info: strawberry.Info) -> Organization:
@@ -278,7 +344,7 @@ def _build_metrics(
             if op is AggregateOp.CONCAT:
                 options["separator"] = sub_selection.arguments.get("separator", ",")
                 options["distinct"] = sub_selection.arguments.get("distinct", False)
-            alias = f"{field_path}__{op.value.lower()}"
+            alias = default_metric_alias(field_path, op)
             _add_metric(
                 metrics,
                 seen,
@@ -286,6 +352,27 @@ def _build_metrics(
             )
 
     return tuple(metrics)
+
+
+#: The row-type field the window functions come back under. Skipped by
+#: :func:`_build_metrics` on its own -- it is not a registry field path -- and
+#: read separately by :func:`_window_kinds`.
+_WINDOW_SELECTION_NAME = "window"
+
+
+def _window_kinds(row_selections: Sequence[SelectedField]) -> tuple[WindowFunctionKind, ...]:
+    """The window functions this document's ``window { ... }`` asked for.
+
+    Read the same way the metrics are: a caller who selects
+    ``window { runningTotal }`` gets one ``OVER`` clause, not all four.
+    """
+    names = [
+        sub_selection.name
+        for selection in row_selections
+        if selection.name == _WINDOW_SELECTION_NAME
+        for sub_selection in _flatten_selections(selection.selections)
+    ]
+    return selected_window_kinds(names)
 
 
 def _to_camel_case(name: str) -> str:
@@ -337,17 +424,20 @@ def _row_to_output(
     registration: EntityRegistration,
     row: dict[str, Any],
     metrics: tuple[MetricSpec, ...],
+    window: WindowSpec | None,
 ) -> Any:
     """One executor row dict, mapped onto the entity's ``*AggregateRow`` type."""
     row_type = ROW_TYPE_BY_ENTITY[entity]
     kwargs: dict[str, Any] = {
         "key": build_group_key(entity, row),
-        "count": row.get("count", 0),
+        "count": row.get(ROW_COUNT_ALIAS, 0),
     }
+    if window is not None:
+        kwargs["window"] = build_window_metrics(entity, row, window)
 
     grouped: dict[str, dict[AggregateOp, Any]] = {}
     for metric in metrics:
-        if metric.alias == "count":
+        if metric.alias == ROW_COUNT_ALIAS:
             continue
         if metric.field_path in registration.relation_counts:
             kwargs[metric.field_path] = row.get(metric.alias)
@@ -402,6 +492,70 @@ def _execute_with_statement_timeout(
         raise
 
 
+def _build_plan(
+    entity: AggregatableEntity,
+    info: strawberry.Info,
+    filter_input: Any,
+    group_by: Sequence[Any],
+    timezone: str,
+    limit: int,
+    offset: int,
+    having: Any,
+    order_by: Sequence[Any] | None,
+    window: Any,
+    parent_key: ParentKeySpec | None,
+) -> tuple[AggregateQueryPlan, tuple[MetricSpec, ...], WindowSpec | None]:
+    """Steps 4-7 of this module's docstring, shared by the root and nested paths.
+
+    Everything before it -- validating the slice, resolving the organization,
+    narrowing the queryset -- and everything after it -- running the query and
+    mapping the rows -- differs between the two, but the plan is built the same
+    way whether the result is one caller's page or one level's batch.
+    """
+    dimensions = resolve_dimensions(group_by, timezone)
+
+    registration = get_registration(entity)
+    row_selections = _row_selections(info)
+
+    metrics_list: list[MetricSpec] = []
+    seen: dict[str, MetricSpec] = {}
+    for metric in _build_metrics(registration, row_selections):
+        _add_metric(metrics_list, seen, metric)
+
+    having_spec, having_metrics = resolve_having(having)
+    for metric in having_metrics:
+        _add_metric(metrics_list, seen, metric)
+
+    dimension_aliases = tuple(dimension.alias for dimension in dimensions)
+    order_specs, order_metrics = resolve_order_by(
+        entity, order_by or (), timezone, dimension_aliases
+    )
+    for metric in order_metrics:
+        _add_metric(metrics_list, seen, metric)
+
+    window_spec, window_metrics = resolve_window(
+        entity, window, timezone, dimensions, _window_kinds(row_selections)
+    )
+    for metric in window_metrics:
+        _add_metric(metrics_list, seen, metric)
+
+    metrics = tuple(metrics_list)
+
+    plan = AggregateQueryPlan(
+        entity=entity,
+        dimensions=dimensions,
+        metrics=metrics,
+        filter_bounds=_filter_bounds(filter_input),
+        having=having_spec,
+        order_by=order_specs,
+        window=window_spec,
+        limit=limit,
+        offset=offset,
+        parent_key=parent_key,
+    )
+    return plan, metrics, window_spec
+
+
 def _execute_aggregate(
     entity: AggregatableEntity,
     info: strawberry.Info,
@@ -410,6 +564,9 @@ def _execute_aggregate(
     timezone: str,
     limit: int,
     offset: int,
+    having: Any,
+    order_by: Sequence[Any] | None,
+    window: Any,
 ) -> list[Any]:
     """The one resolver body every aggregate root field shares."""
     _validate_slice(limit, offset)
@@ -419,24 +576,26 @@ def _execute_aggregate(
     system_user = request.public_api_system_user
 
     base_queryset = filter_input.apply(system_user, organization)
-    dimensions = resolve_dimensions(group_by, timezone)
-
     registration = get_registration(entity)
-    metrics = _build_metrics(registration, _row_selections(info))
 
-    plan = AggregateQueryPlan(
-        entity=entity,
-        dimensions=dimensions,
-        metrics=metrics,
-        filter_bounds=_filter_bounds(filter_input),
-        limit=limit,
-        offset=offset,
+    plan, metrics, window_spec = _build_plan(
+        entity,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
+        window,
+        None,
     )
 
     queryset = build_aggregate_queryset(plan, base_queryset)
     rows = _execute_with_statement_timeout(queryset)
 
-    output_rows = [_row_to_output(entity, registration, row, metrics) for row in rows]
+    output_rows = [_row_to_output(entity, registration, row, metrics, window_spec) for row in rows]
 
     record_aggregate_query(
         plan=plan,
@@ -447,6 +606,90 @@ def _execute_aggregate(
     )
 
     return output_rows
+
+
+def _batched_rows(queryset: Any) -> dict[Any, list[dict[str, Any]]]:
+    """Run one level's batched query and bucket its rows by parent.
+
+    The batch covers every parent at its level, not the parents on the page
+    being rendered -- a sync GraphQL execution resolves list items one at a
+    time, so there is no moment when the page's parent ids are known and no
+    query has run yet (see :mod:`public_api.aggregations.nested`). The
+    caller's ``limit`` bounds the groups *per parent*; this is what bounds
+    their product, by asking for one row more than the cap and refusing if it
+    arrives. ``LIMIT`` is what keeps that cheap: Postgres stops there rather
+    than materializing the rest.
+    """
+    capped = queryset[: MAX_BATCHED_AGGREGATE_ROWS + 1]
+    rows = _execute_with_statement_timeout(capped)
+    if len(rows) > MAX_BATCHED_AGGREGATE_ROWS:
+        raise BatchTooLargeError()
+    return group_rows_by_parent(rows, PARENT_KEY_ALIAS)
+
+
+def _execute_nested_aggregate(
+    link: NestedAggregateLink,
+    info: strawberry.Info,
+    parent_id: Any,
+    filter_input: Any,
+    group_by: Sequence[Any],
+    timezone: str,
+    limit: int,
+    offset: int,
+    having: Any,
+    order_by: Sequence[Any] | None,
+) -> list[Any]:
+    """The one resolver body every *nested* aggregate field shares.
+
+    The same plan the root path builds, plus the parent key, executed once for
+    the whole level and read out of the request's collector -- see
+    :mod:`public_api.aggregations.nested`. ``limit`` / ``offset`` page each
+    parent's own groups rather than the batch.
+
+    There is no ``window`` argument, deliberately. A window over a batched
+    result would have to partition by the parent key to mean anything, which
+    makes ``partitionBy`` no longer the caller's to choose, and a running total
+    that silently restarted per parent would read as a bug in the numbers
+    rather than in the schema. A partner that wants windows can ask the root
+    field for the same rows grouped by the parent's own dimension.
+    """
+    _validate_slice(limit, offset)
+
+    organization = _get_organization(info)
+    request: PublicApiHttpRequest = info.context.request
+    system_user = request.public_api_system_user
+
+    registration = get_registration(link.entity)
+
+    plan, metrics, _ = _build_plan(
+        link.entity,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
+        None,
+        ParentKeySpec(alias=PARENT_KEY_ALIAS, field_path=link.parent_field_path),
+    )
+
+    def execute() -> dict[Any, list[dict[str, Any]]]:
+        # ``apply()`` is inside the closure, not beside the plan, because it is
+        # not free: for a token carrying ``scoped_to_membership_user_id`` it
+        # resolves the membership and materializes the owner's calendar ids,
+        # which is two or three statements. Called once per parent that would
+        # be the same per-parent N+1 this phase exists to remove, just moved
+        # off the aggregated table where the query-count tests could not see
+        # it. The batch runs once per level, so this does too.
+        base_queryset = filter_input.apply(system_user, organization)
+        queryset = build_aggregate_queryset(plan, base_queryset)
+        return _batched_rows(queryset)
+
+    rows = collector_for(request).rows_for(batch_key(level_key(info), plan), parent_id, execute)
+
+    return [_row_to_output(link.entity, registration, row, metrics, None) for row in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -468,10 +711,22 @@ def calendar_event_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: CalendarEventHavingInput | None = None,
+    order_by: list[CalendarEventAggregateOrderInput] | None = None,
+    window: CalendarEventWindowInput | None = None,
 ) -> list[CalendarEventAggregateRow]:
     """Group and aggregate ``CalendarEvent`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.CALENDAR_EVENT, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.CALENDAR_EVENT,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
+        window,
     )
 
 
@@ -482,10 +737,22 @@ def available_time_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: AvailableTimeHavingInput | None = None,
+    order_by: list[AvailableTimeAggregateOrderInput] | None = None,
+    window: AvailableTimeWindowInput | None = None,
 ) -> list[AvailableTimeAggregateRow]:
     """Group and aggregate ``AvailableTime`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.AVAILABLE_TIME, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.AVAILABLE_TIME,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
+        window,
     )
 
 
@@ -496,10 +763,22 @@ def blocked_time_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: BlockedTimeHavingInput | None = None,
+    order_by: list[BlockedTimeAggregateOrderInput] | None = None,
+    window: BlockedTimeWindowInput | None = None,
 ) -> list[BlockedTimeAggregateRow]:
     """Group and aggregate ``BlockedTime`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.BLOCKED_TIME, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.BLOCKED_TIME,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
+        window,
     )
 
 
@@ -512,10 +791,22 @@ def appointment_type_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: AppointmentTypeHavingInput | None = None,
+    order_by: list[AppointmentTypeAggregateOrderInput] | None = None,
+    window: AppointmentTypeWindowInput | None = None,
 ) -> list[AppointmentTypeAggregateRow]:
     """Group and aggregate ``AppointmentType`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.APPOINTMENT_TYPE, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.APPOINTMENT_TYPE,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
+        window,
     )
 
 
@@ -526,10 +817,22 @@ def calendar_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: CalendarHavingInput | None = None,
+    order_by: list[CalendarAggregateOrderInput] | None = None,
+    window: CalendarWindowInput | None = None,
 ) -> list[CalendarAggregateRow]:
     """Group and aggregate ``Calendar`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.CALENDAR, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.CALENDAR,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
+        window,
     )
 
 
@@ -540,8 +843,144 @@ def calendar_pool_aggregate(
     timezone: str,
     limit: int = MAX_AGGREGATE_LIMIT,
     offset: int = 0,
+    having: CalendarPoolHavingInput | None = None,
+    order_by: list[CalendarPoolAggregateOrderInput] | None = None,
+    window: CalendarPoolWindowInput | None = None,
 ) -> list[CalendarPoolAggregateRow]:
     """Group and aggregate ``CalendarPool`` rows visible to the caller's token."""
     return _execute_aggregate(
-        AggregatableEntity.CALENDAR_POOL, info, filter_input, group_by, timezone, limit, offset
+        AggregatableEntity.CALENDAR_POOL,
+        info,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
+        window,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The nested fields
+# ---------------------------------------------------------------------------
+#
+# Same shape as the root wrappers -- one concrete signature per field, one
+# shared body -- with two differences. The parent object arrives as ``root``,
+# and its primary key is what the batched query's rows are dispatched on; and
+# there is no ``window`` argument, for the reason
+# ``_execute_nested_aggregate``'s docstring gives.
+#
+# These are plain functions rather than methods so the GraphQL types in
+# ``calendar_integration/graphql.py`` can mount them without that module
+# having to know anything about plans, collectors or the executor. The
+# resource each one requires is the AGGREGATED entity's, never the parent's:
+# ``FIELD_TO_RESOURCE_MAPPING`` in ``public_api/permissions.py`` maps
+# ``eventAggregate`` to ``CALENDAR_EVENT`` wherever it is mounted, so a
+# calendar-only token reading a calendar cannot read the calendar's event
+# rollups.
+
+
+def calendar_event_aggregate_for_calendar(
+    root: Any,
+    info: strawberry.Info,
+    filter_input: Annotated[CalendarEventAggregateFilterInput, strawberry.argument(name="filter")],
+    group_by: list[CalendarEventGroupByInput],
+    timezone: str,
+    limit: int = MAX_AGGREGATE_LIMIT,
+    offset: int = 0,
+    having: CalendarEventHavingInput | None = None,
+    order_by: list[CalendarEventAggregateOrderInput] | None = None,
+) -> list[CalendarEventAggregateRow]:
+    """Group and aggregate this calendar's own events."""
+    return _execute_nested_aggregate(
+        CALENDAR_EVENTS,
+        info,
+        root.pk,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
+    )
+
+
+def blocked_time_aggregate_for_calendar(
+    root: Any,
+    info: strawberry.Info,
+    filter_input: Annotated[BlockedTimeAggregateFilterInput, strawberry.argument(name="filter")],
+    group_by: list[BlockedTimeGroupByInput],
+    timezone: str,
+    limit: int = MAX_AGGREGATE_LIMIT,
+    offset: int = 0,
+    having: BlockedTimeHavingInput | None = None,
+    order_by: list[BlockedTimeAggregateOrderInput] | None = None,
+) -> list[BlockedTimeAggregateRow]:
+    """Group and aggregate this calendar's own blocked times."""
+    return _execute_nested_aggregate(
+        CALENDAR_BLOCKED_TIMES,
+        info,
+        root.pk,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
+    )
+
+
+def calendar_event_aggregate_for_calendar_pool(
+    root: Any,
+    info: strawberry.Info,
+    filter_input: Annotated[CalendarEventAggregateFilterInput, strawberry.argument(name="filter")],
+    group_by: list[CalendarEventGroupByInput],
+    timezone: str,
+    limit: int = MAX_AGGREGATE_LIMIT,
+    offset: int = 0,
+    having: CalendarEventHavingInput | None = None,
+    order_by: list[CalendarEventAggregateOrderInput] | None = None,
+) -> list[CalendarEventAggregateRow]:
+    """Group and aggregate the events on every calendar this pool rosters."""
+    return _execute_nested_aggregate(
+        CALENDAR_POOL_EVENTS,
+        info,
+        root.pk,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
+    )
+
+
+def calendar_event_aggregate_for_appointment_type(
+    root: Any,
+    info: strawberry.Info,
+    filter_input: Annotated[CalendarEventAggregateFilterInput, strawberry.argument(name="filter")],
+    group_by: list[CalendarEventGroupByInput],
+    timezone: str,
+    limit: int = MAX_AGGREGATE_LIMIT,
+    offset: int = 0,
+    having: CalendarEventHavingInput | None = None,
+    order_by: list[CalendarEventAggregateOrderInput] | None = None,
+) -> list[CalendarEventAggregateRow]:
+    """Group and aggregate the events booked against this appointment type."""
+    return _execute_nested_aggregate(
+        APPOINTMENT_TYPE_EVENTS,
+        info,
+        root.pk,
+        filter_input,
+        group_by,
+        timezone,
+        limit,
+        offset,
+        having,
+        order_by,
     )

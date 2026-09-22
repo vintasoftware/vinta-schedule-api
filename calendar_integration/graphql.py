@@ -30,9 +30,25 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
+from public_api.aggregations.fields import (
+    blocked_time_aggregate_for_calendar,
+    calendar_event_aggregate_for_appointment_type,
+    calendar_event_aggregate_for_calendar,
+    calendar_event_aggregate_for_calendar_pool,
+)
 from public_api.constants import PublicAPIResources
+from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.scoping import scoped_calendar_ids
 from users.graphql import UserGraphQLType
+
+
+# The permission pair every nested aggregate field below carries. The resource
+# it checks is the AGGREGATED entity's, not the parent's -- see
+# ``FIELD_TO_RESOURCE_MAPPING`` in ``public_api/permissions.py``, which maps
+# ``eventAggregate`` to ``CALENDAR_EVENT`` and ``blockedTimeAggregate`` to
+# ``BLOCKED_TIME`` wherever either is mounted. A token holding ``CALENDAR``
+# alone can therefore read a calendar and not its event rollups.
+_AGGREGATE_PERMISSIONS = (IsAuthenticated, OrganizationResourceAccess)
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +346,19 @@ class CalendarGraphQLType:
         # hint is what keeps `owners` constant-query. Measured, the relation form cost
         # 15 -> 36 queries on `TestCalendarOwnersField::test_owners_field_no_n_plus_1`.
         return list(root.ownerships.all())  # type: ignore[arg-type]
+
+    # Nested aggregates. Both batch across every calendar on this level into
+    # one grouped query -- see `public_api/aggregations/nested.py` -- so
+    # selecting either under a list of calendars costs the same whatever the
+    # list's length.
+    event_aggregate = strawberry_django.field(
+        resolver=calendar_event_aggregate_for_calendar,
+        permission_classes=list(_AGGREGATE_PERMISSIONS),
+    )
+    blocked_time_aggregate = strawberry_django.field(
+        resolver=blocked_time_aggregate_for_calendar,
+        permission_classes=list(_AGGREGATE_PERMISSIONS),
+    )
 
 
 @strawberry_django.type(RecurrenceRule)
@@ -962,6 +991,14 @@ class CalendarPoolGraphQLType:
             _owner_scoped_calendar_ids(info),
         )
 
+    # Every event on a calendar this pool rosters, aggregated. The pool key is
+    # reached through the roster's through table, so a calendar in two pools
+    # contributes to both.
+    event_aggregate = strawberry_django.field(
+        resolver=calendar_event_aggregate_for_calendar_pool,
+        permission_classes=list(_AGGREGATE_PERMISSIONS),
+    )
+
 
 # ---------------------------------------------------------------------------
 # AppointmentType types
@@ -1029,6 +1066,12 @@ class AppointmentTypeGraphQLType:
     @staticmethod
     def is_private(root: AppointmentType) -> bool:
         return not root.accepts_public_scheduling
+
+    # The events booked against this appointment type, aggregated.
+    event_aggregate = strawberry_django.field(
+        resolver=calendar_event_aggregate_for_appointment_type,
+        permission_classes=list(_AGGREGATE_PERMISSIONS),
+    )
 
 
 # ---------------------------------------------------------------------------

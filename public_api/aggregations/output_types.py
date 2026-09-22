@@ -5,6 +5,8 @@ One row type per registered entity, mirroring ``registry.py``'s
 
 * ``key`` -- the entity's ``*GroupKey`` type from ``dimensions.py``.
 * ``count`` -- the row count, always present and non-null.
+* ``window`` -- the entity's ``*WindowMetrics`` from ``windows.py``, null
+  unless the query passed a ``window`` argument.
 * one nullable field per aggregatable metric, typed as the
   ``NumericAggregate`` / ``StringAggregate`` / ``DateTimeAggregate`` /
   ``BooleanAggregate`` the registry's ``FieldKind`` maps it to.
@@ -39,6 +41,14 @@ from public_api.aggregations.types import (
     NumericAggregate,
     StringAggregate,
 )
+from public_api.aggregations.windows import (
+    AppointmentTypeWindowMetrics,
+    AvailableTimeWindowMetrics,
+    BlockedTimeWindowMetrics,
+    CalendarEventWindowMetrics,
+    CalendarPoolWindowMetrics,
+    CalendarWindowMetrics,
+)
 
 
 _ROW_DESCRIPTION = (
@@ -52,6 +62,7 @@ _ROW_DESCRIPTION = (
 class CalendarEventAggregateRow:
     key: CalendarEventGroupKey
     count: int
+    window: CalendarEventWindowMetrics | None = None
     duration_minutes: NumericAggregate | None = None
     title: StringAggregate | None = None
     description: StringAggregate | None = None
@@ -69,6 +80,7 @@ class CalendarEventAggregateRow:
 class AvailableTimeAggregateRow:
     key: AvailableTimeGroupKey
     count: int
+    window: AvailableTimeWindowMetrics | None = None
     duration_minutes: NumericAggregate | None = None
     start_time: DateTimeAggregate | None = None
     end_time: DateTimeAggregate | None = None
@@ -80,6 +92,7 @@ class AvailableTimeAggregateRow:
 class BlockedTimeAggregateRow:
     key: BlockedTimeGroupKey
     count: int
+    window: BlockedTimeWindowMetrics | None = None
     duration_minutes: NumericAggregate | None = None
     reason: StringAggregate | None = None
     start_time: DateTimeAggregate | None = None
@@ -92,6 +105,7 @@ class BlockedTimeAggregateRow:
 class AppointmentTypeAggregateRow:
     key: AppointmentTypeGroupKey
     count: int
+    window: AppointmentTypeWindowMetrics | None = None
     name: StringAggregate | None = None
     description: StringAggregate | None = None
     created: DateTimeAggregate | None = None
@@ -105,6 +119,7 @@ class AppointmentTypeAggregateRow:
 class CalendarAggregateRow:
     key: CalendarGroupKey
     count: int
+    window: CalendarWindowMetrics | None = None
     name: StringAggregate | None = None
     description: StringAggregate | None = None
     capacity: NumericAggregate | None = None
@@ -121,6 +136,7 @@ class CalendarAggregateRow:
 class CalendarPoolAggregateRow:
     key: CalendarPoolGroupKey
     count: int
+    window: CalendarPoolWindowMetrics | None = None
     name: StringAggregate | None = None
     description: StringAggregate | None = None
     created: DateTimeAggregate | None = None

@@ -124,3 +124,15 @@ MAX_AGGREGATE_RANGE = datetime.timedelta(days=366)
 #: timeout is the last of the plan's four independent cost guards (bounded
 #: date range, capped ``limit``, deterministic ordering, this).
 AGGREGATE_STATEMENT_TIMEOUT_MS = 5000
+
+#: The most rows one *nested* aggregate's batched query will return before the
+#: engine refuses it. A nested aggregate folds the parent key into the GROUP BY
+#: and covers every parent at that level in one query, so the caller's own
+#: ``limit`` bounds the groups per parent and nothing bounds the total: a
+#: hundred groups each for ten thousand calendars is a million rows, whatever
+#: page of calendars was actually being rendered. This is what bounds that
+#: product, and it refuses rather than truncating -- see
+#: ``public_api.aggregations.errors.BatchTooLargeError`` for why. Set well
+#: above any real document: a hundred parents (the list fields' own cap) each
+#: taking the full ``limit`` of 100 is 10,000.
+MAX_BATCHED_AGGREGATE_ROWS = 10_000

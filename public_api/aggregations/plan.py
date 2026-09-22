@@ -22,6 +22,13 @@ from zoneinfo import ZoneInfo
 
 from public_api.aggregations.errors import (
     OFFSET_NEGATIVE_MESSAGE,
+    WINDOW_FRAME_END_BOUND_MESSAGE,
+    WINDOW_FRAME_OFFSET_REQUIRED_MESSAGE,
+    WINDOW_FRAME_OFFSET_UNEXPECTED_MESSAGE,
+    WINDOW_FRAME_ORDER_MESSAGE,
+    WINDOW_FRAME_RANGE_OFFSET_MESSAGE,
+    WINDOW_FRAME_START_BOUND_MESSAGE,
+    WINDOW_NEEDS_ORDER_BY_MESSAGE,
     AliasCollisionError,
     InvalidPlanError,
     limit_out_of_range_message,
@@ -33,6 +40,13 @@ from public_api.aggregations.types import TemporalGranularity
 #: see "Counts are ``Count('id')``" in the plan's Guiding Decisions. Spelled
 #: as a constant so a plan builder does not have to know the column name.
 ROW_COUNT_FIELD_PATH = "id"
+
+#: The alias every row's mandatory count lands under -- see
+#: ``public_api.aggregations.fields``'s ``_COUNT_METRIC``, which every row
+#: carries under this name regardless of what else a query selected. HAVING
+#: and ORDER BY resolution reuse it so a caller can filter or sort on
+#: ``count`` without a second name for the same thing.
+ROW_COUNT_ALIAS = "count"
 
 #: The band ``limit`` must fall in. Matches every other list field on this
 #: API; a warehouse consumer that needs more wants a paged export, not a
@@ -80,6 +94,31 @@ class OrderDirection(enum.Enum):
 
     ASC = "ASC"
     DESC = "DESC"
+
+
+class ComparisonOp(enum.Enum):
+    """One comparison a HAVING leaf can make against a metric or dimension alias."""
+
+    EQ = "EQ"
+    NE = "NE"
+    GT = "GT"
+    GTE = "GTE"
+    LT = "LT"
+    LTE = "LTE"
+
+
+def default_metric_alias(field_path: str, op: AggregateOp) -> str:
+    """The alias a metric gets when nothing else names one for it.
+
+    ``public_api.aggregations.fields`` uses this for every metric it builds
+    from a GraphQL row selection, and HAVING / ORDER BY resolution reuse it
+    so a caller can filter or sort on a value it did not select for
+    output -- the alias lines up with one the row selection would have
+    produced, so referencing an unselected metric this way still lands on
+    exactly one annotation rather than a second, differently-named one for
+    the same aggregate.
+    """
+    return f"{field_path}__{op.value.lower()}"
 
 
 @dataclass(frozen=True)
@@ -165,24 +204,296 @@ class OrderSpec:
 
 
 @dataclass(frozen=True)
-class HavingSpec:
-    """Post-aggregation predicate tree.
+class HavingComparison:
+    """One leaf predicate: ``<alias> <comparison> <value>``.
 
-    Phase 4 of the plan owns the shape of this and the executor's handling of
-    it. It is declared here, empty, because ``AggregateQueryPlan`` is what
-    Phase 5's audit hook reads: giving the slot a name now means the audit
-    record does not change shape when HAVING lands. Until then the executor
-    refuses a plan that sets it rather than dropping it silently.
+    ``alias`` names a dimension or metric alias the same way
+    :class:`OrderSpec` does -- see
+    ``AggregateQueryPlan._validate_having``, which checks it against the
+    same known-alias set ``_validate_order_by`` already checks
+    ``OrderSpec.alias`` against. HAVING can filter on a metric the caller
+    never asked to see in the row selection; the resolver layer
+    (``public_api.aggregations.having``) is what makes sure such a metric is
+    still in ``AggregateQueryPlan.metrics`` under this same alias, so the
+    executor never has to treat this leaf specially.
     """
+
+    alias: str
+    comparison: ComparisonOp
+    value: float | int
+
+
+@dataclass(frozen=True)
+class HavingSpec:
+    """Post-aggregation predicate tree. Exactly one of the three slots is set:
+    ``comparison`` for a leaf, ``all_of`` / ``any_of`` to combine child specs
+    with AND / OR.
+
+    ``AggregateQueryPlan`` is what Phase 5's audit hook reads, so giving this
+    a real shape (rather than the empty placeholder earlier phases carried)
+    is what lets the audit record describe a HAVING clause's shape -- aliases
+    and comparisons, never the values a metric held for one group.
+    """
+
+    comparison: HavingComparison | None = None
+    all_of: tuple["HavingSpec", ...] = ()
+    any_of: tuple["HavingSpec", ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "all_of", tuple(self.all_of))
+        object.__setattr__(self, "any_of", tuple(self.any_of))
+        set_slots = sum([self.comparison is not None, bool(self.all_of), bool(self.any_of)])
+        if set_slots != 1:
+            raise InvalidPlanError(
+                "A having node must set exactly one of comparison, all_of, or any_of"
+            )
+
+    def referenced_aliases(self) -> tuple[str, ...]:
+        """Every alias this node or its children compare against.
+
+        Used by ``AggregateQueryPlan._validate_having`` to confirm each one
+        is a dimension or metric the plan actually carries.
+        """
+        if self.comparison is not None:
+            return (self.comparison.alias,)
+        return tuple(
+            alias for child in (*self.all_of, *self.any_of) for alias in child.referenced_aliases()
+        )
+
+
+class WindowFunctionKind(enum.Enum):
+    """One window function computed over the grouped rows.
+
+    Every member reads the same column -- :attr:`WindowSpec.metric_alias` --
+    and differs only in what it does with it, so a caller picks the metric
+    once and selects as many of these as it wants.
+    """
+
+    RUNNING_TOTAL = "RUNNING_TOTAL"
+    MOVING_AVERAGE = "MOVING_AVERAGE"
+    RANK = "RANK"
+    PERCENT_OF_TOTAL = "PERCENT_OF_TOTAL"
+
+
+class WindowFrameType(enum.Enum):
+    """The unit a frame's bounds are counted in.
+
+    ``ROWS`` counts rows. ``RANGE`` counts *peers* -- every row sharing the
+    window's ordering value counts as one step -- so a three-step ``RANGE``
+    frame over a day bucket with ties reads more rows than a three-row
+    ``ROWS`` frame does.
+    """
+
+    ROWS = "ROWS"
+    RANGE = "RANGE"
+
+
+class WindowBound(enum.Enum):
+    """One end of a window frame."""
+
+    UNBOUNDED_PRECEDING = "UNBOUNDED_PRECEDING"
+    PRECEDING = "PRECEDING"
+    CURRENT_ROW = "CURRENT_ROW"
+    FOLLOWING = "FOLLOWING"
+    UNBOUNDED_FOLLOWING = "UNBOUNDED_FOLLOWING"
+
+
+#: The bounds that may open a frame. ``UNBOUNDED_FOLLOWING`` is absent: a
+#: frame starting after every row of its partition contains nothing.
+_START_BOUNDS = frozenset(
+    {
+        WindowBound.UNBOUNDED_PRECEDING,
+        WindowBound.PRECEDING,
+        WindowBound.CURRENT_ROW,
+        WindowBound.FOLLOWING,
+    }
+)
+
+#: The bounds that may close a frame, by the mirror image of the same rule.
+_END_BOUNDS = frozenset(
+    {
+        WindowBound.PRECEDING,
+        WindowBound.CURRENT_ROW,
+        WindowBound.FOLLOWING,
+        WindowBound.UNBOUNDED_FOLLOWING,
+    }
+)
+
+#: The two bounds that measure a distance, and so need an offset. The other
+#: three name a fixed position and must not carry one.
+_OFFSET_BOUNDS = frozenset({WindowBound.PRECEDING, WindowBound.FOLLOWING})
+
+
+@dataclass(frozen=True)
+class WindowFrameSpec:
+    """Which rows around the current one a window function reads.
+
+    The defaults are what makes a running total run: every row of the
+    partition from its start up to and including this one.
+
+    :meth:`bounds` returns the pair Django's ``RowRange`` / ``ValueRange``
+    take -- ``None`` for unbounded, ``0`` for the current row, a negative
+    number for *preceding* and a positive one for *following*. That encoding
+    is Django's, not this module's, which is why the offsets a caller
+    supplies are always positive and the sign is applied here.
+    """
+
+    frame_type: WindowFrameType = WindowFrameType.ROWS
+    start: WindowBound = WindowBound.UNBOUNDED_PRECEDING
+    start_offset: int | None = None
+    end: WindowBound = WindowBound.CURRENT_ROW
+    end_offset: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.start not in _START_BOUNDS:
+            raise InvalidPlanError(WINDOW_FRAME_START_BOUND_MESSAGE)
+        if self.end not in _END_BOUNDS:
+            raise InvalidPlanError(WINDOW_FRAME_END_BOUND_MESSAGE)
+        self._validate_offset(self.start, self.start_offset)
+        self._validate_offset(self.end, self.end_offset)
+        # Postgres accepts ``RANGE <n> PRECEDING`` only over exactly one
+        # ordering column whose type an integer can offset. A window here
+        # routinely orders by a bucketed timestamp, or by two terms, and both
+        # are refused by the database rather than by the schema -- so the
+        # combination is refused here, in this engine's own words.
+        if self.frame_type is WindowFrameType.RANGE and (
+            self.start in _OFFSET_BOUNDS or self.end in _OFFSET_BOUNDS
+        ):
+            raise InvalidPlanError(WINDOW_FRAME_RANGE_OFFSET_MESSAGE)
+        start, end = self.bounds()
+        # Only when both ends are finite: an unbounded end is an infinity on
+        # the correct side of the other by construction.
+        if start is not None and end is not None and start > end:
+            raise InvalidPlanError(WINDOW_FRAME_ORDER_MESSAGE)
+
+    @staticmethod
+    def _validate_offset(bound: WindowBound, offset: int | None) -> None:
+        """Refuse an offset on a bound that has no distance to measure, and a
+        missing or non-positive one on a bound that does.
+
+        Zero is refused rather than read as the current row: ``0 PRECEDING``
+        and ``CURRENT ROW`` are the same frame said two ways, and accepting
+        both would mean two spellings of one thing.
+        """
+        if bound in _OFFSET_BOUNDS:
+            if offset is None or offset < 1:
+                raise InvalidPlanError(WINDOW_FRAME_OFFSET_REQUIRED_MESSAGE)
+            return
+        if offset is not None:
+            raise InvalidPlanError(WINDOW_FRAME_OFFSET_UNEXPECTED_MESSAGE)
+
+    def bounds(self) -> tuple[int | None, int | None]:
+        """``(start, end)`` in the encoding Django's window frames take."""
+        return _bound_value(self.start, self.start_offset), _bound_value(self.end, self.end_offset)
+
+
+def _bound_value(bound: WindowBound, offset: int | None) -> int | None:
+    """One bound as the number Django's ``RowRange`` / ``ValueRange`` want."""
+    match bound:
+        case WindowBound.UNBOUNDED_PRECEDING | WindowBound.UNBOUNDED_FOLLOWING:
+            return None
+        case WindowBound.CURRENT_ROW:
+            return 0
+        case WindowBound.PRECEDING:
+            # ``offset`` is not None here: ``_validate_offset`` ran first.
+            return -int(offset or 0)
+        case WindowBound.FOLLOWING:
+            return int(offset or 0)
+    raise InvalidPlanError(WINDOW_FRAME_START_BOUND_MESSAGE)  # pragma: no cover
+
+
+#: Prefix every window column's alias carries in the row dict. Nothing stops
+#: a caller aliasing a metric this way, but Django refuses a duplicate
+#: annotation name outright, so a collision is a loud error rather than a
+#: wrong number -- the same reasoning as the executor's relation-count prefix.
+WINDOW_ALIAS_PREFIX = "_window_"
+
+
+def window_alias(kind: WindowFunctionKind) -> str:
+    """The row-dict key one window function's value lands under."""
+    return WINDOW_ALIAS_PREFIX + kind.value.lower()
 
 
 @dataclass(frozen=True)
 class WindowSpec:
     """Window-function clause applied over the grouped result.
 
-    Declared here for the same reason as :class:`HavingSpec`; Phase 6 owns
-    the shape and the window-over-subquery construction.
+    One metric, one partitioning, one ordering, one frame, and the set of
+    functions to compute over them. The functions share everything else
+    because they answer the same question about the same column -- asking for
+    a running total and a moving average of two different metrics is two
+    queries, not one window.
+
+    ``order_by`` is the *window's* ordering, which is not the result's: the
+    field's own ``orderBy`` decides what order the caller reads rows in, this
+    decides what order a running total accumulates in, and a query that wants
+    "the ten busiest days, each carrying its running total in date order"
+    needs them to differ. It is mandatory -- an unordered running total is not
+    a loose definition, it is no definition at all, and Postgres would pick an
+    order and return numbers that move between runs.
     """
+
+    metric_alias: str
+    order_by: tuple[OrderSpec, ...]
+    functions: tuple[WindowFunctionKind, ...] = ()
+    partition_by: tuple[str, ...] = ()
+    frame: WindowFrameSpec | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "order_by", tuple(self.order_by))
+        object.__setattr__(self, "functions", tuple(self.functions))
+        object.__setattr__(self, "partition_by", tuple(self.partition_by))
+        if not self.metric_alias:
+            raise InvalidPlanError("A window needs a metric alias to read")
+        if not self.order_by:
+            raise InvalidPlanError(WINDOW_NEEDS_ORDER_BY_MESSAGE)
+
+    def referenced_aliases(self) -> tuple[str, ...]:
+        """Every alias this window reads -- its metric, its partitioning and
+        its ordering. Used by ``AggregateQueryPlan._validate_window`` to
+        confirm each one is something the plan actually carries.
+        """
+        return (
+            self.metric_alias,
+            *self.partition_by,
+            *(order.alias for order in self.order_by),
+        )
+
+
+#: The alias a nested aggregate's parent key lands under in the row dict.
+#: Prefixed the same way the executor's relation counts and the window
+#: columns are, and for the same reason: nothing stops a caller aliasing a
+#: metric this way, but Django refuses a duplicate annotation name outright,
+#: so a collision is a loud error rather than a wrong number.
+PARENT_KEY_ALIAS = "_parent_key"
+
+
+@dataclass(frozen=True)
+class ParentKeySpec:
+    """The parent column a nested aggregate folds into its ``GROUP BY``.
+
+    Set only when an aggregate is resolved *under* a parent object -- a
+    calendar's ``eventAggregate``, say. One grouped query then covers every
+    parent at that level at once, and the rows are handed back to the parent
+    each belongs to; see :mod:`public_api.aggregations.nested`.
+
+    ``field_path`` is a path on the *aggregated* model that reaches the
+    parent's primary key, so it may traverse relations
+    (``calendar__pool_memberships__pool_fk_id``) rather than naming a column.
+    That is why it is not a :class:`DimensionSpec` and is not held to the
+    registry's dimensions: a caller can never ask for it, the engine supplies
+    it from a closed set in ``nested.py``, and it is a join key rather than a
+    dimension a partner may group by.
+    """
+
+    alias: str
+    field_path: str
+
+    def __post_init__(self) -> None:
+        if not self.alias:
+            raise InvalidPlanError("A parent key needs a non-empty alias")
+        if not self.field_path:
+            raise InvalidPlanError("A parent key needs a non-empty field path")
 
 
 @dataclass(frozen=True)
@@ -200,12 +511,18 @@ class AggregateQueryPlan:
     window: WindowSpec | None = None
     limit: int = MAX_AGGREGATE_LIMIT
     offset: int = 0
+    #: Set only for a nested aggregate. ``limit`` / ``offset`` then page each
+    #: parent's own groups rather than the result as a whole -- see
+    #: ``executor._sliced_per_parent``.
+    parent_key: ParentKeySpec | None = None
 
     def __post_init__(self) -> None:
         self._validate_dimensions()
         self._validate_metrics()
         self._validate_aliases()
         self._validate_order_by()
+        self._validate_having()
+        self._validate_window()
         self._validate_slice()
 
     # -- validation ------------------------------------------------------
@@ -241,6 +558,13 @@ class AggregateQueryPlan:
                     f"Alias {alias!r} is used by more than one dimension or metric"
                 )
             seen.add(alias)
+        # The parent key is a group-by column too, so it has to be distinct
+        # from every caller-facing alias even though no caller can name it.
+        if self.parent_key is not None and self.parent_key.alias in seen:
+            raise AliasCollisionError(
+                f"Alias {self.parent_key.alias!r} is used by both the parent key "
+                f"and a dimension or metric"
+            )
 
     def _validate_order_by(self) -> None:
         known = set(self._all_aliases())
@@ -248,6 +572,46 @@ class AggregateQueryPlan:
             if order.alias not in known:
                 raise InvalidPlanError(
                     f"Cannot order by {order.alias!r}: no dimension or metric carries that alias"
+                )
+
+    def _validate_having(self) -> None:
+        if self.having is None:
+            return
+        known = set(self._all_aliases())
+        for alias in self.having.referenced_aliases():
+            if alias not in known:
+                raise InvalidPlanError(
+                    f"Cannot filter on {alias!r}: no dimension or metric carries that alias"
+                )
+
+    def _validate_window(self) -> None:
+        """Refuse a window that reads something the plan does not carry.
+
+        ``partition_by`` is held to the dimensions alone, not to every alias:
+        partitioning on a metric would mean a partition per distinct value of
+        a number that the window is meant to be reading *across*, and there
+        is no ``GROUP BY`` column for it either. Ordering, by contrast, may
+        name a metric -- "running total in descending count order" is a
+        reasonable thing to ask for.
+        """
+        if self.window is None:
+            return
+        if self.window.metric_alias not in set(self.metric_aliases):
+            raise InvalidPlanError(
+                f"Cannot window over {self.window.metric_alias!r}: no metric carries that alias"
+            )
+        dimension_aliases = set(self.dimension_aliases)
+        for alias in self.window.partition_by:
+            if alias not in dimension_aliases:
+                raise InvalidPlanError(
+                    f"Cannot partition by {alias!r}: no dimension carries that alias"
+                )
+        known = set(self._all_aliases())
+        for order in self.window.order_by:
+            if order.alias not in known:
+                raise InvalidPlanError(
+                    f"Cannot order a window by {order.alias!r}: "
+                    f"no dimension or metric carries that alias"
                 )
 
     def _validate_slice(self) -> None:
