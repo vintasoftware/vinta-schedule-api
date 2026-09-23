@@ -8,6 +8,11 @@ from strawberry.permission import BasePermission
 from public_api.constants import PublicAPIResources
 
 
+#: Where :class:`OrganizationResourceAccess` memoizes its resource lookups for
+#: the life of one request. See ``_has_resource`` for why that is safe.
+_RESOURCE_CACHE_ATTRIBUTE = "_public_api_resource_access_cache"
+
+
 class IsAuthenticated(BasePermission):
     message = "You must be authenticated to access this resource."
 
@@ -116,6 +121,24 @@ class OrganizationResourceAccess(BasePermission):
         "createBookingPolicy": PublicAPIResources.BOOKING_POLICY,
         "updateBookingPolicy": PublicAPIResources.BOOKING_POLICY,
         "deleteBookingPolicy": PublicAPIResources.BOOKING_POLICY,
+        # Aggregate root fields (public_api/aggregations/fields.py). Each one
+        # requires the same resource as the entity's existing list field --
+        # an aggregate discloses nothing a caller could not already read one
+        # row at a time. See "Aggregate fields require the same resource
+        # scope as the entity's list field" in the plan's Guiding Decisions.
+        "calendarEventAggregate": PublicAPIResources.CALENDAR_EVENT,
+        "availableTimeAggregate": PublicAPIResources.AVAILABLE_TIME,
+        "blockedTimeAggregate": PublicAPIResources.BLOCKED_TIME,
+        "appointmentTypeAggregate": PublicAPIResources.APPOINTMENT_TYPE,
+        "calendarAggregate": PublicAPIResources.CALENDAR,
+        "calendarPoolAggregate": PublicAPIResources.CALENDAR_POOL,
+        # Nested aggregates (calendar_integration/graphql.py). The resource is
+        # the AGGREGATED entity's, never the parent's: reaching an event
+        # rollup through a calendar has to cost the same grant as reading the
+        # events, or the nesting would be a way around the event scope.
+        # `blockedTimeAggregate` needs no second entry -- the nested field and
+        # the root field share a name, and therefore this mapping.
+        "eventAggregate": PublicAPIResources.CALENDAR_EVENT,
     }
 
     def has_permission(self, source, info: Info, **kwargs) -> bool:  # type: ignore
@@ -133,4 +156,34 @@ class OrganizationResourceAccess(BasePermission):
         resource_name = self.FIELD_TO_RESOURCE_MAPPING.get(info.field_name, info.field_name)
 
         # check system_user has access to queried resources
-        return system_user.available_resources.filter(resource_name=resource_name).exists()
+        return self._has_resource(request, system_user, resource_name)
+
+    @staticmethod
+    def _has_resource(request: HttpRequest, system_user, resource_name: str) -> bool:  # type: ignore[no-untyped-def]
+        """Whether this token holds ``resource_name``, asked once per request.
+
+        A permission class runs per *field resolution*, so a permissioned
+        field on a type inside a list is checked once per item -- twenty-five
+        identical `EXISTS` queries for twenty-five calendars, all asking
+        whether the same token holds the same resource. Nothing in the request
+        can change that answer: the middleware binds the system user and the
+        organization once, and a grant is not edited mid-query. So the answer
+        is memoized on the request, keyed by the token and the resource.
+
+        This matters most for the nested aggregate fields
+        (``calendar_integration/graphql.py``), which are the first permissioned
+        fields this API mounts under a list -- without it their query count
+        grows with the list's length even though the aggregate itself is a
+        single batched query.
+        """
+        cache = getattr(request, _RESOURCE_CACHE_ATTRIBUTE, None)
+        if cache is None:
+            cache = {}
+            setattr(request, _RESOURCE_CACHE_ATTRIBUTE, cache)
+
+        key = (system_user.id, resource_name)
+        if key not in cache:
+            cache[key] = system_user.available_resources.filter(
+                resource_name=resource_name
+            ).exists()
+        return cache[key]
