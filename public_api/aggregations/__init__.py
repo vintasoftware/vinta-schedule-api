@@ -33,6 +33,14 @@ from public_api.aggregations.errors import (
     UnsupportedPlanFeatureError,
 )
 from public_api.aggregations.executor import build_aggregate_queryset
+from public_api.aggregations.filters import (
+    AppointmentTypeAggregateFilterInput,
+    AvailableTimeAggregateFilterInput,
+    BlockedTimeAggregateFilterInput,
+    CalendarAggregateFilterInput,
+    CalendarEventAggregateFilterInput,
+    CalendarPoolAggregateFilterInput,
+)
 from public_api.aggregations.plan import (
     MAX_AGGREGATE_LIMIT,
     MIN_AGGREGATE_LIMIT,
@@ -84,7 +92,14 @@ __all__ = [
     "AggregationError",
     "AggregationRequestError",
     "AliasCollisionError",
+    "AppointmentTypeAggregateFilterInput",
+    "AppointmentTypeAggregateFilterInput",
+    "AvailableTimeAggregateFilterInput",
     "BooleanAggregate",
+    "BlockedTimeAggregateFilterInput",
+    "CalendarAggregateFilterInput",
+    "CalendarEventAggregateFilterInput",
+    "CalendarPoolAggregateFilterInput",
     "DateRangeExceededError",
     "DateTimeAggregate",
     "DimensionSpec",
