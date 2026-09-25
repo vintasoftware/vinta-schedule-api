@@ -17,7 +17,6 @@ from allauth.headless.adapter import DefaultHeadlessAdapter
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.socialaccount.adapter import get_adapter as get_socialaccount_adapter
 from allauth.socialaccount.models import SocialLogin
-from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
 from vinta_billing.exceptions import OverLimitError
 from vintasend.constants import NotificationTypes
@@ -394,8 +393,10 @@ class AccountAdapter(DefaultAccountAdapter):
     def send_password_reset_mail(self, user, email, context):
         """
         Sends a password reset email to the user.
+
+        Deliberately does not call super(): allauth's default would send its own
+        email alongside this notification, so the user would get two reset emails.
         """
-        super().send_password_reset_mail(user, email, context)
         self.notification_service.create_notification(
             user_id=user.id,
             notification_type=NotificationTypes.EMAIL.value,
@@ -407,9 +408,9 @@ class AccountAdapter(DefaultAccountAdapter):
             context_kwargs=NotificationContextDict(
                 {
                     "user_id": user.id,
-                    "password_reset_url": build_absolute_uri(
-                        reverse("account_reset_password_from_key", args=[context["key"]])
-                    ),
+                    # allauth builds this from HEADLESS_FRONTEND_URLS; with HEADLESS_ONLY the
+                    # Django-side "account_reset_password_from_key" route does not exist.
+                    "password_reset_url": context["password_reset_url"],
                 }
             ),
         )

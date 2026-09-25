@@ -326,15 +326,17 @@ class TestAccountAdapter:
             patch(
                 "accounts.account_adapters.DefaultAccountAdapter.send_password_reset_mail"
             ) as super_send,
-            patch("accounts.account_adapters.reverse", return_value="/reset/abc/"),
-            patch(
-                "accounts.account_adapters.build_absolute_uri",
-                return_value="https://example.com/reset/abc/",
-            ),
         ):
-            adapter.send_password_reset_mail(user, user.email, {"key": "abc"})
-            super_send.assert_called_once()
+            reset_url = "https://example.com/auth/reset-password/1-abc"
+            adapter.send_password_reset_mail(
+                user, user.email, {"key": "abc", "password_reset_url": reset_url}
+            )
+            super_send.assert_not_called()
             adapter.notification_service.create_notification.assert_called_once()
+            context_kwargs = adapter.notification_service.create_notification.call_args.kwargs[
+                "context_kwargs"
+            ]
+            assert context_kwargs == {"user_id": user.id, "password_reset_url": reset_url}
 
     def test_send_confirmation_mail_signup(self, adapter):
         emailconfirmation = MagicMock()
