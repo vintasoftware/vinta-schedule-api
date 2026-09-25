@@ -1,17 +1,19 @@
-"""A password reset request sends one email, and its link opens the frontend.
+"""A password reset request sends one working email, and its link opens the frontend.
 
-``AccountAdapter.send_password_reset_mail`` used to call ``super()``, so allauth sent its
-own reset email next to the vintasend notification and the user got two. It also built
-the link by reversing ``account_reset_password_from_key``, a route ``HEADLESS_ONLY`` never
-mounts.
+Three bugs stacked on this path, each hidden by the one before it:
 
-The unit test in ``test_account_adapters.py`` hands the adapter a ready-made context, so
-it could not catch either bug. These tests go through the real headless endpoint, so the
-context comes from allauth itself.
+* ``AccountAdapter.send_password_reset_mail`` called ``super()``, so allauth sent its own
+  generic reset email first;
+* it then built the link by reversing ``account_reset_password_from_key``, a route
+  ``HEADLESS_ONLY`` never mounts, so the request ended in a 500; and
+* the notification's body template had a stray ``{% endif %}``, so it could never render.
+
+The unit test in ``test_account_adapters.py`` hands the adapter a ready-made context and
+mocks the notification, so it could catch none of them. These tests go through the real
+headless endpoint and let the notification render and send, into the test mail outbox.
 """
 
 import uuid
-from unittest import mock
 
 from django.core import mail
 from django.urls import reverse
@@ -21,28 +23,23 @@ from allauth.account.models import EmailAddress
 from rest_framework import status
 
 from users.factories import UserFactory
+from users.models import User
 
 
 pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
-def email():
-    """An address no other test in this process has used.
+def user() -> User:
+    """A user with a verified address no other test in this process has used.
 
     allauth rate-limits reset requests per address, and that counter lives in the cache,
     which is not rolled back between tests.
     """
-    return f"reset-{uuid.uuid4().hex[:12]}@example.com"
-
-
-@pytest.fixture
-def create_notification():
-    """Capture the reset notification instead of rendering and sending it."""
-    from di_core.containers import container
-
-    with mock.patch.object(container.notification_service(), "create_notification") as patched:
-        yield patched
+    email = f"reset-{uuid.uuid4().hex[:12]}@example.com"
+    user = UserFactory().create_user(email=email, first_name="Ada")
+    EmailAddress.objects.create(user=user, email=email, verified=True, primary=True)
+    return user
 
 
 def _request_reset(client, email: str):
@@ -53,30 +50,37 @@ def _request_reset(client, email: str):
     )
 
 
-class TestPasswordResetRequest:
-    def test_sends_one_notification_linking_to_the_frontend(
-        self, anonymous_client, email, create_notification, settings
-    ):
-        user = UserFactory().create_user(email=email)
-        EmailAddress.objects.create(user=user, email=email, verified=True, primary=True)
+def _full_text(message: mail.EmailMessage) -> str:
+    """The plain body plus every alternative, so the check does not depend on which
+    part the notification adapter puts the HTML in."""
+    parts = [str(message.body)]
+    parts += [str(content) for content, _ in getattr(message, "alternatives", [])]
+    return "\n".join(parts)
 
-        response = _request_reset(anonymous_client, email)
+
+class TestPasswordResetRequest:
+    def test_sends_exactly_one_email(self, anonymous_client, user):
+        response = _request_reset(anonymous_client, user.email)
 
         assert response.status_code == status.HTTP_200_OK
-        create_notification.assert_called_once()
-        context_kwargs = create_notification.call_args.kwargs["context_kwargs"]
-        assert context_kwargs["user_id"] == user.id
+        # allauth's own email would be a second message, titled "[example.com] Password
+        # Reset Email".
+        assert len(mail.outbox) == 1
+        assert mail.outbox[0].to == [user.email]
+        assert "Password reset" in mail.outbox[0].subject
+
+    def test_link_opens_the_frontend_reset_page(self, anonymous_client, user, settings):
+        _request_reset(anonymous_client, user.email)
+
         frontend_prefix = settings.HEADLESS_FRONTEND_URLS["account_reset_password_from_key"]
         frontend_prefix = frontend_prefix.removesuffix("{key}")
-        assert context_kwargs["password_reset_url"].startswith(frontend_prefix)
-        assert context_kwargs["password_reset_url"] != frontend_prefix, "the key is missing"
+        body = _full_text(mail.outbox[0])
+        assert f'href="{frontend_prefix}' in body
+        assert f'href="{frontend_prefix}"' not in body, "the reset key is missing"
 
-    def test_allauth_sends_no_email_of_its_own(self, anonymous_client, email, create_notification):
-        user = UserFactory().create_user(email=email)
-        EmailAddress.objects.create(user=user, email=email, verified=True, primary=True)
+    def test_greets_the_user_by_name(self, anonymous_client, user):
+        _request_reset(anonymous_client, user.email)
 
-        _request_reset(anonymous_client, email)
-
-        create_notification.assert_called_once()
-        # The notification is mocked, so any email in the outbox came from allauth.
-        assert mail.outbox == []
+        body = _full_text(mail.outbox[0])
+        assert "Dear Ada," in body
+        assert "Reset your password" in body
