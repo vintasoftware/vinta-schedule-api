@@ -341,8 +341,8 @@ class TestSocialSignupCrossOrgInviteAccept:
         # membership (org A), and must not reject the social signup as ambiguous.
         with (
             patch(
-                "accounts.account_adapters.transaction.on_commit",
-                side_effect=lambda callback: callback(),
+                "accounts.calendar_import.transaction.on_commit",
+                side_effect=lambda callback, **kwargs: callback(),
             ),
             patch("calendar_integration.tasks.import_account_calendars_task.delay") as import_task,
         ):

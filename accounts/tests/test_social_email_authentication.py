@@ -15,6 +15,8 @@ does for this feature. They do not call ``complete_social_login``, because the
 response it builds depends on views that ``HEADLESS_ONLY`` does not mount.
 """
 
+from unittest.mock import patch
+
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.messages.middleware import MessageMiddleware
 from django.contrib.sessions.middleware import SessionMiddleware
@@ -27,7 +29,10 @@ from allauth.core import context
 from allauth.socialaccount.adapter import get_adapter
 from allauth.socialaccount.internal.flows.login import pre_social_login
 from allauth.socialaccount.models import SocialAccount, SocialLogin, SocialToken
+from kombu.exceptions import OperationalError
+from model_bakery import baker
 
+from organizations.models import Organization, OrganizationMembership
 from users.factories import UserFactory
 from users.models import User
 
@@ -161,3 +166,62 @@ class TestSocialEmailAuthentication:
 
         assert not sociallogin.is_existing
         assert not SocialAccount.objects.filter(user=user).exists()
+
+
+class TestLinkedAccountCalendarImport:
+    """Linking goes through ``SocialLogin.connect``, never ``save_user``, so the
+    calendar import has to come from the ``social_account_added`` receiver."""
+
+    def test_linking_google_to_an_existing_member_imports_its_calendars(
+        self, django_capture_on_commit_callbacks
+    ):
+        user = _existing_user("existing@example.com")
+        organization = baker.make(Organization)
+        baker.make(OrganizationMembership, user=user, organization=organization, is_active=True)
+        sociallogin = _sociallogin("existing@example.com")
+
+        with (
+            patch("accounts.calendar_import.import_account_calendars_task.delay") as delay,
+            django_capture_on_commit_callbacks(execute=True),
+        ):
+            _lookup_and_accept(sociallogin)
+
+        account = SocialAccount.objects.get(user=user, provider="google")
+        delay.assert_called_once_with(
+            account_type="social_account",
+            account_id=account.pk,
+            organization_id=organization.pk,
+        )
+
+    def test_linking_without_a_membership_imports_nothing(self, django_capture_on_commit_callbacks):
+        user = _existing_user("existing@example.com")
+
+        with (
+            patch("accounts.calendar_import.import_account_calendars_task.delay") as delay,
+            django_capture_on_commit_callbacks(execute=True),
+        ):
+            _lookup_and_accept(_sociallogin("existing@example.com"))
+
+        assert SocialAccount.objects.filter(user=user, provider="google").exists()
+        delay.assert_not_called()
+
+    def test_a_failed_import_does_not_fail_the_login(self, django_capture_on_commit_callbacks):
+        # The import is optional. A broker error must not turn the login into a 500
+        # once the social account has been linked.
+        user = _existing_user("existing@example.com")
+        organization = baker.make(Organization)
+        baker.make(OrganizationMembership, user=user, organization=organization, is_active=True)
+        sociallogin = _sociallogin("existing@example.com")
+
+        with (
+            patch(
+                "accounts.calendar_import.import_account_calendars_task.delay",
+                side_effect=OperationalError("broker unavailable"),
+            ) as delay,
+            django_capture_on_commit_callbacks(execute=True),
+        ):
+            _lookup_and_accept(sociallogin)
+
+        delay.assert_called_once()
+        assert sociallogin.is_existing
+        assert SocialAccount.objects.filter(user=user, provider="google").exists()

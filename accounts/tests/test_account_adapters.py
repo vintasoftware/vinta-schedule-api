@@ -132,6 +132,7 @@ class TestSocialAccountAdapter:
         new_user.profile = Profile(user=new_user, first_name="Katherine", last_name="Johnson")
         sociallogin = MagicMock(spec=SocialLogin)
         sociallogin.user = new_user
+        sociallogin.account = MagicMock(extra_data={})
 
         def _super_save(request, sociallogin, form=None):
             sociallogin.user.save()
@@ -188,6 +189,7 @@ class TestSocialAccountAdapter:
         new_user = User(email="dorothy@example.com")
         sociallogin = MagicMock(spec=SocialLogin)
         sociallogin.user = new_user
+        sociallogin.account = MagicMock(extra_data={})
 
         def _super_save(request, sociallogin, form=None):
             sociallogin.user.save()
