@@ -98,8 +98,37 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         self.organization_service = organization_service
         super().__init__(*args, **kwargs)
 
+    # Providers we trust to sign in to an existing account by email, when that account
+    # has no social account linked yet.
+    #
+    # This fixes a stuck login. Without it, allauth sees the matching email as a signup
+    # conflict. With mandatory email verification and enumeration prevention on, it
+    # then shows a "verify your email" step, but it never sends a code.
+    #
+    # Only Google is listed, because Google verifies the email addresses it reports.
+    # Add another provider only after confirming its verified flag is safe to use for
+    # matching accounts.
+    EMAIL_AUTHENTICATION_PROVIDERS: ClassVar[frozenset[str]] = frozenset({"google"})
+
     def get_connect_redirect_url(self, request, socialaccount):
         return reverse("index")
+
+    def can_authenticate_by_email(self, login: SocialLogin, email: str) -> bool:
+        """Return True if the login's provider may sign in to an existing account by email.
+
+        This replaces allauth's own lookup on purpose. allauth would first read an
+        ``email_authentication`` key from ``SocialApp.settings``, a JSON field stored in
+        the database, so anyone with admin access could trust a new provider without a
+        code change. It would also read the global ``SOCIALACCOUNT_EMAIL_AUTHENTICATION``
+        setting and an ``EMAIL_AUTHENTICATION`` key per provider. Here the list above is
+        the only way to add one, so do not configure email authentication anywhere else.
+
+        allauth only calls this for email addresses the provider marked as verified.
+        When the matching local email was never verified, allauth removes the account's
+        password. That stops whoever registered the email first from still logging in
+        with their password.
+        """
+        return login.provider.id in self.EMAIL_AUTHENTICATION_PROVIDERS
 
     @staticmethod
     def _get_profile(user: User) -> Profile | None:
