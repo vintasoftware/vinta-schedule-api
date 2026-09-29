@@ -4,7 +4,6 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from django.conf import settings
-from django.db import transaction
 from django.urls import reverse
 from django.utils.translation import gettext_lazy
 
@@ -25,10 +24,8 @@ from vintasend.exceptions import NotificationError
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 
+from accounts.calendar_import import request_calendar_import
 from accounts.exceptions import ConsentRequiredError, VerificationEmailUndeliverableError
-from calendar_integration.constants import CalendarProvider
-from calendar_integration.tasks import import_account_calendars_task
-from common.organization_services import memberships
 from legal.services import ConsentService
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import OrganizationMembership
@@ -98,8 +95,37 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         self.organization_service = organization_service
         super().__init__(*args, **kwargs)
 
+    # Providers we trust to sign in to an existing account by email, when that account
+    # has no social account linked yet.
+    #
+    # This fixes a stuck login. Without it, allauth sees the matching email as a signup
+    # conflict. With mandatory email verification and enumeration prevention on, it
+    # then shows a "verify your email" step, but it never sends a code.
+    #
+    # Only Google is listed, because Google verifies the email addresses it reports.
+    # Add another provider only after confirming its verified flag is safe to use for
+    # matching accounts.
+    EMAIL_AUTHENTICATION_PROVIDERS: ClassVar[frozenset[str]] = frozenset({"google"})
+
     def get_connect_redirect_url(self, request, socialaccount):
         return reverse("index")
+
+    def can_authenticate_by_email(self, login: SocialLogin, email: str) -> bool:
+        """Return True if the login's provider may sign in to an existing account by email.
+
+        This replaces allauth's own lookup on purpose. allauth would first read an
+        ``email_authentication`` key from ``SocialApp.settings``, a JSON field stored in
+        the database, so anyone with admin access could trust a new provider without a
+        code change. It would also read the global ``SOCIALACCOUNT_EMAIL_AUTHENTICATION``
+        setting and an ``EMAIL_AUTHENTICATION`` key per provider. Here the list above is
+        the only way to add one, so do not configure email authentication anywhere else.
+
+        allauth only calls this for email addresses the provider marked as verified.
+        When the matching local email was never verified, allauth removes the account's
+        password. That stops whoever registered the email first from still logging in
+        with their password.
+        """
+        return login.provider.id in self.EMAIL_AUTHENTICATION_PROVIDERS
 
     @staticmethod
     def _get_profile(user: User) -> Profile | None:
@@ -161,55 +187,8 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         # UserAlreadyHasMembershipError is treated as a no-op so a social
         # re-login for a user who is already a member does not raise.
         membership = self._provision_org_membership(user)
-        self._request_calendar_import(user, sociallogin, membership)
+        request_calendar_import(user, sociallogin.account, membership)
         return user
-
-    def _request_calendar_import(
-        self,
-        user: User,
-        sociallogin: SocialLogin,
-        membership: OrganizationMembership | None,
-    ) -> None:
-        """Trigger an import of the user's external calendars on social signup.
-
-        No service account is required: a user's own calendars import through
-        their OAuth social-account token (account_type="social_account"). The
-        GoogleCalendarServiceAccount path is only for org-wide room/resource
-        imports.
-
-        Only Google/Microsoft accounts carry calendars; other providers are
-        ignored. The import is org-scoped, so it requires an active membership —
-        when the user is still gated (no membership, e.g. an uninvited social
-        signup) the import is skipped here and runs later when they hit the
-        request-import endpoint after provisioning.
-        """
-        account = getattr(sociallogin, "account", None)
-        if account is None or account.provider not in (
-            CalendarProvider.GOOGLE,
-            CalendarProvider.MICROSOFT,
-        ):
-            return
-
-        # Provisioning selected the inviting organization explicitly. Reusing
-        # that row avoids resolving an arbitrary membership for a user who has
-        # just accepted an invitation to an additional organization. A social
-        # account import is optional when no organization was selected, so the
-        # non-strict lookup deliberately skips ambiguous users instead of
-        # guessing from membership creation order.
-        account_id = account.id
-        organization_id = membership.organization_id if membership is not None else None
-        if organization_id is None:
-            resolved_membership = memberships.resolve_for_user(user, strict=False)
-            if resolved_membership is None:
-                return
-            organization_id = resolved_membership.organization_id
-        transaction.on_commit(
-            lambda: import_account_calendars_task.delay(
-                account_type="social_account",
-                account_id=account_id,
-                organization_id=organization_id,
-            )
-        )
 
     def _provision_org_membership(self, user: User) -> OrganizationMembership | None:
         """Attempt to auto-join the user to an inviting organisation.

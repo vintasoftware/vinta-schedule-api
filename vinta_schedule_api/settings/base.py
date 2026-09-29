@@ -580,6 +580,11 @@ SOCIALACCOUNT_AUTO_SIGNUP = True
 # needs the stored token (+ refresh_token) to call Google/Microsoft on the
 # user's behalf, so persistence must be enabled.
 SOCIALACCOUNT_STORE_TOKENS = True
+# When a social login matches an existing account by email (see
+# SocialAccountAdapter.can_authenticate_by_email), link the social account to that
+# account. The next login then matches by provider uid, and the calendar integration
+# gets the OAuth token it needs.
+SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = True
 SOCIALACCOUNT_ADAPTER = "accounts.account_adapters.SocialAccountAdapter"
 ACCOUNT_ADAPTER = "accounts.account_adapters.AccountAdapter"
 ACCOUNT_EMAIL_VERIFICATION = "mandatory"

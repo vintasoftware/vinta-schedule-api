@@ -1,6 +1,6 @@
 import datetime
 import logging
-from typing import Annotated, Literal
+from typing import Literal
 
 from django.utils import timezone
 
@@ -97,14 +97,23 @@ def _authenticate_or_skip(calendar_service, account, organization) -> bool:
     return True
 
 
+# The injected services in the tasks below are declared with `Provide[...]` as the
+# default, not inside `Annotated`. `@inject` replaces them on every call either way,
+# but Celery checks the arguments of `.delay()` / `.apply_async()` against the
+# task's signature before sending it. On Python 3.14 that check reads the real
+# signature through `@inject`'s `__wrapped__`, so a service without a default is a
+# required argument no caller passes, and every `.delay()` raises `TypeError`.
+# `calendar_integration/tests/tasks/test_task_signatures.py` checks this.
+
+
 @app.task
 @inject
 def import_account_calendars_task(
     account_type: Literal["social_account", "google_service_account"],
     account_id: int,
     organization_id: int,
-    calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
-    entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]],
+    calendar_service: CalendarService = Provide["calendar_service"],
+    entitlement_service: EntitlementService = Provide["entitlement_service"],
     sync_after_import: bool = True,
 ):
     """
@@ -142,8 +151,8 @@ def sync_calendar_task(
     account_id: int,
     calendar_sync_id: int,
     organization_id: int,
-    calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
-    entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]],
+    calendar_service: CalendarService = Provide["calendar_service"],
+    entitlement_service: EntitlementService = Provide["entitlement_service"],
 ):
     """
     Celery task to sync a calendar by its ID.
@@ -186,8 +195,8 @@ def import_organization_calendar_resources_task(
     account_id: int,
     organization_id: int,
     import_workflow_state_id: int,
-    calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
-    entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]],
+    calendar_service: CalendarService = Provide["calendar_service"],
+    entitlement_service: EntitlementService = Provide["entitlement_service"],
 ):
     """
     Celery task to import organization calendar resources.
@@ -244,8 +253,8 @@ RESYNC_AFTER_RECOVERY_LOOKAHEAD = datetime.timedelta(days=365)
 @inject
 def resync_organization_calendars_task(
     organization_id: int,
-    calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
-    entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]],
+    calendar_service: CalendarService = Provide["calendar_service"],
+    entitlement_service: EntitlementService = Provide["entitlement_service"],
 ) -> None:
     """Reconcile ``organization``'s calendars after its billing root recovers out
     of ``RESTRICTED``.
