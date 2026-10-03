@@ -1549,33 +1549,14 @@ class CalendarEventService:
         )
         return self.create_event(calendar_id, event_data)
 
-    def _push_one_off_master_to_provider(
-        self,
-        event: CalendarEvent,
-        start_time: datetime.datetime,
-        end_time: datetime.datetime,
-        timezone: str,
-    ) -> None:
-        """Send a former series master to its provider as a single event.
+    def _adapter_people_for_event(
+        self, event: CalendarEvent
+    ) -> tuple[list[EventAttendeeData], list[ResourceData]]:
+        """Build the provider attendee and resource lists for ``event``.
 
-        A modification on the master's own date ends the master's series and starts a
-        new series at the second occurrence. ``create_event`` already sends the new
-        series to the provider. Without this call the provider would also keep the
-        whole old series, so every later occurrence would show up twice there.
-
-        The payload has no recurrence rule. Google replaces the whole event on update,
-        so its series becomes this one event. The Outlook adapter does not write
-        recurrence, so an Outlook series is not ended by this call.
+        Google replaces the whole event on update, so a payload that leaves these out
+        clears them at the provider.
         """
-        calendar = event.calendar
-        if calendar.calendar_type not in [CalendarType.PERSONAL, CalendarType.RESOURCE]:
-            return
-        if not event.external_id:
-            return
-        write_adapter = self._host._get_write_adapter_for_calendar(calendar)
-        if write_adapter is None:
-            return
-
         attendances = [a for a in event.attendances.all() if a.membership_user_id is not None]
         users_by_id = {
             u.id: u for u in User.objects.filter(id__in=[a.membership_user_id for a in attendances])
@@ -1605,6 +1586,36 @@ class CalendarEventService:
             )
             for ra in event.resource_allocations.select_related("calendar")
         ]
+        return attendees, resources
+
+    def _push_one_off_master_to_provider(
+        self,
+        event: CalendarEvent,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+    ) -> None:
+        """Send a former series master to its provider as a single event.
+
+        A modification on the master's own date ends the master's series and starts a
+        new series at the second occurrence. ``create_event`` already sends the new
+        series to the provider. Without this call the provider would also keep the
+        whole old series, so every later occurrence would show up twice there.
+
+        The payload has no recurrence rule. Google replaces the whole event on update,
+        so its series becomes this one event. The Outlook adapter does not write
+        recurrence, so an Outlook series is not ended by this call.
+        """
+        calendar = event.calendar
+        if calendar.calendar_type not in [CalendarType.PERSONAL, CalendarType.RESOURCE]:
+            return
+        if not event.external_id:
+            return
+        write_adapter = self._host._get_write_adapter_for_calendar(calendar)
+        if write_adapter is None:
+            return
+
+        attendees, resources = self._adapter_people_for_event(event)
 
         write_adapter.update_event(
             calendar.external_id,
@@ -1918,6 +1929,8 @@ class CalendarEventService:
                 and existing_modified.external_id
                 and (write_adapter := self._host._get_write_adapter_for_calendar(master.calendar))
             ):
+                # The occurrence keeps the series' attendees and resources at the provider.
+                attendees, resources = self._adapter_people_for_event(master)
                 updated_external = write_adapter.update_event(
                     master.calendar.external_id,
                     existing_modified.external_id,
@@ -1928,8 +1941,8 @@ class CalendarEventService:
                         start_time=start_time,
                         end_time=end_time,
                         timezone=timezone,
-                        attendees=[],
-                        resources=[],
+                        attendees=attendees,
+                        resources=resources,
                         recurrence_rule=None,
                         is_recurring_instance=True,
                     ),
@@ -1953,6 +1966,8 @@ class CalendarEventService:
         if master.calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE] and (
             write_adapter := self._host._get_write_adapter_for_calendar(master.calendar)
         ):
+            # The occurrence keeps the series' attendees and resources at the provider.
+            attendees, resources = self._adapter_people_for_event(master)
             created_external = write_adapter.create_event(
                 CalendarEventAdapterInputData(
                     calendar_external_id=master.calendar.external_id,
@@ -1961,8 +1976,8 @@ class CalendarEventService:
                     start_time=start_time,
                     end_time=end_time,
                     timezone=timezone,
-                    attendees=[],
-                    resources=[],
+                    attendees=attendees,
+                    resources=resources,
                     recurrence_rule=None,
                     is_recurring_instance=True,
                 )
