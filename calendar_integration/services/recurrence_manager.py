@@ -126,14 +126,15 @@ class RecurrenceManager:
         if isinstance(exception_date, datetime.datetime):
             exception_date = exception_date.date()
 
-        exception_datetime = datetime.datetime.combine(
-            exception_date, parent_object.start_time.time(), tzinfo=parent_object.start_time.tzinfo
-        )
+        # ``exception_date`` is a date in the series' own timezone. The occurrence on
+        # that date starts at the series' local time, which is the instant the
+        # recurrence functions return and exceptions are matched against.
+        exception_datetime = parent_object.occurrence_start_on(exception_date)
 
         # A cancel on the master's own date takes the same path as any other cancel
         # below: a cancelled exception for that occurrence. The series and its master
         # row stay as they are, and the expansion leaves that occurrence out.
-        if exception_date == parent_object.start_time.date() and not is_cancelled:
+        if exception_date == parent_object.start_time_tz_unaware.date() and not is_cancelled:
             # One transaction: the master is detached before the fallible callbacks run,
             # so a failure in any of them must put the series back.
             with transaction.atomic():
@@ -264,10 +265,8 @@ class RecurrenceManager:
 
         # Normalize tz for modification_start_date similar to exceptions
         if modification_start_date.tzinfo is None:
-            modification_start_date = datetime.datetime.combine(
-                modification_start_date.date(),
-                parent_object.start_time.time(),
-                tzinfo=parent_object.start_time.tzinfo,
+            modification_start_date = parent_object.occurrence_start_on(
+                modification_start_date.date()
             )
 
         # Use RecurrenceRule splitting utilities from recurrence_utils
@@ -280,7 +279,9 @@ class RecurrenceManager:
             )
 
         # Split the rule into truncated and continuation parts
-        original_start = parent_object.start_time
+        # In the series' own timezone, so the rule steps local time like the
+        # recurrence functions do.
+        original_start = parent_object.local_start
         truncated_rule, continuation_rule = RecurrenceRuleSplitter.split_at_date(
             parent_object.recurrence_rule, modification_start_date, original_start
         )

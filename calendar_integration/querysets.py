@@ -1240,7 +1240,7 @@ class AvailableTimeQuerySet(
         Known gap: editing **or cancelling** the first occurrence of a series
         truncates the master row and creates a fresh series row with no link back to
         it (``recurrence_manager.create_recurring_exception_generic``, the
-        ``exception_date == parent.start_time.date()`` branch — which never reads
+        ``exception_date == parent.start_time_tz_unaware.date()`` branch — which never reads
         ``is_cancelled``, so both operations take the identical path). That second
         row is indistinguishable from a genuinely new window in the current schema,
         so it is still counted, and it **compounds**: every subsequent

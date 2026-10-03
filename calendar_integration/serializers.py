@@ -2548,11 +2548,9 @@ class EventBulkModificationSerializer(serializers.Serializer):
         elif rrule_string:
             final_rrule_string = rrule_string
 
-        # Build modification datetime from date and parent_event start_time timezone
+        # ``start_date`` is a date in the series' own timezone.
         start_date = self.validated_data["modification_start_date"]
-        modification_start_dt = datetime.datetime.combine(
-            start_date, parent_event.start_time.time(), tzinfo=parent_event.start_time.tzinfo
-        )
+        modification_start_dt = parent_event.occurrence_start_on(start_date)
 
         return (
             calendar_service.modify_recurring_event_from_date(
@@ -2625,11 +2623,8 @@ class BlockedTimeBulkModificationSerializer(serializers.Serializer):
             final_rrule_string = rrule_string
 
         start_date = self.validated_data["modification_start_date"]
-        modification_start_dt = datetime.datetime.combine(
-            start_date,
-            parent_blocked_time.start_time.time(),
-            tzinfo=parent_blocked_time.start_time.tzinfo,
-        )
+        # ``start_date`` is a date in the series' own timezone.
+        modification_start_dt = parent_blocked_time.occurrence_start_on(start_date)
 
         if self.validated_data.get("is_cancelled", False):
             return calendar_service.cancel_recurring_blocked_time_from_date(
@@ -2699,11 +2694,8 @@ class AvailableTimeBulkModificationSerializer(serializers.Serializer):
             final_rrule_string = rrule_string
 
         start_date = self.validated_data["modification_start_date"]
-        modification_start_dt = datetime.datetime.combine(
-            start_date,
-            parent_available_time.start_time.time(),
-            tzinfo=parent_available_time.start_time.tzinfo,
-        )
+        # ``start_date`` is a date in the series' own timezone.
+        modification_start_dt = parent_available_time.occurrence_start_on(start_date)
 
         if self.validated_data.get("is_cancelled", False):
             return calendar_service.cancel_recurring_available_time_from_date(

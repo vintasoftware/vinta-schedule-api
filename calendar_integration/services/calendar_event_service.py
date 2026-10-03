@@ -1554,7 +1554,8 @@ class CalendarEventService:
 
         :param parent_event: The recurring event to create an exception for
         :param exception_date: The **date** of the occurrence to modify/cancel. The
-            engine compares it against ``parent_event.start_time.date()`` to decide
+            engine compares it against ``parent_event.start_time_tz_unaware.date()``
+            (the master's local date) to decide
             whether the exception falls on the master occurrence, and a datetime
             never equals a date, so passing one would silently take the
             future-occurrence branch. The annotation alone does not prevent that —
