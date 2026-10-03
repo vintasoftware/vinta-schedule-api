@@ -149,6 +149,13 @@ if TYPE_CHECKING:
     from calendar_integration.services.recurrence_manager import RecurrenceManager
 
 
+def _as_utc_instant(value: datetime.datetime) -> datetime.datetime:
+    """Return ``value`` as an aware UTC instant. Naive values are taken as UTC."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=datetime.UTC)
+    return value.astimezone(datetime.UTC)
+
+
 class EventServiceHost(Protocol):
     """The collaborator surface the event concern still routes back to the facade for.
 
@@ -1541,6 +1548,9 @@ class CalendarEventService:
         If the exception is on the master event, this method makes the master event non-recurring
         and creates a new recurring event on the second occurrence
 
+        Modified times are UTC instants. A timezone-only change keeps the instant, so the
+        local time changes.
+
         :param parent_event: The recurring event to create an exception for
         :param exception_date: The **date** of the occurrence to modify/cancel. The
             engine compares it against ``parent_event.start_time.date()`` to decide
@@ -1615,6 +1625,43 @@ class CalendarEventService:
             )
             return self.create_event(parent_event.calendar.id, modified_event_data)
 
+        def apply_master_modification(
+            parent_obj: RecurringMixin, modification_data: dict[str, Any]
+        ) -> None:
+            # Event times are UTC instants. The row stores the local wall-clock in its
+            # timezone, so convert. A timezone change alone keeps the same instant.
+            parent_event = cast(CalendarEvent, parent_obj)
+            if modification_data.get("title") is not None:
+                parent_event.title = modification_data["title"]
+            if modification_data.get("description") is not None:
+                parent_event.description = modification_data["description"]
+            requested_start = modification_data.get("start_time")
+            requested_end = modification_data.get("end_time")
+            requested_timezone = modification_data.get("timezone")
+            if requested_start is None and requested_end is None and requested_timezone is None:
+                # Nothing about the time changes, so leave the stored times alone.
+                return
+            original_start = parent_event.start_time
+            original_end = parent_event.end_time
+            new_timezone = requested_timezone or parent_event.timezone
+            new_start = _as_utc_instant(requested_start) if requested_start else original_start
+            if requested_end:
+                new_end = _as_utc_instant(requested_end)
+            elif requested_start:
+                # A new start alone moves the whole event, so the duration stays.
+                new_end = new_start + (original_end - original_start)
+            else:
+                new_end = original_end
+            if new_end <= new_start:
+                raise ValueError("end_time must be after start_time.")
+            parent_event.timezone = new_timezone
+            parent_event.start_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+                new_start, new_timezone
+            )
+            parent_event.end_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+                new_end, new_timezone
+            )
+
         def update_exception_manager(
             parent_obj: RecurringMixin, new_recurring_obj: RecurringMixin
         ) -> None:
@@ -1648,6 +1695,7 @@ class CalendarEventService:
             create_modified_object_callback=create_modified_event,
             exception_manager_update_callback=update_exception_manager,
             exception_manager_delete_callback=delete_exception_manager,
+            apply_master_modification_callback=apply_master_modification,
         )
         return cast(CalendarEvent, result) if result else None
 

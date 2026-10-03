@@ -72,6 +72,8 @@ class RecurrenceManager:
         exception_manager_update_callback: Callable[[RecurringMixin, RecurringMixin], None]
         | None = None,
         exception_manager_delete_callback: Callable[[RecurringMixin], None] | None = None,
+        apply_master_modification_callback: Callable[[RecurringMixin, dict[str, Any]], None]
+        | None = None,
     ) -> RecurringMixin | None:
         """
         Generic method for creating exceptions for recurring objects (events, blocked times, available times).
@@ -85,6 +87,11 @@ class RecurrenceManager:
         :param create_modified_object_callback: Callback to create modified object for non-cancelled exceptions
         :param exception_manager_update_callback: Callback to update exception manager references
         :param exception_manager_delete_callback: Callback to delete exception manager references
+        :param apply_master_modification_callback: Callback that writes ``modification_data``
+            onto the master when the exception falls on the master's own date. It must
+            write times to ``start_time_tz_unaware`` / ``end_time_tz_unaware``:
+            ``start_time`` / ``end_time`` are generated columns, so a value set on them
+            is dropped on save. Without it, each non-None value is set as an attribute.
         :return: Created/modified object or None if cancelled
         """
         if not is_initialized_or_authenticated_calendar_service(
@@ -124,51 +131,62 @@ class RecurrenceManager:
         )
 
         if exception_date == parent_object.start_time.date():
-            # Exception is on the master object date
-            second_occurrence = parent_object.get_next_occurrence(exception_datetime)
-            old_recurrence_rule = parent_object.recurrence_rule
+            # One transaction: the master is detached before the fallible callbacks run,
+            # so a failure in any of them must put the series back.
+            with transaction.atomic():
+                # Exception is on the master object date
+                second_occurrence = parent_object.get_next_occurrence(exception_datetime)
+                old_recurrence_rule = parent_object.recurrence_rule
 
-            if not second_occurrence:
-                # No future occurrences, make the object non-recurring
-                if exception_manager_delete_callback:
-                    exception_manager_delete_callback(parent_object)
-                if old_recurrence_rule:
-                    old_recurrence_rule.delete()
-            else:
-                # Create new recurring object starting from second occurrence
-                new_recurrence_rule: RecurrenceRule = copy.copy(old_recurrence_rule)
-                new_recurrence_rule.id = None
-                new_recurrence_rule.count = (
-                    new_recurrence_rule.count - 1 if new_recurrence_rule.count else None
-                )
+                # Detach the master from its series before the new series is created.
+                # Otherwise the old series still occupies the second occurrence, and the
+                # new series' availability check sees that slot as taken.
+                parent_object.recurrence_rule_fk_id = None
+                parent_object.save(update_fields=["recurrence_rule_fk"])
 
-                if create_new_recurring_callback:
-                    new_recurring_object = create_new_recurring_callback(
-                        parent_object, second_occurrence, new_recurrence_rule
+                if not second_occurrence:
+                    # No future occurrences, make the object non-recurring
+                    if exception_manager_delete_callback:
+                        exception_manager_delete_callback(parent_object)
+                    if old_recurrence_rule:
+                        old_recurrence_rule.delete()
+                else:
+                    # Create new recurring object starting from second occurrence
+                    new_recurrence_rule: RecurrenceRule = copy.copy(old_recurrence_rule)
+                    new_recurrence_rule.id = None
+                    new_recurrence_rule.count = (
+                        new_recurrence_rule.count - 1 if new_recurrence_rule.count else None
                     )
-                    if exception_manager_update_callback:
-                        exception_manager_update_callback(parent_object, new_recurring_object)
 
-                if old_recurrence_rule:
-                    old_recurrence_rule.delete()
+                    if create_new_recurring_callback:
+                        new_recurring_object = create_new_recurring_callback(
+                            parent_object, second_occurrence, new_recurrence_rule
+                        )
+                        if exception_manager_update_callback:
+                            exception_manager_update_callback(parent_object, new_recurring_object)
 
-            # Update the master object to be non-recurring
-            parent_object.recurrence_rule_fk_id = None
-            if modification_data:
-                for field, value in modification_data.items():
-                    if value is not None:
-                        setattr(parent_object, field, value)
-                    # Keep original value if modification is None (fallback behavior)
-            parent_object.save()
+                    if old_recurrence_rule:
+                        old_recurrence_rule.delete()
 
-            # NOTE: adapter sync intentionally omitted here. Bulk modifications
-            # will perform explicit adapter calls when truncating the master series.
+                # Apply the modification to the master, which is now a one-off object.
+                if modification_data:
+                    if apply_master_modification_callback:
+                        apply_master_modification_callback(parent_object, modification_data)
+                    else:
+                        for field, value in modification_data.items():
+                            if value is not None:
+                                setattr(parent_object, field, value)
+                            # Keep original value if modification is None (fallback behavior)
+                parent_object.save()
 
-            # Return the updated master object
-            parent_model = cast(models.Model, parent_object)
-            return parent_object.__class__.objects.filter_by_organization(
-                parent_object.organization_id
-            ).get(id=parent_model.pk)
+                # NOTE: adapter sync intentionally omitted here. Bulk modifications
+                # will perform explicit adapter calls when truncating the master series.
+
+                # Return the updated master object
+                parent_model = cast(models.Model, parent_object)
+                return parent_object.__class__.objects.filter_by_organization(
+                    parent_object.organization_id
+                ).get(id=parent_model.pk)
 
         # Exception is on a future occurrence
         if is_cancelled:
