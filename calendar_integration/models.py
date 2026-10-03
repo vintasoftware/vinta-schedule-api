@@ -29,6 +29,7 @@ from calendar_integration.constants import (
     RecurrenceWeekday,
     RSVPStatus,
 )
+from calendar_integration.local_time import local_wall_clock_to_utc
 from calendar_integration.managers import (
     AppointmentTypeManager,
     AppointmentTypeSlotManager,
@@ -956,8 +957,12 @@ class RecurrenceRule(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Ba
             parts.append(f"COUNT={self.count}")
 
         if self.until:
-            # Format as YYYYMMDDTHHMMSSZ in UTC
-            parts.append(f"UNTIL={self.until.strftime('%Y%m%dT%H%M%SZ')}")
+            # Format as YYYYMMDDTHHMMSSZ in UTC. The trailing Z is only true if the
+            # digits are UTC, so convert an aware value that is in another zone.
+            until = self.until
+            if until.tzinfo is not None:
+                until = until.astimezone(datetime.UTC)
+            parts.append(f"UNTIL={until.strftime('%Y%m%dT%H%M%SZ')}")
 
         if self.by_weekday:
             parts.append(f"BYDAY={self.by_weekday}")
@@ -1183,6 +1188,35 @@ class RecurringMixin(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Ba
     def duration(self):
         """Returns the duration of the object as a timedelta."""
         return self.end_time - self.start_time
+
+    @property
+    def local_start(self) -> datetime.datetime:
+        """The first occurrence's stored wall-clock, with the row's own timezone attached.
+
+        Use it as the ``dtstart`` of a ``dateutil`` rule: ``dateutil`` steps the local
+        wall-clock of ``dtstart``, which is how the series repeats, including across
+        DST changes. A UTC ``dtstart`` would step UTC instead.
+
+        It is built from the stored wall-clock, not from the ``start_time`` instant, so
+        a first occurrence at a local time that does not exist (02:30 on the day the
+        clocks skip it) keeps repeating at 02:30, like ``occurrence_start_on`` and the
+        Postgres functions, instead of at the 03:30 the instant reads as.
+        """
+        return self.start_time_tz_unaware.replace(tzinfo=zoneinfo.ZoneInfo(self.timezone))
+
+    def occurrence_start_on(self, local_date: datetime.date) -> datetime.datetime:
+        """Return the UTC instant at which this series' occurrence on ``local_date`` starts.
+
+        The series repeats at the same local wall-clock time in its own timezone, so
+        the instant moves by an hour across DST changes. ``local_date`` is a date in
+        that timezone. The Postgres ``calculate_recurring_*`` functions step the same
+        way, so the result matches the occurrence instants they return, which is
+        what recurrence exceptions are matched against. On the day a local time
+        happens twice or not at all, it resolves it the way Postgres does (see
+        ``calendar_integration.local_time``).
+        """
+        wall_clock = datetime.datetime.combine(local_date, self.start_time_tz_unaware.time())
+        return local_wall_clock_to_utc(wall_clock, self.timezone)
 
     def _get_occurrences_in_range(
         self,

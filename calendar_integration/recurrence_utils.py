@@ -17,7 +17,22 @@ from django.utils import timezone
 
 from dateutil.rrule import rrulestr
 
+from calendar_integration.local_time import local_wall_clock_to_utc
 from calendar_integration.models import RecurrenceRule, RecurringMixin
+
+
+def _occurrence_instant(occurrence: datetime.datetime) -> datetime.datetime:
+    """Return the UTC instant the Postgres recurrence functions give ``occurrence``.
+
+    ``dateutil`` keeps the wall-clock and, on the day a local time happens twice,
+    picks the earlier instant. Postgres picks the later one. Exceptions are
+    matched against the Postgres instant, so use it wherever a ``dateutil``
+    occurrence is compared with, or stored as, an instant.
+    """
+    tz_name = getattr(occurrence.tzinfo, "key", None)
+    if tz_name is None:
+        return occurrence.astimezone(datetime.UTC)
+    return local_wall_clock_to_utc(occurrence, tz_name)
 
 
 def _detached_copy(rule: RecurrenceRule) -> RecurrenceRule:
@@ -83,9 +98,11 @@ class RecurrenceRuleSplitter:
         if until_date.tzinfo is None:
             until_date = timezone.make_aware(until_date, timezone.get_current_timezone())
 
+        # UNTIL is written as UTC digits with a trailing Z, so hold it in UTC. A value
+        # in the series' own timezone would be written with its local digits.
         truncated = _detached_copy(rule)
         truncated.count = None
-        truncated.until = until_date
+        truncated.until = until_date.astimezone(datetime.UTC)
         return truncated
 
     @staticmethod
@@ -113,7 +130,7 @@ class RecurrenceRuleSplitter:
             # Count occurrences strictly before new_start_date, include the dtstart
             used = 0
             for occ in full_rrule:
-                if occ >= new_start_date:
+                if _occurrence_instant(occ) >= new_start_date:
                     break
                 used += 1
             remaining = original_rule.count - used
@@ -153,12 +170,19 @@ class RecurrenceRuleSplitter:
         r = RecurrenceRuleSplitter._build_rrule(original_rule, original_start)
 
         prev_occurrence = r.before(split_date, inc=False)
+        if prev_occurrence is not None and _occurrence_instant(prev_occurrence) >= split_date:
+            # On the day a local time happens twice, ``dateutil`` puts the occurrence at
+            # the earlier instant, before ``split_date``, while Postgres puts it at the
+            # later one, which is ``split_date`` itself. That occurrence is not before
+            # the split, so take the one before it. Comparing two values in the same
+            # zone looks at the wall-clock only, so this steps back one occurrence.
+            prev_occurrence = r.before(prev_occurrence, inc=False)
         truncated_rule: RecurrenceRule | None
         if prev_occurrence is None:
             truncated_rule = None
         else:
             truncated_rule = RecurrenceRuleSplitter.truncate_rule_until_date(
-                original_rule, prev_occurrence
+                original_rule, _occurrence_instant(prev_occurrence)
             )
 
         continuation_rule = RecurrenceRuleSplitter.create_continuation_rule(
@@ -178,10 +202,17 @@ class OccurrenceValidator:
         if not rule:
             return False
 
-        dtstart = recurring_object.start_time
+        # In the series' own timezone, so the rule steps local time like the
+        # recurrence functions do.
+        dtstart = recurring_object.local_start
         if target_date.tzinfo is None:
             target_date = timezone.make_aware(target_date, timezone.get_current_timezone())
 
+        # Compare instants. Two values in the same zone compare by wall-clock only,
+        # which hides the difference on the day a local time happens twice.
+        target_instant = target_date.astimezone(datetime.UTC)
         r = RecurrenceRuleSplitter._build_rrule(rule, dtstart)
-        occ = r.before(target_date, inc=True)
-        return occ == target_date
+        occ = r.before(target_instant, inc=True)
+        if occ is None:
+            return False
+        return _occurrence_instant(occ) == target_instant

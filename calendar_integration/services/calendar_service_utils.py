@@ -20,6 +20,7 @@ import zoneinfo
 from typing import TYPE_CHECKING, Literal, cast
 
 from calendar_integration.constants import CalendarType
+from calendar_integration.local_time import local_wall_clock_to_utc
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
@@ -142,16 +143,20 @@ def wall_clock_to_utc(datetime_obj: datetime.datetime, iana_tz: str) -> datetime
     naive input aware in ``TIME_ZONE``, which is UTC), so an aware value is read by its
     UTC digits. Either way the digits are the wall-clock.
 
+    A time that happens twice or does not exist on a DST-change day resolves the way
+    Postgres resolves it (see ``local_wall_clock_to_utc``), so the instant checked here
+    is the one the event's generated ``start_time`` column will hold.
+
     e.g. 10:00 + "America/Sao_Paulo" -> 13:00Z.
     """
     try:
-        target_tz = zoneinfo.ZoneInfo(iana_tz)
+        zoneinfo.ZoneInfo(iana_tz)
     except (zoneinfo.ZoneInfoNotFoundError, ValueError) as e:
         raise ValueError(f"Invalid IANA timezone: {iana_tz}") from e
 
     if datetime_obj.tzinfo is not None:
         datetime_obj = datetime_obj.astimezone(datetime.UTC).replace(tzinfo=None)
-    return datetime_obj.replace(tzinfo=target_tz).astimezone(datetime.UTC)
+    return local_wall_clock_to_utc(datetime_obj, iana_tz)
 
 
 # ---------------------------------------------------------------------------
