@@ -130,7 +130,10 @@ class RecurrenceManager:
             exception_date, parent_object.start_time.time(), tzinfo=parent_object.start_time.tzinfo
         )
 
-        if exception_date == parent_object.start_time.date():
+        # A cancel on the master's own date takes the same path as any other cancel
+        # below: a cancelled exception for that occurrence. The series and its master
+        # row stay as they are, and the expansion leaves that occurrence out.
+        if exception_date == parent_object.start_time.date() and not is_cancelled:
             # One transaction: the master is detached before the fallible callbacks run,
             # so a failure in any of them must put the series back.
             with transaction.atomic():

@@ -1545,8 +1545,9 @@ class CalendarEventService:
         """
         Create an exception for a recurring event (either cancelled or modified).
 
-        If the exception is on the master event, this method makes the master event non-recurring
-        and creates a new recurring event on the second occurrence
+        A modification on the master event's own date makes the master a one-off event and
+        starts a new recurring event at the second occurrence. A cancel on any date, the
+        master's included, records a cancelled exception and leaves the series as it is.
 
         Modified times are UTC instants. A timezone-only change keeps the instant, so the
         local time changes.

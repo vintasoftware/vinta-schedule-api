@@ -183,17 +183,24 @@ def test_event_master_date_title_only_leaves_the_times_alone(
 
 
 @pytest.mark.django_db
-def test_event_master_date_cancel_leaves_the_times_alone(
-    owner_service: CalendarService, daily_event: CalendarEvent
+def test_event_master_date_cancel_removes_only_the_first_occurrence(
+    owner_service: CalendarService,
+    calendar: Calendar,
+    organization: Organization,
+    daily_event: CalendarEvent,
 ):
-    before = _wall_clock_of(daily_event)
-
-    owner_service.create_recurring_event_exception(
+    result = owner_service.create_recurring_event_exception(
         parent_event=daily_event, exception_date=DAY_ONE, is_cancelled=True
     )
 
-    assert _wall_clock_of(daily_event) == before
-    assert _times(daily_event) == (_utc(3, 13), _utc(3, 14), TZ, True)
+    assert result is None
+    # The series is kept as it was: same times, still recurring, no new series.
+    assert _times(daily_event) == (_utc(3, 13), _utc(3, 14), TZ, False)
+    assert _other_rows(CalendarEvent, organization, daily_event.pk) == []
+    occurrences = owner_service.get_calendar_events_expanded(
+        calendar=calendar, start_date=_utc(3, 0), end_date=_utc(6, 0)
+    )
+    assert sorted(o.start_time for o in occurrences) == [_utc(4, 13), _utc(5, 13)]
 
 
 @pytest.mark.django_db
@@ -593,3 +600,24 @@ def test_bulk_modification_continuation_keeps_the_local_time(
 
     assert continuation is not None
     assert _times(continuation) == (expected_start, expected_end, TZ, False)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("kind", ["blocked", "available"])
+def test_master_date_cancel_removes_only_the_first_occurrence(
+    kind: str, service: CalendarService, calendar: Calendar, organization: Organization
+):
+    parent = _create_daily(kind, service, calendar)
+
+    result = _create_exception(kind, service, parent, exception_date=DAY_ONE, is_cancelled=True)
+
+    assert result is None
+    assert _times(parent) == (_utc(3, 13), _utc(3, 14), TZ, False)
+    assert _other_rows(_model(kind), organization, parent.pk) == []
+    expand = (
+        service.get_blocked_times_expanded
+        if kind == "blocked"
+        else service.get_available_times_expanded
+    )
+    occurrences = expand(calendar=calendar, start_date=_utc(3, 0), end_date=_utc(6, 0))
+    assert sorted(o.start_time for o in occurrences) == [_utc(4, 13), _utc(5, 13)]
