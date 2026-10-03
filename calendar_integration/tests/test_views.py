@@ -4347,6 +4347,38 @@ class TestBlockedTimeViewSet:
         assert call_args[1]["parent_blocked_time"] == blocked_time
         assert call_args[1]["is_cancelled"] is True
 
+    def test_create_blocked_time_exception_service_value_error_returns_400(
+        self, auth_client, calendar, user
+    ):
+        """A ValueError from the service (e.g. end not after start) is a 400, not a 500."""
+        from di_core.containers import container
+
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
+            organization=user.memberships.get().organization,
+            frequency=RecurrenceFrequency.WEEKLY,
+        )
+        blocked_time = CalendarIntegrationTestFactory.create_blocked_time(
+            calendar=calendar,
+            reason="Weekly team meeting",
+            recurrence_rule=recurrence_rule,
+        )
+        mock_calendar_service = Mock()
+        mock_calendar_service.create_recurring_blocked_time_exception.side_effect = ValueError(
+            "end_time must be after start_time."
+        )
+
+        url = reverse("api:BlockedTimes-create-exception", kwargs={"pk": blocked_time.id})
+        data = {
+            "exception_date": "2024-02-15",
+            "modified_end_time": "2024-02-15T08:00:00",
+        }
+        with container.calendar_service.override(mock_calendar_service):
+            response = auth_client.post(url, data, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "end_time must be after start_time." in str(response.data)
+
     def test_create_blocked_time_exception_modified(self, auth_client, calendar, user):
         """Test creating a modified exception for a recurring blocked time"""
         from di_core.containers import container

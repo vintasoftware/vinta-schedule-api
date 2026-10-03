@@ -67,6 +67,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.recurrence_utils import persist_truncated_rule
 from calendar_integration.services.calendar_service_utils import (
+    convert_naive_utc_datetime_to_timezone,
     resolve_acting_single_use_token,
 )
 from calendar_integration.services.calendar_service_utils import (
@@ -132,6 +133,46 @@ class AvailabilityServiceHost(Protocol):
     def _create_recurrence_rule_if_needed(
         self, rrule_string: str | None
     ) -> RecurrenceRule | None: ...
+
+
+def _as_naive_wall_clock(value: datetime.datetime) -> datetime.datetime:
+    """Return ``value`` as a naive wall-clock. Aware values are taken as UTC."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(datetime.UTC).replace(tzinfo=None)
+
+
+def _apply_wall_clock_master_modification(
+    parent_obj: RecurringMixin, modification_data: dict[str, Any]
+) -> None:
+    """Write a master-date exception's changes onto a blocked or available time.
+
+    Blocked-time and available-time writers take the local wall-clock, so new times
+    go straight into the wall-clock fields. A timezone change alone keeps the same
+    local time. A new start alone keeps the duration.
+    """
+    if hasattr(parent_obj, "reason") and modification_data.get("reason") is not None:
+        parent_obj.reason = modification_data["reason"]
+    if modification_data.get("timezone") is not None:
+        parent_obj.timezone = modification_data["timezone"]
+    requested_start = modification_data.get("start_time")
+    requested_end = modification_data.get("end_time")
+    if requested_start is None and requested_end is None:
+        return
+    original_start = _as_naive_wall_clock(parent_obj.start_time_tz_unaware)
+    original_end = _as_naive_wall_clock(parent_obj.end_time_tz_unaware)
+    new_start = _as_naive_wall_clock(requested_start) if requested_start else original_start
+    if requested_end:
+        new_end = _as_naive_wall_clock(requested_end)
+    elif requested_start:
+        # A new start alone moves the whole block, so the duration stays.
+        new_end = new_start + (original_end - original_start)
+    else:
+        new_end = original_end
+    if new_end <= new_start:
+        raise ValueError("end_time must be after start_time.")
+    parent_obj.start_time_tz_unaware = new_start
+    parent_obj.end_time_tz_unaware = new_end
 
 
 class AvailabilityService:
@@ -973,6 +1014,9 @@ class AvailabilityService:
         """
         Create an exception for a recurring blocked time (either cancelled or modified).
 
+        Modified times are local wall-clock times. A timezone-only change keeps the local
+        time, so the instant moves.
+
         :param parent_blocked_time: The recurring blocked time to create an exception for
         :param exception_date: The date of the occurrence to modify/cancel
         :param modified_reason: New reason for the modified occurrence (if not cancelled)
@@ -990,10 +1034,11 @@ class AvailabilityService:
         ) -> RecurringMixin:
             parent_blocked_time = cast(BlockedTime, parent_obj)
             second_blocked_time = cast(BlockedTime, second_occurrence)
+            # ``create_blocked_time`` takes the local wall-clock, not the instant.
             return self.create_blocked_time(
                 calendar=parent_blocked_time.calendar,
-                start_time=second_blocked_time.start_time,
-                end_time=second_blocked_time.end_time,
+                start_time=second_blocked_time.start_time_tz_unaware,
+                end_time=second_blocked_time.end_time_tz_unaware,
                 timezone=second_blocked_time.timezone,
                 reason=second_blocked_time.reason,
                 rrule_string=new_recurrence_rule.to_rrule_string(),
@@ -1005,12 +1050,20 @@ class AvailabilityService:
             modification_data: dict[str, Any],
         ) -> RecurringMixin:
             parent_blocked_time = cast(BlockedTime, parent_obj)
+            # Modified times arrive as the local wall-clock. ``exception_datetime`` is an
+            # instant, so the defaults are converted to the parent's wall-clock.
             return self.create_blocked_time(
                 calendar=parent_blocked_time.calendar,
-                start_time=modification_data.get("start_time") or exception_datetime,
+                start_time=modification_data.get("start_time")
+                or convert_naive_utc_datetime_to_timezone(
+                    exception_datetime, parent_blocked_time.timezone
+                ),
                 end_time=(
                     modification_data.get("end_time")
-                    or (exception_datetime + parent_blocked_time.duration)
+                    or convert_naive_utc_datetime_to_timezone(
+                        exception_datetime + parent_blocked_time.duration,
+                        parent_blocked_time.timezone,
+                    )
                 ),
                 timezone=modification_data.get("timezone") or parent_blocked_time.timezone,
                 reason=modification_data.get("reason") or parent_blocked_time.reason,
@@ -1055,6 +1108,7 @@ class AvailabilityService:
             create_modified_object_callback=create_modified_blocked_time,
             exception_manager_update_callback=update_exception_manager,
             exception_manager_delete_callback=delete_exception_manager,
+            apply_master_modification_callback=_apply_wall_clock_master_modification,
         )
         # An exception modifies the recurring series; record an UPDATE against the
         # parent series. The change spans new/cancelled occurrence rows with no single
@@ -1074,6 +1128,9 @@ class AvailabilityService:
         """
         Create an exception for a recurring available time (either cancelled or modified).
 
+        Modified times are local wall-clock times. A timezone-only change keeps the local
+        time, so the instant moves.
+
         :param parent_available_time: The recurring available time to create an exception for
         :param exception_date: The date of the occurrence to modify/cancel
         :param modified_start_time: New start time for the modified occurrence (if not cancelled)
@@ -1090,10 +1147,11 @@ class AvailabilityService:
         ) -> RecurringMixin:
             parent_available_time = cast(AvailableTime, parent_obj)
             second_available_time = cast(AvailableTime, second_occurrence)
+            # ``create_available_time`` takes the local wall-clock, not the instant.
             return self.create_available_time(
                 calendar=parent_available_time.calendar,
-                start_time=second_available_time.start_time,
-                end_time=second_available_time.end_time,
+                start_time=second_available_time.start_time_tz_unaware,
+                end_time=second_available_time.end_time_tz_unaware,
                 timezone=second_available_time.timezone,
                 rrule_string=new_recurrence_rule.to_rrule_string(),
             )
@@ -1104,12 +1162,20 @@ class AvailabilityService:
             modification_data: dict[str, Any],
         ) -> RecurringMixin:
             parent_available_time = cast(AvailableTime, parent_obj)
+            # Modified times arrive as the local wall-clock. ``exception_datetime`` is an
+            # instant, so the defaults are converted to the parent's wall-clock.
             return self.create_available_time(
                 calendar=parent_available_time.calendar,
-                start_time=modification_data.get("start_time") or exception_datetime,
+                start_time=modification_data.get("start_time")
+                or convert_naive_utc_datetime_to_timezone(
+                    exception_datetime, parent_available_time.timezone
+                ),
                 end_time=(
                     modification_data.get("end_time")
-                    or (exception_datetime + parent_available_time.duration)
+                    or convert_naive_utc_datetime_to_timezone(
+                        exception_datetime + parent_available_time.duration,
+                        parent_available_time.timezone,
+                    )
                 ),
                 timezone=modification_data.get("timezone") or parent_available_time.timezone,
             )
@@ -1152,6 +1218,7 @@ class AvailabilityService:
             create_modified_object_callback=create_modified_available_time,
             exception_manager_update_callback=update_exception_manager,
             exception_manager_delete_callback=delete_exception_manager,
+            apply_master_modification_callback=_apply_wall_clock_master_modification,
         )
         # An exception modifies the recurring series; record an UPDATE against the
         # parent series. The change spans new/cancelled occurrence rows with no single
@@ -1197,10 +1264,12 @@ class AvailabilityService:
                 if modification_data.get("end_time_offset")
                 else new_start + duration
             )
+            # ``start_dt`` is an instant, so the new times are too. ``create_blocked_time``
+            # takes the local wall-clock, so convert them to the parent's timezone.
             return self.create_blocked_time(
                 calendar=parent.calendar,
-                start_time=new_start,
-                end_time=new_end,
+                start_time=convert_naive_utc_datetime_to_timezone(new_start, parent.timezone),
+                end_time=convert_naive_utc_datetime_to_timezone(new_end, parent.timezone),
                 timezone=parent.timezone,
                 reason=modification_data.get("reason") or parent.reason,
                 rrule_string=recurrence_rule.to_rrule_string() if recurrence_rule else None,
@@ -1281,10 +1350,12 @@ class AvailabilityService:
                 if modification_data.get("end_time_offset")
                 else new_start + duration
             )
+            # ``start_dt`` is an instant, so the new times are too. ``create_available_time``
+            # takes the local wall-clock, so convert them to the parent's timezone.
             return self.create_available_time(
                 calendar=parent.calendar,
-                start_time=new_start,
-                end_time=new_end,
+                start_time=convert_naive_utc_datetime_to_timezone(new_start, parent.timezone),
+                end_time=convert_naive_utc_datetime_to_timezone(new_end, parent.timezone),
                 timezone=parent.timezone,
                 rrule_string=recurrence_rule.to_rrule_string() if recurrence_rule else None,
             )
