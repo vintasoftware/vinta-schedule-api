@@ -32,7 +32,7 @@ constructor:
 from __future__ import annotations
 
 import datetime
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
@@ -147,6 +147,24 @@ if TYPE_CHECKING:
     from calendar_integration.services.dataclasses import AvailableTimeWindow
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
     from calendar_integration.services.recurrence_manager import RecurrenceManager
+
+
+def _adapter_user_name(user: User) -> str:
+    """Return the name to show the provider for ``user``, falling back to the email.
+
+    ``get_full_name`` reads the profile, and a user may not have one.
+    """
+    name = user.get_full_name() if hasattr(user, "profile") else ""
+    return name or user.email
+
+
+def _adapter_rsvp_status(value: str) -> Literal["accepted", "declined", "pending"]:
+    """Narrow a stored RSVP status (``RSVPStatus``) to the adapter's literal type."""
+    if value == "accepted":
+        return "accepted"
+    if value == "declined":
+        return "declined"
+    return "pending"
 
 
 def _as_utc_instant(value: datetime.datetime) -> datetime.datetime:
@@ -1531,6 +1549,80 @@ class CalendarEventService:
         )
         return self.create_event(calendar_id, event_data)
 
+    def _push_one_off_master_to_provider(
+        self,
+        event: CalendarEvent,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+    ) -> None:
+        """Send a former series master to its provider as a single event.
+
+        A modification on the master's own date ends the master's series and starts a
+        new series at the second occurrence. ``create_event`` already sends the new
+        series to the provider. Without this call the provider would also keep the
+        whole old series, so every later occurrence would show up twice there.
+
+        The payload has no recurrence rule. Google replaces the whole event on update,
+        so its series becomes this one event. The Outlook adapter does not write
+        recurrence, so an Outlook series is not ended by this call.
+        """
+        calendar = event.calendar
+        if calendar.calendar_type not in [CalendarType.PERSONAL, CalendarType.RESOURCE]:
+            return
+        if not event.external_id:
+            return
+        write_adapter = self._host._get_write_adapter_for_calendar(calendar)
+        if write_adapter is None:
+            return
+
+        attendances = [a for a in event.attendances.all() if a.membership_user_id is not None]
+        users_by_id = {
+            u.id: u for u in User.objects.filter(id__in=[a.membership_user_id for a in attendances])
+        }
+        attendees = [
+            EventAttendeeData(
+                email=users_by_id[a.membership_user_id].email,
+                name=_adapter_user_name(users_by_id[a.membership_user_id]),
+                status=_adapter_rsvp_status(a.status),
+            )
+            for a in attendances
+            if a.membership_user_id in users_by_id
+        ] + [
+            EventAttendeeData(
+                email=ea.external_attendee.email,
+                name=ea.external_attendee.name or ea.external_attendee.email,
+                status=_adapter_rsvp_status(ea.status),
+            )
+            for ea in event.external_attendances.select_related("external_attendee")
+        ]
+        resources = [
+            ResourceData(
+                email=ra.calendar.email,
+                title=ra.calendar.name,
+                external_id=ra.calendar.external_id,
+                status=_adapter_rsvp_status(ra.status),
+            )
+            for ra in event.resource_allocations.select_related("calendar")
+        ]
+
+        write_adapter.update_event(
+            calendar.external_id,
+            event.external_id,
+            CalendarEventAdapterInputData(
+                calendar_external_id=calendar.external_id,
+                title=event.title,
+                description=event.description,
+                start_time=start_time,
+                end_time=end_time,
+                timezone=timezone,
+                attendees=attendees,
+                resources=resources,
+                external_id=event.external_id,
+                recurrence_rule=None,
+            ),
+        )
+
     def create_recurring_event_exception(
         self,
         parent_event: CalendarEvent,
@@ -1639,9 +1731,6 @@ class CalendarEventService:
             requested_start = modification_data.get("start_time")
             requested_end = modification_data.get("end_time")
             requested_timezone = modification_data.get("timezone")
-            if requested_start is None and requested_end is None and requested_timezone is None:
-                # Nothing about the time changes, so leave the stored times alone.
-                return
             original_start = parent_event.start_time
             original_end = parent_event.end_time
             new_timezone = requested_timezone or parent_event.timezone
@@ -1653,15 +1742,18 @@ class CalendarEventService:
                 new_end = new_start + (original_end - original_start)
             else:
                 new_end = original_end
-            if new_end <= new_start:
-                raise ValueError("end_time must be after start_time.")
-            parent_event.timezone = new_timezone
-            parent_event.start_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
-                new_start, new_timezone
-            )
-            parent_event.end_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
-                new_end, new_timezone
-            )
+            if requested_start is not None or requested_end is not None or requested_timezone:
+                # Only rewrite the stored times when a time or the timezone changes.
+                if new_end <= new_start:
+                    raise ValueError("end_time must be after start_time.")
+                parent_event.timezone = new_timezone
+                parent_event.start_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+                    new_start, new_timezone
+                )
+                parent_event.end_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+                    new_end, new_timezone
+                )
+            self._push_one_off_master_to_provider(parent_event, new_start, new_end, new_timezone)
 
         def update_exception_manager(
             parent_obj: RecurringMixin, new_recurring_obj: RecurringMixin

@@ -2114,3 +2114,95 @@ def test_provider_less_events_store_null_external_id(scoped_event_setup):
     second.refresh_from_db()
     assert first.external_id is None
     assert second.external_id is None
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("modification", ["times", "title_only"])
+def test_master_date_modification_ends_the_series_at_the_provider(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    social_account,
+    modification,
+):
+    """The provider's master becomes one event, and the new series is created there.
+
+    Without the update the provider would keep the whole old series next to the new
+    one, so every later occurrence would show up twice there.
+    """
+    rule = "FREQ=DAILY;COUNT=5"
+    mock_google_adapter.create_event.side_effect = [
+        _adapter_output("provider_series", recurrence_rule=f"RRULE:{rule}"),
+        _adapter_output("provider_new_series", recurrence_rule="RRULE:FREQ=DAILY;COUNT=4"),
+    ]
+    mock_google_adapter.update_event.return_value = _adapter_output("provider_series")
+    master_start = datetime.datetime(2030, 6, 3, 13, 0, tzinfo=datetime.UTC)
+    master = event_service.create_recurring_event(
+        calendar_id=calendar.id,
+        title="Daily",
+        description="",
+        start_time=master_start,
+        end_time=master_start + datetime.timedelta(hours=1),
+        timezone="UTC",
+        recurrence_rule=f"RRULE:{rule}",
+    )
+    _grant_event_owner_token(master, social_account.user, calendar.organization)
+    moved_start = master_start + datetime.timedelta(hours=4)
+    changes = (
+        {"modified_start_time": moved_start}
+        if modification == "times"
+        else {"modified_title": "Renamed first"}
+    )
+
+    event_service.create_recurring_event_exception(
+        parent_event=master, exception_date=master_start.date(), **changes
+    )
+
+    mock_google_adapter.update_event.assert_called_once()
+    calendar_external_id, event_external_id, adapter_input = (
+        mock_google_adapter.update_event.call_args.args
+    )
+    assert (calendar_external_id, event_external_id) == (calendar.external_id, "provider_series")
+    assert adapter_input.recurrence_rule is None
+    expected_start = moved_start if modification == "times" else master_start
+    assert (adapter_input.start_time, adapter_input.end_time) == (
+        expected_start,
+        expected_start + datetime.timedelta(hours=1),
+    )
+    assert adapter_input.title == ("Renamed first" if modification == "title_only" else "Daily")
+    new_series_input = mock_google_adapter.create_event.call_args_list[1].args[0]
+    assert new_series_input.recurrence_rule is not None
+    assert new_series_input.start_time == master_start + datetime.timedelta(days=1)
+
+
+@pytest.mark.django_db
+def test_master_date_cancel_does_not_touch_the_provider_series(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    social_account,
+):
+    """A cancel is a cancelled exception, so the provider's series is not rewritten."""
+    mock_google_adapter.create_event.return_value = _adapter_output(
+        "provider_series", recurrence_rule="RRULE:FREQ=DAILY;COUNT=5"
+    )
+    master_start = datetime.datetime(2030, 6, 3, 13, 0, tzinfo=datetime.UTC)
+    master = event_service.create_recurring_event(
+        calendar_id=calendar.id,
+        title="Daily",
+        description="",
+        start_time=master_start,
+        end_time=master_start + datetime.timedelta(hours=1),
+        timezone="UTC",
+        recurrence_rule="RRULE:FREQ=DAILY;COUNT=5",
+    )
+    _grant_event_owner_token(master, social_account.user, calendar.organization)
+
+    event_service.create_recurring_event_exception(
+        parent_event=master, exception_date=master_start.date(), is_cancelled=True
+    )
+
+    mock_google_adapter.update_event.assert_not_called()
+    assert mock_google_adapter.create_event.call_count == 1
