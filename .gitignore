@@ -54,6 +54,7 @@ tmp_email/
 
 # Vinta AI workflows PR context (durable, not committed)
 .vinta-ai-workflows/prs-context/
+.vinta-ai-maestro/
 
 # Terraform / Terragrunt
 .terragrunt-cache/
@@ -63,3 +64,4 @@ tmp_email/
 
 # uv-managed Python interpreter downloaded during the Render build
 .uv-python/
+.pr-review/settings.yml

@@ -10,7 +10,7 @@ Two migration surfaces:
 1. **Standard Django** — `makemigrations` for model changes. This skill covers the lock-aware schema part.
 2. **Raw-SQL framework** — for DB-defined code (functions, procedures, triggers, views, materialized views) routed through `common/raw_sql_migration_managers.py`. **Don't use this skill** for those — go straight to [create-postgres-view](../create-postgres-view/SKILL.md), [create-postgres-function](../create-postgres-function/SKILL.md), or the trigger / procedure variants. They own the framework specifics.
 
-Background: [AGENTS.md → Architecture → Raw SQL](../../AGENTS.md#raw-sql-functions-procedures-triggers-views-materialized-views) for the framework's contract; [AGENTS.md → Multi-Tenancy](../../AGENTS.md#multi-tenancy) for `SingleOrganizationModelMixin` constraints on new columns + indexes.
+Background: [AGENTS.md → Architecture → Raw SQL](../../../AGENTS.md#raw-sql-functions-procedures-triggers-views-materialized-views) for the framework's contract; [AGENTS.md → Multi-Tenancy](../../../AGENTS.md#multi-tenancy) for `SingleOrganizationModelMixin` constraints on new columns + indexes.
 
 ## Decision questions
 
@@ -67,7 +67,7 @@ Background: [AGENTS.md → Architecture → Raw SQL](../../AGENTS.md#raw-sql-fun
    docker compose run --rm api uv run python manage.py migrate <app> <previous_migration>
    docker compose run --rm api uv run python manage.py migrate <app>
    ```
-7. Run the [outer gate](../../AGENTS.md#outer-gate).
+7. Run the [outer gate](../../../AGENTS.md#outer-gate).
 
 ### Raw-SQL framework (functions / views / materialized views / triggers / procedures)
 
@@ -76,7 +76,7 @@ Background: [AGENTS.md → Architecture → Raw SQL](../../AGENTS.md#raw-sql-fun
 - Views + materialized views → [create-postgres-view](../create-postgres-view/SKILL.md).
 - Functions + procedures + triggers → [create-postgres-function](../create-postgres-function/SKILL.md).
 
-Both follow the same framework contract documented in [AGENTS.md → Architecture → Raw SQL](../../AGENTS.md#raw-sql-functions-procedures-triggers-views-materialized-views): versioned `NNNN.sql` files, manager registered in `__init__.py`, Django migration calls `manager.migration()` (new) or `manager.migrate(old, new)` (bump), next-numbered file on every update.
+Both follow the same framework contract documented in [AGENTS.md → Architecture → Raw SQL](../../../AGENTS.md#raw-sql-functions-procedures-triggers-views-materialized-views): versioned `NNNN.sql` files, manager registered in `__init__.py`, Django migration calls `manager.migration()` (new) or `manager.migrate(old, new)` (bump), next-numbered file on every update.
 
 When a model-shape migration *also* cascades into a raw-SQL bump (function depends on a renamed column, view projects a dropped field, generated column depends on a function), author both in the same migration chain and dispatch to `migration-author`.
 
@@ -144,7 +144,7 @@ Every migration declares a reverse. Auto-generated migrations get sensible rever
 
 ## Verification
 
-Run the [outer gate](../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
+Run the [outer gate](../../../AGENTS.md#outer-gate) — must pass. Skill-specific extras:
 
 ```bash
 docker compose run --rm api uv run python manage.py migrate <app>                 # apply forward

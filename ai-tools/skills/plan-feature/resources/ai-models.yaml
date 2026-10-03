@@ -11,7 +11,7 @@
 # Tier *placement* is human/LLM judgement — the job flags drift and proposes
 # edits, it does not blindly reassign tiers. See scripts/check-ai-models.mjs.
 schema_version: 1
-last_verified: 2026-07-13
+last_verified: 2026-10-02
 
 # Drift is checked against a free, no-key community aggregator (models.dev,
 # vendor-keyed with release dates + pricing), cross-checked against LiteLLM's
@@ -37,7 +37,7 @@ tiers:
       anthropic:
         - id: claude-haiku-4-5
       openai:
-        - id: gpt-5.6-luna
+        - id: gpt-6-luna
           note: optimized for cost-sensitive workloads
       google:
         - id: gemini-3.1-flash-lite
@@ -50,14 +50,12 @@ tiers:
       fixtures, simple HStore/ArrayField additions.
     models:
       anthropic:
-        - id: claude-haiku-4-5
-          note: with iteration; step up to claude-sonnet-5 if phase touches >3 files
-        - id: claude-sonnet-5
+        - id: claude-sonnet-5-5
           note: step-up target when phase touches >3 files
       openai:
-        - id: gpt-5-mini
+        - id: gpt-6-luna
       google:
-        - id: gemini-3.5-flash
+        - id: gemini-3.8-flash
 
   - tier: 3
     label: multi-file orchestration, business logic, SQL views
@@ -68,11 +66,11 @@ tiers:
       covering concurrency edges.
     models:
       anthropic:
-        - id: claude-sonnet-5
+        - id: claude-opus-5-5
       openai:
-        - id: gpt-5.6-terra
+        - id: gpt-6.1-sol
       google:
-        - id: gemini-3-pro
+        - id: gemini-3.1-pro-preview
           note: stronger code recall
 
   - tier: 4
@@ -83,11 +81,10 @@ tiers:
       tuning slow query against partitioned hot table, debugging heisenbug.
     models:
       anthropic:
-        - id: claude-opus-4-8
-          note: "[1m] 1M-context variant for large codebases"
+        - id: claude-fable-5-1
       openai:
-        - id: gpt-5.6-sol
-          note: Frontier model for complex professional work
+        - id: gpt-6-astra
+          note: frontier model; roughly twice sol's price, so reserve it for tier 4
       google:
-        - id: gemini-3-pro
+        - id: gemini-3.1-pro-preview
           note: with thinking

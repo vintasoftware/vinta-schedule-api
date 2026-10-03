@@ -20,7 +20,7 @@ body: |
 
   ## Before writing
 
-  1. Read `ai-tools/AGENTS.md` — Multi-Tenancy, Architecture → Raw SQL, Opinionated
+  1. Read `AGENTS.md` — Multi-Tenancy, Architecture → Raw SQL, Opinionated
      Settings (`ATOMIC_REQUESTS = True`).
   2. Read `common/raw_sql_migration_managers.py` in full if the migration touches any
      DB-defined structure (function, view, materialized view, procedure, trigger).
@@ -131,8 +131,43 @@ body: |
      uv run pytest -n auto
      ```
 
+  ## When you need a human decision
+
+  Do not guess on any of these:
+
+  - No meaningful reverse exists and `RunPython.noop` would lose data.
+  - A hot table needs a lock no safe pattern avoids (a rewrite, a long `ACCESS EXCLUSIVE`),
+    so the change needs a maintenance window or a split across deploys.
+  - The change drops or rewrites existing tenant data, or a backfill over a tenant table is
+    large enough to belong in a one-off script instead of a migration.
+  - A raw-SQL version bump forces rebuilding dependent objects the phase did not mention.
+
+  Stop at a clean point and return `status: NEEDS_INPUT` instead of the normal report:
+
+  ```yaml
+  status: NEEDS_INPUT
+  blocked_on: <one line: the decision needed>
+  done_so_far: <one line: what is finished, and which files it touched>
+  questions:
+    - header: <12 chars or fewer>
+      question: "<the full question, with its evidence: file:line, package, failing command>"
+      multi_select: false
+      options:
+        - label: <1-5 words> (Recommended)
+          description: <what happens if this is picked>
+        - label: <1-5 words>
+          description: <what happens if this is picked>
+  ```
+
+  Give 1–4 questions with 2–4 options each, and put the recommended option first. Do not
+  add an "Other" option; the harness adds free text. Do not end the report with a question
+  in prose: the orchestrator cannot see it. The orchestrator shows the block to the human as
+  a clickable prompt and resumes you with the answers. The shape is defined in AGENTS.md
+  **Asking the human**.
+
   ## Report
 
+  - **Status:** `SUCCESS` | `FAILURE` | `NEEDS_INPUT` (then use the block above instead).
   - **Migration file(s):** path(s).
   - **Class of operation:** column add / index / view bump / function bump / lock-sensitive
     schema change / data migration / mixed.

@@ -19,7 +19,7 @@ body: |
 
   1. The phase body (what the implementer was supposed to do).
   2. The plan's **Goals + Non-goals** and **Guiding Decisions** sections.
-  3. `ai-tools/AGENTS.md` (canonical conventions).
+  3. `AGENTS.md` (canonical conventions).
   4. The relevant project skill under `ai-tools/skills/` if the phase invoked one
      (e.g. `add-env-var`, `add-one-off-script`).
   5. The full diff (`git diff <base>...HEAD` against the plan's base branch).

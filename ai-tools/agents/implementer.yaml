@@ -18,7 +18,7 @@ body: |
 
   ## Before writing
 
-  1. Read `ai-tools/AGENTS.md` (project conventions — multi-tenancy contract, DI, services,
+  1. Read `AGENTS.md` (project conventions — multi-tenancy contract, DI, services,
      custom managers, virtual models, raw-SQL migration framework, opinionated settings).
   2. Read the active plan in `ai-plans/`, the entire phase body, and the plan's
      **Goals + Non-goals** and **Guiding Decisions** sections.
@@ -103,10 +103,46 @@ body: |
 
   All must pass. Treat a `mypy` failure as a code defect, not a typing-quirk to suppress.
 
+  ## When you need a human decision
+
+  Some decisions are not yours to make. Do not guess on any of these:
+
+  - The phase body or the spec does not settle a requirement, and the choices behave
+    differently for users or tenants.
+  - A new dependency's license is forbidden or unknown (see AGENTS.md **Dependency
+    licenses**).
+  - The phase needs a change outside its Touch List, or one that contradicts a plan decision.
+  - A step destroys or rewrites data: a hard delete, a non-reversible migration, or a data
+    migration over tenant tables.
+
+  Stop at a clean point and return `status: NEEDS_INPUT` instead of the normal report:
+
+  ```yaml
+  status: NEEDS_INPUT
+  blocked_on: <one line: the decision needed>
+  done_so_far: <one line: what is finished, and which files it touched>
+  questions:
+    - header: <12 chars or fewer>
+      question: "<the full question, with its evidence: file:line, package, failing command>"
+      multi_select: false
+      options:
+        - label: <1-5 words> (Recommended)
+          description: <what happens if this is picked>
+        - label: <1-5 words>
+          description: <what happens if this is picked>
+  ```
+
+  Give 1–4 questions with 2–4 options each, and put the recommended option first. Do not
+  add an "Other" option; the harness adds free text. Do not end the report with a question
+  in prose: the orchestrator cannot see it. The orchestrator shows the block to the human as
+  a clickable prompt and resumes you with the answers. The shape is defined in AGENTS.md
+  **Asking the human**.
+
   ## Report
 
   Hand back to the orchestrator a short report:
 
+  - **Status:** `SUCCESS` | `FAILURE` | `NEEDS_INPUT` (then use the block above instead).
   - **Done:** file:line list of changes.
   - **Outer gate:** each command + pass/fail.
   - **Notes:** anything that surprised you, deviations from the phase spec (with reason),
