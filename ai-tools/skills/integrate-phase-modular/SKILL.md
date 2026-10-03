@@ -1,6 +1,7 @@
 ---
 name: integrate-phase-modular
 description: Internal integration step of [implement-plan] — NOT a standalone entry point. Pushes one reviewed phase along vinta_schedule_api's commit strategy and opens (or updates) its PR through the prs-context file + bundled open-pr.sh — the only PR-creation path. The conductor passes the resolved `WORKROOT` / `BASE_BRANCH` and the PR / inline-comment policy; do not invoke directly to push arbitrary work.
+disable-model-invocation: true
 ---
 
 # Integrate one phase
@@ -11,34 +12,45 @@ This is the **modular-commits** variant: one branch + one PR for the whole plan,
 
 ## Inputs (passed by the conductor)
 
-- `WORKROOT`, `BASE_BRANCH` — resolved once by the conductor.
+- `WORKROOT` — **this lane's**, resolved by the conductor. Under a parallel run several integrate steps may be in flight at once, each on its own lane; nothing here is shared between them.
+- `phase.base_branch` — the phase's dependency-derived base, computed by the conductor ([Lane branch topology](../implement-plan/SKILL.md#lane-branch-topology)). This is the branch the phase was cut from **and** the PR's `base`. The plan-level `BASE_BRANCH` is only the base of phases that declare no dependencies.
 - `PR creation policy: **agents create PRs** — every phase opens a PR via the bundled prs-context file + [open-pr.sh](../open-pr-from-context/scripts/open-pr.sh).` policy + `run_options.generate_inline_comments`.
 - The phase record + plan-level decisions (for the PR body).
 
-**`WORKROOT` topology rule.** Every phase branches off the previous phase (first executed phase off `<BASE_BRANCH>`), and **every** `git` / lint / test / build / migrate call runs with `git -C <WORKROOT>` (or after `cd <WORKROOT>`). When `use_worktree = false`, `WORKROOT` is the main checkout and this is exactly today's in-place behavior; when `true`, `WORKROOT` is the worktree and branches / commits stack inside it, never touching the main checkout's working tree. One uniform path — no per-step worktree branching.
+**`WORKROOT` topology rule.** Every phase branches off **its own computed base** — the branch derived from that phase's `**Depends on**:` set, which is `<BASE_BRANCH>` for a phase with no dependencies (see [Lane branch topology](../implement-plan/SKILL.md#lane-branch-topology)) — and **every** `git` / lint / test / build / migrate call runs with `git -C <WORKROOT>` (or after `cd <WORKROOT>`). When `use_worktree = false`, `WORKROOT` is the main checkout and phases run one at a time in place; when `true`, `WORKROOT` is a worktree and branches / commits live inside it, never touching the main checkout's working tree. Under parallel execution `WORKROOT` is **this lane's** worktree and nothing else — a lane never reads or writes a sibling lane's tree. One uniform path — no per-step worktree branching.
 
 ## Push to plan branch
 
 Branch naming: `plan/{plan-id-kebab}` (one branch for the whole plan — no per-phase suffix).
 
-**First executed phase** (branches from `<BASE_BRANCH>`, already made current by the conductor):
+**Sequential run** (`max_parallel_lanes = 1`) — every phase commits straight onto the plan branch:
 
 ```bash
-git -C <WORKROOT> checkout <BASE_BRANCH>
-git -C <WORKROOT> checkout -b plan/{plan-id-kebab}
+git -C <WORKROOT> checkout plan/{plan-id-kebab}     # created from <BASE_BRANCH> on the first phase
 # subagent's atomic unit commits land on this branch
 git -C <WORKROOT> push -u origin plan/{plan-id-kebab}
 ```
 
-**Subsequent phases** (stay on the same plan branch — no new branch):
+**Parallel run** — one branch cannot take concurrent writers, so each lane commits its atomic units on a **lane branch** and the conductor merges those into the plan branch at each wave boundary:
 
 ```bash
-git -C <WORKROOT> checkout plan/{plan-id-kebab}
-# subagent's atomic unit commits land on this branch
-git -C <WORKROOT> push origin plan/{plan-id-kebab}
+git -C <WORKROOT> checkout <phase.base_branch>
+git -C <WORKROOT> checkout -b plan/{plan-id-kebab}/lane-{phase.id}
+# subagent's atomic unit commits land on this lane branch
+git -C <WORKROOT> push -u origin plan/{plan-id-kebab}/lane-{phase.id}
 ```
 
-The branch carries every phase's commits in plan order. Reviewers read the commit log top-to-bottom as a table of contents of the implementation.
+then, once every phase at that wave is green, in the integration worktree:
+
+```bash
+git -C <integ.workroot> checkout plan/{plan-id-kebab}
+git -C <integ.workroot> merge --no-ff plan/{plan-id-kebab}/lane-{phase.id}   # once per lane, in plan order
+git -C <integ.workroot> push origin plan/{plan-id-kebab}
+```
+
+`--no-ff` is what preserves the atomic units: the plan branch keeps every individual unit commit, grouped by the merge commit that names its phase. `plan/{plan-id-kebab}` **is** the wave integration branch under this strategy — there is no separate `wave-{N}` branch. Reviewers still read the commit log top-to-bottom as a table of contents; parallel phases appear as adjacent groups rather than one flat sequence.
+
+**Never squash a lane merge.** Squashing collapses the unit commits this whole strategy exists to preserve.
 
 ## Open PR via context file
 
@@ -80,11 +92,13 @@ Two project-level signals decide the actual behavior:
 
    When `generate_inline_comments = false`: skip this step. The file's `# Comments` block stays empty.
 
-4. **Write the prs-context file** at `.vinta-ai-workflows/prs-context/{feature-kebab}/plan.md`, following [resources/prs-context-template.md](../../prs-context-template.md). Frontmatter: `plan_id`, `feature_name`, `phase_id`, `phase_title`, `branch`, `base`, `created_at`, `status: pending`, empty `pr_url`. **`base` is the branch the PR opens against:** this strategy opens a single plan-level PR, so `base = <BASE_BRANCH>`. Body sections: `# Title` (single-line PR title), `# Description` (Markdown body — uses the project's PR template structure from step 2 when one exists), `# Comments` (YAML list of `{file, start_line, end_line?, side, body}` — empty list when comments are off).
+4. **Write the prs-context file** at `.vinta-ai-workflows/prs-context/{feature-kebab}/plan.md` (one PR per plan, not per phase), following [resources/prs-context-template.md](../../prs-context-template.md). Frontmatter: `plan_id`, `feature_name`, `phase_id`, `phase_title`, `branch`, `base`, `created_at`, `status: pending`, empty `pr_url`. **`base` is the branch the PR opens against — resolve it per the commit strategy, never default it to `<BASE_BRANCH>` blindly:** for stacked branches a phase's PR bases on its dependency-derived `<phase.base_branch>` — `<BASE_BRANCH>` only for a phase with no dependencies (see the PR-base rule under the Push to plan branch step above); an integration PR (`kind: integration`) and the plan PR (`kind: plan`) base on `<BASE_BRANCH>`. For a single plan-level PR (modular / one-PR strategies) `base = <BASE_BRANCH>`. Body sections: `# Title` (single-line PR title), `# Description` (Markdown body — uses the project's PR template structure from step 2 when one exists), `# Comments` (YAML list of `{file, start_line, end_line?, side, body}` — empty list when comments are off).
 
-5. **Confirm `.vinta-ai-workflows/prs-context/` is in `.gitignore`.** [vinta-install-ai-tools-setup](../vinta-install-ai-tools-setup/SKILL.md) runs the multi-vendor setup script which appends `.vinta-ai-workflows/prs-context/` on its first invocation. If an older bootstrap missed it, append it now.
+5. **Deslop the prose.** Run the `deslop-comments` skill ([deslop-comments](../deslop-comments/SKILL.md)) over the file you just wrote, passing `.vinta-ai-workflows/prs-context/{feature-kebab}/plan.md` as the explicit scope. `# Title`, the `# Description` body, and every `# Comments` `body` must read as Simple English: one idea per sentence, current behavior stated directly instead of "not X" framing, and no AI-slop vocabulary (`gate`, `guard`, `backstop`, `surface`, `leverage`, `plumb`, `canonical`, …). Keep precise domain terms, and keep the project's PR-template structure intact — section headings, `` placeholders, and checklist lines stay exactly as step 2 wrote them. This pass rewrites prose only: it never touches the frontmatter, the section layout, or which file and lines a comment targets. Do it before `open-pr.sh` runs, since the published PR body and comments come straight from this file.
 
-6. **Run `open-pr.sh`** (only when policy = agents create PRs). Detect a usable CLI (`gh` for GitHub, `glab` for GitLab) plus the script's other deps (`yq`, `jq`):
+6. **Confirm `.vinta-ai-workflows/prs-context/` is in `.gitignore`.** [vinta-install-ai-tools-setup](../vinta-install-ai-tools-setup/SKILL.md) runs the multi-vendor setup script which appends `.vinta-ai-workflows/prs-context/` on its first invocation. If an older bootstrap missed it, append it now.
+
+7. **Run `open-pr.sh`** (only when policy = agents create PRs). Detect a usable CLI (`gh` for GitHub, `glab` for GitLab) plus the script's other deps (`yq`, `jq`):
 
    ```bash
    bash ai-tools/skills/open-pr-from-context/scripts/open-pr.sh .vinta-ai-workflows/prs-context/{feature-kebab}/plan.md
@@ -93,13 +107,15 @@ Two project-level signals decide the actual behavior:
    The script opens the PR (or detects an existing one), posts each inline comment, rewrites the file's frontmatter to `status: published` + populated `pr_url`, appends a publish log. Exit codes:
 
    - `0` — PR up, all comments (if any) posted. Capture `pr_url` for the user update.
-   - `1` — PR up, ≥1 comment failed. Surface the failed `(file:line)` list to the user; continue to the tracking step.
+   - `1` — PR up, ≥1 comment failed. Surface the failed `(file:line)` list to the user, with the `gh error:` / `glab error:` line the script printed above each one; continue to the tracking step.
    - `2` — Hard failure (deps missing, branch not pushed, CLI unauthed, file invalid). Surface the script's stderr; treat the phase as having no PR. The file stays `status: pending` so the user can re-run after fixing the gap.
 
    When policy = "branches only": **don't run the script.** File stays `status: pending`.
 
-7. **Skill wrapper** — [open-pr-from-context](../open-pr-from-context/SKILL.md) is available for ad-hoc invocation (after the run, on a different machine, etc.). The orchestrator can call the script directly here; the skill is for humans.
+   {If integrations.pr-review-canvas = enabled in `.vinta-ai-workflows.yaml`:} **Review canvas.** After exit `0` or `1`, the PR is up. Generate its review canvas with the `pr-review-canvas` skill ([pr-review-canvas](../pr-review-canvas/SKILL.md)). Pass the PR number from the end of `pr_url` (`…/pull/<n>` or `…/merge_requests/<n>`), as in `/pr-review-canvas <n>`. Run it again each time this step re-runs `open-pr.sh` on the same PR, for example after each phase under one plan-level PR. The tool updates the canvas incrementally. The skill posts the canvas as a PR comment unless the project's `pr-review.config.yml` turns sharing off. Add its local review URL and the comment link to the user update. A canvas that fails never fails the phase. Report the skill's error, and point at `pr-review doctor` when the error suggests setup. When the `pr-review-canvas` skill is not installed, say so once, point at `vinta-install-ai-tools-setup`, and skip.
+
+8. **Skill wrapper** — [open-pr-from-context](../open-pr-from-context/SKILL.md) is available for ad-hoc invocation (after the run, on a different machine, etc.). The orchestrator can call the script directly here; the skill is for humans.
 
 ## Output
 
-Return to the conductor: the branch pushed, and the PR-context file path with its `status` (`published` + `pr_url` when `open-pr.sh` ran; `pending` otherwise) plus the publish command when `pending`.
+Return to the conductor: the branch pushed (plus the `integ-` branch when one was pushed), and each PR-context file path written — the integration file first when there is one — with its `status` (`published` + `pr_url` when `open-pr.sh` ran; `pending` otherwise) plus the publish command when `pending`.
