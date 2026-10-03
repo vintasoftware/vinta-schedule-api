@@ -131,6 +131,29 @@ def convert_naive_utc_datetime_to_timezone(
     return local_wall_clock.replace(tzinfo=datetime.UTC)
 
 
+def wall_clock_to_utc(datetime_obj: datetime.datetime, iana_tz: str) -> datetime.datetime:
+    """Return the UTC instant of a client-supplied wall-clock in the given IANA timezone.
+
+    Clients send event times as naive local date-times plus a separate ``timezone``
+    field. The event services take true instants, so every API entry point that writes
+    an event converts its input with this first.
+
+    GraphQL hands the value over naive. DRF hands it over already tagged UTC (it makes
+    naive input aware in ``TIME_ZONE``, which is UTC), so an aware value is read by its
+    UTC digits. Either way the digits are the wall-clock.
+
+    e.g. 10:00 + "America/Sao_Paulo" -> 13:00Z.
+    """
+    try:
+        target_tz = zoneinfo.ZoneInfo(iana_tz)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError) as e:
+        raise ValueError(f"Invalid IANA timezone: {iana_tz}") from e
+
+    if datetime_obj.tzinfo is not None:
+        datetime_obj = datetime_obj.astimezone(datetime.UTC).replace(tzinfo=None)
+    return datetime_obj.replace(tzinfo=target_tz).astimezone(datetime.UTC)
+
+
 # ---------------------------------------------------------------------------
 # Event serialization helpers
 # ---------------------------------------------------------------------------

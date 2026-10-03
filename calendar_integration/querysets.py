@@ -35,6 +35,7 @@ from calendar_integration.database_functions import (
     GetBlockedTimeOccurrencesWithBulkModificationsJSON,
     GetEventOccurrencesJSON,
     GetEventOccurrencesWithBulkModificationsJSON,
+    ManagedCalendarIsFreeInRange,
 )
 from common.querysets import OrganizationScopedQuerySet
 from organizations.authorization import membership_holds_permission
@@ -405,32 +406,31 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
         *,
         with_bulk_modifications: bool,
     ):
-        from calendar_integration.models import AvailableTime, BlockedTime, CalendarEvent
+        from calendar_integration.models import BlockedTime, CalendarEvent
 
         if not ranges:
             return self.none()
 
         queries = []
         for start_datetime, end_datetime in ranges:
-            # For managed calendars: must have available time exactly matching the range
+            # For managed calendars: an availability window occurrence (recurring
+            # windows expanded) must cover the range, and no event or blocked time may
+            # overlap it. The ``CASE`` keeps the function from running for unmanaged
+            # calendars, which the ``unmanaged_query`` below handles.
             managed_query = Q(
-                manage_available_windows=True,
-                id__in=Subquery(
-                    # ``unscoped()`` + ``base_rows_only()``: correlated to the outer
-                    # calendar row (already organization-scoped) through
-                    # ``calendar_fk_id``, and ``base_rows_only`` preserves what
-                    # ``AvailableTime.objects`` applied here before -- appointment-type-slot-scoped
-                    # windows must not narrow availability outside their slot.
-                    AvailableTime.objects.unscoped()
-                    .base_rows_only()
-                    .filter(
-                        calendar_fk_id=OuterRef("id"),
-                        start_time__lte=start_datetime,
-                        end_time__gte=end_datetime,
-                    )
-                    .values("calendar_fk_id")
-                    .distinct()
-                ),
+                Case(
+                    When(
+                        manage_available_windows=True,
+                        then=ManagedCalendarIsFreeInRange(
+                            F("organization_id"),
+                            F("id"),
+                            Value(start_datetime, output_field=models.DateTimeField()),
+                            Value(end_datetime, output_field=models.DateTimeField()),
+                        ),
+                    ),
+                    default=Value(False),
+                    output_field=models.BooleanField(),
+                )
             )
 
             if with_bulk_modifications:
