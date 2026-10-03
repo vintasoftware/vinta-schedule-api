@@ -2282,3 +2282,52 @@ def test_master_date_cancel_does_not_touch_the_provider_series(
 
     mock_google_adapter.update_event.assert_not_called()
     assert mock_google_adapter.create_event.call_count == 1
+
+
+@pytest.mark.django_db
+def test_reschedule_event_occurrence_sends_the_series_people_to_the_provider(
+    write_allowance_setup,
+):
+    """The provider copy of a rescheduled occurrence keeps the series' attendees.
+
+    Google replaces the whole event on update, so a payload with no attendees would
+    clear them there, and a created occurrence would invite nobody.
+    """
+    setup = write_allowance_setup
+    org = setup["organization"]
+    calendar = setup["calendar_a"]
+    owner = setup["owner_a"]
+    master = _make_recurring_master_for_write_tests(org, calendar)
+    EventAttendance.objects.create(
+        organization=org, event=master, membership_user_id=owner.id, status="accepted"
+    )
+    guest = ExternalAttendee.objects.create(
+        organization=org, email="guest@example.com", name="Guest"
+    )
+    EventExternalAttendance.objects.create(organization=org, event=master, external_attendee=guest)
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="reschedule_occurrence_people",
+        organization=org,
+        scoped_to_membership=setup["membership_a"],
+    )
+    facade = _facade_for_system_user(system_user, org)
+    adapter = Mock()
+    adapter.create_event.return_value = _adapter_output("provider-occurrence")
+    adapter.update_event.return_value = _adapter_output("provider-occurrence")
+
+    with patch.object(CalendarService, "_get_write_adapter_for_calendar", return_value=adapter):
+        for hour in (14, 16):  # the first call creates the occurrence, the second updates it
+            facade.reschedule_event_occurrence(
+                calendar_id=calendar.id,
+                master_event_id=master.id,
+                recurrence_id=_RECURRENCE_ID,
+                start_time=datetime.datetime(2026, 7, 17, hour, 0, tzinfo=datetime.UTC),
+                end_time=datetime.datetime(2026, 7, 17, hour + 1, 0, tzinfo=datetime.UTC),
+                timezone="UTC",
+            )
+
+    created_input = adapter.create_event.call_args.args[0]
+    updated_input = adapter.update_event.call_args.args[2]
+    expected = [(owner.email, "accepted"), ("guest@example.com", "pending")]
+    for adapter_input in (created_input, updated_input):
+        assert sorted((a.email, a.status) for a in adapter_input.attendees) == sorted(expected)
