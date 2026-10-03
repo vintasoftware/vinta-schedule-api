@@ -262,6 +262,82 @@ def test_update_event(
 
 
 @pytest.mark.django_db
+def test_update_event_addresses_the_provider_event_by_its_external_ids(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    sample_event_input_data,
+    social_account,
+):
+    """The provider knows the calendar and event by their external ids, not ours."""
+    mock_google_adapter.create_event.return_value = _adapter_output("provider_event_id")
+    mock_google_adapter.update_event.return_value = _adapter_output("provider_event_id")
+    created = event_service.create_event(calendar.id, sample_event_input_data)
+    _grant_event_owner_token(created, social_account.user, calendar.organization)
+
+    event_service.update_event(
+        calendar.id,
+        created.id,
+        CalendarEventInputData(
+            title="Updated Title",
+            description="",
+            start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        ),
+    )
+
+    calendar_external_id, event_external_id, _ = mock_google_adapter.update_event.call_args.args
+    assert (calendar_external_id, event_external_id) == (calendar.external_id, "provider_event_id")
+
+
+@pytest.mark.django_db
+def test_update_event_sends_the_recurrence_rule_to_the_provider(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    social_account,
+):
+    """Google replaces the whole event on update, so the rule must be sent or the series is lost."""
+    rule = "FREQ=WEEKLY;COUNT=10;BYDAY=MO"
+    mock_google_adapter.create_event.return_value = _adapter_output(
+        "recurring_provider_id", recurrence_rule=f"RRULE:{rule}"
+    )
+    mock_google_adapter.update_event.return_value = _adapter_output(
+        "recurring_provider_id", recurrence_rule=f"RRULE:{rule}"
+    )
+    created = event_service.create_recurring_event(
+        calendar_id=calendar.id,
+        title="Weekly Meeting",
+        description="",
+        start_time=datetime.datetime(2025, 6, 23, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        recurrence_rule=f"RRULE:{rule}",
+    )
+    _grant_event_owner_token(created, social_account.user, calendar.organization)
+    kept_rule = created.recurrence_rule.to_rrule_string()
+
+    event_service.update_event(
+        calendar.id,
+        created.id,
+        CalendarEventInputData(
+            title="Renamed series",
+            description="",
+            start_time=created.start_time,
+            end_time=created.end_time,
+            timezone="UTC",
+            recurrence_rule=kept_rule,
+        ),
+    )
+
+    adapter_input = mock_google_adapter.update_event.call_args.args[2]
+    assert adapter_input.recurrence_rule == kept_rule
+
+
+@pytest.mark.django_db
 def test_update_event_omitting_tri_state_fields_leaves_them_untouched(
     event_service,
     mock_google_adapter,
