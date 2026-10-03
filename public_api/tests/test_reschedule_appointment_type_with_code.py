@@ -21,6 +21,7 @@ Scenario coverage:
 
 import datetime
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from model_bakery import baker
@@ -1000,8 +1001,13 @@ class TestRescheduleAppointmentTypeWithCodeNonUTCTimezone:
             {
                 "input": {
                     "code": code,
-                    "startTime": RECIFE_NEW_UTC_START.isoformat(),
-                    "endTime": RECIFE_NEW_UTC_END.isoformat(),
+                    # Clients send the naive Recife wall-clock plus the timezone.
+                    "startTime": RECIFE_NEW_UTC_START.astimezone(ZoneInfo(RECIFE_TZ))
+                    .replace(tzinfo=None)
+                    .isoformat(),
+                    "endTime": RECIFE_NEW_UTC_END.astimezone(ZoneInfo(RECIFE_TZ))
+                    .replace(tzinfo=None)
+                    .isoformat(),
                     "timezone": RECIFE_TZ,
                 }
             },

@@ -176,3 +176,16 @@ class GetAvailableTimeOccurrencesWithBulkModificationsJSON(Func):
 
     function = "get_available_time_occurrences_with_bulk_modifications_json"
     output_field = ArrayField(JSONField())  # PostgreSQL function returns TEXT[] with JSON strings
+
+
+class ManagedCalendarIsFreeInRange(Func):
+    """Whether a managed calendar can take a booking for ``[start, end)``.
+
+    Arguments: organization id, calendar id, start, end. True when an availability
+    window occurrence (recurring windows expanded) covers the range and no event or
+    blocked time occurrence overlaps it. See
+    ``migrations/sql/functions/managed_calendar_is_free_in_range``.
+    """
+
+    function = "managed_calendar_is_free_in_range"
+    output_field = BooleanField()

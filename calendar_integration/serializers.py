@@ -52,6 +52,7 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
+from calendar_integration.services.calendar_service_utils import wall_clock_to_utc
 from calendar_integration.services.dataclasses import (
     AppointmentTypeEventInputData,
     AppointmentTypeInputData,
@@ -667,15 +668,25 @@ class EventRecurringExceptionSerializer(serializers.Serializer):
             organization=parent_event.organization,
         )
 
-        # Convert date to datetime for the exception_date
+        # Clients send the modified times as naive wall-clock in the parent's timezone
+        # (the modified event keeps that timezone). The service takes UTC instants.
+        modified_start_time = self.validated_data.get("modified_start_time")
+        modified_end_time = self.validated_data.get("modified_end_time")
+        if modified_start_time is not None:
+            modified_start_time = wall_clock_to_utc(modified_start_time, parent_event.timezone)
+        if modified_end_time is not None:
+            modified_end_time = wall_clock_to_utc(modified_end_time, parent_event.timezone)
+
+        # ``exception_date`` is a plain date, so it is not converted. The service matches
+        # it against the parent's instants, not against a wall-clock time.
         exception_date = self.validated_data["exception_date"]
         self.instance = self.calendar_service.create_recurring_event_exception(
             parent_event=parent_event,
             exception_date=exception_date,
             modified_title=self.validated_data.get("modified_title"),
             modified_description=self.validated_data.get("modified_description"),
-            modified_start_time=self.validated_data.get("modified_start_time"),
-            modified_end_time=self.validated_data.get("modified_end_time"),
+            modified_start_time=modified_start_time,
+            modified_end_time=modified_end_time,
             is_cancelled=self.validated_data.get("is_cancelled", False),
         )
 
@@ -1184,12 +1195,6 @@ class CalendarEventSerializer(VirtualModelSerializer):
 
         return provider
 
-    def validate_start_time(self, start_time):
-        if start_time <= datetime.datetime.now(tz=datetime.UTC):
-            raise serializers.ValidationError("Start time must be in the future.")
-
-        return start_time
-
     def validate(self, attrs):
         # Incoming datetimes carry wall-clock local to the request ``timezone``
         # (symmetric with how responses render instants in the record timezone).
@@ -1200,12 +1205,16 @@ class CalendarEventSerializer(VirtualModelSerializer):
         # 16:30 UTC (13:30 Recife) instead of the intended 19:30 UTC.
         tz_name = attrs.get("timezone") or (self.instance.timezone if self.instance else None)
         if tz_name:
-            tz = zoneinfo.ZoneInfo(tz_name)
             for field in ("start_time", "end_time"):
                 value = attrs.get(field)
                 if value is not None:
-                    wall_clock = value.astimezone(datetime.UTC).replace(tzinfo=None)
-                    attrs[field] = wall_clock.replace(tzinfo=tz).astimezone(datetime.UTC)
+                    attrs[field] = wall_clock_to_utc(value, tz_name)
+
+        # Checked after the conversion above: before it, ``start_time`` holds
+        # wall-clock digits, not an instant, so it cannot be compared with now.
+        start_time = attrs.get("start_time")
+        if start_time is not None and start_time <= datetime.datetime.now(tz=datetime.UTC):
+            raise serializers.ValidationError({"start_time": "Start time must be in the future."})
 
         calendar = attrs.get("calendar")
 
@@ -1229,8 +1238,8 @@ class CalendarEventSerializer(VirtualModelSerializer):
 
         # For updates, use existing instance values if not provided in attrs
         if self.instance:
-            start_time = start_time or self.instance.start_time_tz_unaware
-            end_time = end_time or self.instance.end_time_tz_unaware
+            start_time = start_time or self.instance.start_time
+            end_time = end_time or self.instance.end_time
 
         if start_time and end_time and start_time >= end_time:
             raise serializers.ValidationError("End time must be after start time.")
@@ -3488,30 +3497,26 @@ class _AppointmentTypeSlotSelectionInputSerializer(serializers.Serializer):
 
 
 class _EndTimeAfterStartTimeSerializerMixin(serializers.Serializer):
-    """Shared ``validate_end_time`` rejecting an ``end_time`` at/before ``start_time``.
+    """Shared ``validate`` for event inputs carrying ``start_time``, ``end_time`` and ``timezone``.
 
-    Parses a string ``start_time`` from ``initial_data`` -- at the point
-    ``validate_end_time`` runs, DRF has not yet validated/coerced sibling
-    fields, so ``start_time`` is read from the raw input instead of
-    ``validated_data``. Silently skips the check when ``start_time`` is
-    missing or unparsable -- the field-level validator for ``start_time``
-    surfaces that failure separately.
+    Clients send naive local date-times plus the IANA ``timezone``. This reads both
+    times as wall-clock in that timezone and replaces them with their UTC instants,
+    which is what the event services expect. It then rejects an ``end_time`` at or
+    before ``start_time``.
     """
 
-    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
-        start_time = self.initial_data.get("start_time") if self.initial_data else None
-        if start_time:
-            try:
-                start_time_parsed = (
-                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-                    if isinstance(start_time, str)
-                    else start_time
-                )
-            except ValueError:
-                start_time_parsed = None
-            if start_time_parsed and end_time <= start_time_parsed:
-                raise serializers.ValidationError("end_time must be after start_time.")
-        return end_time
+    def validate(self, attrs: dict) -> dict:
+        attrs = super().validate(attrs)
+        try:
+            start_time = wall_clock_to_utc(attrs["start_time"], attrs["timezone"])
+            end_time = wall_clock_to_utc(attrs["end_time"], attrs["timezone"])
+        except ValueError as e:
+            raise serializers.ValidationError({"timezone": str(e)}) from e
+        if end_time <= start_time:
+            raise serializers.ValidationError({"end_time": "end_time must be after start_time."})
+        attrs["start_time"] = start_time
+        attrs["end_time"] = end_time
+        return attrs
 
 
 class AppointmentTypeEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):

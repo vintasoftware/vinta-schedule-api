@@ -62,6 +62,7 @@ from calendar_integration.models import (
 from calendar_integration.mutations import (
     AppointmentTypeMutations,
     ExternalEventChangeRequestMutations,
+    event_times_to_utc,
 )
 from calendar_integration.services.calendar_service import _UNCHANGED
 from calendar_integration.services.dataclasses import (
@@ -3371,11 +3372,12 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                     "One or more attendees are not active members of this organization."
                 )
 
+        start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
         event_input = CalendarEventInputData(
             title=input.title,
             description=input.description or "",
-            start_time=input.start_time,
-            end_time=input.end_time,
+            start_time=start_time,
+            end_time=end_time,
             timezone=input.timezone,
             attendances=[
                 EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids
@@ -3492,6 +3494,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         except CalendarEvent.DoesNotExist as exc:
             raise GraphQLError("Event not found.") from exc
 
+        start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
         try:
             if input.recurrence_id is not None:
                 # Single-occurrence path: create / update a modified exception for exactly
@@ -3500,8 +3503,8 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                     calendar_id=input.calendar_id,
                     master_event_id=input.event_id,
                     recurrence_id=input.recurrence_id,
-                    start_time=input.start_time,
-                    end_time=input.end_time,
+                    start_time=start_time,
+                    end_time=end_time,
                     timezone=input.timezone,
                 )
             else:
@@ -3549,8 +3552,8 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                 event_data = CalendarEventInputData(
                     title=existing_event.title,
                     description=existing_event.description or "",
-                    start_time=input.start_time,
-                    end_time=input.end_time,
+                    start_time=start_time,
+                    end_time=end_time,
                     timezone=input.timezone,
                     attendances=preserved_attendances,
                     external_attendances=preserved_external_attendances,
@@ -3918,12 +3921,13 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         appointment_type_deps.appointment_type_service.calendar_service = calendar_service
         appointment_type_deps.appointment_type_service.initialize(organization=org)
 
+        start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
         try:
             event = (
                 appointment_type_deps.appointment_type_service.reschedule_appointment_type_event(
                     event_id=input.event_id,
-                    start_time=input.start_time,
-                    end_time=input.end_time,
+                    start_time=start_time,
+                    end_time=end_time,
                     tz=input.timezone,
                 )
             )

@@ -3097,11 +3097,17 @@ class AppointmentTypeService:
             else "only_calendars_available_in_ranges"
         )
 
+        # Only calendars in a slot pool can end up in ``base_available`` below, so the
+        # availability query is narrowed to them.
+        pool_calendar_ids: set[int] = set().union(*slot_pool_by_id.values())
+
         results: list[AppointmentTypeRangeAvailability] = []
         for start, end in ranges:
             available_ids = set(
                 getattr(
-                    Calendar.objects.filter_by_organization(self.organization_id),
+                    Calendar.objects.filter_by_organization(self.organization_id).filter(
+                        id__in=pool_calendar_ids
+                    ),
                     calendar_qs_method,
                 )([(start, end)]).values_list("id", flat=True)
             )

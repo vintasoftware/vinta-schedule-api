@@ -46,6 +46,7 @@ from calendar_integration.models import (
     EventManagementPermissions,
     ExternalEventChangeRequest,
 )
+from calendar_integration.services.calendar_service_utils import wall_clock_to_utc
 from calendar_integration.services.dataclasses import (
     AppointmentTypeEventInputData,
     AppointmentTypeInputData,
@@ -447,6 +448,22 @@ def _appointment_type_duration_from_seconds(
     return datetime.timedelta(seconds=duration_seconds)
 
 
+def event_times_to_utc(
+    start_time: datetime.datetime, end_time: datetime.datetime, tz: str
+) -> tuple[datetime.datetime, datetime.datetime]:
+    """Read an event input's ``start_time`` / ``end_time`` as wall-clock in ``tz``.
+
+    Clients send naive local date-times plus the IANA timezone, and the event
+    services take UTC instants. Every mutation that schedules or reschedules an
+    event converts its input with this before using it. An unknown timezone becomes
+    a ``GraphQLError`` instead of reaching the service.
+    """
+    try:
+        return wall_clock_to_utc(start_time, tz), wall_clock_to_utc(end_time, tz)
+    except ValueError as e:
+        raise GraphQLError(str(e)) from e
+
+
 def _client_ip_from_request(request: object) -> str:
     """Extract the client IP address from a Django request for audit logging.
 
@@ -768,11 +785,12 @@ class AppointmentTypeMutations:
         deps = get_appointment_type_mutation_dependencies()
         deps.calendar_service.initialize_without_provider(organization=organization)
         deps.appointment_type_service.initialize(organization=organization)
+        start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
         data = AppointmentTypeEventInputData(
             title=input.title,
             description=input.description,
-            start_time=input.start_time,
-            end_time=input.end_time,
+            start_time=start_time,
+            end_time=end_time,
             timezone=input.timezone,
             appointment_type_id=input.appointment_type_id,
             slot_selections=[
@@ -1282,11 +1300,12 @@ class AppointmentTypeMutations:
         source_ip = _client_ip_from_request(info.context.request)
 
         # --- Step 6: build event data ---
+        start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
         event_data = CalendarEventInputData(
             title=input.title,
             description=input.description or "",
-            start_time=input.start_time,
-            end_time=input.end_time,
+            start_time=start_time,
+            end_time=end_time,
             timezone=input.timezone,
             external_attendances=[
                 EventExternalAttendanceInputData(
@@ -1439,12 +1458,13 @@ class AppointmentTypeMutations:
 
         # --- Step 6: build appointment type event data ---
         # appointment_type_id comes from the token — not from client input — to enforce scope.
+        start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
         appointment_type_event_data = AppointmentTypeEventInputData(
             appointment_type_id=token.appointment_type.id,
             title=input.title,
             description=input.description or "",
-            start_time=input.start_time,
-            end_time=input.end_time,
+            start_time=start_time,
+            end_time=end_time,
             timezone=input.timezone,
             slot_selections=[
                 AppointmentTypeSlotSelectionInputData(
@@ -1690,11 +1710,12 @@ class AppointmentTypeMutations:
             if ra.calendar_fk_id
         ]
 
+        start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
         event_data = CalendarEventInputData(
             title=existing_event.title,
             description=existing_event.description or "",
-            start_time=input.start_time,
-            end_time=input.end_time,
+            start_time=start_time,
+            end_time=end_time,
             timezone=input.timezone,
             attendances=preserved_attendances,
             external_attendances=preserved_external_attendances,
@@ -1710,8 +1731,8 @@ class AppointmentTypeMutations:
             deps.calendar_service.initialize_without_provider(organization=org)
             available_windows = deps.calendar_service.get_availability_windows_in_range(
                 existing_event.calendar,
-                input.start_time,
-                input.end_time,
+                start_time,
+                end_time,
             )
             if not available_windows:
                 return CodeEventResult(
@@ -1881,12 +1902,13 @@ class AppointmentTypeMutations:
             )
 
         primary_calendar = bound_event.calendar
+        start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
         if primary_calendar is not None and primary_calendar.manage_available_windows:
             deps.calendar_service.initialize_without_provider(organization=org)
             available_windows = deps.calendar_service.get_availability_windows_in_range(
                 primary_calendar,
-                input.start_time,
-                input.end_time,
+                start_time,
+                end_time,
             )
             if not available_windows:
                 return CodeEventResult(
@@ -1910,8 +1932,8 @@ class AppointmentTypeMutations:
                 deps.appointment_type_service.initialize(organization=org)
                 event = deps.appointment_type_service.reschedule_appointment_type_event(
                     event_id=event_id,
-                    start_time=input.start_time,
-                    end_time=input.end_time,
+                    start_time=start_time,
+                    end_time=end_time,
                     tz=input.timezone,
                 )
                 deps.calendar_permission_service.consume_code(token, source_ip)
