@@ -982,9 +982,10 @@ class CalendarEventService:
                 )
             }
 
+            # The provider knows the calendar and event by their external ids.
             updated_event = write_adapter.update_event(
-                event.calendar.id,
-                event.id,
+                event.calendar.external_id,
+                cast("str", event.external_id),
                 CalendarEventAdapterInputData(
                     calendar_external_id=event.calendar.external_id,
                     title=event_data.title if event_data.title is not None else event.title,
@@ -1024,6 +1025,9 @@ class CalendarEventService:
                         )
                         for r in event_data.resource_allocations
                     ],
+                    # Google replaces the whole event on update, so a rule left out
+                    # here turns the series into a single event at the provider.
+                    recurrence_rule=event_data.recurrence_rule,
                 ),
             )
             original_payload = updated_event.original_payload or {}
