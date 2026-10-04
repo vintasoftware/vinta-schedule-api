@@ -1,0 +1,50 @@
+# Build-context ignore list for Dockerfile.development only. BuildKit reads
+# <Dockerfile>.dockerignore instead of .dockerignore when it exists, so this
+# file replaces .dockerignore for the dev image and leaves the production
+# image's list alone.
+#
+# It matches .dockerignore except for one line: .devcontainer stays in the
+# context, because Dockerfile.development COPYs .devcontainer/setup.sh and
+# .devcontainer/config-files/. Keep the two files in step otherwise.
+
+.db
+node_modules
+npm-debug.log
+.venv
+.git
+.github
+.claude
+.mailpit-data
+ai-plans
+ai-tools
+docs
+infrastructure
+junit
+staticfiles
+mediafiles
+**/__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.env
+.env.docker
+
+# Test support. The production image installs no dev dependencies (`uv sync
+# --no-dev`), and di_core's `container.wire(packages=INTERNAL_INSTALLED_APPS)`
+# imports EVERY module under those packages at startup -- so one shipped test
+# module importing model_bakery crashes web, worker, beat and release alike:
+#
+#   File "/home/user/app/common/tests/test_org_retrievers.py", line 21
+#     from model_bakery import baker
+#   ModuleNotFoundError: No module named 'model_bakery'
+#
+# `factories.py` is test support too, despite living at app level, and every
+# one of them imports model_bakery. The development image gets all of this back
+# through the compose bind mount (`./:/home/user/app/`), and CI runs pytest via
+# `uv run`, not in this image.
+**/tests
+**/testing
+**/factories.py
+**/fixtures.py
+conftest.py
