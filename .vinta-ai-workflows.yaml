@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=./node_modules/vinta-ai-workflows/schemas/vinta-ai-workflows-config.v1.schema.json
 
 schema_version: 1
-vinta_ai_workflows_version: "0.7.0-alpha25"
-last_synced_at: "2026-10-03T00:00:00Z"
+vinta_ai_workflows_version: "0.7.0-alpha26"
+last_synced_at: "2026-10-04T00:00:00Z"
 
 project:
   name: vinta_schedule_api
@@ -21,6 +21,11 @@ commands:
   test_unit: "docker compose run --rm api uv run pytest -n auto"
   test_unit_scoped: "docker compose run --rm api uv run pytest <app>/tests/ -n auto"
   test_unit_new_pattern: "docker compose run --rm api uv run pytest <new-test-path> -vs"
+  # Deterministic worktree provisioning (generated from the vinta-ai-workflows
+  # templates). implement-plan runs these instead of the prepare-worktree skill,
+  # which stays enabled as the fallback when the command fails.
+  worktree_prepare: "scripts/worktree/prepare.sh"
+  worktree_teardown: "scripts/worktree/teardown.sh"
 
 policies:
   pr_creation: agents-create
@@ -79,6 +84,29 @@ agent_models:
   worktree_prep: 1
   integrate: 1
 
+# Project defaults every maestro plan inherits; a plan's .workflow.json only
+# states what differs. Gate types fall back to `commands.*` (lint -> lint,
+# typecheck -> build, test -> test_unit); typecheck is overridden here so maestro
+# also runs mypy, which the outer gate requires. implement-plan keeps running
+# `commands.*`.
+maestro:
+  defaults:
+    gates: [lint, typecheck, test]
+    chores: [deslop, review-canvas]
+  gates:
+    typecheck:
+      cmd: "docker compose run --rm api sh -c 'uv run mypy . && uv run python manage.py check --deploy'"
+  chores:
+    deslop:
+      skill: deslop-comments
+      prompt: "Rewrite the comments and doc blocks this phase wrote into Simple English, and delete the ones that should not be there. Comment-only: no renames, no logic changes."
+      description: "The comment-hygiene pass, on the diff that is about to merge."
+    review-canvas:
+      skill: pr-review-canvas
+      when: after_pr
+      prompt: "Generate the review canvas for this phase's pull request: run `/pr-review-canvas` with the PR number named above. Report the local review URL and the PR comment link it returns. Do not change any file in the repository."
+      description: "A topic-grouped review canvas on each phase PR, for the human reviewer."
+
 stacks:
   - django
 
@@ -116,7 +144,7 @@ skills:
     output_dir: .vinta-ai-workflows/client-handoffs
   prepare-worktree:
     worktree_root: .claude/worktrees
-    deps_strategy: symlink
+    deps_strategy: reinstall
     compose_network: per-worktree
     test_db_strategy: fork-on-schema-change
     summary_dir: .vinta-ai-workflows/worktrees
