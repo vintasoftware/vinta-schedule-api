@@ -1,0 +1,627 @@
+{
+  "$schema": "https://github.com/vintasoftware/vinta-ai-workflows/schemas/workflow.v1.schema.json",
+  "schema_version": 1,
+  "id": "2026-10-04-resource-calendar-provider-sync",
+  "plan_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md",
+  "plan_context_refs": [
+    "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#1-goals",
+    "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#2-guiding-decisions"
+  ],
+  "base_branch": "feature/resource-calendar-provider-sync",
+  "project": {
+    "migrate_cmd": "docker compose run --rm api uv run python manage.py migrate",
+    "databases": {
+      "dev": {
+        "engine": "postgres",
+        "delivery": "external",
+        "name": "vinta_schedule_api",
+        "server_url": "postgres://localhost:5432",
+        "connection_url_var": "DATABASE_URL"
+      }
+    }
+  },
+  "crew": {
+    "tier4": {
+      "role": "implementer",
+      "tier": 4,
+      "model": "claude-fable-5-1",
+      "description": "Push retry protocol, provider-wins resync, booking-resolution apply engine."
+    },
+    "tier3-1": {
+      "role": "implementer",
+      "tier": 3,
+      "model": "claude-opus-5-5",
+      "description": "Schema and contracts, Google adapter, busy check, then the create/edit/delete surface chain."
+    },
+    "tier3-2": {
+      "role": "implementer",
+      "tier": 3,
+      "model": "claude-opus-5-5",
+      "description": "The Microsoft track: admin consent, app-only Places writes, room event delta sync and webhooks; plus the spike."
+    },
+    "tier2": {
+      "role": "implementer",
+      "tier": 2,
+      "model": "claude-sonnet-5-5",
+      "description": "Flag module, notifications, admin, DI wiring, flagged-bookings surface, flag removal."
+    },
+    "reviewer-1": {
+      "role": "reviewer",
+      "tier": 3,
+      "model": "claude-opus-5-5",
+      "description": "Reviews the Tier 2 and Tier 3 phases."
+    },
+    "reviewer-2": {
+      "role": "reviewer",
+      "tier": 4,
+      "model": "claude-fable-5-1",
+      "description": "Reviews the Tier 4 phases and the Tier 4 review overrides (Phases 2, 5, 9)."
+    }
+  },
+  "defaults": {
+    "harness": "claude-code",
+    "model": "claude-opus-5-5",
+    "pipeline": "standard-phase"
+  },
+  "resources": {
+    "lane": {
+      "capacity": 4,
+      "kind": "worktree",
+      "description": "One desk per implementer, kept for the whole run."
+    },
+    "test-suite": {
+      "capacity": 1,
+      "kind": "semaphore",
+      "description": "The full pytest -n auto suite saturates every core; two at once slow both."
+    }
+  },
+  "gates": {
+    "test": {
+      "cmd": "docker compose run --rm api uv run pytest -n auto",
+      "requires": [
+        "test-suite"
+      ],
+      "timeout_s": 1800,
+      "description": "The full suite, one at a time across lanes."
+    }
+  },
+  "nodes": [
+    {
+      "id": "p0",
+      "name": "Provider capability spike script and findings doc",
+      "depends_on": [],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-0",
+      "touches": [
+        "scripts/spikes/resource_directory_spike.py",
+        "scripts/spikes/tests/test_resource_directory_spike.py",
+        "docs/integrations/resource-directory-spike.md"
+      ],
+      "crew": "tier3-2"
+    },
+    {
+      "id": "p1",
+      "name": "Per-organization feature flag module",
+      "depends_on": [],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-1",
+      "touches": [
+        "organizations/models.py",
+        "organizations/migrations/",
+        "organizations/admin.py",
+        "common/feature_flags.py",
+        "common/tests/test_feature_flags.py",
+        "organizations/tests/test_feature_flag_admin.py"
+      ],
+      "crew": "tier2"
+    },
+    {
+      "id": "p2",
+      "name": "Room provider sync schema and adapter contracts",
+      "depends_on": [],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-2",
+      "touches": [
+        "calendar_integration/constants.py",
+        "calendar_integration/models.py",
+        "calendar_integration/querysets.py",
+        "calendar_integration/managers.py",
+        "calendar_integration/migrations/",
+        "calendar_integration/services/dataclasses.py",
+        "calendar_integration/services/protocols/resource_directory_adapter.py",
+        "calendar_integration/exceptions.py",
+        "calendar_integration/signals.py",
+        "calendar_integration/factories.py",
+        "calendar_integration/tests/models/test_room_provider_sync_models.py"
+      ],
+      "crew": "tier3-1"
+    },
+    {
+      "id": "p3",
+      "name": "Room sync admin email notifications",
+      "depends_on": [],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-3",
+      "touches": [
+        "calendar_integration/services/room_sync_notifier.py",
+        "calendar_integration/notification_contexts.py",
+        "templates/calendar_integration/emails/",
+        "di_core/containers.py",
+        "calendar_integration/tests/services/test_room_sync_notifier.py"
+      ],
+      "crew": "tier2"
+    },
+    {
+      "id": "p4",
+      "name": "Google directory write access and adapter",
+      "depends_on": [
+        {
+          "node": "p1",
+          "artifact": "`is_enabled` / `RESOURCE_CALENDAR_PROVIDER_SYNC`, which gates the verify endpoint"
+        },
+        {
+          "node": "p2",
+          "artifact": "`GoogleCalendarServiceAccount.write_enabled` / `write_verified_at`, the `ResourceDirectoryAdapter` protocol, `RoomDirectoryData` / `RoomWriteData` / `ResourceLocationData`, and the `ResourceDirectoryError` family"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-4",
+      "touches": [
+        "calendar_integration/services/calendar_adapters/google_calendar_adapter.py",
+        "calendar_integration/services/google_write_access_service.py",
+        "calendar_integration/google_write_access_views.py",
+        "calendar_integration/routes.py",
+        "di_core/containers.py",
+        "calendar_integration/tests/services/calendar_adapters/test_google_calendar_adapter.py",
+        "calendar_integration/tests/services/test_google_write_access_service.py",
+        "calendar_integration/tests/test_google_write_access_views.py"
+      ],
+      "crew": "tier3-1"
+    },
+    {
+      "id": "p5",
+      "name": "Microsoft organization connection via admin consent",
+      "depends_on": [
+        {
+          "node": "p1",
+          "artifact": "`is_enabled` / `RESOURCE_CALENDAR_PROVIDER_SYNC`, which gates the consent endpoints"
+        },
+        {
+          "node": "p2",
+          "artifact": "the `MicrosoftOrganizationConnection` model"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-5",
+      "touches": [
+        "vinta_schedule_api/settings/base.py",
+        ".env.example",
+        ".env.docker.example",
+        "infrastructure/modules/app-platform/ecs.tf",
+        "infrastructure/modules/app-platform/secrets.tf",
+        "CLAUDE.md",
+        "calendar_integration/services/calendar_clients/ms_app_only_token.py",
+        "calendar_integration/services/microsoft_connection_service.py",
+        "calendar_integration/microsoft_connection_views.py",
+        "calendar_integration/routes.py",
+        "di_core/containers.py",
+        "docs/integrations/microsoft-room-sync-setup.md",
+        "calendar_integration/tests/services/calendar_clients/test_ms_app_only_token.py",
+        "calendar_integration/tests/services/test_microsoft_connection_service.py",
+        "calendar_integration/tests/test_microsoft_connection_views.py"
+      ],
+      "crew": "tier3-2"
+    },
+    {
+      "id": "p6",
+      "name": "Microsoft Places write and location adapter",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "the `ResourceDirectoryAdapter` protocol, the room/location dataclasses and the `ResourceDirectoryError` family"
+        },
+        {
+          "node": "p5",
+          "artifact": "`MicrosoftAppOnlyTokenProvider` and `MicrosoftOrganizationConnection.tenant_id`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-6",
+      "touches": [
+        "calendar_integration/services/calendar_clients/ms_outlook_calendar_api_client.py",
+        "calendar_integration/services/calendar_adapters/ms_outlook_calendar_adapter.py",
+        "calendar_integration/tests/services/calendar_clients/test_ms_outlook_calendar_api_client.py",
+        "calendar_integration/tests/services/calendar_adapters/test_ms_outlook_calendar_adapter.py"
+      ],
+      "crew": "tier3-2"
+    },
+    {
+      "id": "p7",
+      "name": "Background push engine and sync-failure handling",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "the `ResourceCalendarProviderLink` model, its helpers and queryset locks, `ResourceSyncStatus` / `ResourceSyncOperation`, the `ResourceDirectoryAdapterResolver` protocol, the `ResourceDirectoryError` family, and the `resource_room_synced` / `resource_room_archived` signals"
+        },
+        {
+          "node": "p3",
+          "artifact": "`RoomSyncNotifier.notify_sync_failed`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-7",
+      "touches": [
+        "calendar_integration/services/room_sync_service.py",
+        "calendar_integration/tasks/room_sync_tasks.py",
+        "calendar_integration/tasks/__init__.py",
+        "di_core/containers.py",
+        "calendar_integration/tests/services/test_room_sync_service.py",
+        "calendar_integration/tests/tasks/test_room_sync_tasks.py",
+        "calendar_integration/tests/tasks/test_task_signatures.py"
+      ],
+      "crew": "tier4"
+    },
+    {
+      "id": "p8",
+      "name": "Wire provider adapters into the room sync resolver",
+      "depends_on": [
+        {
+          "node": "p4",
+          "artifact": "Google `from_service_account(write=True)` and its `ResourceDirectoryAdapter` methods"
+        },
+        {
+          "node": "p6",
+          "artifact": "Microsoft `from_app_only(connection)` and its `ResourceDirectoryAdapter` methods"
+        },
+        {
+          "node": "p7",
+          "artifact": "the `resource_directory_adapter_resolver` DI provider name `RoomSyncService` consumes, and the `resource_room_synced(created=True)` send this receiver reacts to"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-8",
+      "touches": [
+        "calendar_integration/services/room_sync_adapter_resolver.py",
+        "calendar_integration/receivers/__init__.py",
+        "calendar_integration/receivers/room_sync_receivers.py",
+        "calendar_integration/apps.py",
+        "di_core/containers.py",
+        "calendar_integration/tests/services/test_room_sync_adapter_resolver.py"
+      ],
+      "crew": "tier2"
+    },
+    {
+      "id": "p9",
+      "name": "Hourly location and room resync",
+      "depends_on": [
+        {
+          "node": "p1",
+          "artifact": "`organization_ids_with_flag`"
+        },
+        {
+          "node": "p2",
+          "artifact": "`ResourceLocation`, `ResourceCalendarProviderLink.fields_changed_by_provider` / `locked_for_update(skip_locked=True)`, the `ResourceDirectoryAdapterResolver` protocol, and the `resource_room_synced` / `resource_room_archived` signals"
+        },
+        {
+          "node": "p3",
+          "artifact": "`RoomSyncNotifier.notify_edit_discarded` / `notify_bookings_flagged`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-9",
+      "touches": [
+        "calendar_integration/services/room_resync_service.py",
+        "calendar_integration/tasks/room_resync_tasks.py",
+        "calendar_integration/tasks/__init__.py",
+        "vinta_schedule_api/celerybeat_schedule.py",
+        "di_core/containers.py",
+        "calendar_integration/tests/services/test_room_resync_service.py",
+        "calendar_integration/tests/tasks/test_room_resync_tasks.py"
+      ],
+      "crew": "tier4"
+    },
+    {
+      "id": "p10",
+      "name": "Create synced room and list locations",
+      "depends_on": [
+        {
+          "node": "p1",
+          "artifact": "`is_enabled`, which gates the `provider` input and the locations query"
+        },
+        {
+          "node": "p2",
+          "artifact": "`ResourceLocation`, `ResourceCalendarProviderLink`, `ResourceCalendarCreateRequest`"
+        },
+        {
+          "node": "p7",
+          "artifact": "`RoomSyncService.request_push(link, CREATE)`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-10",
+      "touches": [
+        "calendar_integration/services/calendar_service.py",
+        "calendar_integration/tasks/room_create_request_tasks.py",
+        "calendar_integration/tasks/__init__.py",
+        "vinta_schedule_api/celerybeat_schedule.py",
+        "calendar_integration/graphql.py",
+        "public_api/queries.py",
+        "public_api/mutations.py",
+        "public_api/constants.py",
+        "public_api/permissions.py",
+        "calendar_integration/serializers.py",
+        "calendar_integration/views.py",
+        "calendar_integration/tests/services/test_create_synced_room.py",
+        "calendar_integration/tests/tasks/test_room_create_request_tasks.py",
+        "public_api/tests/test_synced_room_create_mutations.py",
+        "calendar_integration/tests/test_synced_room_create_rest.py"
+      ],
+      "crew": "tier3-1"
+    },
+    {
+      "id": "p11",
+      "name": "Edit synced room and retry sync",
+      "depends_on": [
+        {
+          "node": "p7",
+          "artifact": "`RoomSyncService.request_push(link, UPDATE)` and `RoomSyncService.retry`"
+        },
+        {
+          "node": "p10",
+          "artifact": "the `CalendarGraphQLType.provider_sync` / `ResourceLocationGraphQLType` types the edit result returns, and the synced-room branches already added to `public_api/mutations.py`, `serializers.py` and `views.py`, which this phase extends"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-11",
+      "touches": [
+        "calendar_integration/services/calendar_service.py",
+        "public_api/mutations.py",
+        "public_api/constants.py",
+        "public_api/permissions.py",
+        "calendar_integration/serializers.py",
+        "calendar_integration/views.py",
+        "calendar_integration/tests/services/test_edit_synced_room.py",
+        "public_api/tests/test_synced_room_edit_mutations.py",
+        "calendar_integration/tests/test_synced_room_edit_rest.py"
+      ],
+      "crew": "tier3-1"
+    },
+    {
+      "id": "p12a",
+      "name": "Room bookability, busy check and deletion preview",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "`ResourceCalendarProviderLink.is_bookable`, the `ResourceDirectoryAdapterResolver.get_free_busy` contract, and `BusyWindow`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-12a",
+      "touches": [
+        "calendar_integration/services/booking_resolution_service.py",
+        "calendar_integration/services/calendar_event_service.py",
+        "di_core/containers.py",
+        "calendar_integration/tests/services/test_booking_resolution_preview.py",
+        "calendar_integration/tests/services/test_room_bookability_guard.py"
+      ],
+      "crew": "tier3-1"
+    },
+    {
+      "id": "p12b",
+      "name": "Booking resolution apply engine",
+      "depends_on": [
+        {
+          "node": "p12a",
+          "artifact": "`BookingResolutionPlan` from `BookingResolutionService.validate`, and the module this phase extends"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-12b",
+      "touches": [
+        "calendar_integration/services/calendar_event_service.py",
+        "calendar_integration/services/calendar_service.py",
+        "calendar_integration/services/booking_resolution_service.py",
+        "calendar_integration/tests/services/test_booking_resolution_apply.py"
+      ],
+      "crew": "tier4"
+    },
+    {
+      "id": "p12c",
+      "name": "Delete synced room",
+      "depends_on": [
+        {
+          "node": "p7",
+          "artifact": "`RoomSyncService.request_push(link, DELETE)` and the never-pushed-create → `ARCHIVED` path"
+        },
+        {
+          "node": "p12b",
+          "artifact": "`BookingResolutionService.apply` and `ApplyResult`"
+        },
+        {
+          "node": "p11",
+          "artifact": "the synced-room action set on `CalendarViewSet` and the `public_api/mutations.py` / `permissions.py` / `constants.py` blocks this phase extends; serialized to avoid colliding edits"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-12c",
+      "touches": [
+        "calendar_integration/services/calendar_service.py",
+        "public_api/queries.py",
+        "public_api/mutations.py",
+        "public_api/constants.py",
+        "public_api/permissions.py",
+        "calendar_integration/serializers.py",
+        "calendar_integration/views.py",
+        "calendar_integration/tests/services/test_delete_synced_room.py",
+        "public_api/tests/test_synced_room_delete_mutations.py",
+        "calendar_integration/tests/test_synced_room_delete_rest.py"
+      ],
+      "crew": "tier3-1"
+    },
+    {
+      "id": "p13",
+      "name": "Resolve bookings flagged by provider-side deletion",
+      "depends_on": [
+        {
+          "node": "p9",
+          "artifact": "`flagged_bookings_at`, set by the resync on provider-deleted rooms"
+        },
+        {
+          "node": "p12b",
+          "artifact": "`BookingResolutionService.validate` / `apply`"
+        },
+        {
+          "node": "p12c",
+          "artifact": "the resolution GraphQL input types and REST serializers this phase reuses, and the delete surface it sits beside in `public_api/mutations.py` / `views.py`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-13",
+      "touches": [
+        "calendar_integration/services/calendar_service.py",
+        "public_api/queries.py",
+        "public_api/mutations.py",
+        "public_api/constants.py",
+        "public_api/permissions.py",
+        "calendar_integration/views.py",
+        "calendar_integration/tests/services/test_resolve_flagged_bookings.py",
+        "public_api/tests/test_flagged_bookings_mutations.py"
+      ],
+      "crew": "tier2"
+    },
+    {
+      "id": "p14a",
+      "name": "Microsoft app-only room event delta sync",
+      "depends_on": [
+        {
+          "node": "p1",
+          "artifact": "`is_enabled`, to limit sync to flag-on orgs"
+        },
+        {
+          "node": "p6",
+          "artifact": "the app-only `MSOutlookCalendarAPIClient` constructor, `MSOutlookCalendarAdapter.from_app_only`, and 429 handling"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-14a",
+      "touches": [
+        "calendar_integration/services/calendar_clients/ms_outlook_calendar_api_client.py",
+        "calendar_integration/services/calendar_adapters/ms_outlook_calendar_adapter.py",
+        "calendar_integration/services/calendar_sync_service.py",
+        "calendar_integration/tasks/room_event_sync_tasks.py",
+        "calendar_integration/tasks/__init__.py",
+        "calendar_integration/tests/services/calendar_clients/test_ms_outlook_calendar_api_client.py",
+        "calendar_integration/tests/services/test_ms_room_event_sync.py",
+        "calendar_integration/tests/tasks/test_room_event_sync_tasks.py"
+      ],
+      "crew": "tier3-2"
+    },
+    {
+      "id": "p14b",
+      "name": "Microsoft room event webhooks and renewal",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "the `resource_room_synced` / `resource_room_archived` signals that drive subscribe and unsubscribe; Phases 7 and 9 send them, and the tests send them directly"
+        },
+        {
+          "node": "p14a",
+          "artifact": "`sync_microsoft_room_events_task`, which a notification enqueues"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-14b",
+      "touches": [
+        "calendar_integration/services/calendar_clients/ms_outlook_calendar_api_client.py",
+        "calendar_integration/services/calendar_webhook_service.py",
+        "calendar_integration/webhook_views.py",
+        "calendar_integration/receivers/ms_room_subscription_receivers.py",
+        "calendar_integration/apps.py",
+        "vinta_schedule_api/celerybeat_schedule.py",
+        "calendar_integration/tasks/room_event_sync_tasks.py",
+        "calendar_integration/tests/services/test_ms_room_webhooks.py",
+        "calendar_integration/tests/test_ms_room_webhook_views.py"
+      ],
+      "crew": "tier3-2"
+    },
+    {
+      "id": "p15",
+      "name": "Django admin for room sync operations",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "the models being registered"
+        },
+        {
+          "node": "p5",
+          "artifact": "`MicrosoftConnectionService.verify` for the verify admin action"
+        },
+        {
+          "node": "p7",
+          "artifact": "`RoomSyncService.retry` for the retry admin action"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-15",
+      "touches": [
+        "calendar_integration/admin.py",
+        "calendar_integration/tests/test_room_sync_admin.py"
+      ],
+      "crew": "tier2"
+    },
+    {
+      "id": "p16",
+      "name": "Remove the resource_calendar_provider_sync feature flag",
+      "depends_on": [
+        {
+          "node": "p4",
+          "artifact": "the verify-endpoint gate"
+        },
+        {
+          "node": "p5",
+          "artifact": "the consent-endpoint gates"
+        },
+        {
+          "node": "p8",
+          "artifact": "the `is_write_enabled` / receiver flag checks"
+        },
+        {
+          "node": "p7",
+          "artifact": "the in-task flag re-check"
+        },
+        {
+          "node": "p9",
+          "artifact": "the flag-filtered fan-out"
+        },
+        {
+          "node": "p10",
+          "artifact": "the `provider`-input and locations gates"
+        },
+        {
+          "node": "p11",
+          "artifact": "the synced-edit and generic-REST gates"
+        },
+        {
+          "node": "p12a",
+          "artifact": "the link-presence assumption in the bookability guard"
+        },
+        {
+          "node": "p12c",
+          "artifact": "the delete-surface gates"
+        },
+        {
+          "node": "p13",
+          "artifact": "the flagged-resolution gate"
+        },
+        {
+          "node": "p14a",
+          "artifact": "the flag-on org filter for room event sync"
+        },
+        {
+          "node": "p14b",
+          "artifact": "the subscription and renewal gates"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_IMPLEMENTATION_PLAN.md#phase-16",
+      "touches": [
+        "common/feature_flags.py",
+        "organizations/migrations/",
+        "calendar_integration/google_write_access_views.py",
+        "calendar_integration/microsoft_connection_views.py",
+        "calendar_integration/services/room_sync_adapter_resolver.py",
+        "calendar_integration/receivers/room_sync_receivers.py",
+        "calendar_integration/services/room_sync_service.py",
+        "calendar_integration/tasks/room_resync_tasks.py",
+        "calendar_integration/services/calendar_service.py",
+        "calendar_integration/views.py",
+        "public_api/mutations.py",
+        "public_api/queries.py",
+        "calendar_integration/tasks/room_event_sync_tasks.py",
+        "calendar_integration/services/calendar_webhook_service.py",
+        "calendar_integration/receivers/ms_room_subscription_receivers.py"
+      ],
+      "crew": "tier2"
+    }
+  ]
+}
