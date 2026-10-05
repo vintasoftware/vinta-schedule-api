@@ -218,6 +218,14 @@ class BookingCancelMode(TextChoices):
     CANCEL_EVENT = "cancel_event", "Cancel the whole event"
 
 
+class BookingRoomChange(TextChoices):
+    """What happened to a booking's room when a room was deleted. Sent to the organizer."""
+
+    MOVED = "moved", "Moved to another room"
+    ROOM_REMOVED = "room_removed", "Room removed from the booking"
+    EVENT_CANCELLED = "event_cancelled", "Booking cancelled"
+
+
 class BookingRejectionReason(TextChoices):
     """Why a booking's resolution was rejected. The label is the message shown to callers."""
 

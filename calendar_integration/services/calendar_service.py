@@ -2346,8 +2346,13 @@ class CalendarService(BaseCalendarService):
         modified_end_time_offset: datetime.timedelta | None = None,
         is_bulk_cancelled: bool = False,
         modification_rrule_string: str | None = None,
+        resource_allocations_override: list[ResourceAllocationInputData] | None = None,
     ) -> CalendarEvent | None:
-        """Create a bulk modification for a recurring event from the specified date onwards."""
+        """Create a bulk modification for a recurring event from the specified date onwards.
+
+        See ``CalendarEventService.create_recurring_event_bulk_modification``, including
+        ``resource_allocations_override``.
+        """
         return self._get_event_service().create_recurring_event_bulk_modification(
             parent_event=parent_event,
             modification_start_date=modification_start_date,
@@ -2357,6 +2362,7 @@ class CalendarService(BaseCalendarService):
             modified_end_time_offset=modified_end_time_offset,
             is_bulk_cancelled=is_bulk_cancelled,
             modification_rrule_string=modification_rrule_string,
+            resource_allocations_override=resource_allocations_override,
         )
 
     def create_recurring_blocked_time_bulk_modification(
@@ -2408,8 +2414,13 @@ class CalendarService(BaseCalendarService):
         modified_start_time_offset: datetime.timedelta | None = None,
         modified_end_time_offset: datetime.timedelta | None = None,
         modification_rrule_string: str | None = None,
+        resource_allocations_override: list[ResourceAllocationInputData] | None = None,
     ) -> CalendarEvent | None:
-        """Modify recurring event series from the given date onwards."""
+        """Modify recurring event series from the given date onwards.
+
+        See ``CalendarEventService.create_recurring_event_bulk_modification`` for
+        ``resource_allocations_override``.
+        """
         return self._get_event_service().modify_recurring_event_from_date(
             parent_event=parent_event,
             modification_start_date=modification_start_date,
@@ -2418,6 +2429,7 @@ class CalendarService(BaseCalendarService):
             modified_start_time_offset=modified_start_time_offset,
             modified_end_time_offset=modified_end_time_offset,
             modification_rrule_string=modification_rrule_string,
+            resource_allocations_override=resource_allocations_override,
         )
 
     def cancel_recurring_event_from_date(

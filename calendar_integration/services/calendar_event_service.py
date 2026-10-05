@@ -2631,8 +2631,16 @@ class CalendarEventService:
         modified_end_time_offset: datetime.timedelta | None = None,
         is_bulk_cancelled: bool = False,
         modification_rrule_string: str | None = None,
+        resource_allocations_override: list[ResourceAllocationInputData] | None = None,
     ) -> CalendarEvent | None:
-        """Create a bulk modification for a recurring event from the specified date onwards."""
+        """Create a bulk modification for a recurring event from the specified date onwards.
+
+        The continuation books the parent's rooms, unless ``resource_allocations_override``
+        is given: then it books exactly those rooms. The truncated parent keeps its rooms
+        either way, so occurrences before ``modification_start_date`` are unchanged. A
+        room in the override that the parent did not book is a new booking, so the room
+        bookability guard checks it.
+        """
 
         def truncate_parent(
             parent_obj: RecurringMixin,
@@ -2699,7 +2707,13 @@ class CalendarEventService:
                 if modification_data.get("end_time_offset")
                 else new_start + duration
             )
-            room_ids = [r.calendar_fk_id for r in parent.resource_allocations.all()]
+            parent_room_ids = [r.calendar_fk_id for r in parent.resource_allocations.all()]
+            room_ids = (
+                parent_room_ids
+                if resource_allocations_override is None
+                else [r.resource_id for r in resource_allocations_override]
+            )
+            carried_over_room_ids = [room_id for room_id in room_ids if room_id in parent_room_ids]
 
             return self.create_event(
                 calendar_id=parent.calendar.id,
@@ -2731,7 +2745,7 @@ class CalendarEventService:
                     ],
                 ),
                 # The continuation keeps the series' rooms; it does not book them anew.
-                _carried_over_room_ids=room_ids,  # type: ignore[arg-type]
+                _carried_over_room_ids=carried_over_room_ids,  # type: ignore[arg-type]
             )
 
         def record_bulk(
@@ -2778,8 +2792,12 @@ class CalendarEventService:
         modified_start_time_offset: datetime.timedelta | None = None,
         modified_end_time_offset: datetime.timedelta | None = None,
         modification_rrule_string: str | None = None,
+        resource_allocations_override: list[ResourceAllocationInputData] | None = None,
     ) -> CalendarEvent | None:
-        """Modify recurring event series from the given date onwards."""
+        """Modify recurring event series from the given date onwards.
+
+        ``resource_allocations_override``: see ``create_recurring_event_bulk_modification``.
+        """
         continuation = self.create_recurring_event_bulk_modification(
             parent_event=parent_event,
             modification_start_date=modification_start_date,
@@ -2789,6 +2807,7 @@ class CalendarEventService:
             modified_end_time_offset=modified_end_time_offset,
             is_bulk_cancelled=False,
             modification_rrule_string=modification_rrule_string,
+            resource_allocations_override=resource_allocations_override,
         )
 
         return continuation

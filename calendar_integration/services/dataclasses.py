@@ -819,6 +819,22 @@ class BookingResolutionPlan:
 
 
 @dataclass(frozen=True)
+class ApplyResult:
+    """What ``BookingResolutionService.apply`` did with a plan, by event id, in plan order.
+
+    ``applied`` holds the bookings that are resolved: changed by this run, or already
+    no longer referencing the room (a re-run). ``pending`` holds the bookings left
+    untouched because the apply stopped, starting with ``failed_at``, the booking
+    whose step failed. ``failed_at`` is ``None`` and ``pending`` is empty when every
+    booking was applied.
+    """
+
+    applied: tuple[int, ...]
+    pending: tuple[int, ...]
+    failed_at: int | None
+
+
+@dataclass(frozen=True)
 class RejectedBooking:
     """A booking whose resolution is invalid. ``reason.label`` is the message to show."""
 

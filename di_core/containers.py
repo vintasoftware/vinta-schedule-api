@@ -309,6 +309,11 @@ class AppContainer(containers.DeclarativeContainer):
         # declares the ``resource_directory_adapter_resolver`` provider and Phase 8
         # binds it. Point this argument at that provider then.
         resource_directory_adapter_resolver=providers.Dependency(),
+        # Left undefined too: the organizer emails go through
+        # ``RoomSyncNotifier.notify_booking_room_changed`` (Phase 3 of the same plan),
+        # which is not on this branch. Point this argument at its provider when the
+        # two meet.
+        booking_room_change_notifier=providers.Dependency(),
     )
 
     bookable_slots_service = providers.Factory(

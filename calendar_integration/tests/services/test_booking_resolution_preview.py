@@ -7,6 +7,7 @@ stop from changing on an edit.
 
 import datetime
 from collections.abc import Collection
+from unittest.mock import MagicMock
 
 from django.utils import timezone
 
@@ -51,6 +52,9 @@ from calendar_integration.services.dataclasses import (
     RoomBooking,
     RoomDirectoryData,
     RoomWriteData,
+)
+from calendar_integration.services.protocols.booking_room_change_notifier import (
+    BookingRoomChangeNotifier,
 )
 from calendar_integration.services.protocols.resource_directory_adapter import (
     ResourceDirectoryAdapter,
@@ -137,7 +141,10 @@ def directory() -> FakeRoomDirectory:
 
 @pytest.fixture
 def service(directory: FakeRoomDirectory) -> BookingResolutionService:
-    return BookingResolutionService(resource_directory_adapter_resolver=FakeResolver(directory))
+    return BookingResolutionService(
+        resource_directory_adapter_resolver=FakeResolver(directory),
+        booking_room_change_notifier=MagicMock(spec=BookingRoomChangeNotifier),
+    )
 
 
 @pytest.fixture
@@ -616,7 +623,8 @@ class TestValidate:
         service = BookingResolutionService(
             resource_directory_adapter_resolver=FakeResolver(
                 FakeRoomDirectory(), write_enabled=False
-            )
+            ),
+            booking_room_change_notifier=MagicMock(spec=BookingRoomChangeNotifier),
         )
         preview = service.preview(room_a)
 

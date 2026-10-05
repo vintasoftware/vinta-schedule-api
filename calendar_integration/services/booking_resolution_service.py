@@ -1,4 +1,4 @@
-"""Preview and validate how a room's future bookings are resolved before the room is deleted.
+"""Preview, validate and apply how a room's future bookings are resolved before the room is deleted.
 
 Every query names the room's own organization (``filter_by_organization``), so the
 service gives the same answer from a request, a Celery task or a management command,
@@ -7,31 +7,56 @@ whether or not an organization is bound.
 
 import datetime
 import hashlib
+import logging
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING
 
+from django.db import transaction
 from django.utils import timezone
 
 from calendar_integration.constants import (
+    BookingCancelMode,
     BookingRejectionReason,
+    BookingRoomChange,
     CalendarType,
     CalendarVisibility,
 )
-from calendar_integration.exceptions import StaleBookingPreviewError
-from calendar_integration.models import Calendar, CalendarEvent, ResourceCalendarProviderLink
+from calendar_integration.exceptions import BookingOnRoomCalendarError, StaleBookingPreviewError
+from calendar_integration.models import (
+    Calendar,
+    CalendarEvent,
+    CalendarOwnership,
+    ResourceCalendarProviderLink,
+)
 from calendar_integration.services.dataclasses import (
+    AbortDeletion,
+    ApplyResult,
     BookingResolution,
     BookingResolutionPlan,
     BusyWindow,
+    CalendarEventInputData,
+    CancelBooking,
     MoveBooking,
     RejectedBooking,
     ResolvedBooking,
+    ResourceAllocationInputData,
     RoomBooking,
     RoomBookingPreview,
+)
+from calendar_integration.services.protocols.booking_room_change_notifier import (
+    BookingRoomChangeNotifier,
 )
 from calendar_integration.services.protocols.resource_directory_adapter import (
     ResourceDirectoryAdapterResolver,
 )
+
+
+if TYPE_CHECKING:
+    from calendar_integration.services.calendar_service import CalendarService
+
+
+logger = logging.getLogger(__name__)
 
 
 # How far ahead a recurring series is searched for its next occurrence. Matches
@@ -51,14 +76,15 @@ def _overlaps(window: BusyWindow, start: datetime.datetime, end: datetime.dateti
 
 
 class BookingResolutionService:
-    """Lists a room's future bookings and validates the plan for resolving them.
+    """Lists a room's future bookings, validates the plan for resolving them, and applies it."""
 
-    The apply half (moving and cancelling bookings) builds on the plan returned by
-    :meth:`validate`.
-    """
-
-    def __init__(self, resource_directory_adapter_resolver: ResourceDirectoryAdapterResolver):
+    def __init__(
+        self,
+        resource_directory_adapter_resolver: ResourceDirectoryAdapterResolver,
+        booking_room_change_notifier: BookingRoomChangeNotifier,
+    ):
         self.resource_directory_adapter_resolver = resource_directory_adapter_resolver
+        self.booking_room_change_notifier = booking_room_change_notifier
 
     def preview(self, room: Calendar) -> RoomBookingPreview:
         """The room's future bookings, and a fingerprint of them.
@@ -230,6 +256,173 @@ class BookingResolutionService:
             return rejected
         return BookingResolutionPlan(
             room_id=room.id, fingerprint=preview.fingerprint, bookings=tuple(resolved)
+        )
+
+    def apply(
+        self, plan: BookingResolutionPlan, calendar_service: "CalendarService"
+    ) -> ApplyResult:
+        """Apply a validated plan, one booking at a time, in plan order.
+
+        ``calendar_service`` makes the event edits, so they go through the same
+        permission checks, provider writes, room bookability guard and audit trail as
+        any other edit. The caller initializes it for the room's organization with
+        the actor the room deletion acts as.
+
+        Each booking is applied in its own transaction, because each step calls the
+        provider and a provider call cannot be rolled back:
+
+        - move: the room is swapped for the target in the event's rooms. A series that
+          started before now is split at ``series_from`` with
+          ``modify_recurring_event_from_date``, so the occurrences before it keep the
+          room and the continuation books the target;
+        - cancel, remove the room: the same, with the room dropped instead;
+        - cancel the event: ``delete_event`` (a whole series is deleted), or
+          ``cancel_recurring_event_from_date`` for a series that started before now.
+
+        The organizer (the default owner of the event's calendar) is notified of each
+        change. A cancelled event is notified before it is deleted, since the notifier
+        reads it; the email itself goes out only when the step commits.
+
+        A booking that no longer books the room is skipped and counted as applied, so
+        running a plan again after a partial apply finishes the rest. The apply stops at
+        the first booking that fails: that booking and every one after it are returned
+        as pending, and nothing about them changed.
+
+        Raises ``ValueError`` when the plan cancels the deletion for any booking, or
+        when ``calendar_service`` is bound to another organization. Nothing changes.
+        """
+        if any(isinstance(entry.resolution, AbortDeletion) for entry in plan.bookings):
+            raise ValueError("A plan that cancels the room deletion cannot be applied.")
+        organization = calendar_service.organization
+        room = (
+            Calendar.objects.filter_by_organization(organization.id).filter(id=plan.room_id).first()
+            if organization is not None
+            else None
+        )
+        if room is None:
+            raise ValueError("The calendar service is not bound to the room's organization.")
+
+        applied: list[int] = []
+        for index, entry in enumerate(plan.bookings):
+            event_id = entry.booking.event_id
+            try:
+                with transaction.atomic():
+                    self._apply_booking(room, entry, calendar_service)
+            except Exception:  # noqa: BLE001 -- any failure stops the apply; see the docstring
+                logger.exception(
+                    "Applying the resolution of booking %s for room %s failed.", event_id, room.id
+                )
+                return ApplyResult(
+                    applied=tuple(applied),
+                    pending=tuple(e.booking.event_id for e in plan.bookings[index:]),
+                    failed_at=event_id,
+                )
+            applied.append(event_id)
+        return ApplyResult(applied=tuple(applied), pending=(), failed_at=None)
+
+    def _apply_booking(
+        self, room: Calendar, entry: ResolvedBooking, calendar_service: "CalendarService"
+    ) -> None:
+        booking, resolution = entry.booking, entry.resolution
+        event = (
+            CalendarEvent.objects.filter_by_organization(room.organization_id)
+            .booking_room(room.id)
+            .filter(id=booking.event_id)
+            .first()
+        )
+        if event is None:
+            return
+        series_from = booking.series_from
+        if series_from is not None and not event.get_occurrences_in_range(
+            series_from, series_from + PREVIEW_SEARCH_WINDOW, max_occurrences=1, overlap=True
+        ):
+            # Already split at ``series_from`` by an earlier run: only the past
+            # occurrences, which keep the room, are left on this row.
+            return
+
+        cancel_event = (
+            isinstance(resolution, CancelBooking)
+            and resolution.mode == BookingCancelMode.CANCEL_EVENT
+        )
+        if event.calendar_fk_id == room.id and not cancel_event:
+            raise BookingOnRoomCalendarError()
+
+        organizer_user_id = self._organizer_user_id(event)
+        if cancel_event:
+            if organizer_user_id is not None:
+                self.booking_room_change_notifier.notify_booking_room_changed(
+                    event.id, organizer_user_id, BookingRoomChange.EVENT_CANCELLED
+                )
+            if series_from is not None:
+                calendar_service.cancel_recurring_event_from_date(event, series_from)
+            else:
+                calendar_service.delete_event(
+                    event.calendar_fk_id,  # type: ignore[arg-type]
+                    event.id,
+                    delete_series=event.is_recurring,
+                )
+            return
+
+        room_ids = [
+            room_id
+            for room_id in dict.fromkeys(
+                allocation.calendar_fk_id for allocation in event.resource_allocations.all()
+            )
+            if room_id is not None and room_id != room.id
+        ]
+        if isinstance(resolution, MoveBooking):
+            change = BookingRoomChange.MOVED
+            if resolution.target_calendar_id not in room_ids:
+                room_ids.append(resolution.target_calendar_id)
+        else:
+            change = BookingRoomChange.ROOM_REMOVED
+        allocations = [ResourceAllocationInputData(resource_id=room_id) for room_id in room_ids]
+
+        if series_from is not None:
+            continuation = calendar_service.modify_recurring_event_from_date(
+                parent_event=event,
+                modification_start_date=series_from,
+                resource_allocations_override=allocations,
+            )
+            notified_event_id = continuation.id if continuation is not None else event.id
+        else:
+            calendar_service.update_event(
+                event.calendar_fk_id,  # type: ignore[arg-type]
+                event.id,
+                CalendarEventInputData(
+                    # Omitted (``None``) title, description and attendees are kept.
+                    title=None,
+                    description=None,
+                    start_time=event.start_time,
+                    end_time=event.end_time,
+                    timezone=event.timezone,
+                    resource_allocations=allocations,
+                    # Repeated, or the update turns a series into a single event.
+                    recurrence_rule=(
+                        event.recurrence_rule.to_rrule_string() if event.recurrence_rule else None
+                    ),
+                    parent_event_id=event.parent_recurring_object_fk_id,
+                    is_recurring_exception=event.is_recurring_exception,
+                ),
+            )
+            notified_event_id = event.id
+        if organizer_user_id is not None:
+            self.booking_room_change_notifier.notify_booking_room_changed(
+                notified_event_id, organizer_user_id, change
+            )
+
+    @staticmethod
+    def _organizer_user_id(event: CalendarEvent) -> int | None:
+        """The default owner of the event's calendar, else its lowest-id owner, else ``None``.
+
+        The same rule the ICS export uses for the organizer.
+        """
+        return (
+            CalendarOwnership.objects.filter_by_organization(event.organization_id)
+            .filter(calendar__id=event.calendar_fk_id, membership_user_id__isnull=False)
+            .order_by("-is_default", "membership_user_id")
+            .values_list("membership_user_id", flat=True)
+            .first()
         )
 
     def _validate_moves(
