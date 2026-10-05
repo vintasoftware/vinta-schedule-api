@@ -18,34 +18,59 @@ Implementation Notes:
 - Raises ValueError on subscription failures with meaningful error messages
 """
 
+import contextlib
 import datetime
 import json
 import logging
 import re
 import uuid
-from collections.abc import Iterable
-from typing import Any, ClassVar, Literal, TypedDict, TypeGuard
+from collections.abc import Collection, Iterable, Iterator
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypedDict, TypeGuard
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpHeaders, HttpRequest
 
 from calendar_integration.constants import CalendarProvider
-from calendar_integration.exceptions import WebhookProcessingFailedError
+from calendar_integration.exceptions import (
+    MicrosoftAppOnlyTokenError,
+    MicrosoftConnectionNotConfiguredError,
+    ResourceDirectoryError,
+    ResourceDirectoryInvalidInputError,
+    ResourceDirectoryNotFoundError,
+    ResourceDirectoryNotWriteEnabledError,
+    ResourceDirectoryPermissionError,
+    WebhookProcessingFailedError,
+)
+from calendar_integration.services.calendar_clients.ms_app_only_token import (
+    MicrosoftAppOnlyTokenProvider,
+)
 from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_client import (
+    VINTA_ROOM_TAG_PREFIX,
     MSGraphAPIError,
     MSGraphEvent,
+    MSGraphRoom,
+    MSGraphThrottledError,
     MSOutlookCalendarAPIClient,
 )
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
+    BusyWindow,
     CalendarEventAdapterInputData,
     CalendarEventAdapterOutputData,
     CalendarEventsSyncTypedDict,
     CalendarResourceData,
     EventAttendeeData,
+    ResourceLocationData,
+    ResourceLocationRef,
+    RoomDirectoryData,
+    RoomWriteData,
 )
 from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
+
+
+if TYPE_CHECKING:
+    from calendar_integration.models import MicrosoftOrganizationConnection
 
 
 logger = logging.getLogger(__name__)
@@ -1290,3 +1315,234 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
             Dictionary containing parsed webhook data
         """
         return MSOutlookCalendarAdapter._parse_webhook_notification(body)
+
+    # Room directory (ResourceDirectoryAdapter). Only an app-only adapter built with
+    # `from_app_only` may call these: they write the organization's Microsoft Places.
+
+    @classmethod
+    def from_app_only(
+        cls,
+        connection: "MicrosoftOrganizationConnection",
+        token_provider: MicrosoftAppOnlyTokenProvider,
+    ) -> "MSOutlookCalendarAdapter":
+        """An adapter that acts as Vinta's Entra app in the connection's tenant.
+
+        It needs no user credentials, so it skips the delegated-token check that
+        ``__init__`` runs against ``/me``.
+
+        Raises:
+            ResourceDirectoryNotWriteEnabledError: the connection has no consented
+                tenant, or its write access is not verified.
+        """
+        if not connection.tenant_id or not connection.write_enabled:
+            raise ResourceDirectoryNotWriteEnabledError()
+        adapter = cls.__new__(cls)
+        adapter.client = MSOutlookCalendarAPIClient.app_only(token_provider, connection.tenant_id)
+        adapter.refresh_token = ""
+        return adapter
+
+    def list_locations(self) -> list[ResourceLocationData]:
+        """Every building, once per floor and once per section under it.
+
+        A section is listed with its own place id as ``external_floor_id`` and the
+        floor's name before its own (``"2 / North wing"``). A building with no
+        floors is listed once, with an empty ``external_floor_id``.
+        """
+        with _directory_errors("list buildings and floors"):
+            buildings = self.client.list_buildings()
+            floors, sections = self.client.list_floors_and_sections()
+
+        building_names = {building["id"]: building.get("displayName", "") for building in buildings}
+        floors_by_id = {
+            floor["id"]: floor for floor in floors if floor.get("parentId") in building_names
+        }
+        locations: list[ResourceLocationData] = []
+        for floor in floors_by_id.values():
+            locations.append(
+                ResourceLocationData(
+                    external_building_id=floor["parentId"],
+                    building_name=building_names[floor["parentId"]],
+                    external_floor_id=floor["id"],
+                    floor_name=floor.get("displayName", ""),
+                )
+            )
+        for section in sections:
+            section_floor = floors_by_id.get(section.get("parentId", ""))
+            if section_floor is None:
+                continue
+            locations.append(
+                ResourceLocationData(
+                    external_building_id=section_floor["parentId"],
+                    building_name=building_names[section_floor["parentId"]],
+                    external_floor_id=section["id"],
+                    floor_name=(
+                        f"{section_floor.get('displayName', '')} / {section.get('displayName', '')}"
+                    ),
+                )
+            )
+        buildings_with_floors = {floor["parentId"] for floor in floors_by_id.values()}
+        for building_id, building_name in building_names.items():
+            if building_id not in buildings_with_floors:
+                locations.append(
+                    ResourceLocationData(
+                        external_building_id=building_id, building_name=building_name
+                    )
+                )
+        return locations
+
+    def list_rooms(self) -> list[RoomDirectoryData]:
+        """Every room in the tenant's Places directory, with no free/busy filter."""
+        refs = self._location_refs_by_place_id()
+        with _directory_errors("list rooms"):
+            rooms = list(self.client.list_rooms())
+        return [self._to_room_directory_data(room, refs.get(_parent_id(room))) for room in rooms]
+
+    def create_room(self, data: RoomWriteData) -> RoomDirectoryData:
+        """Create the room, or return the one an earlier attempt with this key created.
+
+        The room is tagged ``vinta-link-<provisional key>`` and the tag is looked up
+        before the POST, so a create replayed after a crash finds its room.
+        """
+        parent_id = _parent_id_for(data.location_ref)
+        tag = f"{VINTA_ROOM_TAG_PREFIX}{data.provisional_key}"
+        with _directory_errors("create the room"):
+            room = self.client.find_room_by_tag(tag)
+            if room is None:
+                room = self.client.create_room(
+                    display_name=data.name,
+                    parent_id=parent_id,
+                    capacity=data.capacity,
+                    tags=[tag],
+                )
+        return self._to_room_directory_data(room, self._location_ref_of(room, data))
+
+    def update_room(
+        self, external_id: str, data: RoomWriteData, fields: Collection[str]
+    ) -> RoomDirectoryData:
+        """Patch only the named fields and return the room as Microsoft stored it."""
+        changes: dict[str, Any] = {}
+        if "name" in fields:
+            changes["displayName"] = data.name
+        if "capacity" in fields:
+            changes["capacity"] = data.capacity
+        if "location_ref" in fields:
+            changes["parentId"] = _parent_id_for(data.location_ref)
+        # TODO(spike): Places has no documented room description field (plan open
+        # question 2), so a description stays in Vinta Schedule only and is never sent.
+        with _directory_errors("update the room"):
+            room = (
+                self.client.update_room(external_id, changes)
+                if changes
+                else self.client.get_room(external_id)
+            )
+        return self._to_room_directory_data(room, self._location_ref_of(room, data))
+
+    def delete_room(self, external_id: str) -> None:
+        """Delete the room. A room already gone raises ``ResourceDirectoryNotFoundError``."""
+        with _directory_errors("delete the room"):
+            self.client.delete_room(external_id)
+
+    def get_free_busy(
+        self, room_email: str, start: datetime.datetime, end: datetime.datetime
+    ) -> list[BusyWindow]:
+        """The room's busy windows from app-only ``getSchedule``. Tentative counts as busy."""
+        with _directory_errors("read the room's free/busy"):
+            schedules = self.client.get_schedule([room_email], start, end)
+        windows: list[BusyWindow] = []
+        for schedule in schedules:
+            error = schedule.get("error")
+            if error:
+                code = error.get("responseCode", "unknown") if isinstance(error, dict) else error
+                raise ResourceDirectoryError(
+                    f"Microsoft could not read the room's schedule ({code})."
+                )
+            for item in schedule.get("scheduleItems", []):
+                if item.get("status") == "free":
+                    continue
+                windows.append(
+                    BusyWindow(
+                        start=_parse_utc(item["start"]["dateTime"]),
+                        end=_parse_utc(item["end"]["dateTime"]),
+                    )
+                )
+        return windows
+
+    def _location_refs_by_place_id(self) -> dict[str, ResourceLocationRef]:
+        """Each building, floor and section id → the location of a room placed under it."""
+        refs: dict[str, ResourceLocationRef] = {}
+        for location in self.list_locations():
+            refs[location.external_building_id] = ResourceLocationRef(
+                external_building_id=location.external_building_id
+            )
+            if location.external_floor_id:
+                refs[location.external_floor_id] = location.ref
+        return refs
+
+    def _location_ref_of(
+        self, room: MSGraphRoom, data: RoomWriteData
+    ) -> ResourceLocationRef | None:
+        # The room usually sits where Vinta Schedule put it, which needs no lookup.
+        parent_id = _parent_id(room)
+        if data.location_ref is not None and parent_id == _parent_id_for(data.location_ref):
+            return data.location_ref
+        return self._location_refs_by_place_id().get(parent_id)
+
+    @staticmethod
+    def _to_room_directory_data(
+        room: MSGraphRoom, location_ref: ResourceLocationRef | None
+    ) -> RoomDirectoryData:
+        return RoomDirectoryData(
+            external_id=room.id,
+            email=room.email_address,
+            name=room.display_name,
+            # TODO(spike): see update_room. None keeps the resync from reading a
+            # missing field as Microsoft clearing the description.
+            description=None,
+            capacity=room.capacity,
+            location_ref=location_ref,
+            provider_payload=room.original_payload or {},
+        )
+
+
+def _parent_id(room: MSGraphRoom) -> str:
+    parent_id = (room.original_payload or {}).get("parentId")
+    return parent_id if isinstance(parent_id, str) else ""
+
+
+def _parent_id_for(location_ref: ResourceLocationRef | None) -> str:
+    """The Places id a room at ``location_ref`` hangs under: its floor or section."""
+    if location_ref is None:
+        raise ResourceDirectoryInvalidInputError("A Microsoft room needs a building and floor.")
+    return location_ref.external_floor_id or location_ref.external_building_id
+
+
+def _parse_utc(value: str) -> datetime.datetime:
+    parsed = datetime.datetime.fromisoformat(value)
+    return parsed.replace(tzinfo=datetime.UTC) if parsed.tzinfo is None else parsed
+
+
+@contextlib.contextmanager
+def _directory_errors(action: str) -> Iterator[None]:
+    """Turn Graph and token failures into the ``ResourceDirectoryError`` family."""
+    try:
+        yield
+    except MSGraphThrottledError as exc:
+        raise ResourceDirectoryError(
+            f"Microsoft is throttling requests; could not {action} yet."
+        ) from exc
+    except MSGraphAPIError as exc:
+        status = exc.status_code
+        message = f"Could not {action} on Microsoft: {exc}"
+        if status in {400, 409, 412, 422}:
+            raise ResourceDirectoryInvalidInputError(message) from exc
+        if status in {401, 403}:
+            raise ResourceDirectoryPermissionError(message) from exc
+        if status == 404:  # noqa: PLR2004
+            raise ResourceDirectoryNotFoundError(message) from exc
+        raise ResourceDirectoryError(message) from exc
+    except MicrosoftAppOnlyTokenError as exc:
+        raise ResourceDirectoryPermissionError(
+            f"Could not get an app-only token from Microsoft to {action}."
+        ) from exc
+    except MicrosoftConnectionNotConfiguredError as exc:
+        raise ResourceDirectoryError(str(exc)) from exc

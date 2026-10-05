@@ -523,3 +523,124 @@ class ExternalClientIdentifierDuplicateSystemError(ExternalClientIdentifierError
     """
 
     default_message = "Duplicate system in identifiers list; each system must appear at most once."
+
+
+class ResourceDirectoryError(CalendarIntegrationError):
+    """Raised when a provider's room directory (Google Directory, Microsoft Places) fails.
+
+    ``is_transient`` tells the push engine whether to retry. A transient error is
+    retried with backoff until the link's retry deadline; a non-transient one moves
+    the link to sync failed right away. The base class defaults to transient, so an
+    unclassified provider failure (5xx, 429, a timeout) is retried rather than
+    dropped.
+    """
+
+    default_message = "The room directory provider returned an error."
+    default_is_transient = True
+
+    def __init__(self, message: str | None = None, *, is_transient: bool | None = None):
+        super().__init__(message)
+        self.is_transient = self.default_is_transient if is_transient is None else is_transient
+
+
+class ResourceDirectoryInvalidInputError(ResourceDirectoryError):
+    """The provider rejected the request itself (HTTP 400 / 409 / 412 / 422).
+
+    Never transient: sending the same payload again fails the same way.
+    """
+
+    default_message = "The room directory provider rejected the request as invalid."
+    default_is_transient = False
+
+
+class ResourceDirectoryPermissionError(ResourceDirectoryError):
+    """The provider refused the credentials or the scope (HTTP 401 / 403).
+
+    Transient by design: an IT admin can restore the permission while the push is
+    still inside its retry window.
+    """
+
+    default_message = "The room directory provider denied access."
+    default_is_transient = True
+
+
+class ResourceDirectoryNotFoundError(ResourceDirectoryError):
+    """The room or location does not exist on the provider (HTTP 404).
+
+    Not transient. Callers decide what a missing room means: a delete treats it as
+    already done, an update treats it as a sync failure.
+    """
+
+    default_message = "The room or location was not found on the provider."
+    default_is_transient = False
+
+
+class ResourceDirectoryNotWriteEnabledError(ResourceDirectoryPermissionError):
+    """The organization has no write-enabled connection for the provider.
+
+    Raised by ``ResourceDirectoryAdapterResolver.adapter_for``. It is a permission
+    error, and so transient, because an org admin can verify write access again
+    while a push is still being retried.
+    """
+
+    default_message = "Room writes are not enabled for this organization and provider."
+
+
+class MicrosoftConnectionNotConfiguredError(CalendarIntegrationError):
+    """``MS_CLIENT_ID`` or ``MS_CLIENT_SECRET`` is empty, so no Microsoft call can be made."""
+
+    default_message = "Microsoft room sync is not configured on this environment."
+
+
+class MicrosoftAppOnlyTokenError(CalendarIntegrationError):
+    """The Microsoft identity platform refused, or never answered, an app-only token request.
+
+    ``status_code`` and ``error_code`` (the OAuth ``error`` field, such as
+    ``invalid_client`` or ``unauthorized_client``) are kept for callers. The
+    provider's ``error_description`` is not, because it is free text.
+    """
+
+    default_message = "Could not get an app-only token from Microsoft."
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        status_code: int | None = None,
+        error_code: str | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+
+
+class MicrosoftConsentStateError(CalendarIntegrationError):
+    """The admin-consent ``state`` is tampered, expired, already used or not this org's."""
+
+    default_message = "The Microsoft admin-consent link is invalid or was already used."
+
+
+class MicrosoftConsentDeniedError(CalendarIntegrationError):
+    """The tenant admin did not grant admin consent: Microsoft sent no authorization code."""
+
+    default_message = "Microsoft admin consent was not granted."
+
+
+class MicrosoftSignInError(CalendarIntegrationError):
+    """The admin's sign-in could not be confirmed with Microsoft.
+
+    The authorization code was refused, or the returned ``id_token`` was not issued to
+    Vinta's app for this consent attempt, or it named no tenant.
+    """
+
+    default_message = "Could not confirm the Microsoft sign-in."
+
+
+class MicrosoftSignInNotAdminError(MicrosoftSignInError):
+    """The user who signed in is not an administrator who can grant admin consent.
+
+    Their ``id_token`` carries neither the Global Administrator nor the Privileged Role
+    Administrator role, so the sign-in does not prove control of the tenant.
+    """
+
+    default_message = "The Microsoft sign-in was not made by a tenant administrator."

@@ -213,6 +213,8 @@ PYTHONBREAKPOINT
 SALT_KEY
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
+MS_CLIENT_ID
+MS_CLIENT_SECRET
 TWILIO_ACCOUNT_SID
 TWILIO_API_KEY_SID
 TWILIO_API_KEY_SECRET
@@ -237,12 +239,14 @@ DEFAULT_PAYMENT_PROVIDER
 - `STRIPE_SECRET_KEY` (str, default `""`) — Stripe API key used by `vinta_billing`'s `StripePaymentAdapter`/`StripeSubscriptionAdapter` to authenticate every **outbound** call. Stripe's half of the `is_configured` contract described under `MERCADOPAGO_ACCESS_TOKEN`; it is `DEFAULT_PAYMENT_PROVIDER`'s credential, so an empty value refuses charges for every unpinned organization.
 - `STRIPE_WEBHOOK_SECRET` (str, default `""`) — shared secret used to verify Stripe's `Stripe-Signature` webhook header (`vinta_billing.services.stripe_signature`). Same fail-closed convention as `MERCADOPAGO_WEBHOOK_SECRET`.
 - `STRIPE_PUBLISHABLE_KEY` (str, default `""`) — browser-safe public key used to initialize Stripe's payment form. Not a secret; intentionally served on unauthenticated endpoints.
+- `MS_CLIENT_ID` (str, default `""`) — application (client) id of Vinta's multi-tenant Microsoft Entra app. Config, not a secret: it appears in the admin-consent URL. Used by the Outlook calendar adapter and by Microsoft room sync, which mints app-only tokens for a customer tenant through the client-credentials flow. See `docs/integrations/microsoft-room-sync-setup.md`.
+- `MS_CLIENT_SECRET` (str, default `""`) — the client secret of that app. With either value empty, the Microsoft consent and verify endpoints answer 503 and no token is requested.
 - `DEFAULT_PAYMENT_PROVIDER` (str, default `"stripe"`) — system-wide default payment provider slug. Must be one of the valid providers in `vinta_billing.constants.PaymentProviders`; `settings/base.py` assembles `VINTA_BILLING["PROVIDERS"]` / `["DEFAULT_PROVIDER"]` from this and the six credential vars above. Read at import time to fail fast on misconfiguration.
 
 Deployed-environment vars come from two places, and which one decides where you add a new var:
 
-- **ECS task definition `environment`** — non-secret config, built from Terraform inputs in `infrastructure/modules/app-platform/ecs.tf` (`local.container_environment`). Covers `ALLOWED_HOSTS`, `SITE_DOMAIN`, `API_DOMAIN`, `FRONTEND_BASE_URL`, `CORS_ALLOWED_ORIGINS`, `DEFAULT_FROM_EMAIL`, `DEFAULT_BCC_EMAILS`, the AWS bucket / region / CloudFront-domain settings, and the `CELERY_*` tuning knobs.
-- **One Secrets Manager secret per environment** — every credential, as a flat JSON object; ECS maps each key to its own env var. Covers `SECRET_KEY`, `SALT_KEY`, `DATABASE_URL`, `REDIS_URL`, `SENTRY_DSN`, `SMTP_*`, `GOOGLE_*`, `TWILIO_*`, `STRIPE_*`, `MERCADOPAGO_*`, `AWS_CLOUDFRONT_KEY`/`_ID`. The key list is `local.secret_keys` in `infrastructure/modules/app-platform/secrets.tf`; `extra_secret_keys` adds one without editing the module.
+- **ECS task definition `environment`** — non-secret config, built from Terraform inputs in `infrastructure/modules/app-platform/ecs.tf` (`local.container_environment`). Covers `ALLOWED_HOSTS`, `SITE_DOMAIN`, `API_DOMAIN`, `FRONTEND_BASE_URL`, `CORS_ALLOWED_ORIGINS`, `DEFAULT_FROM_EMAIL`, `DEFAULT_BCC_EMAILS`, `MS_CLIENT_ID`, the AWS bucket / region / CloudFront-domain settings, and the `CELERY_*` tuning knobs.
+- **One Secrets Manager secret per environment** — every credential, as a flat JSON object; ECS maps each key to its own env var. Covers `SECRET_KEY`, `SALT_KEY`, `DATABASE_URL`, `REDIS_URL`, `SENTRY_DSN`, `SMTP_*`, `GOOGLE_*`, `MS_CLIENT_SECRET`, `TWILIO_*`, `STRIPE_*`, `MERCADOPAGO_*`, `AWS_CLOUDFRONT_KEY`/`_ID`. The key list is `local.secret_keys` in `infrastructure/modules/app-platform/secrets.tf`; `extra_secret_keys` adds one without editing the module.
 
 SQS broker vars, set in every environment including local (Floci): `CELERY_BROKER_URL`, `CELERY_TASK_DEFAULT_QUEUE`, `CELERY_SQS_QUEUE_URL`, `CELERY_SQS_IS_SECURE`, `CELERY_SQS_VISIBILITY_TIMEOUT`, `CELERY_SQS_WAIT_TIME_SECONDS`, `CELERY_SQS_POLLING_INTERVAL`. Local-only: `CELERY_TASK_ALWAYS_EAGER`. Deployed-only vars the app reads: `COMMIT_SHA` (set by the deploy, reported to Sentry), and `ECS_CONTAINER_METADATA_URI_V4` (set by ECS itself — `settings/production.py` reads the task's own IP from it and appends it to `ALLOWED_HOSTS`, which is what lets the load balancer health check succeed without `ALLOWED_HOSTS = "*"`).
 

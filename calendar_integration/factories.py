@@ -2,10 +2,17 @@ import datetime
 from typing import Any
 
 from django.db.models import Model
+from django.utils import timezone
 
 from organizations.models import OrganizationMembership
 
-from .constants import CalendarProvider, ExternalEventChangeKind, QuotaPeriod, RecurrenceFrequency
+from .constants import (
+    CalendarProvider,
+    ExternalEventChangeKind,
+    QuotaPeriod,
+    RecurrenceFrequency,
+    ResourceSyncStatus,
+)
 from .external_client_identifiers import normalize_system
 from .models import (
     AppointmentTypeSlotQuotaRule,
@@ -17,7 +24,10 @@ from .models import (
     EventAttendance,
     ExternalClientIdentifier,
     ExternalEventChangeRequest,
+    MicrosoftOrganizationConnection,
     RecurrenceRule,
+    ResourceCalendarProviderLink,
+    ResourceLocation,
 )
 
 
@@ -503,5 +513,81 @@ def create_external_client_identifier(
         identified_object=identified_object,
         system=normalize_system(system),
         identifier=identifier,
+        **kwargs,
+    )
+
+
+def create_resource_location(
+    *,
+    organization,
+    provider: str = CalendarProvider.GOOGLE,
+    external_building_id: str = "building-1",
+    building_name: str = "Main Building",
+    external_floor_id: str = "1",
+    floor_name: str = "1",
+    **kwargs: Any,
+) -> ResourceLocation:
+    """Create a ``ResourceLocation`` (a provider building and floor), active and seen now.
+
+    ``organization`` is required explicitly (no default) so tests that forget to pass
+    it fail loudly rather than silently cross-tenant.
+    """
+    kwargs.setdefault("last_seen_at", timezone.now())
+    return ResourceLocation.objects.create(
+        organization=organization,
+        provider=provider,
+        external_building_id=external_building_id,
+        building_name=building_name,
+        external_floor_id=external_floor_id,
+        floor_name=floor_name,
+        **kwargs,
+    )
+
+
+def create_resource_provider_link(
+    *,
+    calendar,
+    sync_status: str = ResourceSyncStatus.SYNCED,
+    provider: str | None = None,
+    location: ResourceLocation | None = None,
+    provider_snapshot: dict | None = None,
+    pending_fields: dict | None = None,
+    **kwargs: Any,
+) -> ResourceCalendarProviderLink:
+    """Create a ``ResourceCalendarProviderLink`` for the room *calendar*.
+
+    The link takes *calendar*'s organization, and its provider unless ``provider`` is
+    passed. Defaults to a ``SYNCED`` link with empty snapshot and pending fields.
+    """
+    return ResourceCalendarProviderLink.objects.create(
+        organization=calendar.organization,
+        calendar=calendar,
+        provider=provider if provider is not None else calendar.provider,
+        sync_status=sync_status,
+        location=location,
+        provider_snapshot=provider_snapshot if provider_snapshot is not None else {},
+        pending_fields=pending_fields if pending_fields is not None else {},
+        **kwargs,
+    )
+
+
+def create_microsoft_organization_connection(
+    *,
+    organization,
+    tenant_id: str = "00000000-0000-0000-0000-000000000000",
+    write_enabled: bool = False,
+    **kwargs: Any,
+) -> MicrosoftOrganizationConnection:
+    """Create a ``MicrosoftOrganizationConnection`` with a tenant id already consented.
+
+    ``organization`` is required explicitly (no default) so tests that forget to pass
+    it fail loudly rather than silently cross-tenant. ``write_enabled`` defaults to
+    False, as a connection is before verification.
+    """
+    kwargs.setdefault("consented_at", timezone.now())
+    return MicrosoftOrganizationConnection.objects.create(
+        organization=organization,
+        tenant_id=tenant_id,
+        write_enabled=write_enabled,
         **kwargs,
     )
