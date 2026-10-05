@@ -22,13 +22,13 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from calendar_integration.constants import (
+    ROOM_ON_PROVIDER_STATES,
     CalendarManagementTokenKind,
     CalendarProvider,
     CalendarSyncStatus,
     CalendarType,
     CalendarVisibility,
     ExternalEventChangeRequestStatus,
-    ResourceSyncOperation,
     ResourceSyncStatus,
 )
 from calendar_integration.database_functions import (
@@ -1456,11 +1456,25 @@ class ResourceCalendarProviderLinkQuerySet(OrganizationScopedQuerySet):
             )
         )
 
+    def on_provider(self) -> "ResourceCalendarProviderLinkQuerySet":
+        """Links whose room exists on the provider and is not on its way out.
+
+        The filter form of ``ResourceCalendarProviderLink.is_bookable``, built from
+        the same ``ROOM_ON_PROVIDER_STATES``: ``SYNCED``, ``PENDING_UPDATE``, and
+        ``SYNC_FAILED`` on an update.
+        """
+        condition = Q(pk__in=[])
+        for sync_status, failed_operation in ROOM_ON_PROVIDER_STATES:
+            if failed_operation:
+                condition |= Q(sync_status=sync_status, failed_operation=failed_operation)
+            else:
+                condition |= Q(sync_status=sync_status)
+        return self.filter(condition)
+
     def for_resync(self, provider: str) -> "ResourceCalendarProviderLinkQuerySet":
         """Links of ``provider`` whose room exists on the provider and may take its changes.
 
-        That is ``SYNCED``, ``PENDING_UPDATE``, and ``SYNC_FAILED`` on an update.
-        Left out:
+        That is :meth:`on_provider`. Left out:
 
         - ``PENDING_CREATION`` and ``SYNC_FAILED`` on a create: the room may not
           exist on the provider yet, so a resync would wrongly read it as deleted.
@@ -1468,13 +1482,7 @@ class ResourceCalendarProviderLinkQuerySet(OrganizationScopedQuerySet):
           way out, so there is nothing to import.
         - ``ARCHIVED``: archived rooms never change again.
         """
-        return self.filter(provider=provider).filter(
-            Q(sync_status__in=(ResourceSyncStatus.SYNCED, ResourceSyncStatus.PENDING_UPDATE))
-            | Q(
-                sync_status=ResourceSyncStatus.SYNC_FAILED,
-                failed_operation=ResourceSyncOperation.UPDATE,
-            )
-        )
+        return self.filter(provider=provider).on_provider()
 
     def locked_for_update(
         self, link_id: int, skip_locked: bool = False

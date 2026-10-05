@@ -16,6 +16,7 @@ from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from calendar_integration.constants import (
     RESOURCE_SYNCED_FIELDS,
+    ROOM_ON_PROVIDER_STATES,
     CalendarManagementTokenKind,
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
@@ -3029,17 +3030,17 @@ class ResourceCalendarProviderLink(
     def is_bookable(self) -> bool:
         """Whether new bookings may allocate this room.
 
-        Bookable while the room exists on the provider and is not on its way out:
-        ``SYNCED``, ``PENDING_UPDATE``, or ``SYNC_FAILED`` on an update. Not bookable
-        while pending creation, after a failed create, while pending deletion,
-        after a failed delete, or once archived.
+        Bookable while the room exists on the provider and is not on its way out
+        (``ROOM_ON_PROVIDER_STATES``): ``SYNCED``, ``PENDING_UPDATE``, or
+        ``SYNC_FAILED`` on an update. Not bookable while pending creation, after a
+        failed create, while pending deletion, after a failed delete, or once
+        archived. ``ResourceCalendarProviderLinkQuerySet.on_provider`` is the same
+        rule as a filter.
         """
-        if self.sync_status in (ResourceSyncStatus.SYNCED, ResourceSyncStatus.PENDING_UPDATE):
-            return True
-        return (
-            self.sync_status == ResourceSyncStatus.SYNC_FAILED
-            and self.failed_operation == ResourceSyncOperation.UPDATE
+        failed_operation = (
+            self.failed_operation if self.sync_status == ResourceSyncStatus.SYNC_FAILED else ""
         )
+        return (self.sync_status, failed_operation) in ROOM_ON_PROVIDER_STATES
 
     def fields_changed_by_provider(self, provider_values: Mapping[str, Any]) -> set[str]:
         """The synced fields whose provider value differs from the last-sync snapshot.
@@ -3065,12 +3066,18 @@ class ResourceCalendarProviderLink(
 
         ``pushed_fields`` is the copy of ``pending_fields`` the push sent.
         ``provider_values`` is what the provider returned for the room, when it
-        returned anything; otherwise the pushed values are taken as the provider's.
+        returned anything.
 
         A pending field is cleared only when its value still equals the value that
         was pushed. A field edited again while the push was in flight keeps its newer
-        value, so the next push sends it. The snapshot takes the provider's values,
-        and ``last_synced_at`` is set to now.
+        value, so the next push sends it.
+
+        Only the pushed fields enter the snapshot: each takes the provider's value
+        when the provider reports it, so provider-side normalization sticks, and the
+        pushed value otherwise. Every other snapshot key keeps its old value, even
+        when ``provider_values`` differs. ``Calendar`` does not mirror such a
+        difference yet, so the next resync has to see it as a provider change and
+        import it. ``last_synced_at`` is set to now.
 
         Returns the names of the cleared fields. Status, attempts and the retry
         deadline are the push engine's to change.
@@ -3083,12 +3090,12 @@ class ResourceCalendarProviderLink(
         self.pending_fields = {
             field: value for field, value in self.pending_fields.items() if field not in cleared
         }
-        synced_values = pushed_fields if provider_values is None else provider_values
+        reported = provider_values or {}
         self.provider_snapshot = {
             **self.provider_snapshot,
             **{
-                field: value
-                for field, value in synced_values.items()
+                field: reported.get(field, value)
+                for field, value in pushed_fields.items()
                 if field in RESOURCE_SYNCED_FIELDS
             },
         }

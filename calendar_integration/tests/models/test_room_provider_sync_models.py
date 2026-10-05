@@ -236,12 +236,32 @@ class TestMarkPushed:
         assert link.pending_fields == {}
         assert link.provider_snapshot == {**SNAPSHOT, "name": "Huddle One"}
 
-    def test_snapshot_ignores_unknown_provider_keys(self):
-        link = _link(provider_snapshot={}, pending_fields=dict(SNAPSHOT))
+    def test_snapshot_keeps_unpushed_fields_the_provider_changed(self):
+        # An IT admin changed capacity on the provider; Vinta Schedule pushed only a
+        # rename. Calendar still holds the old capacity, so the snapshot must too,
+        # or the next resync would see no capacity change and never import it.
+        link = _link(provider_snapshot=dict(SNAPSHOT), pending_fields={"name": "Huddle One"})
+        provider_room = {**SNAPSHOT, "name": "Huddle One", "capacity": 20}
 
-        link.mark_pushed(dict(SNAPSHOT), {**SNAPSHOT, "color": "blue"})
+        link.mark_pushed({"name": "Huddle One"}, provider_room)
 
-        assert link.provider_snapshot == SNAPSHOT
+        assert link.provider_snapshot == {**SNAPSHOT, "name": "Huddle One"}
+        assert link.fields_changed_by_provider(provider_room) == {"capacity"}
+
+    def test_pushed_field_the_provider_does_not_report_takes_the_pushed_value(self):
+        link = _link(provider_snapshot=dict(SNAPSHOT), pending_fields={"description": "New"})
+        without_description = {k: v for k, v in SNAPSHOT.items() if k != "description"}
+
+        link.mark_pushed({"description": "New"}, without_description)
+
+        assert link.provider_snapshot == {**SNAPSHOT, "description": "New"}
+
+    def test_snapshot_ignores_unknown_keys(self):
+        link = _link(provider_snapshot={}, pending_fields={"name": "Huddle", "color": "blue"})
+
+        link.mark_pushed({"name": "Huddle", "color": "blue"}, {"name": "Huddle", "color": "red"})
+
+        assert link.provider_snapshot == {"name": "Huddle"}
 
     def test_sets_last_synced_at(self):
         link = _link(provider_snapshot={}, pending_fields={})
@@ -491,6 +511,33 @@ class TestLinkQuerySet:
             links[ResourceSyncStatus.PENDING_CREATION],
             links[ResourceSyncStatus.PENDING_UPDATE],
             links[ResourceSyncStatus.PENDING_DELETION],
+        }
+
+    def test_on_provider_matches_is_bookable_for_every_state(self, organization: Organization):
+        links = [
+            create_resource_provider_link(
+                calendar=_make_room(organization),
+                sync_status=sync_status,
+                failed_operation=failed_operation,
+            )
+            for sync_status in ResourceSyncStatus.values
+            for failed_operation in ["", *ResourceSyncOperation.values]
+        ]
+
+        with organization_context(organization):
+            on_provider = set(ResourceCalendarProviderLink.objects.on_provider())
+
+        assert on_provider == {link for link in links if link.is_bookable}
+        assert {(link.sync_status, link.failed_operation) for link in on_provider} == {
+            (ResourceSyncStatus.SYNCED, ""),
+            (ResourceSyncStatus.SYNCED, ResourceSyncOperation.CREATE),
+            (ResourceSyncStatus.SYNCED, ResourceSyncOperation.UPDATE),
+            (ResourceSyncStatus.SYNCED, ResourceSyncOperation.DELETE),
+            (ResourceSyncStatus.PENDING_UPDATE, ""),
+            (ResourceSyncStatus.PENDING_UPDATE, ResourceSyncOperation.CREATE),
+            (ResourceSyncStatus.PENDING_UPDATE, ResourceSyncOperation.UPDATE),
+            (ResourceSyncStatus.PENDING_UPDATE, ResourceSyncOperation.DELETE),
+            (ResourceSyncStatus.SYNC_FAILED, ResourceSyncOperation.UPDATE),
         }
 
     def test_for_resync(self, organization: Organization):

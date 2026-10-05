@@ -194,3 +194,18 @@ class ResourceSyncOperation(TextChoices):
 # ``location_ref`` is a ``{"external_building_id": ..., "external_floor_id": ...}``
 # dict, or ``None`` for a room with no location.
 RESOURCE_SYNCED_FIELDS: tuple[str, ...] = ("name", "description", "capacity", "location_ref")
+
+
+# The ``(sync_status, failed_operation)`` states in which a provider-backed room
+# exists on the provider and is not on its way out. ``failed_operation`` is only
+# read for ``SYNC_FAILED``; for every other status it is ``""`` here. This is the
+# one definition of the rule: ``ResourceCalendarProviderLink.is_bookable`` checks
+# an instance against it and ``ResourceCalendarProviderLinkQuerySet.on_provider``
+# builds its filter from it.
+ROOM_ON_PROVIDER_STATES: frozenset[tuple[str, str]] = frozenset(
+    {
+        (ResourceSyncStatus.SYNCED, ""),
+        (ResourceSyncStatus.PENDING_UPDATE, ""),
+        (ResourceSyncStatus.SYNC_FAILED, ResourceSyncOperation.UPDATE),
+    }
+)

@@ -647,6 +647,10 @@ class ResourceCalendarProviderLinkManager(_ResourceCalendarProviderLinkManagerBa
         """Wraps :meth:`ResourceCalendarProviderLinkQuerySet.due_for_push`."""
         return self.get_queryset().due_for_push()
 
+    def on_provider(self) -> ResourceCalendarProviderLinkQuerySet:
+        """Wraps :meth:`ResourceCalendarProviderLinkQuerySet.on_provider`."""
+        return self.get_queryset().on_provider()
+
     def for_resync(self, provider: str) -> ResourceCalendarProviderLinkQuerySet:
         """Wraps :meth:`ResourceCalendarProviderLinkQuerySet.for_resync`."""
         return self.get_queryset().for_resync(provider)
