@@ -970,19 +970,8 @@ class MSOutlookCalendarAPIClient:
         Returns:
             MSGraphRoom object
         """
-        response = self._make_request("GET", f"/places/{room_id}")
-
-        return MSGraphRoom(
-            id=response["id"],
-            display_name=response["displayName"],
-            email_address=response["emailAddress"],
-            capacity=response.get("capacity"),
-            building=response.get("building"),
-            floor_number=response.get("floorNumber"),
-            phone=response.get("phone"),
-            is_wheelchair_accessible=response.get("isWheelChairAccessible", False),
-            original_payload=response,
-        )
+        response = self._make_request("GET", f"/places/{urllib.parse.quote(room_id, safe='@')}")
+        return self._parse_room(response)
 
     # Room directory writes (Microsoft Places). Room sync calls these on an app-only
     # client, which needs the Place.ReadWrite.All and Calendars.Read application

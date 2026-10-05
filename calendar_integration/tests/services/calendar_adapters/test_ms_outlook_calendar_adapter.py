@@ -2840,6 +2840,13 @@ class TestUpdateRoom:
         assert [(method, path) for method, path, _ in graph.requests] == [("GET", "/places/room-1")]
         assert updated.name == "Old name"
 
+    def test_room_without_a_mailbox_yet_is_read_back(self, directory, graph):
+        del graph.places["room-1"]["emailAddress"]
+
+        updated = directory.update_room("room-1", write_data(), fields=["description"])
+
+        assert (updated.external_id, updated.email, updated.name) == ("room-1", "", "Old name")
+
     def test_room_moved_on_the_provider_is_read_back_where_it_is(self, directory, graph):
         graph.places["room-1"]["parentId"] = "hq-2"
 

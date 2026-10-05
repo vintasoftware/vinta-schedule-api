@@ -1903,15 +1903,18 @@ class TestRoomDirectoryRequests:
         assert room.display_name == "Room B"
 
     def test_update_room_answered_with_no_content_reads_the_room_back(self, app_only_client):
+        # A room Places just created may have no mailbox address yet.
+        without_mailbox = room_payload(capacity=12)
+        del without_mailbox["emailAddress"]
         app_only_client.session.request.side_effect = [
             create_mock_response(204),
-            create_mock_response(200, room_payload(capacity=12)),
+            create_mock_response(200, without_mailbox),
         ]
 
         room = app_only_client.update_room("room-1", {"capacity": 12})
 
         assert self.sent(app_only_client)[:2] == ("GET", f"{GRAPH}/places/room-1")
-        assert room.capacity == 12
+        assert (room.capacity, room.email_address) == (12, "")
 
     def test_delete_room(self, app_only_client):
         app_only_client.session.request.return_value = create_mock_response(204)
