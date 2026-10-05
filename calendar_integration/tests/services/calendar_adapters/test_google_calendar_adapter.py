@@ -1004,6 +1004,20 @@ class TestWebhookSubscriptions:
         )
         mock_rate_limiters[1].try_acquire.assert_called_once()
 
+    def test_create_webhook_subscription_with_tracking_fits_room_email_in_channel_id_limit(
+        self, adapter, mock_rate_limiters
+    ):
+        """Google rejects a push channel id over 64 characters, and a real room email
+        alone is about 60, so the channel id must not embed the calendar id."""
+        room_email = "c_188f3a9b2c4d5e6f7a8b9c0d1e2f3a4b5c@resource.calendar.google.com"
+        watch = adapter.client.events.return_value.watch
+        watch.return_value.execute.return_value = {"id": "returned-channel"}
+
+        adapter.create_webhook_subscription_with_tracking(room_email, "https://example.com/webhook")
+
+        assert watch.call_args.kwargs["calendarId"] == room_email
+        assert len(watch.call_args.kwargs["body"]["id"]) <= 64
+
     def test_unsubscribe_from_calendar_events(self, adapter, mock_rate_limiters):
         """Test unsubscribing from calendar events."""
         adapter.client.channels.return_value.stop.return_value.execute.return_value = {}

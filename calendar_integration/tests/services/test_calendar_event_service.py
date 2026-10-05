@@ -573,21 +573,17 @@ def test_delete_event(
     mock_google_adapter.delete_event.assert_called_once()
 
 
-@pytest.mark.django_db
-def test_create_and_delete_event_on_google_room_address_the_room_by_resource_email(
-    event_service,
-    mock_google_adapter,
-    organization,
-    sample_event_input_data,
-    social_account,
-):
-    """A Google room's ``external_id`` is its Directory resourceId, but the Calendar API
-    only accepts the room's resourceEmail as calendarId."""
-    room_email = "c_1882room@resource.calendar.google.com"
+ROOM_EMAIL = "c_1882room@resource.calendar.google.com"
+
+
+@pytest.fixture
+def google_room(organization, social_account):
+    """A Google room: ``external_id`` is its Directory resourceId, while the Calendar API
+    only accepts its resourceEmail as calendarId. The user holds an owner token on it."""
     room = Calendar.objects.create(
         name="Board Room",
         external_id="c_1882room",
-        email=room_email,
+        email=ROOM_EMAIL,
         provider=CalendarProvider.GOOGLE,
         calendar_type=CalendarType.RESOURCE,
         organization=organization,
@@ -604,14 +600,58 @@ def test_create_and_delete_event_on_google_room_address_the_room_by_resource_ema
     token.permissions.all().delete()
     for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
         token.permissions.create(permission=permission_str, organization_id=organization.id)
+    return room
+
+
+@pytest.mark.django_db
+def test_create_and_delete_event_on_google_room_address_the_room_by_resource_email(
+    event_service,
+    mock_google_adapter,
+    google_room,
+    sample_event_input_data,
+    social_account,
+):
     mock_google_adapter.create_event.return_value = _adapter_output("room_event_1")
 
-    created = event_service.create_event(room.id, sample_event_input_data)
-    _grant_event_owner_token(created, social_account.user, organization)
-    event_service.delete_event(room.id, created.id)
+    created = event_service.create_event(google_room.id, sample_event_input_data)
+    _grant_event_owner_token(created, social_account.user, google_room.organization)
+    event_service.delete_event(google_room.id, created.id)
 
-    assert mock_google_adapter.create_event.call_args.args[0].calendar_external_id == room_email
-    mock_google_adapter.delete_event.assert_called_once_with(room_email, "room_event_1")
+    assert mock_google_adapter.create_event.call_args.args[0].calendar_external_id == ROOM_EMAIL
+    mock_google_adapter.delete_event.assert_called_once_with(ROOM_EMAIL, "room_event_1")
+
+
+@pytest.mark.django_db
+def test_update_event_on_google_room_addresses_the_room_by_resource_email(
+    event_service,
+    mock_google_adapter,
+    google_room,
+    sample_event_input_data,
+    social_account,
+):
+    mock_google_adapter.create_event.return_value = _adapter_output("room_event_1")
+    mock_google_adapter.update_event.return_value = _adapter_output("room_event_1")
+    created = event_service.create_event(google_room.id, sample_event_input_data)
+    _grant_event_owner_token(created, social_account.user, google_room.organization)
+
+    event_service.update_event(
+        google_room.id,
+        created.id,
+        CalendarEventInputData(
+            title="Updated Title",
+            description="",
+            start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        ),
+    )
+
+    calendar_id, event_id, adapter_input = mock_google_adapter.update_event.call_args.args
+    assert (calendar_id, event_id, adapter_input.calendar_external_id) == (
+        ROOM_EMAIL,
+        "room_event_1",
+        ROOM_EMAIL,
+    )
 
 
 @pytest.mark.django_db

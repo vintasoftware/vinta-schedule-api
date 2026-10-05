@@ -1000,7 +1000,8 @@ class CalendarEventService:
                 )
             }
 
-            # The provider knows the calendar and event by their external ids.
+            # The provider knows the calendar by its provider id and the event by its
+            # external id.
             updated_event = write_adapter.update_event(
                 event.calendar.provider_calendar_id,
                 cast("str", event.external_id),
