@@ -24,7 +24,7 @@
     "tier4": {
       "role": "implementer",
       "tier": 4,
-      "model": "claude-fable-5-1",
+      "model": "claude-opus-5-5",
       "description": "Push retry protocol, provider-wins resync, booking-resolution apply engine."
     },
     "tier3-1": {
@@ -54,7 +54,7 @@
     "reviewer-2": {
       "role": "reviewer",
       "tier": 4,
-      "model": "claude-fable-5-1",
+      "model": "claude-opus-5-5",
       "description": "Reviews the Tier 4 phases and the Tier 4 review overrides (Phases 2, 5, 9)."
     }
   },
