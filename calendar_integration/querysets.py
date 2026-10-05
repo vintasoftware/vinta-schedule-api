@@ -23,6 +23,7 @@ from django.utils import timezone
 
 from calendar_integration.constants import (
     CalendarManagementTokenKind,
+    CalendarProvider,
     CalendarSyncStatus,
     CalendarType,
     CalendarVisibility,
@@ -260,6 +261,25 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
         restating it in each consumer.
         """
         return self.filter(calendar_type=calendar_type).exclude_inactive()
+
+    def for_provider_calendar_id(
+        self, provider: str, provider_calendar_id: str
+    ) -> "CalendarQuerySet":
+        """Calendars of ``provider`` that its calendar API addresses as ``provider_calendar_id``.
+
+        The query-side mirror of ``Calendar.provider_calendar_id``: a Google room with an
+        email is known to Google by that email, every other calendar by ``external_id``.
+        Use it to resolve an id that came back from the provider, such as the calendar
+        named in a webhook notification.
+        """
+        if provider != CalendarProvider.GOOGLE:
+            return self.filter(provider=provider, external_id=provider_calendar_id)
+        google_room_with_email = Q(calendar_type=CalendarType.RESOURCE) & ~Q(email="")
+        return self.filter(
+            (Q(external_id=provider_calendar_id) & ~google_room_with_email)
+            | (google_room_with_email & Q(email=provider_calendar_id)),
+            provider=provider,
+        )
 
     def not_newly_counted_as_type(self, calendar_type: str) -> "CalendarQuerySet":
         """Calendars an upsert that *forces* ``calendar_type`` would not newly count.

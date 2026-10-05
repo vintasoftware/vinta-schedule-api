@@ -145,7 +145,7 @@ class ExternalEventChangeRequestService:
         """
         calendar = event.calendar
         # The provider speaks in external ids, never the internal PKs.
-        calendar_external_id = calendar.external_id if calendar is not None else ""
+        calendar_external_id = calendar.provider_calendar_id if calendar is not None else ""
 
         attendees: list[EventAttendeeData] = []
         # Internal (member) attendances — resolve membership identity to email/name.
@@ -870,7 +870,7 @@ class ExternalEventChangeRequestService:
             if kind == ExternalEventChangeKind.DELETE and new_external_id is not None:
                 try:
                     write_adapter.delete_event(
-                        event.calendar.external_id if event.calendar is not None else "",
+                        event.calendar.provider_calendar_id if event.calendar is not None else "",
                         new_external_id,
                     )
                 except Exception:
