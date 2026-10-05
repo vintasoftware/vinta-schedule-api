@@ -13,6 +13,7 @@ from redis.exceptions import RedisError
 from calendar_integration.exceptions import (
     MicrosoftAppOnlyTokenError,
     MicrosoftConnectionNotConfiguredError,
+    MicrosoftSignInError,
 )
 from calendar_integration.services.calendar_clients import ms_app_only_token
 from calendar_integration.services.calendar_clients.ms_app_only_token import (
@@ -309,3 +310,115 @@ class TestDecodeRoles:
     )
     def test_anything_else_has_no_roles(self, token):
         assert decode_roles(token) == frozenset()
+
+
+def sign_in_response(**claims: Any) -> Mock:
+    response = Mock(status_code=200)
+    response.json.return_value = {
+        "id_token": make_jwt({"aud": CLIENT_ID, "nonce": "nonce-1", "tid": TENANT_ID, **claims}),
+        "access_token": ACCESS_TOKEN,
+    }
+    return response
+
+
+class TestTenantFromSignIn:
+    REDIRECT_URI = "https://api.example.com/calendar/microsoft-connection/callback/"
+
+    def test_redeems_the_code_with_the_client_secret(self, post):
+        post.return_value = sign_in_response()
+
+        make_provider().tenant_from_sign_in(
+            "auth-code", redirect_uri=self.REDIRECT_URI, nonce="nonce-1"
+        )
+
+        post.assert_called_once_with(
+            "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "code": "auth-code",
+                "redirect_uri": self.REDIRECT_URI,
+                "scope": "openid https://graph.microsoft.com/.default",
+            },
+            timeout=ms_app_only_token.REQUEST_TIMEOUT_SECONDS,
+        )
+
+    def test_returns_the_tid_of_the_id_token(self, post):
+        post.return_value = sign_in_response(tid=TENANT_ID.upper())
+
+        tenant = make_provider().tenant_from_sign_in(
+            "auth-code", redirect_uri=self.REDIRECT_URI, nonce="nonce-1"
+        )
+
+        assert tenant == TENANT_ID
+
+    @pytest.mark.parametrize(
+        "claims",
+        [
+            {"aud": "another-app"},
+            {"nonce": "another-attempt"},
+            {"tid": None},
+            {"tid": "contoso.onmicrosoft.com"},
+        ],
+    )
+    def test_id_token_not_issued_for_this_attempt_is_refused(self, post, claims):
+        post.return_value = sign_in_response(**claims)
+
+        with pytest.raises(MicrosoftSignInError):
+            make_provider().tenant_from_sign_in(
+                "auth-code", redirect_uri=self.REDIRECT_URI, nonce="nonce-1"
+            )
+
+    def test_answer_without_an_id_token_is_refused(self, post):
+        post.return_value = token_response()
+
+        with pytest.raises(MicrosoftSignInError):
+            make_provider().tenant_from_sign_in(
+                "auth-code", redirect_uri=self.REDIRECT_URI, nonce="nonce-1"
+            )
+
+    def test_refused_code_raises(self, post):
+        post.return_value = error_response(400, "invalid_grant")
+
+        with pytest.raises(MicrosoftSignInError):
+            make_provider().tenant_from_sign_in(
+                "auth-code", redirect_uri=self.REDIRECT_URI, nonce="nonce-1"
+            )
+
+    def test_network_error_raises(self, post):
+        post.side_effect = requests.ConnectionError("down")
+
+        with pytest.raises(MicrosoftSignInError):
+            make_provider().tenant_from_sign_in(
+                "auth-code", redirect_uri=self.REDIRECT_URI, nonce="nonce-1"
+            )
+
+    def test_unconfigured_app_raises_without_a_request(self, post):
+        provider = MicrosoftAppOnlyTokenProvider(
+            client_id="", client_secret="", cache_getter=lambda: None
+        )
+
+        with pytest.raises(MicrosoftConnectionNotConfiguredError):
+            provider.tenant_from_sign_in(
+                "auth-code", redirect_uri=self.REDIRECT_URI, nonce="nonce-1"
+            )
+
+        post.assert_not_called()
+
+    def test_secret_code_and_tokens_never_reach_the_logs(self, post, caplog):
+        caplog.set_level(logging.DEBUG)
+        code = "secret-authorization-code"
+        for answer in (
+            error_response(400, "invalid_grant"),
+            sign_in_response(aud="another-app"),
+        ):
+            post.return_value = answer
+            with pytest.raises(MicrosoftSignInError):
+                make_provider().tenant_from_sign_in(
+                    code, redirect_uri=self.REDIRECT_URI, nonce="nonce-1"
+                )
+
+        assert caplog.records, "the error paths are expected to log something"
+        for value in (CLIENT_SECRET, code, ACCESS_TOKEN, "AADSTS"):
+            assert value not in caplog.text

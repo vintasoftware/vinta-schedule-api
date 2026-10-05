@@ -5,13 +5,17 @@ The round trip:
 1. An org admin asks for a consent URL. ``build_consent_url`` stores a fresh random
    nonce on the organization's ``MicrosoftOrganizationConnection`` and signs
    ``{organization id, nonce}`` into the OAuth ``state``.
-2. A Global Administrator of the customer's tenant opens the URL and grants admin
-   consent to Vinta's multi-tenant Entra app. Microsoft redirects the browser to the
-   callback with ``tenant``, ``admin_consent`` and the same ``state``.
+2. A Global Administrator of the customer's tenant opens the URL, signs in, and
+   grants admin consent to Vinta's multi-tenant Entra app (an OpenID Connect
+   authorization-code request with ``prompt=admin_consent``). Microsoft redirects the
+   browser to the callback with an authorization ``code`` and the same ``state``.
 3. ``complete_consent`` checks the signature and the age of the state, then clears
-   the stored nonce in the same row lock that saves the tenant id. A state is
-   therefore good for one callback only, and only for the organization it was
-   issued to.
+   the stored nonce under a row lock, so a state is good for one callback only, and
+   only for the organization it was issued to. It then redeems the code with Vinta's
+   client secret and stores the ``tid`` of the returned ``id_token``.
+
+   The tenant never comes from the callback's query string. Anyone holding a state
+   could write that, and would then connect a tenant they never signed in to.
 4. ``verify`` mints an app-only token for the tenant, checks its ``roles`` claim and
    reads one building from Microsoft Places. Only then is ``write_enabled`` set.
 """
@@ -37,16 +41,15 @@ from calendar_integration.exceptions import (
 )
 from calendar_integration.models import MicrosoftOrganizationConnection
 from calendar_integration.services.calendar_clients.ms_app_only_token import (
-    GRAPH_DEFAULT_SCOPE,
+    SIGN_IN_SCOPE,
     MicrosoftAppOnlyTokenProvider,
-    is_tenant_id,
 )
 from organizations.models import Organization
 
 
 logger = logging.getLogger(__name__)
 
-ADMIN_CONSENT_URL = "https://login.microsoftonline.com/organizations/v2.0/adminconsent"
+AUTHORIZE_URL = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize"
 GRAPH_BUILDINGS_URL = "https://graph.microsoft.com/v1.0/places/microsoft.graph.building"
 GRAPH_REQUEST_TIMEOUT_SECONDS = 15
 
@@ -102,12 +105,18 @@ class MicrosoftConnectionService:
         query = urllib.parse.urlencode(
             {
                 "client_id": self.token_provider.client_id,
-                "scope": GRAPH_DEFAULT_SCOPE,
+                "response_type": "code",
+                "response_mode": "query",
                 "redirect_uri": redirect_uri,
+                "scope": SIGN_IN_SCOPE,
+                # Shows the tenant-wide consent screen, which only an admin can accept.
+                "prompt": "admin_consent",
                 "state": state,
+                # Echoed back inside the id_token, tying it to this attempt.
+                "nonce": nonce,
             }
         )
-        return f"{ADMIN_CONSENT_URL}?{query}"
+        return f"{AUTHORIZE_URL}?{query}"
 
     def organization_id_from_state(self, state: str) -> int:
         """The organization id a consent ``state`` was issued to, once its signature checks out.
@@ -121,20 +130,21 @@ class MicrosoftConnectionService:
         return self._read_state(state)[0]
 
     def complete_consent(
-        self, state: str, tenant: str, admin_consent: str
+        self, state: str, code: str, redirect_uri: str
     ) -> MicrosoftOrganizationConnection:
-        """Store the consenting tenant on the organization the ``state`` was issued to.
+        """Store the tenant the admin signed in to on the organization ``state`` was issued to.
 
-        The nonce is used up whether or not consent was granted.
+        ``code`` is the authorization code from the callback, and ``redirect_uri`` must
+        be the one the consent URL carried. The nonce is used up before the code is
+        redeemed, so a state works once whatever happens next.
 
         Raises:
             MicrosoftConsentStateError: the state is tampered, expired, already used, or
                 was not issued to the organization it names.
-            MicrosoftConsentDeniedError: the admin declined, or Microsoft sent no valid
-                tenant id. The nonce is still used up.
+            MicrosoftConsentDeniedError: the admin declined (no code came back).
+            MicrosoftSignInError: Microsoft did not confirm the sign-in for this attempt.
         """
         organization_id, nonce = self._read_state(state)
-        granted = admin_consent.lower() == "true" and is_tenant_id(tenant)
         with transaction.atomic():
             connection = (
                 MicrosoftOrganizationConnection.objects.filter_by_organization(organization_id)
@@ -145,25 +155,30 @@ class MicrosoftConnectionService:
             if connection is None:
                 raise MicrosoftConsentStateError()
             connection.consent_state = ""
-            update_fields = ["consent_state", "modified"]
-            if granted:
-                connection.tenant_id = tenant.lower()
-                connection.consented_at = timezone.now()
-                # A new consent has not been verified yet, whatever the old one was.
-                connection.write_enabled = False
-                connection.verified_at = None
-                connection.last_verification_error = ""
-                update_fields += [
-                    "tenant_id",
-                    "consented_at",
-                    "write_enabled",
-                    "verified_at",
-                    "last_verification_error",
-                ]
-            connection.save(update_fields=update_fields)
-        if not granted:
+            connection.save(update_fields=["consent_state", "modified"])
+        if not code:
             logger.info("Microsoft admin consent not granted for organization %s", organization_id)
             raise MicrosoftConsentDeniedError()
+
+        tenant_id = self.token_provider.tenant_from_sign_in(
+            code, redirect_uri=redirect_uri, nonce=nonce
+        )
+        connection.tenant_id = tenant_id
+        connection.consented_at = timezone.now()
+        # A new consent has not been verified yet, whatever the old one was.
+        connection.write_enabled = False
+        connection.verified_at = None
+        connection.last_verification_error = ""
+        connection.save(
+            update_fields=[
+                "tenant_id",
+                "consented_at",
+                "write_enabled",
+                "verified_at",
+                "last_verification_error",
+                "modified",
+            ]
+        )
         logger.info("Microsoft admin consent stored for organization %s", organization_id)
         return connection
 

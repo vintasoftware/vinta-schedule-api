@@ -6,7 +6,8 @@
   tenant-scoped view.
 * ``GET calendar/microsoft-connection/callback/`` is where Microsoft sends the
   browser after admin consent. It is unauthenticated and binds no organization: the
-  one it acts on comes from the signed ``state``, and it always redirects to
+  one it acts on comes from the signed ``state``, the tenant from the ``id_token``
+  Microsoft returns when the server redeems the ``code``, and it always redirects to
   ``FRONTEND_BASE_URL``.
 
 All three answer 404 while ``resource_calendar_provider_sync`` is off for the
@@ -34,6 +35,7 @@ from calendar_integration.exceptions import (
     MicrosoftConnectionNotConfiguredError,
     MicrosoftConsentDeniedError,
     MicrosoftConsentStateError,
+    MicrosoftSignInError,
 )
 from calendar_integration.serializers import (
     MicrosoftConnectionVerificationSerializer,
@@ -60,11 +62,17 @@ CONSENT_STATUS_CONNECTED = "connected"
 CONSENT_STATUS_ERROR = "error"
 CONSENT_REASON_INVALID_STATE = "invalid_state"
 CONSENT_REASON_DENIED = "consent_denied"
+CONSENT_REASON_SIGN_IN_FAILED = "sign_in_failed"
 
 
 def _acting_organization(request: Request) -> Organization:
     # IsOrganizationAdmin has already required an active membership.
     return cast("Any", request).organization_membership.organization
+
+
+def _callback_uri(request: HttpRequest) -> str:
+    # The consent URL and the code redemption must send the same redirect URI.
+    return request.build_absolute_uri(reverse("microsoft-connection-callback"))
 
 
 def _require_flag(organization: Organization) -> None:
@@ -93,10 +101,9 @@ class MicrosoftConsentUrlView(TenantScopedViewMixin, APIView):
         """Issue a new single-use consent link. Older links stop working."""
         organization = _acting_organization(request)
         _require_flag(organization)
-        redirect_uri = request.build_absolute_uri(reverse("microsoft-connection-callback"))
         try:
             consent_url = microsoft_connection_service.build_consent_url(
-                organization, redirect_uri=redirect_uri
+                organization, redirect_uri=_callback_uri(request)
             )
         except MicrosoftConnectionNotConfiguredError:
             return _not_configured_response()
@@ -163,16 +170,20 @@ class MicrosoftConsentCallbackView(View):
             raise Http404(FLAG_OFF_MESSAGE)
 
         try:
+            # Only `code` is read from the query string. Any `tenant` value there is
+            # ignored: the tenant comes from Microsoft's answer to the code redemption.
             microsoft_connection_service.complete_consent(
                 state,
-                tenant=request.GET.get("tenant", ""),
-                admin_consent=request.GET.get("admin_consent", ""),
+                code=request.GET.get("code", ""),
+                redirect_uri=_callback_uri(request),
             )
         except MicrosoftConsentStateError:
             logger.info("Rejected Microsoft consent callback for organization %s", organization_id)
             return _consent_result_redirect(CONSENT_STATUS_ERROR, CONSENT_REASON_INVALID_STATE)
         except MicrosoftConsentDeniedError:
             return _consent_result_redirect(CONSENT_STATUS_ERROR, CONSENT_REASON_DENIED)
+        except (MicrosoftSignInError, MicrosoftConnectionNotConfiguredError):
+            return _consent_result_redirect(CONSENT_STATUS_ERROR, CONSENT_REASON_SIGN_IN_FAILED)
         return _consent_result_redirect(CONSENT_STATUS_CONNECTED)
 
 

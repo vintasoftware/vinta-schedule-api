@@ -38,6 +38,12 @@ Entra tenant.
 
    Do not grant admin consent in Vinta's own tenant for customers; each customer
    grants it in theirs.
+
+   The consent link is also a sign-in (OpenID Connect, scope `openid`). That is how
+   Vinta Schedule learns which tenant consented. It needs no extra setting: `openid`
+   needs no admin grant, and a **Web** platform with a client secret gets the id
+   token from the token endpoint. Leave "ID tokens (used for implicit and hybrid
+   flows)" off.
 3. Under **Certificates & secrets → Client secrets**, create a secret. Note its
    expiry date and set a reminder to rotate it before then: an expired secret stops
    every customer's room sync at once.
@@ -70,14 +76,17 @@ tenant finishes it.
    (`POST /calendar/microsoft-connection/consent-url/`, or the button in the web app).
 2. They send the link to their Global Administrator. The link works **once**, for
    **one hour**, and only for that organization. Requesting a new link cancels the
-   previous one. Do not forward the link outside your company: whoever accepts it
-   connects their tenant to your Vinta Schedule organization.
+   previous one. Do not forward the link outside your company: whoever signs in with
+   it and accepts connects *their own* tenant to your Vinta Schedule organization.
 3. The Global Administrator opens the link, signs in to the customer's tenant, reviews
-   the two permissions and selects **Accept**.
-4. Microsoft sends the browser back to Vinta Schedule, which stores the tenant id and
-   sends the browser on to the web app with the outcome
+   the two permissions and selects **Accept**. Only an administrator can accept this
+   screen.
+4. Microsoft sends the browser back to Vinta Schedule with a one-time code. Vinta
+   Schedule redeems the code with Microsoft and stores the tenant the administrator
+   signed in to, as Microsoft reports it; a tenant id written into the link itself is
+   ignored. It then sends the browser on to the web app with the outcome
    (`/settings/integrations/microsoft?status=connected`, or `status=error` with
-   `reason=invalid_state` or `reason=consent_denied`).
+   `reason=invalid_state`, `reason=consent_denied` or `reason=sign_in_failed`).
 
 ### 2. Assign the Exchange roles
 
@@ -132,6 +141,7 @@ Run the verification again after any change to consent or permissions.
 | Consent page says the redirect URI does not match | Vinta ops: the app registration's redirect URI must equal `https://<API domain>/calendar/microsoft-connection/callback/` exactly. |
 | `reason=invalid_state` after accepting | The link was used before, is older than an hour, or a newer link was requested. Request a new link. |
 | `reason=consent_denied` | The administrator canceled, or was not allowed to consent. A Global Administrator must accept. |
+| `reason=sign_in_failed` | Microsoft did not confirm the sign-in: the code expired or was refused, or Vinta's app credentials are wrong. Request a new link and try again. If it repeats, Vinta ops checks `MS_CLIENT_ID` / `MS_CLIENT_SECRET`. |
 | Verify says a permission is missing | Open a new consent link and accept again; Microsoft asks only for what is missing. |
 | Verify says Vinta could not get a token | Consent was revoked, or the tenant removed the enterprise app. Grant consent again. |
 | Verify passes but room writes fail | Assign the Exchange roles in step 2, wait up to an hour, then retry the sync. |

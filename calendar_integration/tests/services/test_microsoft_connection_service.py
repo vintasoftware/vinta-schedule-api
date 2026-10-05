@@ -1,7 +1,12 @@
 """Integration tests for MicrosoftConnectionService: the consent round trip and verify."""
 
+import base64
+import contextlib
 import datetime
+import json
 import urllib.parse
+from collections.abc import Iterator
+from typing import Any
 from unittest.mock import Mock, patch
 
 from django.core import signing
@@ -17,10 +22,12 @@ from calendar_integration.exceptions import (
     MicrosoftConnectionNotConfiguredError,
     MicrosoftConsentDeniedError,
     MicrosoftConsentStateError,
+    MicrosoftSignInError,
 )
 from calendar_integration.factories import create_microsoft_organization_connection
 from calendar_integration.models import MicrosoftOrganizationConnection
 from calendar_integration.services import microsoft_connection_service as service_module
+from calendar_integration.services.calendar_clients import ms_app_only_token as token_module
 from calendar_integration.services.calendar_clients.ms_app_only_token import (
     MicrosoftAppOnlyToken,
     MicrosoftAppOnlyTokenProvider,
@@ -73,6 +80,26 @@ def graph_response(status_code: int) -> Mock:
     return Mock(status_code=status_code)
 
 
+def id_token(claims: dict[str, Any]) -> str:
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return f"eyJhbGciOiJub25lIn0.{payload}.signature"
+
+
+@contextlib.contextmanager
+def microsoft_sign_in(state: str, tid: str | None, **overrides: Any) -> Iterator[Mock]:
+    """Answer the code redemption the way Microsoft would for an admin of ``tid``."""
+    claims = {
+        "aud": "vinta-client-id",
+        "nonce": signing.loads(state, salt=CONSENT_STATE_SALT)["nonce"],
+        "tid": tid,
+        **overrides,
+    }
+    response = Mock(status_code=200)
+    response.json.return_value = {"id_token": id_token(claims), "access_token": "delegated"}
+    with patch.object(token_module.requests, "post", return_value=response) as post:
+        yield post
+
+
 @pytest.fixture
 def organization() -> Organization:
     return baker.make(Organization)
@@ -85,24 +112,28 @@ def service() -> MicrosoftConnectionService:
 
 @pytest.mark.django_db
 class TestBuildConsentUrl:
-    def test_url_targets_admin_consent_with_a_signed_state(self, service, organization):
+    def test_url_asks_an_admin_to_sign_in_and_consent_with_a_signed_state(
+        self, service, organization
+    ):
         consent_url = service.build_consent_url(organization, redirect_uri=REDIRECT_URI)
 
         parts = urllib.parse.urlsplit(consent_url)
         query = urllib.parse.parse_qs(parts.query)
+        nonce = connection_of(organization).consent_state
         assert f"{parts.scheme}://{parts.netloc}{parts.path}" == (
-            "https://login.microsoftonline.com/organizations/v2.0/adminconsent"
+            "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize"
         )
         assert {key: values for key, values in query.items() if key != "state"} == {
             "client_id": ["vinta-client-id"],
-            "scope": ["https://graph.microsoft.com/.default"],
+            "response_type": ["code"],
+            "response_mode": ["query"],
             "redirect_uri": [REDIRECT_URI],
+            "scope": ["openid https://graph.microsoft.com/.default"],
+            "prompt": ["admin_consent"],
+            "nonce": [nonce],
         }
         payload = signing.loads(query["state"][0], salt=CONSENT_STATE_SALT)
-        assert payload == {
-            "org": organization.pk,
-            "nonce": connection_of(organization).consent_state,
-        }
+        assert payload == {"org": organization.pk, "nonce": nonce}
 
     def test_creates_the_connection_with_only_a_nonce(self, service, organization):
         service.build_consent_url(organization, redirect_uri=REDIRECT_URI)
@@ -140,10 +171,11 @@ class TestBuildConsentUrl:
 
 @pytest.mark.django_db
 class TestCompleteConsent:
-    def test_valid_state_stores_the_tenant_and_uses_up_the_nonce(self, service, organization):
+    def test_stores_the_tenant_from_the_id_token_and_uses_up_the_nonce(self, service, organization):
         with freeze_time("2026-10-05 12:00:00"):
             state = state_from(service.build_consent_url(organization, redirect_uri=REDIRECT_URI))
-            service.complete_consent(state, tenant=TENANT_ID.upper(), admin_consent="True")
+            with microsoft_sign_in(state, tid=TENANT_ID.upper()) as post:
+                service.complete_consent(state, code="auth-code", redirect_uri=REDIRECT_URI)
 
         connection = connection_of(organization)
         assert (
@@ -152,6 +184,18 @@ class TestCompleteConsent:
             connection.consent_state,
             connection.write_enabled,
         ) == (TENANT_ID, datetime.datetime(2026, 10, 5, 12, tzinfo=datetime.UTC), "", False)
+        post.assert_called_once_with(
+            "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": "vinta-client-id",
+                "client_secret": "vinta-client-secret",
+                "code": "auth-code",
+                "redirect_uri": REDIRECT_URI,
+                "scope": "openid https://graph.microsoft.com/.default",
+            },
+            timeout=token_module.REQUEST_TIMEOUT_SECONDS,
+        )
 
     def test_new_consent_resets_a_previous_verification(self, service, organization):
         with organization_context(organization):
@@ -164,7 +208,8 @@ class TestCompleteConsent:
             )
         state = state_from(service.build_consent_url(organization, redirect_uri=REDIRECT_URI))
 
-        service.complete_consent(state, tenant=TENANT_ID, admin_consent="True")
+        with microsoft_sign_in(state, tid=TENANT_ID):
+            service.complete_consent(state, code="auth-code", redirect_uri=REDIRECT_URI)
 
         connection = connection_of(organization)
         assert (
@@ -174,12 +219,70 @@ class TestCompleteConsent:
             connection.last_verification_error,
         ) == (TENANT_ID, False, None, "")
 
+    @pytest.mark.parametrize(
+        "id_token_claims",
+        [
+            {"aud": "another-app"},
+            {"nonce": "a-nonce-from-another-attempt"},
+            {"tid": None},
+            {"tid": "contoso.onmicrosoft.com"},
+        ],
+    )
+    def test_id_token_not_issued_for_this_attempt_stores_nothing(
+        self, service, organization, id_token_claims
+    ):
+        state = state_from(service.build_consent_url(organization, redirect_uri=REDIRECT_URI))
+
+        with (
+            microsoft_sign_in(state, **{"tid": TENANT_ID, **id_token_claims}),
+            pytest.raises(MicrosoftSignInError),
+        ):
+            service.complete_consent(state, code="auth-code", redirect_uri=REDIRECT_URI)
+
+        connection = connection_of(organization)
+        assert (connection.tenant_id, connection.consent_state) == ("", "")
+
+    def test_refused_code_stores_nothing(self, service, organization):
+        state = state_from(service.build_consent_url(organization, redirect_uri=REDIRECT_URI))
+        refused = Mock(status_code=400)
+        refused.json.return_value = {"error": "invalid_grant"}
+
+        with (
+            patch.object(token_module.requests, "post", return_value=refused),
+            pytest.raises(MicrosoftSignInError),
+        ):
+            service.complete_consent(state, code="stolen-or-stale", redirect_uri=REDIRECT_URI)
+
+        connection = connection_of(organization)
+        assert (connection.tenant_id, connection.consent_state) == ("", "")
+
+    def test_declined_consent_stores_nothing_but_uses_up_the_nonce(self, service, organization):
+        state = state_from(service.build_consent_url(organization, redirect_uri=REDIRECT_URI))
+
+        with (
+            patch.object(token_module.requests, "post") as post,
+            pytest.raises(MicrosoftConsentDeniedError),
+        ):
+            service.complete_consent(state, code="", redirect_uri=REDIRECT_URI)
+
+        post.assert_not_called()
+        connection = connection_of(organization)
+        assert (connection.tenant_id, connection.consented_at, connection.consent_state) == (
+            "",
+            None,
+            "",
+        )
+
     def test_tampered_state_is_rejected(self, service, organization):
         state = state_from(service.build_consent_url(organization, redirect_uri=REDIRECT_URI))
 
-        with pytest.raises(MicrosoftConsentStateError):
-            service.complete_consent(tamper(state), tenant=TENANT_ID, admin_consent="True")
+        with (
+            microsoft_sign_in(state, tid=TENANT_ID) as post,
+            pytest.raises(MicrosoftConsentStateError),
+        ):
+            service.complete_consent(tamper(state), code="auth-code", redirect_uri=REDIRECT_URI)
 
+        post.assert_not_called()
         assert connection_of(organization).tenant_id == ""
 
     def test_state_signed_with_another_salt_is_rejected(self, service, organization):
@@ -188,19 +291,22 @@ class TestCompleteConsent:
         forged = signing.dumps({"org": organization.pk, "nonce": nonce}, salt="another.purpose")
 
         with pytest.raises(MicrosoftConsentStateError):
-            service.complete_consent(forged, tenant=TENANT_ID, admin_consent="True")
+            service.complete_consent(forged, code="auth-code", redirect_uri=REDIRECT_URI)
 
         assert connection_of(organization).tenant_id == ""
 
     def test_replayed_state_is_rejected(self, service, organization):
         state = state_from(service.build_consent_url(organization, redirect_uri=REDIRECT_URI))
-        service.complete_consent(state, tenant=TENANT_ID, admin_consent="True")
+        with microsoft_sign_in(state, tid=TENANT_ID):
+            service.complete_consent(state, code="auth-code", redirect_uri=REDIRECT_URI)
 
-        with pytest.raises(MicrosoftConsentStateError):
-            service.complete_consent(
-                state, tenant="99999999-9999-9999-9999-999999999999", admin_consent="True"
-            )
+        with (
+            microsoft_sign_in(state, tid="99999999-9999-9999-9999-999999999999") as post,
+            pytest.raises(MicrosoftConsentStateError),
+        ):
+            service.complete_consent(state, code="second-code", redirect_uri=REDIRECT_URI)
 
+        post.assert_not_called()
         assert connection_of(organization).tenant_id == TENANT_ID
 
     def test_superseded_link_is_rejected(self, service, organization):
@@ -208,7 +314,7 @@ class TestCompleteConsent:
         service.build_consent_url(organization, redirect_uri=REDIRECT_URI)
 
         with pytest.raises(MicrosoftConsentStateError):
-            service.complete_consent(old_state, tenant=TENANT_ID, admin_consent="True")
+            service.complete_consent(old_state, code="auth-code", redirect_uri=REDIRECT_URI)
 
         assert connection_of(organization).tenant_id == ""
 
@@ -223,7 +329,7 @@ class TestCompleteConsent:
         )
 
         with pytest.raises(MicrosoftConsentStateError):
-            service.complete_consent(cross_state, tenant=TENANT_ID, admin_consent="True")
+            service.complete_consent(cross_state, code="auth-code", redirect_uri=REDIRECT_URI)
 
         assert connection_of(organization).tenant_id == ""
         assert connection_of(other_organization).tenant_id == ""
@@ -234,7 +340,7 @@ class TestCompleteConsent:
         state = signing.dumps({"org": never_asked.pk, "nonce": "guess"}, salt=CONSENT_STATE_SALT)
 
         with pytest.raises(MicrosoftConsentStateError):
-            service.complete_consent(state, tenant=TENANT_ID, admin_consent="True")
+            service.complete_consent(state, code="auth-code", redirect_uri=REDIRECT_URI)
 
         assert not MicrosoftOrganizationConnection.objects.filter_by_organization(
             never_asked
@@ -254,7 +360,7 @@ class TestCompleteConsent:
         state = signing.dumps(payload, salt=CONSENT_STATE_SALT)
 
         with pytest.raises(MicrosoftConsentStateError):
-            service.complete_consent(state, tenant=TENANT_ID, admin_consent="True")
+            service.complete_consent(state, code="auth-code", redirect_uri=REDIRECT_URI)
 
     def test_expired_state_is_rejected(self, service, organization):
         with freeze_time("2026-10-05 12:00:00"):
@@ -264,33 +370,9 @@ class TestCompleteConsent:
             freeze_time("2026-10-05 13:00:01"),
             pytest.raises(MicrosoftConsentStateError),
         ):
-            service.complete_consent(state, tenant=TENANT_ID, admin_consent="True")
+            service.complete_consent(state, code="auth-code", redirect_uri=REDIRECT_URI)
 
         assert connection_of(organization).tenant_id == ""
-
-    @pytest.mark.parametrize(
-        ("tenant", "admin_consent"),
-        [
-            (TENANT_ID, "False"),
-            (TENANT_ID, ""),
-            ("", "True"),
-            ("contoso.onmicrosoft.com", "True"),
-        ],
-    )
-    def test_denied_consent_stores_nothing_but_uses_up_the_nonce(
-        self, service, organization, tenant, admin_consent
-    ):
-        state = state_from(service.build_consent_url(organization, redirect_uri=REDIRECT_URI))
-
-        with pytest.raises(MicrosoftConsentDeniedError):
-            service.complete_consent(state, tenant=tenant, admin_consent=admin_consent)
-
-        connection = connection_of(organization)
-        assert (connection.tenant_id, connection.consented_at, connection.consent_state) == (
-            "",
-            None,
-            "",
-        )
 
 
 @pytest.mark.django_db

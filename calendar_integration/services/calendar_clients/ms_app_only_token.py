@@ -9,7 +9,11 @@ Tokens are cached in Redis until five minutes before they expire. Redis is optio
 here, as everywhere else: when it is missing or its circuit is open, every call asks
 Microsoft for a fresh token.
 
-Neither the client secret nor any token is ever logged.
+The same Entra app also redeems the authorization code of the admin-consent sign-in
+(``tenant_from_sign_in``). That is how Vinta learns which tenant consented: from the
+``id_token`` Microsoft returns to this server, never from the browser.
+
+Neither the client secret, an authorization code, nor any token is ever logged.
 """
 
 import base64
@@ -30,6 +34,7 @@ from redis.exceptions import RedisError
 from calendar_integration.exceptions import (
     MicrosoftAppOnlyTokenError,
     MicrosoftConnectionNotConfiguredError,
+    MicrosoftSignInError,
 )
 from common.redis import CircuitBreakerOpenError, get_redis_connection, redis_breaker
 
@@ -38,6 +43,10 @@ logger = logging.getLogger(__name__)
 
 TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"  # noqa: S105 - a URL
 GRAPH_DEFAULT_SCOPE = "https://graph.microsoft.com/.default"
+# The admin signs in through the multi-tenant endpoint; the code is redeemed there too.
+SIGN_IN_TOKEN_URL = "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"  # noqa: S105 - a URL
+# `openid` makes Microsoft return an id_token, whose `tid` claim names the tenant.
+SIGN_IN_SCOPE = f"openid {GRAPH_DEFAULT_SCOPE}"
 CACHE_EXPIRY_MARGIN_SECONDS = 5 * 60
 REQUEST_TIMEOUT_SECONDS = 15
 CACHE_KEY_PREFIX = "ms_app_only_token"
@@ -75,22 +84,32 @@ class MicrosoftAppOnlyToken:
     expires_at: float
 
 
-def decode_roles(access_token: str) -> frozenset[str]:
-    """The ``roles`` claim of an access token: the application permissions granted.
+def decode_jwt_claims(token: str) -> dict[str, Any]:
+    """The claims of a JWT that Microsoft's token endpoint returned to this server.
 
-    The signature is not checked. The token came straight from Microsoft's token
-    endpoint over TLS, and the roles only tell an admin which permission is missing.
-    Graph still enforces the real permissions on every call.
+    The signature is not checked. Only call this on a token received directly from
+    Microsoft over TLS in the response to our own request (OpenID Connect Core 3.1.3.7
+    allows that for an id_token from the token endpoint), never on one a browser or
+    caller handed in. Anything that is not a JWT gives ``{}``.
     """
-    parts = access_token.split(".")
-    if len(parts) < 2:
-        return frozenset()
+    parts = token.split(".")
+    if len(parts) < 2:  # noqa: PLR2004
+        return {}
     payload = parts[1] + "=" * (-len(parts[1]) % 4)
     try:
         claims = json.loads(base64.urlsafe_b64decode(payload))
     except (ValueError, binascii.Error):
-        return frozenset()
-    roles = claims.get("roles") if isinstance(claims, dict) else None
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
+def decode_roles(access_token: str) -> frozenset[str]:
+    """The ``roles`` claim of an access token: the application permissions granted.
+
+    The roles only tell an admin which permission is missing. Graph still enforces the
+    real permissions on every call.
+    """
+    roles = decode_jwt_claims(access_token).get("roles")
     if not isinstance(roles, list):
         return frozenset()
     return frozenset(role for role in roles if isinstance(role, str))
@@ -141,6 +160,62 @@ class MicrosoftAppOnlyTokenProvider:
         token = self._request_token(tenant_id)
         self._write_cache(tenant_id, token)
         return token
+
+    def tenant_from_sign_in(self, code: str, redirect_uri: str, nonce: str) -> str:
+        """Redeem the admin-consent sign-in code and return the tenant the admin signed in to.
+
+        The tenant is the ``tid`` claim of the ``id_token`` in Microsoft's answer. That
+        token is accepted only when it was issued to Vinta's app (``aud``) for this
+        consent attempt (``nonce``). The delegated access token in the same answer is
+        dropped unused.
+
+        Raises:
+            MicrosoftConnectionNotConfiguredError: ``MS_CLIENT_ID`` or ``MS_CLIENT_SECRET``
+                is empty.
+            MicrosoftSignInError: Microsoft refused or did not answer, or the id_token
+                does not match this app and attempt, or names no tenant.
+        """
+        if not self.is_configured:
+            raise MicrosoftConnectionNotConfiguredError()
+        try:
+            response = requests.post(
+                SIGN_IN_TOKEN_URL,
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "scope": SIGN_IN_SCOPE,
+                },
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            logger.warning("Microsoft sign-in code redemption failed: %s", type(exc).__name__)
+            raise MicrosoftSignInError() from None
+
+        body = _json_object(response)
+        if response.status_code != 200:  # noqa: PLR2004
+            error_code = body.get("error") if isinstance(body.get("error"), str) else None
+            logger.warning(
+                "Microsoft sign-in code redemption returned HTTP %s (%s)",
+                response.status_code,
+                error_code,
+            )
+            raise MicrosoftSignInError()
+
+        id_token = body.get("id_token")
+        claims = decode_jwt_claims(id_token) if isinstance(id_token, str) else {}
+        tenant_id = claims.get("tid")
+        if (
+            claims.get("aud") != self._client_id
+            or claims.get("nonce") != nonce
+            or not isinstance(tenant_id, str)
+            or not is_tenant_id(tenant_id)
+        ):
+            logger.warning("Microsoft sign-in returned an id_token not issued for this attempt")
+            raise MicrosoftSignInError()
+        return tenant_id.lower()
 
     def _cache_key(self, tenant_id: str) -> str:
         # Keyed by client id too, so rotating to another Entra app never serves a

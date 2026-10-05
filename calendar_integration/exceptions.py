@@ -621,6 +621,16 @@ class MicrosoftConsentStateError(CalendarIntegrationError):
 
 
 class MicrosoftConsentDeniedError(CalendarIntegrationError):
-    """The tenant admin did not grant admin consent, or Microsoft sent no usable tenant id."""
+    """The tenant admin did not grant admin consent: Microsoft sent no authorization code."""
 
     default_message = "Microsoft admin consent was not granted."
+
+
+class MicrosoftSignInError(CalendarIntegrationError):
+    """The admin's sign-in could not be confirmed with Microsoft.
+
+    The authorization code was refused, or the returned ``id_token`` was not issued to
+    Vinta's app for this consent attempt, or it named no tenant.
+    """
+
+    default_message = "Could not confirm the Microsoft sign-in."

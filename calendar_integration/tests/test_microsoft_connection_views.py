@@ -1,10 +1,15 @@
 """Tests for the Microsoft connection endpoints: consent URL, consent callback and verify."""
 
+import base64
+import contextlib
 import datetime
+import json
 import urllib.parse
-from unittest.mock import Mock
+from collections.abc import Iterator
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
+from django.core import signing
 from django.test import Client
 from django.urls import resolve, reverse
 
@@ -18,7 +23,9 @@ from calendar_integration.microsoft_connection_views import (
     MicrosoftConsentUrlView,
 )
 from calendar_integration.models import MicrosoftOrganizationConnection
+from calendar_integration.services.calendar_clients import ms_app_only_token as token_module
 from calendar_integration.services.microsoft_connection_service import (
+    CONSENT_STATE_SALT,
     MicrosoftConnectionVerification,
 )
 from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC
@@ -31,6 +38,7 @@ from organizations.tests.helpers import make_membership
 User = get_user_model()
 
 TENANT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+SIGNED_IN_TENANT_ID = "11111111-2222-3333-4444-555555555555"
 CONSENT_URL_PATH = "/calendar/microsoft-connection/consent-url/"
 VERIFY_PATH = "/calendar/microsoft-connection/verify/"
 CALLBACK_PATH = "/calendar/microsoft-connection/callback/"
@@ -57,6 +65,21 @@ def state_from(consent_url: str) -> str:
 
 def connection_of(organization: Organization) -> MicrosoftOrganizationConnection:
     return MicrosoftOrganizationConnection.objects.filter_by_organization(organization).get()
+
+
+@contextlib.contextmanager
+def microsoft_sign_in(state: str, tid: str) -> Iterator[Mock]:
+    """Answer the code redemption the way Microsoft would for an admin of tid."""
+    claims = {
+        "aud": "vinta-client-id",
+        "nonce": signing.loads(state, salt=CONSENT_STATE_SALT)["nonce"],
+        "tid": tid,
+    }
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    response = Mock(status_code=200)
+    response.json.return_value = {"id_token": f"eyJhbGciOiJub25lIn0.{payload}.sig"}
+    with patch.object(token_module.requests, "post", return_value=response) as post:
+        yield post
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +144,7 @@ class TestConsentUrl:
 
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(consent_url).query)
         assert consent_url.startswith(
-            "https://login.microsoftonline.com/organizations/v2.0/adminconsent?"
+            "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?"
         )
         assert query["client_id"] == ["vinta-client-id"]
         assert query["redirect_uri"] == [f"http://testserver{CALLBACK_PATH}"]
@@ -205,31 +228,76 @@ class TestVerify:
 
 @pytest.mark.django_db
 class TestCallback:
-    def test_valid_callback_stores_the_tenant_and_redirects_to_the_frontend(
+    def test_valid_callback_stores_the_signed_in_tenant_and_redirects_to_the_frontend(
         self, admin_client, organization, settings
     ):
         state = state_from(consent_url_for(admin_client))
 
-        response = Client().get(
-            CALLBACK_PATH, {"admin_consent": "True", "tenant": TENANT_ID, "state": state}
-        )
+        with microsoft_sign_in(state, tid=TENANT_ID) as post:
+            response = Client().get(CALLBACK_PATH, {"code": "auth-code", "state": state})
 
         assert response.status_code == 302
         assert response["Location"] == expected_redirect({"status": "connected"}, settings)
         assert connection_of(organization).tenant_id == TENANT_ID
+        assert post.call_args.kwargs["data"]["code"] == "auth-code"
+        assert post.call_args.kwargs["data"]["redirect_uri"] == f"http://testserver{CALLBACK_PATH}"
+
+    def test_tenant_in_the_query_string_is_ignored(self, admin_client, organization, settings):
+        state = state_from(consent_url_for(admin_client))
+
+        with microsoft_sign_in(state, tid=SIGNED_IN_TENANT_ID):
+            response = Client().get(
+                CALLBACK_PATH,
+                {"code": "auth-code", "state": state, "tenant": TENANT_ID, "tid": TENANT_ID},
+            )
+
+        assert response["Location"] == expected_redirect({"status": "connected"}, settings)
+        assert connection_of(organization).tenant_id == SIGNED_IN_TENANT_ID
+
+    def test_naming_a_tenant_without_signing_in_stores_nothing(
+        self, admin_client, organization, settings
+    ):
+        """The org admin holds a valid state and hand-writes the old admin-consent answer."""
+        state = state_from(consent_url_for(admin_client))
+
+        with patch.object(token_module.requests, "post") as post:
+            response = Client().get(
+                CALLBACK_PATH, {"admin_consent": "True", "tenant": TENANT_ID, "state": state}
+            )
+
+        assert response["Location"] == expected_redirect(
+            {"status": "error", "reason": "consent_denied"}, settings
+        )
+        post.assert_not_called()
+        connection = connection_of(organization)
+        assert (connection.tenant_id, connection.consent_state) == ("", "")
+
+    def test_code_microsoft_refuses_stores_nothing(self, admin_client, organization, settings):
+        state = state_from(consent_url_for(admin_client))
+        refused = Mock(status_code=400)
+        refused.json.return_value = {"error": "invalid_grant"}
+
+        with patch.object(token_module.requests, "post", return_value=refused):
+            response = Client().get(CALLBACK_PATH, {"code": "made-up", "state": state})
+
+        assert response["Location"] == expected_redirect(
+            {"status": "error", "reason": "sign_in_failed"}, settings
+        )
+        connection = connection_of(organization)
+        assert (connection.tenant_id, connection.consent_state) == ("", "")
 
     def test_replayed_callback_is_rejected(self, admin_client, organization, settings):
         state = state_from(consent_url_for(admin_client))
-        params = {"admin_consent": "True", "tenant": TENANT_ID, "state": state}
-        Client().get(CALLBACK_PATH, params)
+        with microsoft_sign_in(state, tid=TENANT_ID):
+            Client().get(CALLBACK_PATH, {"code": "auth-code", "state": state})
 
-        response = Client().get(
-            CALLBACK_PATH, {**params, "tenant": "99999999-9999-9999-9999-999999999999"}
-        )
+        with microsoft_sign_in(state, tid=SIGNED_IN_TENANT_ID) as post:
+            response = Client().get(CALLBACK_PATH, {"code": "second-code", "state": state})
 
         assert response["Location"] == expected_redirect(
             {"status": "error", "reason": "invalid_state"}, settings
         )
+        post.assert_not_called()
         assert connection_of(organization).tenant_id == TENANT_ID
 
     def test_tampered_state_is_rejected(self, admin_client, organization, settings):
@@ -237,17 +305,17 @@ class TestCallback:
         index = len(state) // 3
         tampered = state[:index] + ("A" if state[index] != "A" else "B") + state[index + 1 :]
 
-        response = Client().get(
-            CALLBACK_PATH, {"admin_consent": "True", "tenant": TENANT_ID, "state": tampered}
-        )
+        with microsoft_sign_in(state, tid=TENANT_ID) as post:
+            response = Client().get(CALLBACK_PATH, {"code": "auth-code", "state": tampered})
 
         assert response["Location"] == expected_redirect(
             {"status": "error", "reason": "invalid_state"}, settings
         )
+        post.assert_not_called()
         assert connection_of(organization).tenant_id == ""
 
     def test_missing_state_is_rejected(self, settings):
-        response = Client().get(CALLBACK_PATH, {"admin_consent": "True", "tenant": TENANT_ID})
+        response = Client().get(CALLBACK_PATH, {"code": "auth-code"})
 
         assert response["Location"] == expected_redirect(
             {"status": "error", "reason": "invalid_state"}, settings
@@ -273,16 +341,16 @@ class TestCallback:
     def test_redirect_target_never_comes_from_the_request(self, admin_client, settings):
         state = state_from(consent_url_for(admin_client))
 
-        response = Client().get(
-            CALLBACK_PATH,
-            {
-                "admin_consent": "True",
-                "tenant": TENANT_ID,
-                "state": state,
-                "redirect_uri": "https://evil.example/steal",
-                "next": "https://evil.example/steal",
-            },
-        )
+        with microsoft_sign_in(state, tid=TENANT_ID):
+            response = Client().get(
+                CALLBACK_PATH,
+                {
+                    "code": "auth-code",
+                    "state": state,
+                    "redirect_uri": "https://evil.example/steal",
+                    "next": "https://evil.example/steal",
+                },
+            )
 
         assert response.status_code == 302
         assert response["Location"] == expected_redirect({"status": "connected"}, settings)
@@ -291,9 +359,9 @@ class TestCallback:
         state = state_from(consent_url_for(admin_client))
         set_flag(organization, enabled=False)
 
-        response = Client().get(
-            CALLBACK_PATH, {"admin_consent": "True", "tenant": TENANT_ID, "state": state}
-        )
+        with microsoft_sign_in(state, tid=TENANT_ID) as post:
+            response = Client().get(CALLBACK_PATH, {"code": "auth-code", "state": state})
 
         assert response.status_code == 404
+        post.assert_not_called()
         assert connection_of(organization).tenant_id == ""
