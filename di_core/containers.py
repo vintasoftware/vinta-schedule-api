@@ -46,7 +46,11 @@ from calendar_integration.services.external_client_identifier_service import (
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
+from calendar_integration.services.protocols.resource_directory_adapter import (
+    ResourceDirectoryAdapterResolver,
+)
 from calendar_integration.services.room_sync_notifier import RoomSyncNotifier
+from calendar_integration.services.room_sync_service import RoomSyncService
 from legal.services import ConsentService
 from notifications.notification_adapters.django_email import (
     ReplyToDjangoEmailNotificationAdapter,
@@ -281,6 +285,21 @@ class AppContainer(containers.DeclarativeContainer):
     room_sync_notifier = providers.Factory(
         RoomSyncNotifier,
         notification_service=notification_service,
+    )
+
+    #: The `ResourceDirectoryAdapterResolver` the room sync engines write through.
+    #: Left undefined until the Google and Microsoft room adapters are wired in;
+    #: until then resolving `room_sync_service` raises, and tests override this
+    #: provider with a fake resolver.
+    resource_directory_adapter_resolver: providers.Dependency[ResourceDirectoryAdapterResolver] = (
+        providers.Dependency()
+    )
+
+    room_sync_service = providers.Factory(
+        RoomSyncService,
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
+        room_sync_notifier=room_sync_notifier,
+        audit_service=audit_service,
     )
 
     booking_policy_service = providers.Factory(
