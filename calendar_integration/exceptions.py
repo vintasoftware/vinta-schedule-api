@@ -584,3 +584,13 @@ class ResourceDirectoryNotWriteEnabledError(ResourceDirectoryPermissionError):
     """
 
     default_message = "Room writes are not enabled for this organization and provider."
+
+
+class RoomSyncStateError(CalendarIntegrationError):
+    """A room sync operation was asked for from a link status that does not allow it.
+
+    For example an edit of a room that is pending deletion or archived, or a manual
+    retry of a link that is not in sync failed.
+    """
+
+    default_message = "This room's sync status does not allow that operation."
