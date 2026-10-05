@@ -27,6 +27,7 @@ from calendar_integration.exceptions import (
     WebhookIgnoredError,
     WebhookProcessingFailedError,
 )
+from calendar_integration.models import GoogleCalendarServiceAccount
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     BusyWindow,
@@ -278,6 +279,22 @@ class GoogleCalendarAdapter(CalendarAdapter):
         adapter.client = build("calendar", "v3", credentials=sa_creds)
         adapter.admin_client = build("admin", "directory_v1", credentials=sa_creds)
         return adapter
+
+    @classmethod
+    def from_service_account_model(
+        cls, account: GoogleCalendarServiceAccount, write: bool = False
+    ) -> "GoogleCalendarAdapter":
+        """``from_service_account`` for a stored ``GoogleCalendarServiceAccount`` row."""
+        return cls.from_service_account(
+            {
+                "account_id": str(account.id),
+                "email": account.email,
+                "private_key_id": account.private_key_id,
+                "private_key": account.private_key,
+                "admin_email": account.admin_email,
+            },
+            write=write,
+        )
 
     @staticmethod
     def parse_webhook_headers(headers: HttpHeaders) -> dict[str, str]:
@@ -632,33 +649,20 @@ class GoogleCalendarAdapter(CalendarAdapter):
 
         Pages through all results using ``nextPageToken`` (up to 500 resources per page).
         """
-        if not hasattr(self, "admin_client"):
-            raise NotImplementedError(
-                "get_calendar_resources requires a service-account adapter with admin_client."
-            )
+        self._require_admin_client("get_calendar_resources")
         return self._iter_calendar_resources()
 
     def _iter_calendar_resources(self) -> Iterable[CalendarResourceData]:
-        page_token: str | None = None
-        while True:
-            read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
-            kwargs: dict[str, Any] = {"customer": "my_customer", "maxResults": 500}
-            if page_token:
-                kwargs["pageToken"] = page_token
-            result = self.admin_client.resources().calendars().list(**kwargs).execute()
-            for resource in result.get("items", []):
-                yield CalendarResourceData(
-                    external_id=resource["resourceId"],
-                    name=resource["resourceName"],
-                    description=resource.get("resourceDescription", ""),
-                    email=resource.get("resourceEmail", ""),
-                    capacity=resource.get("capacity", 0),
-                    original_payload=resource,
-                    provider=self.provider,
-                )
-            page_token = result.get("nextPageToken")
-            if not page_token:
-                break
+        for resource in self._directory_pages(self.admin_client.resources().calendars().list):
+            yield CalendarResourceData(
+                external_id=resource["resourceId"],
+                name=resource["resourceName"],
+                description=resource.get("resourceDescription", ""),
+                email=resource.get("resourceEmail", ""),
+                capacity=resource.get("capacity", 0),
+                original_payload=resource,
+                provider=self.provider,
+            )
 
     def get_calendar_resource(self, resource_id: str) -> CalendarResourceData:
         """Fetch a single Google Workspace resource calendar via the Admin SDK Directory API.
@@ -667,10 +671,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
         ``self.admin_client`` is available. OAuth-user adapters do not have ``admin_client``
         and will raise ``NotImplementedError``.
         """
-        if not hasattr(self, "admin_client"):
-            raise NotImplementedError(
-                "get_calendar_resource requires a service-account adapter with admin_client."
-            )
+        self._require_admin_client("get_calendar_resource")
         read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
         resource = (
             self.admin_client.resources()
@@ -807,7 +808,12 @@ class GoogleCalendarAdapter(CalendarAdapter):
         )
 
     def _directory_pages(self, list_method: Any) -> Iterable[dict[str, Any]]:
-        """Every item from a paginated Directory ``list`` call, one page per request."""
+        """Every item from a paginated Directory ``list`` call, one page per request.
+
+        Google errors propagate unchanged, which is what ``get_calendar_resources``
+        callers have always seen. The room directory methods wrap the whole
+        iteration in ``_call_directory`` to get the ``ResourceDirectoryError`` family.
+        """
         page_token: str | None = None
         while True:
             read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
@@ -817,7 +823,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
             }
             if page_token:
                 kwargs["pageToken"] = page_token
-            result = _call_directory(list_method(**kwargs).execute)
+            result = list_method(**kwargs).execute()
             yield from result.get("items", [])
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -847,26 +853,29 @@ class GoogleCalendarAdapter(CalendarAdapter):
         building with no floors is listed once with an empty floor.
         """
         self._require_admin_client("list_locations")
-        locations: list[ResourceLocationData] = []
-        for building in self._directory_pages(self.admin_client.resources().buildings().list):
-            floor_names = building.get("floorNames") or [""]
-            locations.extend(
-                ResourceLocationData(
-                    external_building_id=building["buildingId"],
-                    building_name=building.get("buildingName", ""),
-                    external_floor_id=floor_name,
-                    floor_name=floor_name,
-                )
-                for floor_name in floor_names
+        buildings = _call_directory(
+            lambda: list(self._directory_pages(self.admin_client.resources().buildings().list))
+        )
+        return [
+            ResourceLocationData(
+                external_building_id=building["buildingId"],
+                building_name=building.get("buildingName", ""),
+                external_floor_id=floor_name,
+                floor_name=floor_name,
             )
-        return locations
+            for building in buildings
+            for floor_name in building.get("floorNames") or [""]
+        ]
 
     def list_rooms(self) -> list[RoomDirectoryData]:
         """Every ``CONFERENCE_ROOM`` resource, with no free/busy filter."""
         self._require_admin_client("list_rooms")
+        resources = _call_directory(
+            lambda: list(self._directory_pages(self.admin_client.resources().calendars().list))
+        )
         return [
             self._room_from_directory_resource(resource)
-            for resource in self._directory_pages(self.admin_client.resources().calendars().list)
+            for resource in resources
             if resource.get("resourceCategory") == _CONFERENCE_ROOM_CATEGORY
         ]
 
@@ -952,8 +961,9 @@ class GoogleCalendarAdapter(CalendarAdapter):
         """Busy windows for ``room_email`` from Calendar ``freebusy.query``.
 
         Long ranges are queried in 90-day chunks, as ``get_available_calendar_resources``
-        does. A per-calendar error from Google (for example ``notFound``) raises
-        ``ResourceDirectoryNotFoundError``.
+        does. A per-calendar ``notFound`` error from Google raises
+        ``ResourceDirectoryNotFoundError``; any other per-calendar error raises a
+        transient ``ResourceDirectoryError``.
         """
         windows: list[BusyWindow] = []
         for chunk_start, chunk_end in self._split_date_range(start, end, 90):
@@ -971,10 +981,14 @@ class GoogleCalendarAdapter(CalendarAdapter):
             )
             calendar = result.get("calendars", {}).get(room_email, {})
             if calendar.get("errors"):
-                reasons = ", ".join(e.get("reason", "unknown") for e in calendar["errors"])
-                raise ResourceDirectoryNotFoundError(
-                    f"Google free/busy returned an error for the room: {reasons}"
-                )
+                reasons = [error.get("reason", "unknown") for error in calendar["errors"]]
+                message = f"Google free/busy returned an error for the room: {', '.join(reasons)}"
+                # Google reports per-calendar failures inside a 200. Only ``notFound``
+                # means the room is gone; ``internalError``, ``backendError`` and the
+                # rest are Google-side hiccups, so they stay transient.
+                if reasons == ["notFound"]:
+                    raise ResourceDirectoryNotFoundError(message)
+                raise ResourceDirectoryError(message)
             windows.extend(
                 BusyWindow(
                     start=datetime.datetime.fromisoformat(busy["start"]),

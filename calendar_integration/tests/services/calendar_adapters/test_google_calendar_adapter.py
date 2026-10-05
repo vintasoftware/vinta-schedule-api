@@ -17,6 +17,7 @@ from calendar_integration.exceptions import (
     ResourceDirectoryNotFoundError,
     ResourceDirectoryPermissionError,
 )
+from calendar_integration.models import GoogleCalendarServiceAccount
 from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
     _SA_SCOPES,
     _SA_WRITE_SCOPES,
@@ -1420,6 +1421,42 @@ class TestServiceAccountWriteScope:
         ]
 
 
+class TestFromServiceAccountModel:
+    """``from_service_account_model`` builds the credentials from a stored row."""
+
+    @pytest.mark.parametrize(
+        ("write", "expected_scopes"), [(False, _SA_SCOPES), (True, _SA_WRITE_SCOPES)]
+    )
+    def test_maps_the_row(self, write, expected_scopes):
+        account = GoogleCalendarServiceAccount(
+            id=7,
+            email="service@example.com",
+            admin_email="admin@example.com",
+            private_key_id="key-id",
+            private_key="private-key",
+        )
+        with (
+            patch(
+                "calendar_integration.services.calendar_adapters.google_calendar_adapter.google_service_account.Credentials.from_service_account_info"
+            ) as mock_from_info,
+            patch("calendar_integration.services.calendar_adapters.google_calendar_adapter.build"),
+        ):
+            adapter = GoogleCalendarAdapter.from_service_account_model(account, write=write)
+
+        assert adapter.account_id == "service-7"
+        mock_from_info.assert_called_once_with(
+            {
+                "type": "service_account",
+                "private_key_id": "key-id",
+                "private_key": "private-key",
+                "client_email": "service@example.com",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            },
+            scopes=expected_scopes,
+        )
+        mock_from_info.return_value.with_subject.assert_called_once_with("admin@example.com")
+
+
 class TestResourceDirectoryAdapter:
     """The ``ResourceDirectoryAdapter`` methods against a mocked Directory and Calendar client."""
 
@@ -1623,6 +1660,25 @@ class TestResourceDirectoryAdapter:
                 datetime.datetime(2026, 10, 5, 9, tzinfo=datetime.UTC),
                 datetime.datetime(2026, 10, 5, 18, tzinfo=datetime.UTC),
             )
+
+    @pytest.mark.parametrize("reason", ["internalError", "backendError"])
+    def test_get_free_busy_other_calendar_errors_are_transient(self, mock_rate_limiters, reason):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        email = "huddle@resource.calendar.google.com"
+        sa_adapter.client.freebusy.return_value.query.return_value.execute.return_value = {
+            "calendars": {email: {"errors": [{"domain": "global", "reason": reason}]}}
+        }
+
+        with pytest.raises(ResourceDirectoryError) as excinfo:
+            sa_adapter.get_free_busy(
+                email,
+                datetime.datetime(2026, 10, 5, 9, tzinfo=datetime.UTC),
+                datetime.datetime(2026, 10, 5, 18, tzinfo=datetime.UTC),
+            )
+
+        assert type(excinfo.value) is ResourceDirectoryError
+        assert excinfo.value.is_transient is True
+        assert str(excinfo.value) == (f"Google free/busy returned an error for the room: {reason}")
 
     def test_verify_room_write_access_lists_one_building(self, mock_rate_limiters):
         sa_adapter = _make_sa_adapter(mock_rate_limiters)

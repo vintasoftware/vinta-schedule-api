@@ -68,16 +68,7 @@ class GoogleWriteAccessService:
             )
 
         try:
-            adapter = GoogleCalendarAdapter.from_service_account(
-                {
-                    "account_id": str(service_account.id),
-                    "email": service_account.email,
-                    "private_key_id": service_account.private_key_id,
-                    "private_key": service_account.private_key,
-                    "admin_email": service_account.admin_email,
-                },
-                write=True,
-            )
+            adapter = GoogleCalendarAdapter.from_service_account_model(service_account, write=True)
         except ValueError:
             logger.warning(
                 "Google service account %s key could not be loaded (organization %s)",

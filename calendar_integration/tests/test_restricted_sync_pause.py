@@ -563,7 +563,7 @@ class TestResyncTaskQueuesPerCalendarSync:
             del adapter.resolve_expression
             del adapter.get_source_expressions
             adapter_class.return_value = adapter
-            adapter_class.from_service_account.return_value = adapter
+            adapter_class.from_service_account_model.return_value = adapter
 
             with patch.object(sync_calendar_task, "delay") as dispatched:
                 resync_organization_calendars_task(organization_id=organization.pk)

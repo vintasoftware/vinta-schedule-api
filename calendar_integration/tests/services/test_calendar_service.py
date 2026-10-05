@@ -196,7 +196,7 @@ def mock_google_adapter():
         del mock_adapter.resolve_expression
         del mock_adapter.get_source_expressions
         mock_adapter_class.return_value = mock_adapter
-        mock_adapter_class.from_service_account.return_value = mock_adapter
+        mock_adapter_class.from_service_account_model.return_value = mock_adapter
         yield mock_adapter
 
 
@@ -598,7 +598,7 @@ def test_get_calendar_adapter_for_google_service_account(
     """Test getting Google adapter for service account."""
     # Deferred deliberately: the ``mock_google_adapter`` fixture above patches
     # ``calendar_integration.services.calendar_adapters.google_calendar_adapter.GoogleCalendarAdapter``,
-    # and the assertions below read ``from_service_account`` off that mock. A module-scope
+    # and the assertions below read ``from_service_account_model`` off that mock. A module-scope
     # import would bind the real class into this module before the patch is installed, so
     # the name here would no longer be the mock and the call assertions would go green
     # against the wrong object (or fail outright).
@@ -610,10 +610,7 @@ def test_get_calendar_adapter_for_google_service_account(
 
     assert adapter == mock_google_adapter
     assert account is google_service_account
-    GoogleCalendarAdapter.from_service_account.assert_called_once()
-    passed = GoogleCalendarAdapter.from_service_account.call_args.args[0]
-    assert passed["admin_email"] == google_service_account.admin_email
-    assert passed["email"] == google_service_account.email
+    GoogleCalendarAdapter.from_service_account_model.assert_called_once_with(google_service_account)
 
 
 @pytest.mark.django_db
