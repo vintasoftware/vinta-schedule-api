@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import datetime
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.test import override_settings
 from django.urls import reverse
@@ -47,6 +47,7 @@ from calendar_integration.models import (
     CalendarSync,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
+    GoogleCalendarServiceAccount,
 )
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.calendar_webhook_service import (
@@ -138,6 +139,12 @@ class FakeHost:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def https_api_domain(settings: Any) -> None:
+    """Google only accepts HTTPS callbacks, and no channel is opened without one."""
+    settings.API_DOMAIN = "https://api.example.com"
 
 
 @pytest.fixture
@@ -481,7 +488,7 @@ def test_refresh_google_keeps_the_new_channel_when_stopping_the_old_one_fails(
     fake_adapter.create_webhook_subscription_with_tracking.return_value = _watch_response(
         "ch-new", "res-new", 1_800_000_000_000
     )
-    fake_adapter.stop_webhook_subscription.side_effect = RuntimeError("channel already gone")
+    fake_adapter.stop_webhook_subscription.side_effect = ValueError("channel already gone")
 
     make_service(social_context, FakeHost()).refresh_webhook_subscription(subscription_id=sub.id)
 
@@ -575,12 +582,14 @@ def test_ensure_watch_channel_leaves_a_fresh_channel_alone(
 
 
 @pytest.mark.parametrize(
-    ("has_account", "expires_in", "is_active"),
+    ("has_account", "expires_in", "is_active", "stops_old_channel"),
     [
-        pytest.param(True, datetime.timedelta(hours=3), True, id="expiring-soon"),
-        pytest.param(True, None, True, id="no-expiry-recorded"),
-        pytest.param(False, datetime.timedelta(days=3), True, id="no-account-recorded"),
-        pytest.param(True, datetime.timedelta(days=3), False, id="deactivated"),
+        pytest.param(True, datetime.timedelta(hours=3), True, True, id="expiring-soon"),
+        pytest.param(True, None, True, True, id="no-expiry-recorded"),
+        pytest.param(False, datetime.timedelta(days=3), True, True, id="no-account-recorded"),
+        # Deactivated rows are either already stopped or have no account left to stop
+        # them with; their notifications are rejected either way.
+        pytest.param(True, datetime.timedelta(days=3), False, False, id="deactivated"),
     ],
 )
 @pytest.mark.django_db
@@ -592,6 +601,7 @@ def test_ensure_watch_channel_replaces_a_channel_that_needs_it(
     has_account: bool,
     expires_in: datetime.timedelta | None,
     is_active: bool,
+    stops_old_channel: bool,
 ) -> None:
     existing = _google_subscription(
         calendar, social_account if has_account else None, expires_in, is_active
@@ -609,6 +619,106 @@ def test_ensure_watch_channel_replaces_a_channel_that_needs_it(
         social_account,
         True,
     )
+    assert fake_adapter.stop_webhook_subscription.call_args_list == (
+        [(("ch-old", "res-old"),)] if stops_old_channel else []
+    )
+    assert list(
+        CalendarWebhookSubscription.objects.filter_by_organization(calendar.organization_id)
+        .filter(calendar=calendar)
+        .values_list("id", flat=True)
+    ) == [existing.id]
+
+
+@pytest.mark.django_db
+def test_ensure_watch_channel_closes_the_channel_of_a_calendar_that_stopped_syncing(
+    social_context: CalendarServiceContext,
+    calendar: Calendar,
+    social_account: SocialAccount,
+    fake_adapter: MagicMock,
+) -> None:
+    existing = _google_subscription(calendar, social_account, datetime.timedelta(hours=3))
+    calendar.sync_enabled = False
+    calendar.save(update_fields=["sync_enabled"])
+
+    assert make_service(social_context, FakeHost()).ensure_calendar_watch_channel(calendar) is None
+
+    existing.refresh_from_db()
+    assert existing.is_active is False
+    fake_adapter.stop_webhook_subscription.assert_called_once_with("ch-old", "res-old")
+    fake_adapter.create_webhook_subscription_with_tracking.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_ensure_watch_channel_opens_nothing_without_an_https_callback(
+    social_context: CalendarServiceContext,
+    calendar: Calendar,
+    fake_adapter: MagicMock,
+    settings: Any,
+) -> None:
+    """Google refuses a plain-HTTP callback, so local development opens no channel."""
+    settings.API_DOMAIN = "localhost:3000"
+    settings.DEFAULT_PROTOCOL = "http"
+
+    assert make_service(social_context, FakeHost()).ensure_calendar_watch_channel(calendar) is None
+    assert fake_adapter.mock_calls == []
+
+
+@pytest.mark.django_db
+def test_ensure_watch_channel_leaves_a_calendar_another_worker_is_handling(
+    social_context: CalendarServiceContext,
+    calendar: Calendar,
+    fake_adapter: MagicMock,
+) -> None:
+    """Two concurrent openers would each open a channel at Google and leak one."""
+    with patch(
+        "calendar_integration.services.calendar_webhook_service.try_advisory_xact_lock",
+        return_value=False,
+    ) as lock:
+        result = make_service(social_context, FakeHost()).ensure_calendar_watch_channel(calendar)
+
+    assert result is None
+    lock.assert_called_once_with(f"google-watch-channel:{calendar.id}")
+    assert fake_adapter.mock_calls == []
+
+
+@pytest.mark.django_db
+def test_renewing_as_another_kind_of_account_replaces_the_recorded_account(
+    calendar: Calendar,
+    organization: Organization,
+    social_account: SocialAccount,
+    fake_adapter: MagicMock,
+) -> None:
+    """A channel opened by a service account and renewed by a social account records
+    only the social account, and stays on the same row of the same organization."""
+    service_account = GoogleCalendarServiceAccount.objects.create(
+        organization=organization,
+        email="sa@project.iam.gserviceaccount.com",
+        private_key_id="key-id",
+        private_key="key",
+    )
+    sub = _google_subscription(calendar, None, datetime.timedelta(hours=3))
+    sub.google_service_account = service_account
+    sub.save()
+    fake_adapter.create_webhook_subscription_with_tracking.return_value = _watch_response(
+        "ch-new", "res-new", 1_800_000_000_000
+    )
+    social_context = CalendarServiceContext(
+        organization=organization,
+        user_or_token=social_account.user,
+        account=social_account,
+        calendar_adapter=fake_adapter,
+        calendar_permission_service=None,
+        calendar_side_effects_service=None,
+    )
+
+    make_service(social_context, FakeHost()).refresh_webhook_subscription(subscription_id=sub.id)
+
+    rows = CalendarWebhookSubscription.objects.filter_by_organization(organization).filter(
+        calendar=calendar
+    )
+    assert [
+        (r.id, r.organization_id, r.social_account, r.google_service_account) for r in rows
+    ] == [(sub.id, organization.id, social_account, None)]
 
 
 @pytest.mark.django_db
@@ -727,6 +837,33 @@ def test_verify_google_channel_ignores_the_sync_handshake(
         make_service(unauthenticated_context, FakeHost()).verify_google_channel(
             _channel_headers(channel_id="ch-not-saved-yet", state="sync")
         )
+
+
+@pytest.mark.django_db
+def test_verified_notification_without_a_usable_account_is_ignored_not_pending(
+    unauthenticated_context: CalendarServiceContext,
+    verified_subscription: CalendarWebhookSubscription,
+    fake_adapter: MagicMock,
+) -> None:
+    """Nothing ever processes ``PENDING`` events, so a notification that cannot sync
+    must not be left looking like it will."""
+    fake_adapter.validate_webhook_notification_static.return_value = {
+        "provider": "google",
+        "calendar_id": "wh_cal_001",
+        "event_type": "exists",
+    }
+    host = FakeHost(fake_adapter=fake_adapter)
+
+    event = make_service(unauthenticated_context, host).process_webhook_notification(
+        provider="google",
+        calendar_external_id="wh_cal_001",
+        headers=_channel_headers(),
+        subscription=verified_subscription,
+    )
+
+    assert event is not None
+    assert event.processing_status == IncomingWebhookProcessingStatus.IGNORED
+    assert host.request_webhook_triggered_sync_calls == []
 
 
 @pytest.mark.django_db

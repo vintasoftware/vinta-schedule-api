@@ -9,7 +9,10 @@ from vinta_billing.services.entitlement_service import EntitlementService
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.models import CalendarWebhookSubscription
 from calendar_integration.services.calendar_service import CalendarService
-from calendar_integration.services.calendar_webhook_service import GOOGLE_CHANNEL_RENEW_WITHIN
+from calendar_integration.services.calendar_webhook_service import (
+    GOOGLE_CHANNEL_RENEW_WITHIN,
+    PROVIDER_CALL_ERRORS,
+)
 from calendar_integration.tasks.calendar_sync_tasks import (
     _authenticate_or_skip,
     _restricted_or_skip,
@@ -76,13 +79,30 @@ def renew_google_calendar_watch_channel_task(
 
         account = subscription.account
         if account is None:
-            logger.warning(
-                "Cannot renew Google channel subscription %s: no account recorded to "
-                "renew it as. It is renewed after the calendar's next sync instead.",
-                subscription.id,
-            )
+            _deactivate(subscription, "no account recorded to renew it as")
             return
 
-        if not _authenticate_or_skip(calendar_service, account, organization):
+        try:
+            if not _authenticate_or_skip(calendar_service, account, organization):
+                return
+        except PROVIDER_CALL_ERRORS as exc:
+            # The account's token was revoked or cannot be refreshed. Retrying every
+            # hour would only fail again.
+            _deactivate(subscription, type(exc).__name__)
             return
         ensure_watch_channel_or_log(calendar_service, subscription.calendar)
+
+
+def _deactivate(subscription: CalendarWebhookSubscription, reason: str) -> None:
+    """Stop renewing a channel that cannot be renewed.
+
+    The sweep skips inactive channels, and the calendar's next successful sync opens a
+    fresh one as whichever account that sync ran as.
+    """
+    logger.warning(
+        "Deactivating Google channel subscription %s, which cannot be renewed: %s",
+        subscription.id,
+        reason,
+    )
+    subscription.is_active = False
+    subscription.save(update_fields=["is_active", "modified"])

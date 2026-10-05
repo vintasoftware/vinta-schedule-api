@@ -114,6 +114,7 @@ from calendar_integration.services.calendar_service_utils import (
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from calendar_integration.services.calendar_sync_service import CalendarSyncService
 from calendar_integration.services.calendar_webhook_service import (
+    PROVIDER_CALL_ERRORS,
     CalendarWebhookService,
     WebhookHealthStatus,
 )
@@ -2590,12 +2591,12 @@ class CalendarService(BaseCalendarService):
         # request_webhook_triggered_sync callback through the host seam).
         self.organization = organization
 
-        # The webhook view is a plain Django view, so nothing has bound the organization
-        # yet. Bind the one named in the URL for the scoped reads and writes below.
-        with organization_context(organization):
-            if provider == CalendarProvider.GOOGLE:
+        if provider == CalendarProvider.GOOGLE:
+            # The webhook view is a plain Django view, so nothing has bound the
+            # organization yet; authenticating and syncing need it bound.
+            with organization_context(organization):
                 return self._handle_google_webhook(request, organization)
-            return self._get_webhook_service().handle_webhook(provider, request)
+        return self._get_webhook_service().handle_webhook(provider, request)
 
     def _handle_google_webhook(
         self, request: HttpRequest, organization: Organization
@@ -2628,8 +2629,9 @@ class CalendarService(BaseCalendarService):
         else:
             try:
                 self.authenticate(account=account, organization=organization)
-            except (OverLimitError, InvalidCalendarTokenError) as exc:
-                # A server-to-server push has no user to show this to, and Google would
+            except PROVIDER_CALL_ERRORS as exc:
+                # The account lost its entitlement or its token, or Google refused it. A
+                # server-to-server push has no user to show this to, and Google would
                 # only retry. Record the notification without syncing instead.
                 logger.info(
                     "Not syncing on Google notification for subscription %s: %s",

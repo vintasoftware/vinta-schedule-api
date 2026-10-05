@@ -823,9 +823,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
 
         calendar_id = _calendar_id_from_resource_uri(resource_uri)
         if not calendar_id:
-            raise WebhookProcessingFailedError(
-                f"Could not extract calendar ID from resource URI: {resource_uri}"
-            )
+            # Not the URI itself: the calendar id in it can be a person's email.
+            raise WebhookProcessingFailedError("Could not extract calendar ID from resource URI")
 
         return {
             "provider": "google",

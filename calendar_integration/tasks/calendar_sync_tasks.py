@@ -22,6 +22,7 @@ from calendar_integration.models import (
     GoogleCalendarServiceAccount,
 )
 from calendar_integration.services.calendar_service import CalendarService
+from calendar_integration.services.calendar_webhook_service import PROVIDER_CALL_ERRORS
 from common.organization_context import organization_context
 from organizations.models import Organization
 from payments.seams.scopes import scope_for
@@ -108,10 +109,10 @@ def ensure_watch_channel_or_log(calendar_service: CalendarService, calendar: Cal
     """
     try:
         calendar_service.ensure_calendar_watch_channel(calendar)
-    # Any provider error (HTTP, auth, quota) lands here; none of them should fail the
-    # caller. Only the exception type is logged, since provider messages can name the
-    # calendar's email.
-    except Exception as exc:  # noqa: BLE001
+    # Only provider and account errors: anything else is a bug and should fail loudly.
+    # Only the exception type is logged, since provider messages can name the calendar's
+    # email.
+    except PROVIDER_CALL_ERRORS as exc:
         logger.warning(
             "Could not open or renew the Google push channel for calendar %s: %s",
             calendar.id,

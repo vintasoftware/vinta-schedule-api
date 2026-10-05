@@ -21,12 +21,14 @@ from calendar_integration.constants import (
     IncomingWebhookProcessingStatus,
 )
 from calendar_integration.exceptions import (
+    InvalidCalendarTokenError,
     ServiceNotAuthenticatedError,
     WebhookIgnoredError,
     WebhookProcessingFailedError,
 )
 from calendar_integration.models import (
     Calendar,
+    CalendarOwnership,
     CalendarSync,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
@@ -36,7 +38,7 @@ from calendar_integration.services.calendar_adapters.google_calendar_adapter imp
     GoogleCalendarAdapter,
 )
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from payments.seams.resource_keys import EXTERNAL_CALENDAR_GOOGLE
 from payments.seams.scopes import scope_for
 from users.models import User
@@ -228,20 +230,8 @@ class CalendarServiceWebhookTest(TestCase):
         assert webhook_event.processing_status == IncomingWebhookProcessingStatus.PROCESSED
         assert webhook_event.calendar_sync == result
 
-    @patch("calendar_integration.tasks.sync_calendar_task.delay")
-    def test_request_webhook_triggered_sync_recent_sync_exists(self, mock_sync_task):
-        """Test webhook sync when recent sync already exists."""
-        # Create a recent sync
-        recent_sync = CalendarSync.objects.create(
-            calendar=self.calendar,
-            organization=self.organization,
-            start_datetime=datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=12),
-            end_datetime=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(hours=12),
-            status=CalendarSyncStatus.SUCCESS,
-            should_update_events=True,
-        )
-
-        webhook_event = CalendarWebhookEvent.objects.create(
+    def _webhook_event(self) -> CalendarWebhookEvent:
+        return CalendarWebhookEvent.objects.create(
             organization=self.organization,
             provider=CalendarProvider.GOOGLE,
             event_type="exists",
@@ -250,7 +240,22 @@ class CalendarServiceWebhookTest(TestCase):
             raw_payload={"raw": ""},
         )
 
-        # Mock the calendar service as authenticated
+    def _recent_sync(self, status: str) -> CalendarSync:
+        return CalendarSync.objects.create(
+            calendar=self.calendar,
+            organization=self.organization,
+            start_datetime=datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=12),
+            end_datetime=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(hours=12),
+            status=status,
+            should_update_events=True,
+        )
+
+    @patch("calendar_integration.tasks.sync_calendar_task.delay")
+    def test_request_webhook_triggered_sync_joins_a_queued_sync(self, mock_sync_task):
+        """A sync that has not started yet will read the latest state, so it covers
+        this notification's change too."""
+        queued_sync = self._recent_sync(CalendarSyncStatus.NOT_STARTED)
+        webhook_event = self._webhook_event()
         self.service.account = Mock()
         self.service.calendar_adapter = Mock()
 
@@ -258,16 +263,34 @@ class CalendarServiceWebhookTest(TestCase):
             external_calendar_id="test-calendar-id", webhook_event=webhook_event
         )
 
-        # Should return the existing sync, not create a new one
-        assert result == recent_sync
-
-        # Check that no new sync was created
+        assert result == queued_sync
         assert CalendarSync.objects.filter_by_organization(self.organization).count() == 1
-
-        # Verify webhook event was updated
         webhook_event.refresh_from_db()
         assert webhook_event.processing_status == IncomingWebhookProcessingStatus.PROCESSED
-        assert webhook_event.calendar_sync == recent_sync
+        assert webhook_event.calendar_sync == queued_sync
+
+    @patch("calendar_integration.tasks.sync_calendar_task.delay")
+    def test_request_webhook_triggered_sync_after_a_started_sync_queues_another(
+        self, mock_sync_task
+    ):
+        """A running or finished sync may have read the calendar before this change.
+        Folding the notification into it would lose the change."""
+        for status in (CalendarSyncStatus.IN_PROGRESS, CalendarSyncStatus.SUCCESS):
+            with self.subTest(status=str(status)):
+                earlier_sync = self._recent_sync(status)
+                webhook_event = self._webhook_event()
+                self.service.account = Mock()
+                self.service.account.id = 1
+                self.service.calendar_adapter = Mock()
+
+                result = self.service.request_webhook_triggered_sync(
+                    external_calendar_id="test-calendar-id", webhook_event=webhook_event
+                )
+
+                assert result is not None
+                assert result != earlier_sync
+                assert result.status == CalendarSyncStatus.NOT_STARTED
+                CalendarSync.objects.filter_by_organization(self.organization).delete()
 
     @override_settings(GOOGLE_CLIENT_ID="test_client_id", GOOGLE_CLIENT_SECRET="test_client_secret")
     @patch("calendar_integration.services.calendar_adapters.google_calendar_adapter.build")
@@ -677,6 +700,42 @@ class GoogleCalendarPushNotificationSyncTest(TestCase):
             calendar_sync,
             IncomingWebhookProcessingStatus.PROCESSED,
             "push@example.com",
+        )
+        # The channel token authenticates notifications; storing it would let anyone
+        # who can read the table forge one.
+        assert "X-Goog-Channel-Token" not in event.headers
+        assert event.headers["X-Goog-Channel-ID"] == "calendar-0123abcd"
+
+    def test_revoked_token_records_the_notification_without_syncing(self):
+        """The channel's account lost its Google token. Before, the calendar owner's
+        adapter was resolved again while processing, ``InvalidCalendarTokenError``
+        escaped, and Google got a 500 and retried; nothing was recorded."""
+        OrganizationMembership.objects.get_or_create(user=self.user, organization=self.organization)
+        CalendarOwnership.objects.create(
+            organization=self.organization,
+            calendar=self.calendar,
+            membership_user_id=self.user.id,
+            is_default=True,
+        )
+
+        with (
+            patch.object(
+                CalendarService,
+                "get_calendar_adapter_for_account",
+                side_effect=InvalidCalendarTokenError("reauthenticate"),
+            ),
+            patch("calendar_integration.tasks.sync_calendar_task.delay") as delay,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            response = self.client.post(self.webhook_url, **self._headers())
+
+        assert response.status_code == 200
+        delay.assert_not_called()
+        assert not CalendarSync.objects.filter_by_organization(self.organization).exists()
+        event = CalendarWebhookEvent.objects.filter_by_organization(self.organization).get()
+        assert (event.subscription, event.processing_status) == (
+            self.subscription,
+            IncomingWebhookProcessingStatus.IGNORED,
         )
 
     def test_forged_token_is_rejected_without_recording_or_syncing(self):

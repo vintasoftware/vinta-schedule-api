@@ -14,6 +14,7 @@ import pytest
 from allauth.socialaccount.models import SocialAccount
 
 from calendar_integration.constants import CalendarProvider, CalendarSyncStatus
+from calendar_integration.exceptions import InvalidCalendarTokenError
 from calendar_integration.models import (
     Calendar,
     CalendarSync,
@@ -133,7 +134,7 @@ def test_channel_error_does_not_fail_the_sync_task(
     """The sync already succeeded; the next sync or the hourly sweep retries the channel."""
     service = MagicMock()
     service.sync_events.side_effect = _finish_sync_with(CalendarSyncStatus.SUCCESS)
-    service.ensure_calendar_watch_channel.side_effect = RuntimeError("Google said no")
+    service.ensure_calendar_watch_channel.side_effect = ValueError("Google said no")
 
     sync_calendar_task(
         "social_account",
@@ -144,6 +145,25 @@ def test_channel_error_does_not_fail_the_sync_task(
     )
 
     service.ensure_calendar_watch_channel.assert_called_once_with(calendar)
+
+
+def test_programming_error_while_opening_the_channel_is_not_swallowed(
+    social_account, calendar, calendar_sync, organization
+):
+    """Only provider and account errors are tolerated; a bug must fail loudly instead of
+    quietly leaving calendars without push notifications."""
+    service = MagicMock()
+    service.sync_events.side_effect = _finish_sync_with(CalendarSyncStatus.SUCCESS)
+    service.ensure_calendar_watch_channel.side_effect = AttributeError("bug")
+
+    with pytest.raises(AttributeError):
+        sync_calendar_task(
+            "social_account",
+            social_account.id,
+            calendar_sync.id,
+            organization.id,
+            calendar_service=service,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +199,40 @@ def test_sweep_queues_only_active_google_channels_due_for_renewal(organization, 
     )
 
 
+def test_sweep_spans_organizations_and_hands_each_task_its_own(organization, social_account):
+    """The scheduler has no organization bound; each renewal task binds its own."""
+    other = Organization.objects.create(name="Other Channel Org")
+    mine = _subscription(
+        Calendar.objects.create(
+            name="Mine",
+            external_id="mine@example.com",
+            provider=CalendarProvider.GOOGLE,
+            organization=organization,
+        ),
+        datetime.timedelta(hours=1),
+        social_account,
+    )
+    theirs = _subscription(
+        Calendar.objects.create(
+            name="Theirs",
+            external_id="theirs@example.com",
+            provider=CalendarProvider.GOOGLE,
+            organization=other,
+        ),
+        datetime.timedelta(hours=1),
+    )
+
+    with patch(
+        "calendar_integration.tasks.webhook_channel_tasks."
+        "renew_google_calendar_watch_channel_task.delay"
+    ) as delay:
+        renew_google_calendar_watch_channels_task()
+
+    assert sorted(call.args for call in delay.call_args_list) == sorted(
+        [(mine.id, organization.id), (theirs.id, other.id)]
+    )
+
+
 def test_renewal_authenticates_as_the_recorded_account(organization, calendar, social_account):
     subscription = _subscription(calendar, datetime.timedelta(hours=3), social_account)
     service = MagicMock()
@@ -210,7 +264,9 @@ def test_renewal_of_a_room_uses_the_service_account(organization, calendar):
     service.authenticate.assert_called_once_with(account=service_account, organization=organization)
 
 
-def test_renewal_without_a_recorded_account_does_nothing(organization, calendar):
+def test_renewal_without_a_recorded_account_deactivates_the_channel(organization, calendar):
+    """There is no one to renew it as, so the sweep would retry it every hour forever.
+    The calendar's next sync opens a fresh channel."""
     subscription = _subscription(calendar, datetime.timedelta(hours=3))
     service = MagicMock()
 
@@ -220,6 +276,24 @@ def test_renewal_without_a_recorded_account_does_nothing(organization, calendar)
 
     service.authenticate.assert_not_called()
     service.ensure_calendar_watch_channel.assert_not_called()
+    subscription.refresh_from_db()
+    assert subscription.is_active is False
+
+
+def test_renewal_with_a_revoked_token_deactivates_the_channel(
+    organization, calendar, social_account
+):
+    subscription = _subscription(calendar, datetime.timedelta(hours=3), social_account)
+    service = MagicMock()
+    service.authenticate.side_effect = InvalidCalendarTokenError("reauthenticate")
+
+    renew_google_calendar_watch_channel_task(
+        subscription.id, organization.id, calendar_service=service
+    )
+
+    service.ensure_calendar_watch_channel.assert_not_called()
+    subscription.refresh_from_db()
+    assert subscription.is_active is False
 
 
 def test_renewal_of_a_deactivated_channel_does_nothing(organization, calendar, social_account):
