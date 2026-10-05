@@ -686,6 +686,7 @@ class CalendarEventService:
         # point) nor the availability check (which follows below).
         if (
             not is_owner_scoped_system_user
+            and not self._context.is_room_resolution
             and not event_data.appointment_type_authorized
             and (
                 not context.calendar_permission_service.can_perform_scheduling(
@@ -1004,7 +1005,11 @@ class CalendarEventService:
             is_public_token_write = True
 
         serialized_old_event = self._serialize_event(event)
-        if not is_public_token_write and not context.calendar_permission_service.can_perform_update(
+        # A room-resolution context (``initialize_for_room_resolution``) acts as the
+        # system on behalf of an already-authorized room deletion.
+        if not (
+            is_public_token_write or self._context.is_room_resolution
+        ) and not context.calendar_permission_service.can_perform_update(
             old_event=serialized_old_event,
             # ``serialized_old_event`` doubles as the fall-back for the tri-state
             # fields this payload omits: an omitted field is, by definition,
@@ -2464,7 +2469,11 @@ class CalendarEventService:
             is_public_token_write = True
 
         serialized_old_event = self._serialize_event(event)
-        if not is_public_token_write and not context.calendar_permission_service.can_perform_update(
+        # A room-resolution context (``initialize_for_room_resolution``) acts as the
+        # system on behalf of an already-authorized room deletion.
+        if not (
+            is_public_token_write or self._context.is_room_resolution
+        ) and not context.calendar_permission_service.can_perform_update(
             old_event=serialized_old_event,
             new_event=None,
             # Cancellation has no new span -- can_perform_update skips the

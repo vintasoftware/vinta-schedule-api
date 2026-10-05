@@ -314,6 +314,7 @@ class AppContainer(containers.DeclarativeContainer):
         # which is not on this branch. Point this argument at its provider when the
         # two meet.
         booking_room_change_notifier=providers.Dependency(),
+        calendar_service=calendar_service,
     )
 
     bookable_slots_service = providers.Factory(

@@ -814,6 +814,7 @@ class BookingResolutionPlan:
     """A validated resolution for every future booking of ``room_id``, in preview order."""
 
     room_id: int
+    organization_id: int
     fingerprint: str
     bookings: tuple[ResolvedBooking, ...]
 

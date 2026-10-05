@@ -118,19 +118,6 @@ class StaleBookingPreviewError(CalendarIntegrationError):
     default_message = "The room's bookings changed since the preview. Request a new preview."
 
 
-class BookingOnRoomCalendarError(CalendarIntegrationError):
-    """A booking that sits on the deleted room's own calendar cannot be moved or lose its room.
-
-    Such an event is the room's copy of a booking, not an event that allocates the
-    room, so there is no allocation to swap or drop. Only cancelling the whole event
-    applies to it.
-    """
-
-    default_message = (
-        "This booking is on the room's own calendar. Only cancelling the event is supported."
-    )
-
-
 class InvalidCalendarOperationError(EventManagementError):
     default_message = "This calendar does not manage available windows."
 

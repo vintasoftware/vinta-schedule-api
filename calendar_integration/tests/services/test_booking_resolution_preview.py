@@ -144,6 +144,7 @@ def service(directory: FakeRoomDirectory) -> BookingResolutionService:
     return BookingResolutionService(
         resource_directory_adapter_resolver=FakeResolver(directory),
         booking_room_change_notifier=MagicMock(spec=BookingRoomChangeNotifier),
+        calendar_service=MagicMock(spec=CalendarService),
     )
 
 
@@ -250,6 +251,15 @@ def _allocate(
     return ResourceAllocation.objects.create(
         organization=event.organization, event=event, calendar=room, status=status
     )
+
+
+def _booking(
+    calendar: Calendar, room: Calendar, start: datetime.datetime, **kwargs
+) -> CalendarEvent:
+    """An event on ``calendar`` that books ``room`` through an allocation."""
+    event = _event(calendar, start, **kwargs)
+    _allocate(event, room)
+    return event
 
 
 def _add_external_attendees(event: CalendarEvent, count: int) -> None:
@@ -454,6 +464,7 @@ class TestValidate:
         by_id = {booking.event_id: booking for booking in preview.bookings}
         assert result == BookingResolutionPlan(
             room_id=room_a.id,
+            organization_id=room_a.organization_id,
             fingerprint=preview.fingerprint,
             bookings=(
                 ResolvedBooking(by_id[scenario["m1"].id], MoveBooking(room_b.id)),
@@ -479,7 +490,7 @@ class TestValidate:
         assert BookingRejectionReason.TARGET_BUSY.label == "target room is busy"
 
     def test_target_busy_by_an_allocation_only(self, service, organizer_calendar, room_a, room_b):
-        booking = _event(room_a, _wall_clock(2, 10))
+        booking = _booking(organizer_calendar, room_a, _wall_clock(2, 10))
         other = _event(organizer_calendar, _wall_clock(2, 10))
         _allocate(other, room_b)
         preview = service.preview(room_a)
@@ -488,8 +499,10 @@ class TestValidate:
 
         assert result == [RejectedBooking(booking.id, BookingRejectionReason.TARGET_BUSY)]
 
-    def test_target_busy_on_the_provider(self, service, directory, room_a, room_b):
-        booking = _event(room_a, _wall_clock(2, 10))
+    def test_target_busy_on_the_provider(
+        self, service, directory, organizer_calendar, room_a, room_b
+    ):
+        booking = _booking(organizer_calendar, room_a, _wall_clock(2, 10))
         directory.busy[room_b.email] = [
             BusyWindow(
                 _utc(_wall_clock(2, 10)) + datetime.timedelta(minutes=30), _utc(_wall_clock(2, 12))
@@ -502,9 +515,11 @@ class TestValidate:
         assert result == [RejectedBooking(booking.id, BookingRejectionReason.TARGET_BUSY)]
 
     def test_series_rejected_when_a_later_occurrence_is_busy(
-        self, service, directory, organization, room_a, room_b
+        self, service, directory, organization, organizer_calendar, room_a, room_b
     ):
-        series = _event(room_a, _wall_clock(-14, -3), rule=_weekly(organization))
+        series = _booking(
+            organizer_calendar, room_a, _wall_clock(-14, -3), rule=_weekly(organization)
+        )
         directory.busy[room_b.email] = [
             BusyWindow(_utc(_wall_clock(21, -3)), _utc(_wall_clock(21, -2)))
         ]
@@ -514,9 +529,11 @@ class TestValidate:
 
         assert result == [RejectedBooking(series.id, BookingRejectionReason.TARGET_BUSY)]
 
-    def test_two_bookings_moved_into_the_same_slot_conflict(self, service, room_a, room_b):
-        first = _event(room_a, _wall_clock(2, 10))
-        second = _event(room_a, _wall_clock(2, 10))
+    def test_two_bookings_moved_into_the_same_slot_conflict(
+        self, service, organizer_calendar, room_a, room_b
+    ):
+        first = _booking(organizer_calendar, room_a, _wall_clock(2, 10))
+        second = _booking(organizer_calendar, room_a, _wall_clock(2, 10))
         preview = service.preview(room_a)
 
         result = service.validate(room_a, preview.fingerprint, MoveBooking(room_b.id), {})
@@ -537,8 +554,22 @@ class TestValidate:
 
         assert isinstance(result, BookingResolutionPlan)
 
-    def test_target_too_small(self, service, organization, room_a):
-        booking = _event(room_a, _wall_clock(2, 10))
+    def test_room_calendar_copy_is_not_checked_against_the_target(
+        self, service, directory, organizer_calendar, room_a, room_b
+    ):
+        # The meeting and the room's copy of it share a slot; ``apply`` deletes the
+        # copy rather than moving it, so only the meeting books room B.
+        _booking(organizer_calendar, room_a, _wall_clock(2, 10))
+        _event(room_a, _wall_clock(2, 10))
+        preview = service.preview(room_a)
+
+        result = service.validate(room_a, preview.fingerprint, MoveBooking(room_b.id), {})
+
+        assert isinstance(result, BookingResolutionPlan)
+        assert directory.free_busy_calls == [room_b.email]
+
+    def test_target_too_small(self, service, organization, organizer_calendar, room_a):
+        booking = _booking(organizer_calendar, room_a, _wall_clock(2, 10))
         _add_external_attendees(booking, 3)
         small = _room(organization, "Small", capacity=2)
         preview = service.preview(room_a)
@@ -618,13 +649,16 @@ class TestValidate:
         with pytest.raises(StaleBookingPreviewError):
             service.validate(room_a, fingerprint, AbortDeletion(), {})
 
-    def test_provider_error_on_the_target_is_raised(self, organization, room_a, room_b):
-        _event(room_a, _wall_clock(2, 10))
+    def test_provider_error_on_the_target_is_raised(
+        self, organization, organizer_calendar, room_a, room_b
+    ):
+        _booking(organizer_calendar, room_a, _wall_clock(2, 10))
         service = BookingResolutionService(
             resource_directory_adapter_resolver=FakeResolver(
                 FakeRoomDirectory(), write_enabled=False
             ),
             booking_room_change_notifier=MagicMock(spec=BookingRoomChangeNotifier),
+            calendar_service=MagicMock(spec=CalendarService),
         )
         preview = service.preview(room_a)
 

@@ -267,6 +267,8 @@ class CalendarService(BaseCalendarService):
         self._calendar_cache: dict[tuple[int, str | int], Calendar] = {}
         # Shared auth-context snapshot; set by authenticate() / initialize_without_provider().
         self._context: CalendarServiceContext | None = None
+        # Set by initialize_for_room_resolution(); see that method.
+        self._is_room_resolution = False
         # Stateless recurrence engine shared by event/blocked-time/available-time methods.
         # Constructed once; it holds no auth state (everything arrives as method params).
         self._recurrence_manager = RecurrenceManager()
@@ -541,6 +543,7 @@ class CalendarService(BaseCalendarService):
             self._assert_provider_entitlement(early_provider)
 
         self.calendar_adapter, self.account = self.get_calendar_adapter_for_account(account)
+        self._is_room_resolution = False
 
         if early_provider is None:
             self._assert_provider_entitlement(_provider_for_account(self.account))
@@ -576,6 +579,7 @@ class CalendarService(BaseCalendarService):
         self.user_or_token = user_or_token
         self.account = None
         self.calendar_adapter = None
+        self._is_room_resolution = False
 
         if (
             self.calendar_permission_service
@@ -606,6 +610,20 @@ class CalendarService(BaseCalendarService):
             external_client_identifier_service=self.external_client_identifier_service,
         )
 
+    def initialize_for_room_resolution(self, organization: Organization) -> None:
+        """Initialize the service to resolve the bookings of a room that is being deleted.
+
+        Only ``BookingResolutionService.apply`` calls this. The service acts as the
+        system rather than as a user or token: event creates, updates and deletes skip
+        the per-event permission checks, because they edit other people's events on
+        behalf of a room deletion the caller was already authorized to make
+        (``IsOrganizationAdmin`` or the ``delete_resource_calendar`` grant). Everything
+        else about those writes is unchanged: provider writes, the room bookability
+        guard, billing checks, and the audit trail, which records the system actor.
+        """
+        self.initialize_without_provider(user_or_token=None, organization=organization)
+        self._is_room_resolution = True
+
     def _build_context_snapshot(self) -> CalendarServiceContext:
         """Build a context snapshot from the current auth-state instance attributes.
 
@@ -626,6 +644,7 @@ class CalendarService(BaseCalendarService):
             entitlement_service=self.entitlement_service,
             bypass_entitlement_limits=self._bypass_entitlement_limits,
             external_client_identifier_service=self.external_client_identifier_service,
+            is_room_resolution=self._is_room_resolution,
         )
 
     def _get_event_service(self) -> CalendarEventService:

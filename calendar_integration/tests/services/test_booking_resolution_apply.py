@@ -1,10 +1,12 @@
 """Tests for ``BookingResolutionService.apply``: applying a validated room deletion plan.
 
 Plans are built through the real route (``preview`` then ``validate``) and applied
-through a ``CalendarService`` acting as a public-API token scoped to the organizer
-calendar's owner, the one actor that may update, delete and create events on that
-calendar. The organizer calendar is internal, so no provider is called for the
+through the container's ``CalendarService``, which ``apply`` binds as the room
+resolution actor. Organizer calendars are internal, so no provider is called for the
 events. The room directory is a fake that reports every room free.
+
+The bulk-modification tests call the facade directly, as a public-API token scoped
+to the organizer calendar's owner, which may create events on that calendar.
 
 Event times are relative to the real clock rather than frozen, because the preview
 fingerprint reads each event's ``modified`` timestamp.
@@ -14,6 +16,7 @@ import datetime
 from collections.abc import Collection
 from unittest.mock import MagicMock, call
 
+from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 
 import pytest
@@ -115,10 +118,11 @@ def notifier() -> MagicMock:
 
 
 @pytest.fixture
-def service(notifier: MagicMock) -> BookingResolutionService:
+def service(notifier: MagicMock, di_container) -> BookingResolutionService:
     return BookingResolutionService(
         resource_directory_adapter_resolver=FreeRoomResolver(),
         booking_room_change_notifier=notifier,
+        calendar_service=di_container.calendar_service(),
     )
 
 
@@ -129,16 +133,23 @@ def organizer(organization: Organization) -> User:
     return user
 
 
-@pytest.fixture
-def organizer_calendar(organization: Organization, organizer: User) -> Calendar:
+def _organizer_calendar(organization: Organization, owner: User, name: str) -> Calendar:
     calendar = Calendar.objects.create(
-        organization=organization, name="Organizer", provider=CalendarProvider.INTERNAL
+        organization=organization,
+        name=name,
+        external_id=f"organizer-{name}",
+        provider=CalendarProvider.INTERNAL,
     )
-    OrganizationMembership.objects.create(user=organizer, organization=organization)
+    OrganizationMembership.objects.create(user=owner, organization=organization)
     CalendarOwnership.objects.create(
-        calendar=calendar, membership_user_id=organizer.id, organization=organization
+        calendar=calendar, membership_user_id=owner.id, organization=organization
     )
     return calendar
+
+
+@pytest.fixture
+def organizer_calendar(organization: Organization, organizer: User) -> Calendar:
+    return _organizer_calendar(organization, organizer, "Organizer")
 
 
 @pytest.fixture
@@ -253,15 +264,17 @@ class TestApply:
     def test_spec_scenario_4_moves_series_from_now_on_and_cancels_m2(
         self,
         service: BookingResolutionService,
-        facade: CalendarService,
         notifier: MagicMock,
         organizer: User,
         organizer_calendar: Calendar,
         room_a: Calendar,
         room_b: Calendar,
     ):
+        # M2 is on another organizer's calendar: the apply edits everyone's events.
+        second_organizer = User.objects.create_user(email="second@example.com", password="pw")
+        second_calendar = _organizer_calendar(room_a.organization, second_organizer, "Second")
         m1 = _event(organizer_calendar, _wall_clock(1, 2), room_a, title="M1")
-        m2 = _event(organizer_calendar, _wall_clock(2, 4), room_a, title="M2")
+        m2 = _event(second_calendar, _wall_clock(2, 4), room_a, title="M2")
         series = _event(organizer_calendar, _wall_clock(-15, 6), room_a, title="S", weekly=True)
         plan = _plan(
             service,
@@ -270,7 +283,7 @@ class TestApply:
             {m2.id: CancelBooking(BookingCancelMode.CANCEL_EVENT)},
         )
 
-        result = service.apply(plan, facade)
+        result = service.apply(plan)
 
         assert result == ApplyResult(applied=_plan_ids(plan), pending=(), failed_at=None)
         assert _room_ids(m1) == {room_b.id}
@@ -295,7 +308,7 @@ class TestApply:
         assert service.preview(room_a).bookings == ()
         expected = {
             m1.id: call(m1.id, organizer.id, BookingRoomChange.MOVED),
-            m2.id: call(m2.id, organizer.id, BookingRoomChange.EVENT_CANCELLED),
+            m2.id: call(m2.id, second_organizer.id, BookingRoomChange.EVENT_CANCELLED),
             series.id: call(continuation.id, organizer.id, BookingRoomChange.MOVED),
         }
         assert notifier.notify_booking_room_changed.call_args_list == [
@@ -305,7 +318,6 @@ class TestApply:
     def test_series_that_has_not_started_is_moved_as_a_whole(
         self,
         service: BookingResolutionService,
-        facade: CalendarService,
         organizer_calendar: Calendar,
         room_a: Calendar,
         room_b: Calendar,
@@ -314,7 +326,7 @@ class TestApply:
         rule = series.recurrence_rule
         assert rule is not None
 
-        service.apply(_plan(service, room_a, MoveBooking(room_b.id)), facade)
+        service.apply(_plan(service, room_a, MoveBooking(room_b.id)))
 
         series.refresh_from_db()
         assert _room_ids(series) == {room_b.id}
@@ -325,13 +337,12 @@ class TestApply:
     def test_series_cancelled_from_now_on_keeps_its_past(
         self,
         service: BookingResolutionService,
-        facade: CalendarService,
         organizer_calendar: Calendar,
         room_a: Calendar,
     ):
         series = _event(organizer_calendar, _wall_clock(-15, 6), room_a, weekly=True)
 
-        service.apply(_plan(service, room_a, CancelBooking(BookingCancelMode.CANCEL_EVENT)), facade)
+        service.apply(_plan(service, room_a, CancelBooking(BookingCancelMode.CANCEL_EVENT)))
 
         series.refresh_from_db()
         now = timezone.now()
@@ -343,7 +354,6 @@ class TestApply:
     def test_remove_room_keeps_the_other_rooms_and_other_events_allocations(
         self,
         service: BookingResolutionService,
-        facade: CalendarService,
         notifier: MagicMock,
         organizer: User,
         organization: Organization,
@@ -358,9 +368,7 @@ class TestApply:
             organization=organization, event=other, calendar=room_a, status=RSVPStatus.DECLINED
         )
 
-        result = service.apply(
-            _plan(service, room_a, CancelBooking(BookingCancelMode.REMOVE_ROOM)), facade
-        )
+        result = service.apply(_plan(service, room_a, CancelBooking(BookingCancelMode.REMOVE_ROOM)))
 
         assert result == ApplyResult(applied=(meeting.id,), pending=(), failed_at=None)
         assert _room_ids(meeting) == {room_b.id}
@@ -376,7 +384,6 @@ class TestApply:
     def test_failure_stops_the_apply_and_a_rerun_applies_the_rest_only(
         self,
         service: BookingResolutionService,
-        facade: CalendarService,
         notifier: MagicMock,
         organization: Organization,
         organizer_calendar: Calendar,
@@ -396,7 +403,7 @@ class TestApply:
         link_b.sync_status = ResourceSyncStatus.PENDING_DELETION
         link_b.save()
 
-        result = service.apply(plan, facade)
+        result = service.apply(plan)
 
         assert result == ApplyResult(
             applied=(first.id,), pending=(second.id, third.id), failed_at=second.id
@@ -412,7 +419,7 @@ class TestApply:
         link_b.save()
         notifier.reset_mock()
 
-        rerun = service.apply(plan, facade)
+        rerun = service.apply(plan)
 
         assert rerun == ApplyResult(
             applied=(first.id, second.id, third.id), pending=(), failed_at=None
@@ -427,54 +434,75 @@ class TestApply:
             third.id,
         ]
 
-    def test_booking_on_the_rooms_own_calendar_can_only_be_cancelled(
+    @pytest.mark.parametrize(
+        "resolution",
+        [
+            MoveBooking(0),
+            CancelBooking(BookingCancelMode.REMOVE_ROOM),
+            CancelBooking(BookingCancelMode.CANCEL_EVENT),
+        ],
+        ids=["move", "remove_room", "cancel_event"],
+    )
+    def test_room_calendar_copy_is_deleted_whatever_the_resolution(
         self,
         service: BookingResolutionService,
-        facade: CalendarService,
+        notifier: MagicMock,
+        organizer_calendar: Calendar,
         room_a: Calendar,
         room_b: Calendar,
+        resolution: BookingResolution,
     ):
-        on_room = _event(room_a, _wall_clock(1))
+        if isinstance(resolution, MoveBooking):
+            resolution = MoveBooking(room_b.id)
+        meeting = _event(organizer_calendar, _wall_clock(1), room_a, title="Meeting")
+        # The room's copy of the same booking, as the room calendar's sync stores it.
+        copy = _event(room_a, _wall_clock(1), title="Meeting")
+        plan = _plan(service, room_a, resolution)
+        assert set(_plan_ids(plan)) == {meeting.id, copy.id}
 
-        result = service.apply(_plan(service, room_a, MoveBooking(room_b.id)), facade)
+        result = service.apply(plan)
 
-        assert result == ApplyResult(applied=(), pending=(on_room.id,), failed_at=on_room.id)
+        assert result == ApplyResult(applied=_plan_ids(plan), pending=(), failed_at=None)
         assert (
-            CalendarEvent.objects.filter_by_organization(on_room.organization_id)
-            .filter(id=on_room.id, calendar__id=room_a.id)
+            not CalendarEvent.objects.filter_by_organization(copy.organization_id)
+            .filter(id=copy.id)
             .exists()
         )
+        assert service.preview(room_a).bookings == ()
+        # Only the organizer's own event is notified.
+        assert [c.args[0] for c in notifier.notify_booking_room_changed.call_args_list] == [
+            meeting.id
+        ]
 
     def test_plan_that_cancels_the_deletion_is_refused(
         self,
         service: BookingResolutionService,
-        facade: CalendarService,
         organizer_calendar: Calendar,
         room_a: Calendar,
     ):
         meeting = _event(organizer_calendar, _wall_clock(1), room_a)
 
         with pytest.raises(ValueError, match="cancels the room deletion"):
-            service.apply(_plan(service, room_a, AbortDeletion()), facade)
+            service.apply(_plan(service, room_a, AbortDeletion()))
 
         assert _room_ids(meeting) == {room_a.id}
 
-    def test_calendar_service_of_another_organization_is_refused(
+    def test_apply_leaves_other_facades_under_the_normal_permission_checks(
         self,
         service: BookingResolutionService,
+        organization: Organization,
         organizer_calendar: Calendar,
         room_a: Calendar,
         room_b: Calendar,
         di_container,
     ):
-        _event(organizer_calendar, _wall_clock(1), room_a)
+        meeting = _event(organizer_calendar, _wall_clock(1), room_a)
+        service.apply(_plan(service, room_a, MoveBooking(room_b.id)))
         other = di_container.calendar_service()
-        other.initialize_without_provider(
-            organization=Organization.objects.create(name="Other Org")
-        )
+        other.initialize_without_provider(organization=organization)
 
-        with pytest.raises(ValueError, match="not bound to the room's organization"):
-            service.apply(_plan(service, room_a, MoveBooking(room_b.id)), other)
+        with pytest.raises(PermissionDenied):
+            other.delete_event(organizer_calendar.id, meeting.id)
 
 
 @pytest.mark.django_db

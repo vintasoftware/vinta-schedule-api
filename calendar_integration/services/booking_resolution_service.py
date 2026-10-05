@@ -22,7 +22,7 @@ from calendar_integration.constants import (
     CalendarType,
     CalendarVisibility,
 )
-from calendar_integration.exceptions import BookingOnRoomCalendarError, StaleBookingPreviewError
+from calendar_integration.exceptions import StaleBookingPreviewError
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
@@ -82,9 +82,12 @@ class BookingResolutionService:
         self,
         resource_directory_adapter_resolver: ResourceDirectoryAdapterResolver,
         booking_room_change_notifier: BookingRoomChangeNotifier,
+        calendar_service: "CalendarService",
     ):
         self.resource_directory_adapter_resolver = resource_directory_adapter_resolver
         self.booking_room_change_notifier = booking_room_change_notifier
+        # Only ``apply`` uses it, after binding it with ``initialize_for_room_resolution``.
+        self.calendar_service = calendar_service
 
     def preview(self, room: Calendar) -> RoomBookingPreview:
         """The room's future bookings, and a fingerprint of them.
@@ -226,7 +229,8 @@ class BookingResolutionService:
           bookings moved to the same target must not overlap each other either.
 
         A booking whose event already books the target is not checked for capacity
-        or busy: moving it only takes the deleted room off it.
+        or busy: moving it only takes the deleted room off it. Neither is an event on
+        the room's own calendar: ``apply`` deletes that copy instead of moving it.
 
         A provider error while reading a target's free/busy is raised, so an
         unchecked move is never accepted.
@@ -255,18 +259,20 @@ class BookingResolutionService:
         if rejected:
             return rejected
         return BookingResolutionPlan(
-            room_id=room.id, fingerprint=preview.fingerprint, bookings=tuple(resolved)
+            room_id=room.id,
+            organization_id=room.organization_id,
+            fingerprint=preview.fingerprint,
+            bookings=tuple(resolved),
         )
 
-    def apply(
-        self, plan: BookingResolutionPlan, calendar_service: "CalendarService"
-    ) -> ApplyResult:
+    def apply(self, plan: BookingResolutionPlan) -> ApplyResult:
         """Apply a validated plan, one booking at a time, in plan order.
 
-        ``calendar_service`` makes the event edits, so they go through the same
-        permission checks, provider writes, room bookability guard and audit trail as
-        any other edit. The caller initializes it for the room's organization with
-        the actor the room deletion acts as.
+        The event edits go through the injected ``CalendarService``, initialized with
+        ``initialize_for_room_resolution``: it acts as the system, so it may edit every
+        organizer's events, while provider writes, the room bookability guard, billing
+        checks and the audit trail work as for any other edit. Authorizing the room
+        deletion is the caller's job.
 
         Each booking is applied in its own transaction, because each step calls the
         provider and a provider call cannot be rolled back:
@@ -279,6 +285,12 @@ class BookingResolutionService:
         - cancel the event: ``delete_event`` (a whole series is deleted), or
           ``cancel_recurring_event_from_date`` for a series that started before now.
 
+        An event on the room's own calendar is the room's copy of a booking (synced
+        from the provider), not an event that allocates the room. Whatever its
+        resolution, the copy is deleted the way a cancelled event is, and no one is
+        notified: the room calendar's owner is not the booking's organizer, and an
+        organizer's own event is resolved, and notified, as its own booking.
+
         The organizer (the default owner of the event's calendar) is notified of each
         change. A cancelled event is notified before it is deleted, since the notifier
         reads it; the email itself goes out only when the step commits.
@@ -288,26 +300,20 @@ class BookingResolutionService:
         the first booking that fails: that booking and every one after it are returned
         as pending, and nothing about them changed.
 
-        Raises ``ValueError`` when the plan cancels the deletion for any booking, or
-        when ``calendar_service`` is bound to another organization. Nothing changes.
+        Raises ``ValueError``, changing nothing, when the plan cancels the deletion for
+        any booking.
         """
         if any(isinstance(entry.resolution, AbortDeletion) for entry in plan.bookings):
             raise ValueError("A plan that cancels the room deletion cannot be applied.")
-        organization = calendar_service.organization
-        room = (
-            Calendar.objects.filter_by_organization(organization.id).filter(id=plan.room_id).first()
-            if organization is not None
-            else None
-        )
-        if room is None:
-            raise ValueError("The calendar service is not bound to the room's organization.")
+        room = Calendar.objects.filter_by_organization(plan.organization_id).get(id=plan.room_id)
+        self.calendar_service.initialize_for_room_resolution(room.organization)
 
         applied: list[int] = []
         for index, entry in enumerate(plan.bookings):
             event_id = entry.booking.event_id
             try:
                 with transaction.atomic():
-                    self._apply_booking(room, entry, calendar_service)
+                    self._apply_booking(room, entry)
             except Exception:  # noqa: BLE001 -- any failure stops the apply; see the docstring
                 logger.exception(
                     "Applying the resolution of booking %s for room %s failed.", event_id, room.id
@@ -320,9 +326,7 @@ class BookingResolutionService:
             applied.append(event_id)
         return ApplyResult(applied=tuple(applied), pending=(), failed_at=None)
 
-    def _apply_booking(
-        self, room: Calendar, entry: ResolvedBooking, calendar_service: "CalendarService"
-    ) -> None:
+    def _apply_booking(self, room: Calendar, entry: ResolvedBooking) -> None:
         booking, resolution = entry.booking, entry.resolution
         event = (
             CalendarEvent.objects.filter_by_organization(room.organization_id)
@@ -340,27 +344,20 @@ class BookingResolutionService:
             # occurrences, which keep the room, are left on this row.
             return
 
-        cancel_event = (
-            isinstance(resolution, CancelBooking)
-            and resolution.mode == BookingCancelMode.CANCEL_EVENT
-        )
-        if event.calendar_fk_id == room.id and not cancel_event:
-            raise BookingOnRoomCalendarError()
+        if event.calendar_fk_id == room.id:
+            self._cancel(event, series_from)
+            return
 
         organizer_user_id = self._organizer_user_id(event)
-        if cancel_event:
+        if (
+            isinstance(resolution, CancelBooking)
+            and resolution.mode == BookingCancelMode.CANCEL_EVENT
+        ):
             if organizer_user_id is not None:
                 self.booking_room_change_notifier.notify_booking_room_changed(
                     event.id, organizer_user_id, BookingRoomChange.EVENT_CANCELLED
                 )
-            if series_from is not None:
-                calendar_service.cancel_recurring_event_from_date(event, series_from)
-            else:
-                calendar_service.delete_event(
-                    event.calendar_fk_id,  # type: ignore[arg-type]
-                    event.id,
-                    delete_series=event.is_recurring,
-                )
+            self._cancel(event, series_from)
             return
 
         room_ids = [
@@ -379,14 +376,14 @@ class BookingResolutionService:
         allocations = [ResourceAllocationInputData(resource_id=room_id) for room_id in room_ids]
 
         if series_from is not None:
-            continuation = calendar_service.modify_recurring_event_from_date(
+            continuation = self.calendar_service.modify_recurring_event_from_date(
                 parent_event=event,
                 modification_start_date=series_from,
                 resource_allocations_override=allocations,
             )
             notified_event_id = continuation.id if continuation is not None else event.id
         else:
-            calendar_service.update_event(
+            self.calendar_service.update_event(
                 event.calendar_fk_id,  # type: ignore[arg-type]
                 event.id,
                 CalendarEventInputData(
@@ -409,6 +406,17 @@ class BookingResolutionService:
         if organizer_user_id is not None:
             self.booking_room_change_notifier.notify_booking_room_changed(
                 notified_event_id, organizer_user_id, change
+            )
+
+    def _cancel(self, event: CalendarEvent, series_from: datetime.datetime | None) -> None:
+        """Delete ``event``, or only its occurrences from ``series_from`` on."""
+        if series_from is not None:
+            self.calendar_service.cancel_recurring_event_from_date(event, series_from)
+        else:
+            self.calendar_service.delete_event(
+                event.calendar_fk_id,  # type: ignore[arg-type]
+                event.id,
+                delete_series=event.is_recurring,
             )
 
     @staticmethod
@@ -478,7 +486,9 @@ class BookingResolutionService:
                 reasons[booking.event_id] = BookingRejectionReason.TARGET_NOT_BOOKABLE
             elif target.provider != room.provider:
                 reasons[booking.event_id] = BookingRejectionReason.TARGET_ON_DIFFERENT_PROVIDER
-            elif event.id in already_booking_target[target.id]:
+            elif event.id in already_booking_target[target.id] or event.calendar_fk_id == room.id:
+                # Already in the target, or the room's own copy of a booking, which
+                # ``apply`` deletes rather than moves: neither books the target anew.
                 continue
             elif target.capacity is not None and event.attendee_count > target.capacity:  # type: ignore[attr-defined]
                 reasons[booking.event_id] = BookingRejectionReason.TARGET_TOO_SMALL
