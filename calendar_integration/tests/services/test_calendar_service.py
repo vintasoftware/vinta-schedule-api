@@ -3449,6 +3449,139 @@ def test_update_event_with_unchanged_orphan_attendee_requires_no_attendee_permis
     assert orphan_attendance.membership_user_id is None
 
 
+@pytest.fixture
+def other_calendar_event(calendar, organization):
+    """A second event in the same calendar, to check updates don't touch it."""
+    return CalendarEvent.objects.create(
+        calendar_fk=calendar,
+        title="Other Event",
+        description="Shares attendees with the test event",
+        start_time_tz_unaware=datetime.datetime(2025, 6, 23, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 23, 11, 0),
+        timezone="UTC",
+        external_id="other_event_456",
+        organization=organization,
+    )
+
+
+def _remove_all_attendees_input() -> CalendarEventInputData:
+    return CalendarEventInputData(
+        title="Attendees Removed",
+        description="",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendances=[],
+        external_attendances=[],
+        resource_allocations=[],
+    )
+
+
+def _remove_all_attendees_adapter_output() -> CalendarEventAdapterOutputData:
+    return CalendarEventAdapterOutputData(
+        calendar_external_id="cal_123",
+        external_id="event_123",
+        title="Attendees Removed",
+        description="",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+
+
+@pytest.mark.django_db
+def test_update_event_removing_attendee_keeps_their_attendances_on_other_events(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar_event,
+    other_calendar_event,
+    organization,
+    event_management_token,
+):
+    """Removing a user from one event must only drop that event's attendance.
+
+    Regression: the stale-attendance delete in ``update_event`` filtered on the user
+    alone, so removing U from E1 also deleted U's attendance on every other event in
+    the organization.
+    """
+    attendee = User.objects.create_user(email="shared_attendee@example.com")
+    Profile.objects.create(user=attendee, first_name="Shared", last_name="Attendee")
+    OrganizationMembership.objects.create(user=attendee, organization=organization)
+    EventAttendance.objects.create(
+        organization=organization, event=calendar_event, membership_user_id=attendee.id
+    )
+    other_event_attendance = EventAttendance.objects.create(
+        organization=organization, event=other_calendar_event, membership_user_id=attendee.id
+    )
+    mock_google_adapter.update_event.return_value = _remove_all_attendees_adapter_output()
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=organization)
+    service.update_event(
+        calendar_event.calendar.id, calendar_event.id, _remove_all_attendees_input()
+    )
+
+    attendance_ids = set(
+        EventAttendance.objects.filter_by_organization(organization.id)
+        .filter(membership_user_id=attendee.id)
+        .values_list("id", flat=True)
+    )
+    # E1's attendance is gone; E2's survives.
+    assert attendance_ids == {other_event_attendance.id}
+
+
+@pytest.mark.django_db
+def test_update_event_removing_shared_external_attendee_keeps_other_events_attendance(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar_event,
+    other_calendar_event,
+    organization,
+    event_management_token,
+):
+    """Removing a shared external attendee from one event must not affect other events.
+
+    Provider sync reuses one ``ExternalAttendee`` per email across events
+    (``get_or_create`` in ``CalendarSyncService``). Regression: ``update_event``
+    deleted the attendance without an event filter and then deleted the attendee row
+    itself, which cascaded to its attendance on every other event.
+    """
+    shared_attendee = ExternalAttendee.objects.create(
+        organization=organization, email="shared_external@example.com", name="Shared"
+    )
+    EventExternalAttendance.objects.create(
+        organization=organization, event=calendar_event, external_attendee=shared_attendee
+    )
+    other_event_attendance = EventExternalAttendance.objects.create(
+        organization=organization, event=other_calendar_event, external_attendee=shared_attendee
+    )
+    mock_google_adapter.update_event.return_value = _remove_all_attendees_adapter_output()
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=organization)
+    service.update_event(
+        calendar_event.calendar.id, calendar_event.id, _remove_all_attendees_input()
+    )
+
+    attendance_ids = set(
+        EventExternalAttendance.objects.filter_by_organization(organization.id)
+        .filter(external_attendee__id=shared_attendee.id)
+        .values_list("id", flat=True)
+    )
+    # E1's attendance is gone; E2's survives, and so does the attendee it points at.
+    assert attendance_ids == {other_event_attendance.id}
+    assert (
+        ExternalAttendee.objects.filter_by_organization(organization.id)
+        .filter(id=shared_attendee.id)
+        .exists()
+    )
+
+
 @pytest.mark.django_db
 def test_create_event_persists_membership_user_id_for_mixed_attendees(
     social_account,

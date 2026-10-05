@@ -1239,7 +1239,7 @@ class CalendarEventService:
             event_external_attendances_instance_to_delete = (
                 EventExternalAttendance.objects.filter_by_organization(
                     context.organization.id
-                ).filter(external_attendee_fk_id__in=external_attendees_to_delete)
+                ).filter(event=event, external_attendee__id__in=external_attendees_to_delete)
             )
             serialized_external_attendances_to_delete = [
                 serialized_delete
@@ -1261,8 +1261,11 @@ class CalendarEventService:
             # collides with its own about-to-be-deleted predecessor on
             # ``extclientid_uniq_system_ident``.
             event_external_attendances_instance_to_delete.delete()
+            # Provider sync reuses one ``ExternalAttendee`` per email across events, so
+            # only delete the ones no other event still points at. Deleting a shared
+            # one would cascade to its attendances and tokens on those other events.
             ExternalAttendee.objects.filter_by_organization(context.organization.id).filter(
-                id__in=external_attendees_to_delete
+                id__in=external_attendees_to_delete, external_attendances__isnull=True
             ).delete()
 
             # Apply identifiers now that every attendee has a stable pk --
@@ -1412,7 +1415,7 @@ class CalendarEventService:
             # membership-scoped semantics.
             attendances_instances_to_delete = EventAttendance.objects.filter_by_organization(
                 context.organization.id
-            ).filter(membership_user_id__in=attendances_to_delete)
+            ).filter(event=event, membership_user_id__in=attendances_to_delete)
             serialized_attendances_to_delete = [
                 serialized
                 for attendance in attendances_instances_to_delete
