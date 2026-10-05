@@ -305,6 +305,18 @@ def _spike_label() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _delete_now(cleanups: Cleanups, label: str) -> HttpResponse:
+    """Run one registered cleanup as a scenario step.
+
+    It stays registered unless it worked, so a delete that fails or raises is tried
+    again on the way out, and logged there if it fails again.
+    """
+    response = cleanups[label]()
+    if response.ok or response.status == 404:
+        del cleanups[label]
+    return response
+
+
 @contextmanager
 def _cleanup_on_exit(cleanups: Cleanups) -> Iterator[None]:
     """Run every pending cleanup, newest first, whatever happened in the block."""
@@ -471,10 +483,7 @@ def run_google_create_delete(ctx: SpikeContext, *, customer: str, building_id: s
         ctx.record("duplicate_name_insert_status", duplicate.status)
         ctx.record("duplicate_name_insert_error", provider_error_code(duplicate))
 
-        del cleanups[resource_id]
-        deleted = ctx.send(
-            f"google.delete({resource_id})", "DELETE", _google_calendars_url(customer, resource_id)
-        )
+        deleted = _delete_now(cleanups, resource_id)
         ctx.record("delete_status", deleted.status)
         after_delete = ctx.send(
             f"google.get({resource_id}, after delete)",
@@ -669,10 +678,7 @@ def run_ms_create_delete(ctx: SpikeContext, options: MicrosoftOptions) -> None:
         after_tags = after_patch.body.get("tags")
         ctx.record("tag_survives_patch", isinstance(after_tags, list) and tag in after_tags)
 
-        del cleanups[place_id]
-        deleted = ctx.send(
-            f"microsoft.places.delete({place_id})", "DELETE", _place_url(options, place_id)
-        )
+        deleted = _delete_now(cleanups, place_id)
         ctx.record("delete_status", deleted.status)
         ctx.record("delete_error", provider_error_code(deleted))
         after_delete = ctx.send(

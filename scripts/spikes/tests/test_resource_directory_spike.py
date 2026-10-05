@@ -5,6 +5,7 @@ import json
 import re
 import socket
 import urllib.request
+from collections.abc import Callable
 from typing import Any, ClassVar
 
 import pytest
@@ -204,10 +205,22 @@ def test_execute_without_credentials_stops_before_any_call(
 
 
 class ScriptedTransport:
-    """Answers each request with a 2xx, except the operation told to raise."""
+    """Answers each request with a 2xx, except the ones `fail_when` picks.
 
-    def __init__(self, raise_on: str) -> None:
-        self.raise_on = raise_on
+    A picked request raises, or returns `status` when one is given. `times` limits how
+    many picked requests fail; the rest succeed.
+    """
+
+    def __init__(
+        self,
+        fail_when: Callable[[str, str], object],
+        *,
+        status: int | None = None,
+        times: int | None = None,
+    ) -> None:
+        self.fail_when = fail_when
+        self.status = status
+        self.times = times
         self.calls: list[tuple[str, str]] = []
 
     def send(
@@ -221,7 +234,11 @@ class ScriptedTransport:
         form_body: dict[str, str] | None = None,
     ) -> spike.HttpResponse:
         self.calls.append((method, operation))
-        if self.raise_on in operation:
+        if self.fail_when(method, operation) and (self.times is None or self.times > 0):
+            if self.times is not None:
+                self.times -= 1
+            if self.status is not None:
+                return spike.HttpResponse(status=self.status, body={})
             raise RuntimeError("provider blew up")
         body = dict(json_body or {})
         body.setdefault("id", "place-1")
@@ -230,7 +247,7 @@ class ScriptedTransport:
 
 def test_google_room_is_deleted_when_a_later_step_fails(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(spike, "google_access_token", lambda *, dry_run: "token")
-    transport = ScriptedTransport(raise_on="replay")
+    transport = ScriptedTransport(lambda method, op: "replay" in op)
     args = spike.build_parser().parse_args(
         ["google-create-delete", "--building-id", "b-1", "--execute"]
     )
@@ -247,7 +264,7 @@ def test_google_room_is_deleted_when_a_later_step_fails(monkeypatch: pytest.Monk
 
 def test_microsoft_room_is_deleted_when_a_later_step_fails(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(spike, "microsoft_access_token", lambda transport, *, dry_run: "token")
-    transport = ScriptedTransport(raise_on="filter by tag")
+    transport = ScriptedTransport(lambda method, op: "filter by tag" in op)
     args = spike.build_parser().parse_args(
         ["ms-create-delete", "--floor-id", "floor-1", "--execute", "--provision-timeout", "0"]
     )
@@ -258,9 +275,48 @@ def test_microsoft_room_is_deleted_when_a_later_step_fails(monkeypatch: pytest.M
     assert transport.calls[-1] == ("DELETE", "microsoft.places.delete(place-1)")
 
 
+MAIN_GOOGLE_DELETE = re.compile(r"google\.delete\(vinta-spike-[0-9a-f]{12}\)")
+
+
+def test_google_room_whose_delete_step_fails_is_deleted_again_and_reported(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    monkeypatch.setattr(spike, "google_access_token", lambda *, dry_run: "token")
+    transport = ScriptedTransport(lambda method, op: MAIN_GOOGLE_DELETE.fullmatch(op), status=500)
+    args = spike.build_parser().parse_args(
+        ["google-create-delete", "--building-id", "b-1", "--execute"]
+    )
+
+    summary = spike.run(args, transport=transport)
+
+    assert summary["findings"]["delete_status"] == 500
+    main_deletes = [op for _, op in transport.calls if MAIN_GOOGLE_DELETE.fullmatch(op)]
+    assert len(main_deletes) == 2
+    assert f"cleanup {main_deletes[0][len('google.delete(') : -1]} returned HTTP 500" in caplog.text
+    assert "delete it by hand" in caplog.text
+
+
+def test_microsoft_room_whose_delete_step_raises_is_deleted_again(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(spike, "microsoft_access_token", lambda transport, *, dry_run: "token")
+    transport = ScriptedTransport(
+        lambda method, op: op == "microsoft.places.delete(place-1)", times=1
+    )
+    args = spike.build_parser().parse_args(
+        ["ms-create-delete", "--floor-id", "floor-1", "--execute", "--provision-timeout", "0"]
+    )
+
+    with pytest.raises(RuntimeError, match="provider blew up"):
+        spike.run(args, transport=transport)
+
+    deletes = [call for call in transport.calls if call[0] == "DELETE"]
+    assert deletes == [("DELETE", "microsoft.places.delete(place-1)")] * 2
+
+
 def test_microsoft_findings_hold_no_room_content(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(spike, "microsoft_access_token", lambda transport, *, dry_run: "token")
-    transport = ScriptedTransport(raise_on="never-matches")
+    transport = ScriptedTransport(lambda method, op: False)
 
     def send_with_email(*args: Any, **kwargs: Any) -> spike.HttpResponse:
         response = ScriptedTransport.send(transport, *args, **kwargs)
