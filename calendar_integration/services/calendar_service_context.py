@@ -23,7 +23,10 @@ if TYPE_CHECKING:
     from vinta_billing.services.entitlement_service import EntitlementService
 
     from audit_integration.services import OrganizationAuditService
-    from calendar_integration.models import GoogleCalendarServiceAccount
+    from calendar_integration.models import (
+        GoogleCalendarServiceAccount,
+        MicrosoftOrganizationConnection,
+    )
     from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.calendar_side_effects_service import (
         CalendarSideEffectsService,
@@ -50,7 +53,9 @@ class CalendarServiceContext:
 
     organization: Organization | None
     user_or_token: User | str | SystemUser | None
-    account: SocialAccount | GoogleCalendarServiceAccount | None
+    # A ``MicrosoftOrganizationConnection`` only in the context the Microsoft room sync
+    # builds for its app-only adapter (``CalendarSyncService.sync_microsoft_room_events``).
+    account: SocialAccount | GoogleCalendarServiceAccount | MicrosoftOrganizationConnection | None
     calendar_adapter: CalendarAdapter | None
     calendar_permission_service: CalendarPermissionService | None
     calendar_side_effects_service: CalendarSideEffectsService | None
