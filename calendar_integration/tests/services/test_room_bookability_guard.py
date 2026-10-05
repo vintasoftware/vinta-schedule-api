@@ -24,6 +24,7 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarManagementToken,
+    CalendarOwnership,
     ResourceAllocation,
     ResourceCalendarProviderLink,
 )
@@ -288,3 +289,98 @@ class TestUpdateEvent:
         )
 
         assert _allocated_room_ids(organization, updated) == {room.id}
+
+
+@pytest.fixture
+def owner_scoped_facade(organization, user, di_container, internal_event):
+    """A facade acting as a public-API token scoped to the owner of the internal calendar.
+
+    The one actor that can both update and create events on that calendar today: an
+    org-wide token may not create events, and a ``User`` update with rooms fails in
+    the permission diff (see ``org_wide_facade``).
+    """
+    membership, _ = OrganizationMembership.objects.get_or_create(
+        user=user, organization=organization, defaults={"is_active": True}
+    )
+    CalendarOwnership.objects.create(
+        calendar=internal_event.calendar, membership_user_id=user.id, organization=organization
+    )
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="room_guard_split",
+        organization=organization,
+        scoped_to_membership=membership,
+    )
+    facade = di_container.calendar_service()
+    facade.initialize_without_provider(user_or_token=system_user, organization=organization)
+    return facade
+
+
+def _archive(room: Calendar) -> None:
+    """Archive the room after it was booked, as a provider-side deletion does."""
+    link = ResourceCalendarProviderLink.objects.filter_by_organization(room.organization_id).get(
+        calendar=room
+    )
+    link.sync_status = ResourceSyncStatus.ARCHIVED
+    link.save()
+
+
+@pytest.mark.django_db
+class TestCarriedOverRooms:
+    """Writes that copy an existing booking's rooms do not book those rooms anew."""
+
+    def test_transfer_keeps_a_room_archived_since_booking(
+        self, event_service, organization, calendar, user, mock_google_adapter
+    ):
+        mock_google_adapter.create_event.side_effect = [
+            _adapter_output("original-event"),
+            _adapter_output("transferred-event"),
+        ]
+        mock_google_adapter.get_event.return_value = _adapter_output("original-event")
+        room = _room(organization, "Room A")
+        create_resource_provider_link(calendar=room)
+        original = event_service.create_event(calendar.id, _event_input(room))
+        _owner_token(user, organization, event_fk=original)
+        target = Calendar.objects.create(
+            name="Target Calendar",
+            external_id="guard_target_cal",
+            provider=CalendarProvider.GOOGLE,
+            organization=organization,
+        )
+        _owner_token(user, organization, calendar=target)
+        _archive(room)
+
+        moved = event_service.transfer_event(original, target)
+
+        assert moved.calendar == target
+        assert _allocated_room_ids(organization, moved) == {room.id}
+
+    def test_editing_a_series_from_a_date_keeps_a_room_archived_since_booking(
+        self, owner_scoped_facade, organization, internal_event
+    ):
+        room = _room(organization, "Room A")
+        create_resource_provider_link(calendar=room)
+        series = owner_scoped_facade.create_event(
+            internal_event.calendar_fk_id,
+            CalendarEventInputData(
+                title="Daily",
+                description="",
+                # An hour after ``internal_event``, which would otherwise take the slot.
+                start_time=END,
+                end_time=END + datetime.timedelta(hours=1),
+                timezone="UTC",
+                recurrence_rule="RRULE:FREQ=DAILY;COUNT=5",
+                resource_allocations=[ResourceAllocationInputData(resource_id=room.id)],
+            ),
+        )
+        _archive(room)
+
+        continuation = owner_scoped_facade.modify_recurring_event_from_date(
+            parent_event=series,
+            modification_start_date=END + datetime.timedelta(days=2),
+            modified_title="Renamed",
+        )
+
+        assert continuation is not None
+        assert continuation.title == "Renamed"
+        assert _allocated_room_ids(organization, continuation) == {room.id}
+        assert _allocated_room_ids(organization, series) == {room.id}

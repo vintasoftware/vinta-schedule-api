@@ -31,7 +31,7 @@ services such as ``AppointmentTypeService``.
 
 import datetime
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from typing import TYPE_CHECKING, Annotated
 
 from django.db import transaction
@@ -1552,6 +1552,7 @@ class CalendarService(BaseCalendarService):
         bypass_limits: bool = False,
         _enforce_policy: bool = True,
         _check_postpaid_allowance: bool = True,
+        _carried_over_room_ids: Collection[int] = (),
     ) -> CalendarEvent:
         """
         Create a new event in the calendar.
@@ -1572,6 +1573,9 @@ class CalendarService(BaseCalendarService):
             docstring. Set to ``False`` by the bundle fan-out for the same reason as
             ``_enforce_policy``: it already checked headroom once for the whole
             fan-out count.
+        :param _carried_over_room_ids: Internal flag; callers must NOT pass this.
+            Forwarded verbatim to ``CalendarEventService.create_event`` -- see its
+            docstring. Set by ``transfer_event`` to the moved event's rooms.
         :return: Response from the calendar client.
         """
         if _enforce_policy and self.organization is not None:
@@ -1588,6 +1592,7 @@ class CalendarService(BaseCalendarService):
                     event_data,
                     bypass_limits=bypass_limits,
                     _check_postpaid_allowance=_check_postpaid_allowance,
+                    _carried_over_room_ids=_carried_over_room_ids,
                 )
             self._check_booking_policy(
                 calendar,
@@ -1604,6 +1609,7 @@ class CalendarService(BaseCalendarService):
             event_data,
             bypass_limits=bypass_limits,
             _check_postpaid_allowance=_check_postpaid_allowance,
+            _carried_over_room_ids=_carried_over_room_ids,
         )
 
     def _update_bundle_event(
