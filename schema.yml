@@ -11004,6 +11004,61 @@ paths:
           description: ''
         '404':
           description: No default calendar for this user
+  /calendar/microsoft-connection/consent-url/:
+    post:
+      operationId: calendar_microsoft_connection_consent_url_create
+      description: Issue a new single-use consent link. Older links stop working.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicrosoftConsentUrl'
+          description: ''
+  /calendar/microsoft-connection/verify/:
+    post:
+      operationId: calendar_microsoft_connection_verify_create
+      description: Verify write access. A failed check answers 200 with ``error``
+        set.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicrosoftConnectionVerification'
+          description: ''
   /calendar/request-import/:
     post:
       operationId: calendar_request_import_create
@@ -20783,6 +20838,37 @@ components:
       required:
       - id
       - name
+    MicrosoftConnectionVerification:
+      type: object
+      description: The outcome of checking that the connected Microsoft tenant allows
+        room writes.
+      properties:
+        write_enabled:
+          type: boolean
+          readOnly: true
+        verified_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        error:
+          type: string
+          readOnly: true
+      required:
+      - error
+      - verified_at
+      - write_enabled
+    MicrosoftConsentUrl:
+      type: object
+      description: The admin-consent link an org admin hands to their tenant's Global
+        Administrator.
+      properties:
+        consent_url:
+          type: string
+          format: uri
+          readOnly: true
+      required:
+      - consent_url
     MyMembership:
       type: object
       description: |-

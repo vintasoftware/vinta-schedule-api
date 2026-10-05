@@ -584,3 +584,43 @@ class ResourceDirectoryNotWriteEnabledError(ResourceDirectoryPermissionError):
     """
 
     default_message = "Room writes are not enabled for this organization and provider."
+
+
+class MicrosoftConnectionNotConfiguredError(CalendarIntegrationError):
+    """``MS_CLIENT_ID`` or ``MS_CLIENT_SECRET`` is empty, so no Microsoft call can be made."""
+
+    default_message = "Microsoft room sync is not configured on this environment."
+
+
+class MicrosoftAppOnlyTokenError(CalendarIntegrationError):
+    """The Microsoft identity platform refused, or never answered, an app-only token request.
+
+    ``status_code`` and ``error_code`` (the OAuth ``error`` field, such as
+    ``invalid_client`` or ``unauthorized_client``) are kept for callers. The
+    provider's ``error_description`` is not, because it is free text.
+    """
+
+    default_message = "Could not get an app-only token from Microsoft."
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        status_code: int | None = None,
+        error_code: str | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+
+
+class MicrosoftConsentStateError(CalendarIntegrationError):
+    """The admin-consent ``state`` is tampered, expired, already used or not this org's."""
+
+    default_message = "The Microsoft admin-consent link is invalid or was already used."
+
+
+class MicrosoftConsentDeniedError(CalendarIntegrationError):
+    """The tenant admin did not grant admin consent, or Microsoft sent no usable tenant id."""
+
+    default_message = "Microsoft admin consent was not granted."
