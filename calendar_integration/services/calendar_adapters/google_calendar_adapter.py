@@ -845,7 +845,10 @@ class GoogleCalendarAdapter(CalendarAdapter):
         ttl_seconds = tracking_params.get("ttl_seconds") if tracking_params else 3600
 
         if not channel_id:
-            channel_id = f"calendar-{resource_id}-{uuid.uuid4().hex[:8]}"
+            # Google caps a channel id at 64 characters, which a room's calendar id (its
+            # resource email) can fill on its own. The subscription row already records
+            # which calendar the channel belongs to.
+            channel_id = f"calendar-{uuid.uuid4().hex}"
 
         body = {
             "id": channel_id,

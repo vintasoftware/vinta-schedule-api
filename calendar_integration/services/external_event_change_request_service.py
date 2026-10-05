@@ -144,7 +144,7 @@ class ExternalEventChangeRequestService:
         in ``calendar_service_utils``.
         """
         calendar = event.calendar
-        # The provider speaks in external ids, never the internal PKs.
+        # The provider speaks in its own ids, never the internal PKs.
         calendar_external_id = calendar.provider_calendar_id if calendar is not None else ""
 
         attendees: list[EventAttendeeData] = []

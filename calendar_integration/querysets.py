@@ -271,14 +271,22 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
         email is known to Google by that email, every other calendar by ``external_id``.
         Use it to resolve an id that came back from the provider, such as the calendar
         named in a webhook notification.
+
+        Ordered so ``first()`` picks the right row when two match. That happens when an
+        account lists a Google room among its own calendars: the account import adds a
+        second, ``PERSONAL`` row whose ``external_id`` is the room email. The room row
+        comes first, because it is the one the room import and room sync act on.
         """
         if provider != CalendarProvider.GOOGLE:
-            return self.filter(provider=provider, external_id=provider_calendar_id)
+            return self.filter(provider=provider, external_id=provider_calendar_id).order_by("id")
         google_room_with_email = Q(calendar_type=CalendarType.RESOURCE) & ~Q(email="")
         return self.filter(
             (Q(external_id=provider_calendar_id) & ~google_room_with_email)
             | (google_room_with_email & Q(email=provider_calendar_id)),
             provider=provider,
+        ).order_by(
+            Case(When(google_room_with_email, then=Value(0)), default=Value(1)),
+            "id",
         )
 
     def not_newly_counted_as_type(self, calendar_type: str) -> "CalendarQuerySet":

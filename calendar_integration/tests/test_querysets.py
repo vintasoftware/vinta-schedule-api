@@ -1782,3 +1782,31 @@ class TestCalendarQuerySetForProviderCalendarId:
 
         assert self._lookup(organization, CalendarProvider.MICROSOFT, "ms-room-id") == [room]
         assert self._lookup(organization, CalendarProvider.MICROSOFT, "room@contoso.com") == []
+
+    @pytest.mark.parametrize(
+        ("provider", "calendar_type", "email"),
+        [
+            (CalendarProvider.GOOGLE, CalendarType.RESOURCE, "room@resource.calendar.google.com"),
+            (CalendarProvider.GOOGLE, CalendarType.RESOURCE, ""),
+            (CalendarProvider.GOOGLE, CalendarType.PERSONAL, "someone@example.com"),
+            (CalendarProvider.MICROSOFT, CalendarType.RESOURCE, "room@contoso.com"),
+        ],
+    )
+    def test_finds_each_calendar_by_its_provider_calendar_id(
+        self,
+        organization: Organization,
+        provider: str,
+        calendar_type: str,
+        email: str,
+    ) -> None:
+        """The queryset and ``Calendar.provider_calendar_id`` must agree on every shape."""
+        calendar = Calendar.objects.create(
+            name="Any",
+            external_id="ext-id",
+            email=email,
+            provider=provider,
+            calendar_type=calendar_type,
+            organization=organization,
+        )
+
+        assert self._lookup(organization, provider, calendar.provider_calendar_id) == [calendar]

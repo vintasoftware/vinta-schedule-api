@@ -571,6 +571,46 @@ def test_request_webhook_triggered_sync_finds_google_room_by_resource_email(
     assert [call["calendar"] for call in host.request_calendar_sync_calls] == [google_room]
 
 
+@pytest.mark.django_db
+def test_request_webhook_triggered_sync_prefers_google_room_over_personal_duplicate(
+    context: CalendarServiceContext,
+    organization: Organization,
+) -> None:
+    """A room the account also lists among its own calendars is imported a second time
+    as a PERSONAL row keyed by the room email. A notification for the room email must
+    still sync the room, even when that duplicate row is older."""
+    Calendar.objects.create(
+        name="Board Room (calendar list)",
+        external_id=ROOM_EMAIL,
+        email=ROOM_EMAIL,
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.PERSONAL,
+        sync_enabled=False,
+        organization=organization,
+    )
+    room = Calendar.objects.create(
+        name="Board Room",
+        external_id="c_1882room",
+        email=ROOM_EMAIL,
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.RESOURCE,
+        organization=organization,
+    )
+    webhook_event = baker.make(
+        CalendarWebhookEvent,
+        organization=organization,
+        provider=CalendarProvider.GOOGLE,
+    )
+    host = FakeHost()
+
+    make_service(context, host).request_webhook_triggered_sync(
+        external_calendar_id=ROOM_EMAIL,
+        webhook_event=webhook_event,
+    )
+
+    assert [call["calendar"] for call in host.request_calendar_sync_calls] == [room]
+
+
 # ---------------------------------------------------------------------------
 # Tests: get_webhook_health_status
 # ---------------------------------------------------------------------------

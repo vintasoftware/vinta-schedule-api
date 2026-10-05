@@ -224,16 +224,15 @@ class CalendarWebhookService:
             return None
 
         # Find the calendar by the id the provider knows it by (a Google room's email,
-        # otherwise its external ID). ``first()``: a room the account also lists among
-        # its own calendars can have a second row whose external ID is that email.
+        # otherwise its external ID). ``first()``: a room can match twice; the queryset
+        # orders the room row first.
         calendar = (
             Calendar.objects.filter_by_organization(narrowed.organization.id)
             .for_provider_calendar_id(webhook_event.provider, external_calendar_id)
-            .order_by("id")
             .first()
         )
         if calendar is None:
-            logger.warning("Calendar not found for external_id: %s", external_calendar_id)
+            logger.warning("Calendar not found for provider calendar id: %s", external_calendar_id)
             return None
 
         # Check for recent syncs to prevent excessive syncing (deduplication)
@@ -352,7 +351,7 @@ class CalendarWebhookService:
         elif calendar.provider == CalendarProvider.MICROSOFT:
             subscription_data = (
                 auth_context.calendar_adapter.create_webhook_subscription_with_tracking(
-                    resource_id=calendar.external_id,
+                    resource_id=calendar.provider_calendar_id,
                     callback_url=callback_url,
                     tracking_params={"expiration_hours": expiration_hours},
                 )
