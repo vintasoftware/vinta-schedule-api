@@ -1378,8 +1378,7 @@ class CalendarSyncService:
         # ALLOW (default): apply the incoming changes directly to the local event.
         existing_event.title = event.title
         existing_event.description = event.description
-        existing_event.start_time = event.start_time
-        existing_event.end_time = event.end_time
+        self._set_synced_times(existing_event, event)
         existing_event.meta["latest_original_payload"] = event.original_payload or {}
         changes.events_to_update.append(existing_event)
         changes.matched_event_ids.add(existing_external_id)
@@ -1400,13 +1399,32 @@ class CalendarSyncService:
             return
 
         # Update existing blocked time
-        existing_blocked_time.start_time = event.start_time
-        existing_blocked_time.end_time = event.end_time
+        self._set_synced_times(existing_blocked_time, event)
         existing_blocked_time.reason = event.title
         existing_blocked_time.external_id = event.external_id
         existing_blocked_time.meta["latest_original_payload"] = event.original_payload or {}
         changes.blocked_times_to_update.append(existing_blocked_time)
         changes.matched_event_ids.add(existing_blocked_time.external_id)
+
+    def _set_synced_times(
+        self, row: CalendarEvent | BlockedTime, event: CalendarEventAdapterOutputData
+    ) -> None:
+        """Copy the provider's times onto an existing row, the way a new row stores them.
+
+        ``start_time`` / ``end_time`` are generated from ``*_tz_unaware`` and
+        ``timezone``, so those three columns are what has to change.
+        """
+        row.start_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+            event.start_time, event.timezone
+        )
+        row.end_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+            event.end_time, event.timezone
+        )
+        row.timezone = event.timezone
+        # Not written (the database generates them); kept current in memory for the
+        # available-time pruning that reads these rows after the bulk update.
+        row.start_time = event.start_time
+        row.end_time = event.end_time
 
     def _process_new_event(
         self, event: CalendarEventAdapterOutputData, calendar: Calendar, changes: EventsSyncChanges
@@ -1623,7 +1641,14 @@ class CalendarSyncService:
 
         if changes.events_to_update:
             CalendarEvent.objects.bulk_update(
-                changes.events_to_update, ["title", "description", "start_time", "end_time"]
+                changes.events_to_update,
+                [
+                    "title",
+                    "description",
+                    "start_time_tz_unaware",
+                    "end_time_tz_unaware",
+                    "timezone",
+                ],
             )
 
         if changes.attendances_to_create:
@@ -1635,7 +1660,13 @@ class CalendarSyncService:
         if changes.blocked_times_to_update:
             BlockedTime.objects.bulk_update(
                 changes.blocked_times_to_update,
-                ["start_time_tz_unaware", "end_time_tz_unaware", "reason", "external_id"],
+                [
+                    "start_time_tz_unaware",
+                    "end_time_tz_unaware",
+                    "timezone",
+                    "reason",
+                    "external_id",
+                ],
             )
 
         if changes.events_to_delete:

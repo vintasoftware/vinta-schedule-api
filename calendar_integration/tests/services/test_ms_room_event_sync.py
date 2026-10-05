@@ -121,15 +121,6 @@ class TestSyncWithDeltaToken:
             "token-2",
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Shared sync pipeline bug, outside this phase: _process_existing_blocked_time "
-            "assigns the generated start_time / end_time, but the bulk update writes "
-            "start_time_tz_unaware / end_time_tz_unaware, so a moved booking keeps its "
-            "old time."
-        ),
-    )
     def test_a_moved_booking_moves(self, di_container, organization, ms_room_graph):
         calendar = make_room(organization)
         ms_room_graph.events = {"ev-1": graph_event("ev-1", "Standup", TOMORROW_10)}
