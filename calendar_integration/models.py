@@ -52,6 +52,7 @@ from calendar_integration.managers import (
     CalendarPoolManager,
     CalendarPoolMembershipManager,
     CalendarSyncManager,
+    CalendarWebhookSubscriptionManager,
     ExternalEventChangeRequestManager,
     ResourceCalendarCreateRequestManager,
     ResourceCalendarProviderLinkManager,
@@ -2464,7 +2465,7 @@ class CalendarWebhookSubscription(
 ):
     """Tracks active webhook subscriptions for calendars."""
 
-    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
+    objects: ClassVar[CalendarWebhookSubscriptionManager] = CalendarWebhookSubscriptionManager()
 
     calendar = OrganizationSafeForeignKey(
         Calendar, on_delete=models.CASCADE, related_name="webhook_subscriptions"

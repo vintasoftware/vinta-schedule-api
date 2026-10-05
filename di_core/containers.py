@@ -43,6 +43,7 @@ from calendar_integration.services.calendar_clients.ms_app_only_token import (
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
+from calendar_integration.services.calendar_webhook_service import MicrosoftRoomWebhookService
 from calendar_integration.services.external_client_identifier_service import (
     ExternalClientIdentifierService,
 )
@@ -342,6 +343,11 @@ class AppContainer(containers.DeclarativeContainer):
     consent_service = providers.Factory(
         ConsentService,
         audit_service=audit_service,
+    )
+
+    microsoft_room_webhook_service = providers.Factory(
+        MicrosoftRoomWebhookService,
+        token_provider=microsoft_app_only_token_provider,
     )
 
     microsoft_connection_service = providers.Factory(

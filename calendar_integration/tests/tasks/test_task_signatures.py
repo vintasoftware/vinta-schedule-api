@@ -18,8 +18,10 @@ from celery import Task
 from calendar_integration.tasks import (
     import_account_calendars_task,
     import_organization_calendar_resources_task,
+    subscribe_microsoft_room_task,
     sync_calendar_task,
     sync_microsoft_room_events_task,
+    unsubscribe_microsoft_room_task,
 )
 from calendar_integration.tasks.calendar_sync_tasks import resync_organization_calendars_task
 
@@ -49,6 +51,18 @@ from calendar_integration.tasks.calendar_sync_tasks import resync_organization_c
             ("social_account", 1, 1, 1),
             {},
             id="sync_calendar-CalendarSyncService.request_calendar_sync",
+        ),
+        pytest.param(
+            subscribe_microsoft_room_task,
+            (1, 1),
+            {},
+            id="subscribe_microsoft_room-resource_room_synced receiver",
+        ),
+        pytest.param(
+            unsubscribe_microsoft_room_task,
+            (1, 1),
+            {},
+            id="unsubscribe_microsoft_room-resource_room_archived receiver",
         ),
         pytest.param(
             sync_microsoft_room_events_task,

@@ -7,6 +7,7 @@ from django.urls import path
 from calendar_integration.webhook_views import (
     GoogleCalendarWebhookView,
     MicrosoftCalendarWebhookView,
+    MicrosoftRoomWebhookView,
 )
 
 
@@ -22,5 +23,10 @@ urlpatterns = [
         "webhooks/microsoft-calendar/<int:organization_id>/",
         MicrosoftCalendarWebhookView.as_view(),
         name="microsoft_webhook",
+    ),
+    path(
+        "webhooks/microsoft-rooms/<int:organization_id>/",
+        MicrosoftRoomWebhookView.as_view(),
+        name="microsoft_room_webhook",
     ),
 ]

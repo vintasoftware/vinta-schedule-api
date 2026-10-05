@@ -22,6 +22,7 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from calendar_integration.constants import (
+    MICROSOFT_ROOM_SUBSCRIPTION_RESOURCE_PREFIX,
     ROOM_ON_PROVIDER_STATES,
     CalendarManagementTokenKind,
     CalendarProvider,
@@ -1539,3 +1540,28 @@ class ResourceCalendarCreateRequestQuerySet(OrganizationScopedQuerySet):
     def live(self, now: datetime.datetime | None = None) -> "ResourceCalendarCreateRequestQuerySet":
         """Requests whose idempotency key can still be replayed."""
         return self.filter(expires_at__gt=now or timezone.now())
+
+
+class CalendarWebhookSubscriptionQuerySet(OrganizationScopedQuerySet):
+    """QuerySet for :class:`~calendar_integration.models.CalendarWebhookSubscription`."""
+
+    def microsoft_rooms(self) -> "CalendarWebhookSubscriptionQuerySet":
+        """Subscriptions the app-only Microsoft room sync made (not delegated ones)."""
+        return self.filter(
+            provider=CalendarProvider.MICROSOFT,
+            resource_uri__startswith=MICROSOFT_ROOM_SUBSCRIPTION_RESOURCE_PREFIX,
+        )
+
+    def active_microsoft_rooms(
+        self, external_subscription_ids: Iterable[str]
+    ) -> "CalendarWebhookSubscriptionQuerySet":
+        """Active Microsoft room subscriptions with one of these Graph subscription ids."""
+        return self.microsoft_rooms().filter(
+            is_active=True, external_subscription_id__in=list(external_subscription_ids)
+        )
+
+    def microsoft_rooms_expiring_before(
+        self, cutoff: datetime.datetime
+    ) -> "CalendarWebhookSubscriptionQuerySet":
+        """Active Microsoft room subscriptions that expire before ``cutoff``."""
+        return self.microsoft_rooms().filter(is_active=True, expires_at__lt=cutoff)
