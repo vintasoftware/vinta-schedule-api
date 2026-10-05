@@ -807,8 +807,10 @@ class CalendarEventQuerySet(OrganizationScopedQuerySet, RecurringQuerySetMixin):
         An event books a room when it sits on the room's own calendar, or when it
         allocates the room and the allocation was not declined. Every kind of row is
         returned: one-off events, recurring masters, bulk-modification continuations,
-        and the exception rows of a series (which carry their own allocations, copied
-        from the master when the occurrence was edited).
+        and exception rows. An exception row is returned only when it books the room
+        itself (it sits on the room's calendar); editing an occurrence gives its row
+        no allocations, so a series that allocates the room books it through the
+        master, whose expansion includes the modified occurrence.
         """
         from calendar_integration.models import ResourceAllocation
 

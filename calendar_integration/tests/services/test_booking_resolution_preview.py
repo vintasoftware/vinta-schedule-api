@@ -31,12 +31,14 @@ from calendar_integration.factories import create_resource_provider_link
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
+    CalendarOwnership,
     EventExternalAttendance,
     ExternalAttendee,
     RecurrenceRule,
     ResourceAllocation,
 )
 from calendar_integration.services.booking_resolution_service import BookingResolutionService
+from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
     AbortDeletion,
     BookingResolutionPlan,
@@ -53,7 +55,9 @@ from calendar_integration.services.dataclasses import (
 from calendar_integration.services.protocols.resource_directory_adapter import (
     ResourceDirectoryAdapter,
 )
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
+from public_api.services import PublicAPIAuthService
+from users.models import Profile, User
 
 
 HOUR = datetime.timedelta(hours=1)
@@ -199,6 +203,32 @@ def _event(
     )
     event.refresh_from_db()
     return event
+
+
+def _owner_scoped_facade(calendar: Calendar, di_container) -> CalendarService:
+    """A facade acting as a public-API token scoped to ``calendar``'s owner.
+
+    Such a token may create events on the calendar, which is what writing an
+    occurrence exception does.
+    """
+    user = User.objects.create_user(email="owner@example.com", password="pw")
+    Profile.objects.create(user=user)
+    membership = OrganizationMembership.objects.create(
+        user=user, organization=calendar.organization, is_active=True
+    )
+    CalendarOwnership.objects.create(
+        calendar=calendar, membership_user_id=user.id, organization=calendar.organization
+    )
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="booking_resolution_owner",
+        organization=calendar.organization,
+        scoped_to_membership=membership,
+    )
+    facade = di_container.calendar_service()
+    facade.initialize_without_provider(
+        user_or_token=system_user, organization=calendar.organization
+    )
+    return facade
 
 
 def _weekly(organization: Organization) -> RecurrenceRule:
@@ -367,21 +397,25 @@ class TestRoomBusyWindows:
 
         assert directory.free_busy_calls == []
 
-    def test_modified_occurrence_that_dropped_the_room_is_not_busy(
-        self, service, organization, organizer_calendar, room_a
+    def test_modified_occurrence_of_a_series_that_allocates_the_room_is_busy(
+        self, service, organization, organizer_calendar, room_a, di_container
     ):
         series = _event(organizer_calendar, _wall_clock(-7, 2), rule=_weekly(organization))
         _allocate(series, room_a)
-        # The occurrence a week from now was moved two hours later and no longer books
-        # the room.
-        moved = _event(organizer_calendar, _wall_clock(7, 4), parent=series)
-        series.create_exception(_utc(_wall_clock(7, 2)), is_cancelled=False, modified_object=moved)
+        # Move the occurrence a week from now two hours later. The edit keeps the
+        # series' rooms; the exception row it writes has no allocations of its own.
+        _owner_scoped_facade(organizer_calendar, di_container).create_recurring_event_exception(
+            series,
+            exception_date=_wall_clock(7, 2).date(),
+            modified_start_time=_utc(_wall_clock(7, 4)),
+            modified_end_time=_utc(_wall_clock(7, 5)),
+        )
 
         windows = service.room_busy_windows(
             room_a, _utc(_wall_clock(6, 0)), _utc(_wall_clock(8, 0))
         )
 
-        assert windows == []
+        assert windows == [BusyWindow(_utc(_wall_clock(7, 4)), _utc(_wall_clock(7, 5)))]
 
 
 @pytest.fixture
@@ -397,7 +431,9 @@ def scenario(organization, organizer_calendar, room_a, room_b):
 
 
 class TestValidate:
-    def test_valid_plan_applies_overrides_over_the_default(self, service, room_a, room_b, scenario):
+    def test_valid_plan_applies_overrides_over_the_default(
+        self, service, directory, room_a, room_b, scenario
+    ):
         preview = service.preview(room_a)
         cancel = CancelBooking(BookingCancelMode.CANCEL_EVENT)
 
@@ -418,6 +454,8 @@ class TestValidate:
                 ResolvedBooking(by_id[scenario["series"].id], MoveBooking(room_b.id)),
             ),
         )
+        # M1 and S both move to B, and B's free/busy is read once for both.
+        assert directory.free_busy_calls == [room_b.email]
 
     def test_spec_scenario_5_busy_target_rejects_naming_m1(
         self, service, organizer_calendar, room_a, room_b, scenario

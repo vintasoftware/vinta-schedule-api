@@ -137,7 +137,10 @@ class BookingResolutionService:
 
         - events on the room's own calendar;
         - events on any calendar that allocate the room (a declined allocation does
-          not count), with recurring series expanded;
+          not count), with recurring series expanded. Every occurrence of a series
+          that books the room counts, a modified one included: an occurrence edit
+          keeps the series' rooms, and its exception row carries no allocations of
+          its own;
         - the provider's free/busy, for a room whose provider link says it exists on
           the provider (``is_bookable``). That covers bookings Vinta Schedule has not
           synced. A provider error is raised as the ``ResourceDirectoryError`` family.
@@ -157,10 +160,6 @@ class BookingResolutionService:
             windows.extend(
                 BusyWindow(occurrence.start_time, occurrence.end_time)
                 for occurrence in row.get_occurrences_in_range(start, end, overlap=True)
-                # A modified occurrence comes back as its own exception row. That row
-                # is in ``rows`` itself when it still books the room, and must not
-                # count when the edit took the room off it.
-                if occurrence.pk is None or occurrence.pk == row.pk
             )
 
         link = (
@@ -269,51 +268,59 @@ class BookingResolutionService:
             for target_id in targets
         }
 
-        # Occurrences already claimed on each target by moves checked earlier.
-        claimed: dict[int, list[BusyWindow]] = defaultdict(list)
-        rejected: list[RejectedBooking] = []
+        reasons: dict[int, BookingRejectionReason] = {}
+        # Moves that passed every other check, by target, in preview order.
+        busy_checks: dict[int, list[tuple[RoomBooking, list[BusyWindow]]]] = defaultdict(list)
         for booking, move in moves:
             event = events[booking.event_id]
             target = targets.get(move.target_calendar_id)
             link = links.get(move.target_calendar_id)
-
-            reason: BookingRejectionReason | None = None
             if target is None:
-                reason = BookingRejectionReason.TARGET_NOT_FOUND
+                reasons[booking.event_id] = BookingRejectionReason.TARGET_NOT_FOUND
             elif target.id == room.id:
-                reason = BookingRejectionReason.TARGET_IS_SAME_ROOM
+                reasons[booking.event_id] = BookingRejectionReason.TARGET_IS_SAME_ROOM
             elif target.visibility == CalendarVisibility.INACTIVE or (
                 link is not None and not link.is_bookable
             ):
-                reason = BookingRejectionReason.TARGET_NOT_BOOKABLE
+                reasons[booking.event_id] = BookingRejectionReason.TARGET_NOT_BOOKABLE
             elif target.provider != room.provider:
-                reason = BookingRejectionReason.TARGET_ON_DIFFERENT_PROVIDER
-            elif event.id not in already_booking_target[target.id]:
-                occurrences = self._affected_occurrences(event, booking)
-                if target.capacity is not None and event.attendee_count > target.capacity:  # type: ignore[attr-defined]
-                    reason = BookingRejectionReason.TARGET_TOO_SMALL
-                elif self._is_busy(target, occurrences, claimed[target.id]):
-                    reason = BookingRejectionReason.TARGET_BUSY
+                reasons[booking.event_id] = BookingRejectionReason.TARGET_ON_DIFFERENT_PROVIDER
+            elif event.id in already_booking_target[target.id]:
+                continue
+            elif target.capacity is not None and event.attendee_count > target.capacity:  # type: ignore[attr-defined]
+                reasons[booking.event_id] = BookingRejectionReason.TARGET_TOO_SMALL
+            else:
+                busy_checks[target.id].append((booking, self._affected_occurrences(event, booking)))
+
+        # One busy read per target, so one provider free/busy call however many
+        # bookings move there. Each booking is checked against that, and against the
+        # occurrences of the bookings moved there before it in this plan.
+        for target_id, checks in busy_checks.items():
+            all_occurrences = [
+                occurrence for _, occurrences in checks for occurrence in occurrences
+            ]
+            if not all_occurrences:
+                continue
+            windows = self.room_busy_windows(
+                targets[target_id],
+                min(occurrence.start for occurrence in all_occurrences),
+                max(occurrence.end for occurrence in all_occurrences),
+            )
+            for booking, occurrences in checks:
+                if any(
+                    _overlaps(window, occurrence.start, occurrence.end)
+                    for occurrence in occurrences
+                    for window in windows
+                ):
+                    reasons[booking.event_id] = BookingRejectionReason.TARGET_BUSY
                 else:
-                    claimed[target.id].extend(occurrences)
+                    windows.extend(occurrences)
 
-            if reason is not None:
-                rejected.append(RejectedBooking(event_id=booking.event_id, reason=reason))
-        return rejected
-
-    def _is_busy(
-        self, target: Calendar, occurrences: list[BusyWindow], claimed: list[BusyWindow]
-    ) -> bool:
-        if not occurrences:
-            return False
-        span_start = min(occurrence.start for occurrence in occurrences)
-        span_end = max(occurrence.end for occurrence in occurrences)
-        windows = [*self.room_busy_windows(target, span_start, span_end), *claimed]
-        return any(
-            _overlaps(window, occurrence.start, occurrence.end)
-            for occurrence in occurrences
-            for window in windows
-        )
+        return [
+            RejectedBooking(event_id=booking.event_id, reason=reasons[booking.event_id])
+            for booking, _ in moves
+            if booking.event_id in reasons
+        ]
 
     def _affected_occurrences(self, event: CalendarEvent, booking: RoomBooking) -> list[BusyWindow]:
         """The occurrences a resolution of ``booking`` changes.
