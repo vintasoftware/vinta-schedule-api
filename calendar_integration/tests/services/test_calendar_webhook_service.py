@@ -25,10 +25,12 @@ from unittest.mock import MagicMock
 
 import pytest
 from allauth.socialaccount.models import SocialAccount
+from model_bakery import baker
 
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncTriggerSource,
+    CalendarType,
     IncomingWebhookProcessingStatus,
 )
 from calendar_integration.exceptions import (
@@ -157,6 +159,21 @@ def calendar(db: Any, organization: Organization) -> Calendar:
     )
 
 
+ROOM_EMAIL = "c_1882room@resource.calendar.google.com"
+
+
+@pytest.fixture
+def google_room(db: Any, organization: Organization) -> Calendar:
+    return Calendar.objects.create(
+        name="Board Room",
+        external_id="c_1882room",
+        email=ROOM_EMAIL,
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.RESOURCE,
+        organization=organization,
+    )
+
+
 @pytest.fixture
 def fake_adapter() -> MagicMock:
     adapter = MagicMock()
@@ -262,6 +279,37 @@ def test_create_calendar_webhook_subscription_requires_auth(
             calendar=calendar,
             callback_url="https://example.com/webhook",
         )
+
+
+@pytest.mark.django_db
+def test_create_calendar_webhook_subscription_google_room_watches_resource_email(
+    context: CalendarServiceContext,
+    google_room: Calendar,
+    fake_adapter: MagicMock,
+) -> None:
+    """Google's Calendar API knows a room by its resourceEmail, so the watch channel
+    must be opened on the email, not on the Directory resourceId kept in external_id."""
+    fake_adapter.create_webhook_subscription_with_tracking.return_value = {
+        "channel_id": "channel-room",
+        "resource_id": "resource-room",
+        "resource_uri": f"https://www.googleapis.com/calendar/v3/calendars/{ROOM_EMAIL}/events",
+        "expiration": "1700000000000",
+        "calendar_id": ROOM_EMAIL,
+        "callback_url": "https://example.com/webhook",
+    }
+    service = make_service(context, FakeHost(fake_adapter=fake_adapter))
+
+    service.create_calendar_webhook_subscription(
+        calendar=google_room,
+        callback_url="https://example.com/webhook",
+        expiration_hours=24,
+    )
+
+    fake_adapter.create_webhook_subscription_with_tracking.assert_called_once_with(
+        resource_id=ROOM_EMAIL,
+        callback_url="https://example.com/webhook",
+        tracking_params={"ttl_seconds": 24 * 3600},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +539,36 @@ def test_process_webhook_notification_requires_organization_raises_immediately(
     # Guard must short-circuit before any calendar lookup or validation occurs.
     fake_adapter.validate_webhook_notification_static.assert_not_called()
     assert host.request_webhook_triggered_sync_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: request_webhook_triggered_sync
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_request_webhook_triggered_sync_finds_google_room_by_resource_email(
+    context: CalendarServiceContext,
+    organization: Organization,
+    google_room: Calendar,
+) -> None:
+    """A room's watch channel is keyed by its resourceEmail, so the notification names
+    the email; the lookup must resolve it to the room even though external_id holds
+    the Directory resourceId."""
+    webhook_event = baker.make(
+        CalendarWebhookEvent,
+        organization=organization,
+        provider=CalendarProvider.GOOGLE,
+    )
+    host = FakeHost()
+    service = make_service(context, host)
+
+    service.request_webhook_triggered_sync(
+        external_calendar_id=ROOM_EMAIL,
+        webhook_event=webhook_event,
+    )
+
+    assert [call["calendar"] for call in host.request_calendar_sync_calls] == [google_room]
 
 
 # ---------------------------------------------------------------------------

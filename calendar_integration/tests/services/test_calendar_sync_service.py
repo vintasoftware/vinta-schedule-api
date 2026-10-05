@@ -315,6 +315,42 @@ def test_sync_events_marks_success(
     assert calendar_sync.status == CalendarSyncStatus.SUCCESS
 
 
+@pytest.mark.django_db
+def test_execute_calendar_sync_google_room_fetches_events_by_resource_email(
+    context: CalendarServiceContext,
+    organization: Organization,
+    fake_adapter: MagicMock,
+) -> None:
+    """A Google room is imported with the Directory ``resourceId`` as ``external_id``,
+    but the Calendar API only knows the room by its ``resourceEmail``. Sync must ask
+    for the room's events by email, or Google answers 404."""
+    room = Calendar.objects.create(
+        name="Board Room",
+        external_id="c_1882room",
+        email="c_1882room@resource.calendar.google.com",
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.RESOURCE,
+        organization=organization,
+    )
+    window_start = datetime.datetime(2025, 8, 3, 0, 0, tzinfo=datetime.UTC)
+    window_end = datetime.datetime(2025, 8, 3, 23, 59, tzinfo=datetime.UTC)
+    fake_adapter.get_events.return_value = {"events": [], "next_sync_token": "tok"}
+    calendar_sync = CalendarSync.objects.create(
+        calendar=room,
+        organization=organization,
+        start_datetime=window_start,
+        end_datetime=window_end,
+        should_update_events=True,
+        status=CalendarSyncStatus.IN_PROGRESS,
+    )
+
+    make_service(context, FakeHost())._execute_calendar_sync(calendar_sync, sync_token=None)
+
+    fake_adapter.get_events.assert_called_once_with(
+        "c_1882room@resource.calendar.google.com", True, window_start, window_end, None
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests: organization-resource import path
 # ---------------------------------------------------------------------------

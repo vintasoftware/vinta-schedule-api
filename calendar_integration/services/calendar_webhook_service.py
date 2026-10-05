@@ -223,13 +223,16 @@ class CalendarWebhookService:
             )
             return None
 
-        # Find calendar by external ID
-        try:
-            calendar = Calendar.objects.filter_by_organization(narrowed.organization.id).get(
-                external_id=external_calendar_id,
-                provider=webhook_event.provider,
-            )
-        except Calendar.DoesNotExist:
+        # Find the calendar by the id the provider knows it by (a Google room's email,
+        # otherwise its external ID). ``first()``: a room the account also lists among
+        # its own calendars can have a second row whose external ID is that email.
+        calendar = (
+            Calendar.objects.filter_by_organization(narrowed.organization.id)
+            .for_provider_calendar_id(webhook_event.provider, external_calendar_id)
+            .order_by("id")
+            .first()
+        )
+        if calendar is None:
             logger.warning("Calendar not found for external_id: %s", external_calendar_id)
             return None
 
@@ -341,7 +344,7 @@ class CalendarWebhookService:
         if calendar.provider == CalendarProvider.GOOGLE:
             subscription_data = (
                 auth_context.calendar_adapter.create_webhook_subscription_with_tracking(
-                    resource_id=calendar.external_id,
+                    resource_id=calendar.provider_calendar_id,
                     callback_url=callback_url,
                     tracking_params={"ttl_seconds": expiration_hours * 3600},
                 )

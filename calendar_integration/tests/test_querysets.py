@@ -1710,3 +1710,75 @@ class TestBulkModificationQuerySet:
             _dt(2023, 10, 1), _dt(2023, 10, 10), include_continuations=True
         )
         assert len(all_occurrences) == 5
+
+
+@pytest.mark.django_db
+class TestCalendarQuerySetForProviderCalendarId:
+    """``for_provider_calendar_id`` resolves the id a provider uses for a calendar."""
+
+    @pytest.fixture
+    def organization(self) -> Organization:
+        return Organization.objects.create(name="Provider Id Org")
+
+    @pytest.fixture
+    def google_room(self, organization: Organization) -> Calendar:
+        return Calendar.objects.create(
+            name="Board Room",
+            external_id="c_1882room",
+            email="c_1882room@resource.calendar.google.com",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.RESOURCE,
+            organization=organization,
+        )
+
+    @pytest.fixture
+    def google_personal(self, organization: Organization) -> Calendar:
+        return Calendar.objects.create(
+            name="Personal",
+            external_id="someone@example.com",
+            email="someone@example.com",
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+            organization=organization,
+        )
+
+    def _lookup(
+        self, organization: Organization, provider: str, calendar_id: str
+    ) -> list[Calendar]:
+        return list(
+            Calendar.objects.filter_by_organization(organization.id).for_provider_calendar_id(
+                provider, calendar_id
+            )
+        )
+
+    def test_google_room_is_found_by_resource_email(
+        self, organization: Organization, google_room: Calendar, google_personal: Calendar
+    ) -> None:
+        assert self._lookup(
+            organization, CalendarProvider.GOOGLE, "c_1882room@resource.calendar.google.com"
+        ) == [google_room]
+
+    def test_google_room_is_not_found_by_resource_id(
+        self, organization: Organization, google_room: Calendar
+    ) -> None:
+        assert self._lookup(organization, CalendarProvider.GOOGLE, "c_1882room") == []
+
+    def test_google_personal_calendar_is_found_by_external_id(
+        self, organization: Organization, google_room: Calendar, google_personal: Calendar
+    ) -> None:
+        assert self._lookup(organization, CalendarProvider.GOOGLE, "someone@example.com") == [
+            google_personal
+        ]
+
+    def test_microsoft_room_is_found_by_external_id(self, organization: Organization) -> None:
+        room = Calendar.objects.create(
+            name="MS Room",
+            external_id="ms-room-id",
+            email="room@contoso.com",
+            provider=CalendarProvider.MICROSOFT,
+            calendar_type=CalendarType.RESOURCE,
+            organization=organization,
+        )
+
+        assert self._lookup(organization, CalendarProvider.MICROSOFT, "ms-room-id") == [room]
+        assert self._lookup(organization, CalendarProvider.MICROSOFT, "room@contoso.com") == []

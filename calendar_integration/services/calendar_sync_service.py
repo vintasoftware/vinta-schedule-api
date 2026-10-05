@@ -843,7 +843,7 @@ class CalendarSyncService:
         should_update_events = calendar_sync.should_update_events
 
         events_dict = context.calendar_adapter.get_events(
-            calendar.external_id, calendar.is_resource, start_date, end_date, sync_token
+            calendar.provider_calendar_id, calendar.is_resource, start_date, end_date, sync_token
         )
         # Materialize so we can collect the incoming external ids up front; the
         # batch is already held fully in memory while building `changes` below.

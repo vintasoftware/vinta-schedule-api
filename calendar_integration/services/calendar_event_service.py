@@ -717,7 +717,7 @@ class CalendarEventService:
 
             created_event = write_adapter.create_event(
                 CalendarEventAdapterInputData(
-                    calendar_external_id=calendar.external_id,
+                    calendar_external_id=calendar.provider_calendar_id,
                     title=event_data.title or "",
                     description=event_data.description or "",
                     start_time=event_data.start_time,
@@ -1002,10 +1002,10 @@ class CalendarEventService:
 
             # The provider knows the calendar and event by their external ids.
             updated_event = write_adapter.update_event(
-                event.calendar.external_id,
+                event.calendar.provider_calendar_id,
                 cast("str", event.external_id),
                 CalendarEventAdapterInputData(
-                    calendar_external_id=event.calendar.external_id,
+                    calendar_external_id=event.calendar.provider_calendar_id,
                     title=event_data.title if event_data.title is not None else event.title,
                     description=(
                         event_data.description
@@ -1622,10 +1622,10 @@ class CalendarEventService:
         attendees, resources = self._adapter_people_for_event(event)
 
         write_adapter.update_event(
-            calendar.external_id,
+            calendar.provider_calendar_id,
             event.external_id,
             CalendarEventAdapterInputData(
-                calendar_external_id=calendar.external_id,
+                calendar_external_id=calendar.provider_calendar_id,
                 title=event.title,
                 description=event.description,
                 start_time=start_time,
@@ -1937,10 +1937,10 @@ class CalendarEventService:
                 # The occurrence keeps the series' attendees and resources at the provider.
                 attendees, resources = self._adapter_people_for_event(master)
                 updated_external = write_adapter.update_event(
-                    master.calendar.external_id,
+                    master.calendar.provider_calendar_id,
                     existing_modified.external_id,
                     CalendarEventAdapterInputData(
-                        calendar_external_id=master.calendar.external_id,
+                        calendar_external_id=master.calendar.provider_calendar_id,
                         title=master.title,
                         description=master.description,
                         start_time=start_time,
@@ -1975,7 +1975,7 @@ class CalendarEventService:
             attendees, resources = self._adapter_people_for_event(master)
             created_external = write_adapter.create_event(
                 CalendarEventAdapterInputData(
-                    calendar_external_id=master.calendar.external_id,
+                    calendar_external_id=master.calendar.provider_calendar_id,
                     title=master.title,
                     description=master.description,
                     start_time=start_time,
@@ -2398,7 +2398,7 @@ class CalendarEventService:
         ] and (write_adapter := self._host._get_write_adapter_for_calendar(event.calendar)):
             if event.is_recurring and delete_series:
                 # Delete the entire recurring series from external calendar
-                write_adapter.delete_event(event.calendar.external_id, event.external_id)
+                write_adapter.delete_event(event.calendar.provider_calendar_id, event.external_id)
             elif event.is_recurring_instance and not delete_series:
                 # Create a cancellation exception instead of deleting
                 if event.parent_recurring_object:
@@ -2407,7 +2407,7 @@ class CalendarEventService:
                     )
             else:
                 # Delete single event or instance
-                write_adapter.delete_event(event.calendar.external_id, event.external_id)
+                write_adapter.delete_event(event.calendar.provider_calendar_id, event.external_id)
 
         if event.is_recurring and delete_series:
             # Delete the entire series including all instances and exceptions
@@ -2470,7 +2470,7 @@ class CalendarEventService:
             )
 
         event_data = context.calendar_adapter.get_event(
-            event.calendar.external_id, event.external_id
+            event.calendar.provider_calendar_id, event.external_id
         )
 
         # Create a new event in the target calendar

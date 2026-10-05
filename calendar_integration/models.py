@@ -216,6 +216,22 @@ class Calendar(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseMode
         return self.calendar_type == CalendarType.RESOURCE
 
     @property
+    def provider_calendar_id(self) -> str:
+        """
+        The id the provider's calendar API knows this calendar by.
+
+        Usually ``external_id``. Google rooms are the exception: they are imported
+        from the Directory API, so ``external_id`` holds the room's ``resourceId``,
+        but the Calendar API addresses a room by its ``resourceEmail``
+        ("The calendarId corresponds to the resourceEmail field" -- Google Calendar
+        API, *Domain resources, rooms & calendars*). ``external_id`` keeps the
+        ``resourceId`` because the room import upserts on it.
+        """
+        if self.provider == CalendarProvider.GOOGLE and self.is_resource and self.email:
+            return self.email
+        return self.external_id
+
+    @property
     def latest_sync(self) -> "CalendarSync | None":
         """
         Returns the latest sync record for this calendar.
