@@ -49,14 +49,21 @@ client.unsubscribe_from_calendar_events(subscription["id"])
 import datetime
 import logging
 import time
-from collections.abc import Iterable
+import urllib.parse
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 from pyrate_limiter import Duration, Rate
 
 from common.redis import build_resilient_limiter
+
+
+if TYPE_CHECKING:
+    from calendar_integration.services.calendar_clients.ms_app_only_token import (
+        MicrosoftAppOnlyTokenProvider,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -74,6 +81,13 @@ quote_limiter = build_resilient_limiter(
 
 RETRIES_ON_ERROR = 5
 STATUS_TO_RETRY = {500, 502, 503, 504}  # HTTP status codes to retry on
+# Graph throttling (429). The request is retried after the `Retry-After` delay at most
+# this many times. A longer delay is not waited out here: the error goes back to the
+# caller, so a background task can be re-enqueued instead of holding a worker.
+THROTTLE_RETRIES = 3
+MAX_RETRY_AFTER_SECONDS = 30
+# Microsoft Places: a Vinta-created room carries this tag so a replayed create can find it.
+VINTA_ROOM_TAG_PREFIX = "vinta-link-"
 
 
 @dataclass
@@ -134,6 +148,31 @@ class MSGraphAPIError(Exception):
         self.response_data = response_data
 
 
+class MSGraphThrottledError(MSGraphAPIError):
+    """Graph kept answering 429 Too Many Requests. Transient: try again later.
+
+    ``retry_after`` is the delay, in seconds, Graph asked for in its last answer, or
+    ``None`` when it sent none.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        retry_after: int | None = None,
+        response_data: dict | None = None,
+    ):
+        super().__init__(message, 429, response_data)
+        self.retry_after = retry_after
+
+
+def _retry_after_seconds(response: requests.Response) -> int | None:
+    """The ``Retry-After`` header in seconds, or ``None`` when absent or not a number."""
+    value = response.headers.get("Retry-After")
+    if not isinstance(value, str) or not value.strip().isdigit():
+        return None
+    return int(value.strip())
+
+
 class MSOutlookCalendarAPIClient:
     """
     Microsoft Graph Calendar API Client for Microsoft Outlook integration.
@@ -155,6 +194,7 @@ class MSOutlookCalendarAPIClient:
         """
         self.access_token = access_token
         self.user_id = user_id or "me"
+        self._access_token_getter: Callable[[], str] | None = None
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -163,6 +203,20 @@ class MSOutlookCalendarAPIClient:
                 "Accept": "application/json",
             }
         )
+
+    @classmethod
+    def app_only(
+        cls, token_provider: "MicrosoftAppOnlyTokenProvider", tenant_id: str
+    ) -> "MSOutlookCalendarAPIClient":
+        """A client that acts as Vinta's Entra app in ``tenant_id``, with no user behind it.
+
+        Every request asks ``token_provider`` for the tenant's app-only token, which it
+        caches until shortly before expiry, so a long-lived client never sends an
+        expired token. There is no signed-in user, so ``/me`` endpoints do not work.
+        """
+        client = cls(access_token="")
+        client._access_token_getter = lambda: token_provider.get_token(tenant_id).access_token
+        return client
 
     def _make_request(
         self,
@@ -195,8 +249,11 @@ class MSOutlookCalendarAPIClient:
             request_headers.update(headers)
 
         last_exception = None
+        throttled_retries = 0
 
         for attempt in range(RETRIES_ON_ERROR + 1):  # +1 for the initial attempt
+            if self._access_token_getter is not None:
+                request_headers["Authorization"] = f"Bearer {self._access_token_getter()}"
             try:
                 quote_limiter.try_acquire("ms_outlook_calendar")
                 response = self.session.request(
@@ -212,6 +269,30 @@ class MSOutlookCalendarAPIClient:
                     return {}
 
                 response_data = response.json() if response.content else {}
+
+                if response.status_code == 429:
+                    retry_after = _retry_after_seconds(response)
+                    wait_time = 2**attempt if retry_after is None else retry_after
+                    if (
+                        throttled_retries < THROTTLE_RETRIES
+                        and attempt < RETRIES_ON_ERROR
+                        and wait_time <= MAX_RETRY_AFTER_SECONDS
+                    ):
+                        throttled_retries += 1
+                        logger.warning(
+                            "MS Graph API throttled the request (retry %d/%d). Retrying in %ds...",
+                            throttled_retries,
+                            THROTTLE_RETRIES,
+                            wait_time,
+                        )
+                        time.sleep(wait_time)
+                        continue
+                    logger.warning("MS Graph API still throttling; retry after %ss", retry_after)
+                    raise MSGraphThrottledError(
+                        "MS Graph API error: 429 - too many requests",
+                        retry_after=retry_after,
+                        response_data=response_data,
+                    )
 
                 if not response.ok:
                     # Check if this is a retryable status code and we have attempts left
@@ -783,6 +864,11 @@ class MSOutlookCalendarAPIClient:
         Yields:
             MSGraphRoom objects one at a time
         """
+        for room_data in self._iter_places("room", page_size):
+            yield self._parse_room(room_data)
+
+    def _iter_places(self, place_type: str, page_size: int = 100) -> Iterable[dict[str, Any]]:
+        """Every place of ``place_type`` (``room``, ``building``, ``floor``, ``section``)."""
         skip = 0
 
         while True:
@@ -791,31 +877,36 @@ class MSOutlookCalendarAPIClient:
                 "$skip": skip,
             }
 
-            response = self._make_request("GET", "/places/microsoft.graph.room", params=params)
-            room_data_list = response.get("value", [])
+            response = self._make_request(
+                "GET", f"/places/microsoft.graph.{place_type}", params=params
+            )
+            place_data_list = response.get("value", [])
 
-            if not room_data_list:
+            if not place_data_list:
                 break
 
-            # Yield rooms from current page
-            for room_data in room_data_list:
-                yield MSGraphRoom(
-                    id=room_data["id"],
-                    display_name=room_data["displayName"],
-                    email_address=room_data["emailAddress"],
-                    capacity=room_data.get("capacity"),
-                    building=room_data.get("building"),
-                    floor_number=room_data.get("floorNumber"),
-                    phone=room_data.get("phone"),
-                    is_wheelchair_accessible=room_data.get("isWheelChairAccessible", False),
-                    original_payload=room_data,
-                )
+            yield from place_data_list
 
-            # If we got fewer rooms than requested, we've reached the end
-            if len(room_data_list) < page_size:
+            # If we got fewer places than requested, we've reached the end
+            if len(place_data_list) < page_size:
                 break
 
             skip += page_size
+
+    @staticmethod
+    def _parse_room(room_data: dict[str, Any]) -> MSGraphRoom:
+        # A room Places just created may not have its mailbox address yet.
+        return MSGraphRoom(
+            id=room_data["id"],
+            display_name=room_data.get("displayName", ""),
+            email_address=room_data.get("emailAddress") or "",
+            capacity=room_data.get("capacity"),
+            building=room_data.get("building"),
+            floor_number=room_data.get("floorNumber"),
+            phone=room_data.get("phone"),
+            is_wheelchair_accessible=room_data.get("isWheelChairAccessible", False),
+            original_payload=room_data,
+        )
 
     def list_rooms_as_list(self, page_size: int = 100) -> list[MSGraphRoom]:
         """
@@ -879,19 +970,89 @@ class MSOutlookCalendarAPIClient:
         Returns:
             MSGraphRoom object
         """
-        response = self._make_request("GET", f"/places/{room_id}")
+        response = self._make_request("GET", f"/places/{urllib.parse.quote(room_id, safe='@')}")
+        return self._parse_room(response)
 
-        return MSGraphRoom(
-            id=response["id"],
-            display_name=response["displayName"],
-            email_address=response["emailAddress"],
-            capacity=response.get("capacity"),
-            building=response.get("building"),
-            floor_number=response.get("floorNumber"),
-            phone=response.get("phone"),
-            is_wheelchair_accessible=response.get("isWheelChairAccessible", False),
-            original_payload=response,
+    # Room directory writes (Microsoft Places). Room sync calls these on an app-only
+    # client, which needs the Place.ReadWrite.All and Calendars.Read application
+    # permissions.
+
+    def list_buildings(self) -> list[dict[str, Any]]:
+        """Every building place in the tenant, as Graph returns it."""
+        return list(self._iter_places("building"))
+
+    def list_floors_and_sections(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Every floor place and every section place, as two lists.
+
+        A floor's ``parentId`` is its building; a section's is its floor.
+        """
+        return list(self._iter_places("floor")), list(self._iter_places("section"))
+
+    def find_room_by_tag(self, tag: str) -> MSGraphRoom | None:
+        """The room whose ``tags`` contain ``tag``, or ``None``.
+
+        Matched here rather than with ``$filter``, so it relies only on tags being
+        stored and listed, not on Places supporting a filter on them.
+        """
+        for room in self.list_rooms():
+            tags = (room.original_payload or {}).get("tags") or []
+            if tag in tags:
+                return room
+        return None
+
+    def create_room(
+        self, display_name: str, parent_id: str, capacity: int | None, tags: list[str]
+    ) -> MSGraphRoom:
+        """Create a room under the floor or section ``parent_id``."""
+        data: dict[str, Any] = {
+            "@odata.type": "microsoft.graph.room",
+            "displayName": display_name,
+            "parentId": parent_id,
+            "tags": tags,
+        }
+        if capacity is not None:
+            data["capacity"] = capacity
+        return self._parse_room(self._make_request("POST", "/places", data=data))
+
+    def update_room(self, place_id: str, changes: dict[str, Any]) -> MSGraphRoom:
+        """Patch the room ``place_id`` with ``changes`` (Graph field names) and return it."""
+        endpoint = f"/places/{urllib.parse.quote(place_id, safe='@')}"
+        response = self._make_request(
+            "PATCH", endpoint, data={"@odata.type": "microsoft.graph.room", **changes}
         )
+        # Graph answers a PATCH with the place, but a 204 carries no body to read.
+        return self._parse_room(response) if response else self.get_room(place_id)
+
+    def delete_room(self, place_id: str) -> None:
+        """Delete the room ``place_id``."""
+        self._make_request("DELETE", f"/places/{urllib.parse.quote(place_id, safe='@')}")
+
+    def get_schedule(
+        self,
+        room_emails: list[str],
+        start: datetime.datetime,
+        end: datetime.datetime,
+        interval_minutes: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Free/busy of ``room_emails`` between the timezone-aware ``start`` and ``end``.
+
+        Returns Graph's ``scheduleInformation`` list, one entry per address, with
+        ``scheduleItems`` in UTC. With no signed-in user, the schedule is read through
+        the first room's own mailbox.
+        """
+        if not room_emails:
+            return []
+        endpoint = f"/users/{urllib.parse.quote(room_emails[0], safe='@')}/calendar/getSchedule"
+        data = {
+            "schedules": room_emails,
+            "startTime": self._format_datetime(start.astimezone(datetime.UTC)),
+            "endTime": self._format_datetime(end.astimezone(datetime.UTC)),
+            "availabilityViewInterval": interval_minutes,
+        }
+        response = self._make_request(
+            "POST", endpoint, data=data, headers={"Prefer": 'outlook.timezone="UTC"'}
+        )
+        return response.get("value", [])
 
     def find_meeting_times(
         self,

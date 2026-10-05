@@ -112,6 +112,7 @@ locals {
       ACCOUNT_PHONE_VERIFICATION_ENABLED = tostring(var.account_phone_verification_enabled)
       DEFAULT_PAYMENT_PROVIDER           = var.default_payment_provider
       BILLING_DEFAULT_GRACE_PERIOD_DAYS  = tostring(var.billing_default_grace_period_days)
+      MS_CLIENT_ID                       = var.ms_client_id
     },
     var.extra_environment,
   )
