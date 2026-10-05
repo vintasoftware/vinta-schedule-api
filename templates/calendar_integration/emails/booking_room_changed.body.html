@@ -15,15 +15,15 @@
 </p>
 {% if change == "event_cancelled" %}
 <p>
-{% blocktrans %}An organization admin cancelled this booking. If you still need it, please book again with another room.{% endblocktrans %}
+{% blocktrans %}The booking has been cancelled. If you still need it, please book again with another room.{% endblocktrans %}
 </p>
 {% elif change == "room_removed" %}
 <p>
-{% blocktrans %}An organization admin kept the booking but removed the room from it. Please pick another room in Vinta Schedule if you need one.{% endblocktrans %}
+{% blocktrans %}The booking has been kept, but the room has been removed from it. Please pick another room in Vinta Schedule if you need one.{% endblocktrans %}
 </p>
 {% else %}
 <p>
-{% blocktrans %}An organization admin moved the booking to another room. Please check the booking in Vinta Schedule for the new room.{% endblocktrans %}
+{% blocktrans %}The booking has been moved to another room. Please check the booking in Vinta Schedule for the new room.{% endblocktrans %}
 </p>
 {% endif %}
 {% endblock %}

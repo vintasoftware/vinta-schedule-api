@@ -8,8 +8,8 @@ room during a delete.
 
 Who gets the email:
 
-* **Org admins** for the three room-level notices. "Admin" is an active
-  ``OrganizationMembership`` holding ``MANAGE_MEMBERS`` -- the same set
+* **Org admins** for the three room-level notices: the active memberships
+  ``OrganizationMembership.objects.administrators(...)`` returns, the same set
   ``ExternalEventChangeRequestService._notify_eligible_approvers`` emails, so
   the people told about a room are the people allowed to manage the
   organization.
@@ -31,7 +31,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
 from django.db import transaction
 from django.db.models import TextChoices
@@ -41,7 +40,6 @@ from vintasend.services.notification_service import NotificationContextDict
 
 from calendar_integration.models import Calendar, CalendarEvent
 from organizations.models import OrganizationMembership
-from organizations.permission_catalog import MANAGE_MEMBERS
 
 
 if TYPE_CHECKING:
@@ -81,12 +79,14 @@ class RoomSyncNotifier:
     # Public API
     # ------------------------------------------------------------------
 
-    def notify_sync_failed(self, calendar_id: int, operation: str, reason: str) -> None:
+    def notify_sync_failed(
+        self, calendar_id: int, operation: RoomSyncOperation, reason: str
+    ) -> None:
         """Tell org admins a provider write for a room gave up.
 
         Args:
             calendar_id: PK of the room's ``Calendar``.
-            operation: A ``RoomSyncOperation`` value: the write that failed.
+            operation: The write that failed.
             reason: A short, generic sentence written for admins. Callers
                 must not put attendee or event content in it.
         """
@@ -99,7 +99,7 @@ class RoomSyncNotifier:
             context_kwargs={
                 "room_id": room.id,
                 "room_name": room.name,
-                "operation": str(RoomSyncOperation(operation)),
+                "operation": operation.value,
                 "reason": reason,
                 "organization_id": room.organization_id,
             },
@@ -113,8 +113,12 @@ class RoomSyncNotifier:
 
         Args:
             calendar_id: PK of the room's ``Calendar``.
-            fields: Names of the fields whose queued values were dropped.
+            fields: Names of the fields whose queued values were dropped. At
+                least one: an email saying nothing was discarded is a bug in
+                the caller, refused here before anything is queued.
         """
+        if not fields:
+            raise ValueError("notify_edit_discarded needs at least one discarded field")
         room = self._get_room(calendar_id)
         self._notify_admins(
             organization_id=room.organization_id,
@@ -154,7 +158,7 @@ class RoomSyncNotifier:
         )
 
     def notify_booking_room_changed(
-        self, event_id: int, organizer_user_id: int, change: str
+        self, event_id: int, organizer_user_id: int, change: BookingRoomChange
     ) -> None:
         """Tell an organizer their booking moved room, lost its room, or was cancelled.
 
@@ -162,7 +166,7 @@ class RoomSyncNotifier:
             event_id: PK of the booking's ``CalendarEvent``.
             organizer_user_id: PK of the ``User`` to email. Resolved by the
                 caller, which knows how the booking was made.
-            change: A ``BookingRoomChange`` value.
+            change: What happened to the booking's room.
         """
         event = CalendarEvent.objects.get(id=event_id)
         self._schedule(
@@ -173,8 +177,11 @@ class RoomSyncNotifier:
             context_kwargs={
                 "event_id": event.id,
                 "event_title": event.title,
-                "event_start": _format_event_start(event),
-                "change": str(BookingRoomChange(change)),
+                # The stored wall-clock with the event's own timezone attached
+                # (see ``CalendarEvent.local_start``), formatted here because the
+                # context is stored as JSON.
+                "event_start": f"{event.local_start:%Y-%m-%d %H:%M} ({event.timezone})",
+                "change": change.value,
                 "organization_id": event.organization_id,
             },
         )
@@ -186,23 +193,6 @@ class RoomSyncNotifier:
     def _get_room(self, calendar_id: int) -> Calendar:
         return Calendar.objects.get(id=calendar_id)
 
-    def _admin_user_ids(self, organization_id: int) -> list[int]:
-        """Active memberships holding ``MANAGE_MEMBERS``, as user ids.
-
-        Counted by capability, not by a role column: the same
-        ``holding_permission`` the last-admin guard and the change-request
-        approver notice use.
-        """
-        return list(
-            OrganizationMembership.objects.filter(
-                organization_id=organization_id,
-                is_active=True,
-            )
-            .holding_permission(MANAGE_MEMBERS)
-            .values_list("user_id", flat=True)
-            .distinct()
-        )
-
     def _notify_admins(
         self,
         *,
@@ -212,7 +202,10 @@ class RoomSyncNotifier:
         context_name: str,
         context_kwargs: dict[str, object],
     ) -> None:
-        for user_id in self._admin_user_ids(organization_id):
+        admin_user_ids = OrganizationMembership.objects.administrators(organization_id).values_list(
+            "user_id", flat=True
+        )
+        for user_id in admin_user_ids:
             self._schedule(
                 user_id=user_id,
                 title=title,
@@ -267,14 +260,3 @@ class RoomSyncNotifier:
             )
 
         return _send
-
-
-def _format_event_start(event: CalendarEvent) -> str:
-    """The booking's start as wall-clock time in the event's own timezone.
-
-    Rendered here, not in the template: the context is stored as JSON, so it
-    carries a string, and the event's IANA timezone is what the organizer
-    expects to read.
-    """
-    local_start = event.start_time.astimezone(ZoneInfo(event.timezone))
-    return f"{local_start:%Y-%m-%d %H:%M} ({event.timezone})"

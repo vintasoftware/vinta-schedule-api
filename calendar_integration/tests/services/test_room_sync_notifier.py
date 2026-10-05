@@ -313,15 +313,15 @@ def test_no_admins_means_no_emails(
 
 @pytest.mark.django_db
 @pytest.mark.usefixtures("bound", "admin_a")
-def test_unknown_operation_is_rejected_before_anything_is_queued(
+def test_empty_discarded_fields_are_rejected_before_anything_is_queued(
     notifier: RoomSyncNotifier,
     mock_notification_service: MagicMock,
     room: Calendar,
     django_capture_on_commit_callbacks: Callable[..., Any],
 ) -> None:
     with django_capture_on_commit_callbacks(execute=True) as callbacks:
-        with pytest.raises(ValueError, match="rename"):
-            notifier.notify_sync_failed(room.id, "rename", "nope")
+        with pytest.raises(ValueError, match="at least one discarded field"):
+            notifier.notify_edit_discarded(room.id, [])
 
     assert callbacks == []
     mock_notification_service.create_notification.assert_not_called()
@@ -487,7 +487,7 @@ def test_booking_room_changed_renders_subject_and_body(
     event: CalendarEvent,
     organizer: User,
     django_capture_on_commit_callbacks: Callable[..., Any],
-    change: str,
+    change: BookingRoomChange,
     expected_subject: str,
     expected_heading: str,
 ) -> None:
@@ -503,8 +503,10 @@ def test_booking_room_changed_renders_subject_and_body(
         'The room you booked for "Quarterly planning" on 2026-11-01 12:00 (America/Sao_Paulo)'
         in sent.body
     )
-    # The organizer's own event is named; nothing else about it leaks.
+    # The organizer's own event is named; nothing else about it leaks, and no
+    # actor is named: the change may come from an admin, a partner or Vinta ops.
     assert "private notes" not in sent.body
+    assert "admin" not in sent.body
 
 
 # ---------------------------------------------------------------------------
@@ -517,11 +519,6 @@ def test_room_sync_failed_context_rejects_unknown_operation() -> None:
         room_sync_failed_context(
             room_id=1, room_name="x", operation="rename", reason="r", organization_id=1
         )
-
-
-def test_room_edit_discarded_context_rejects_empty_fields() -> None:
-    with pytest.raises(NotificationContextGenerationError):
-        room_edit_discarded_context(room_id=1, room_name="x", fields=[], organization_id=1)
 
 
 def test_room_edit_discarded_context_flattens_field_names_for_the_template() -> None:

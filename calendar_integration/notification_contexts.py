@@ -102,18 +102,15 @@ def room_edit_discarded_context(
         room_name: The room's name, captured when the email was queued.
         fields: One ``{"name": <field name>}`` per field whose queued value the
             provider's won over. Dict-shaped because vintasend only stores
-            dict items in a list; the template gets the flat names.
+            dict items in a list; the template gets the flat names. Never
+            empty: ``RoomSyncNotifier.notify_edit_discarded`` refuses an empty
+            list before queuing.
         organization_id: ID of the organization the room belongs to.
     """
-    field_names = [item["name"] for item in fields]
-    if not field_names:
-        raise NotificationContextGenerationError(
-            "Room edit discarded notification needs at least one discarded field"
-        )
     return {
         "room_id": room_id,
         "room_name": room_name,
-        "fields": field_names,
+        "fields": [item["name"] for item in fields],
         "organization_id": organization_id,
     }
 
