@@ -57,17 +57,17 @@ Parse once, reuse for every phase:
 
    b. **Draft inline review comments per phase?** *"On top of the standard PR description, do you want me to scan each phase's diff and add 3–10 inline comments calling out non-obvious decisions (subtle invariants, feature-flag short-circuits, cross-phase coupling, upstream-contract naming)? Off by default — say yes when reviewers will appreciate annotated diffs."* Options: `Yes — include inline comments`, `No — PR description only`.
 
-   c. **Run phases in a worktree?** *"Do you want every phase's subagent to work inside an isolated git worktree (its own runnable copy of the app with its own dev + test DB, env files, docker-compose project name) instead of sharing your main checkout? Lets you keep using `main` for unrelated work while this plan runs; survives parallel plans on the same repo without DB / port / docker collisions. Costs one extra checkout's worth of disk + the time it takes [prepare-worktree](../prepare-worktree/SKILL.md) to provision it."* Options: `No — run in current checkout`, `Yes — provision one shared worktree for the whole plan`. Default = value of `run_options.implement-plan.use_worktree` in `.vinta-ai-workflows.yaml` (`Yes` for this project).
+   c. **Run phases in a worktree?** *"Do you want every phase's subagent to work inside an isolated git worktree (its own runnable copy of the app with its own dev + test DB, env files, docker-compose project name) instead of sharing your main checkout? Lets you keep using `main` for unrelated work while this plan runs; survives parallel plans on the same repo without DB / port / docker collisions. Costs one extra checkout's worth of disk + the time it takes to provision it."* Provisioning runs the project's `commands.worktree_prepare` when set, else the [prepare-worktree](../prepare-worktree/SKILL.md) skill — see [Pick the provisioner once](#step-05--resolve-workroot). Options: `No — run in current checkout`, `Yes — provision one shared worktree for the whole plan`. Default = value of `run_options.implement-plan.use_worktree` in `.vinta-ai-workflows.yaml` (`Yes` for this project).
 
       When `Yes` **and the run is sequential**: one worktree serves every executable phase — all phase branches live inside it. When `Yes` **and the run is parallel**: the conductor provisions a **pool** of worktrees, one per lane, plus one integration worktree — see [Provision the lane worktree pool](#provision-the-lane-worktree-pool). Either way the pool is sized once, at Step 0.5, and never grown mid-run.
 
-      Skip this question entirely when `foundation_skills.prepare-worktree` is `disabled` in `.vinta-ai-workflows.yaml`: record `run_options.use_worktree = false`; surface a one-line note that worktree isolation is available if the team opts in via [vinta-sync-ai-tools](../../skills/vinta-sync-ai-tools/SKILL.md). When it is disabled, question (e) below is also skipped and the run is sequential — parallel execution has a hard worktree requirement.
+      Skip this question entirely when worktrees are unavailable — `foundation_skills.prepare-worktree` is `disabled` **and** `commands.worktree_prepare` is unset in `.vinta-ai-workflows.yaml`: record `run_options.use_worktree = false`; surface a one-line note that worktree isolation is available if the team enables the skill via [vinta-sync-ai-tools](../../skills/vinta-sync-ai-tools/SKILL.md) or sets `commands.worktree_prepare` to its own provisioning script. When worktrees are unavailable, question (e) below is also skipped and the run is sequential — parallel execution has a hard worktree requirement.
 
    d. **Full test suite each phase?** *"Each phase's outer gate always runs the repo-wide type/build gate. For tests, do you want the quick path (run only the scoped suite covering the apps/files that phase touched — faster phases) or the full repo test suite every phase (slower, but guards against regressions in untouched code)? New tests still pass individually in the inner loop either way."* Options: `Quick — scoped tests only each phase (default)`, `Full — run the whole test suite each phase`. Default = value of `run_options.implement-plan.full_test_suite` in `.vinta-ai-workflows.yaml` (`Quick`/false for this project). Records `run_options.full_test_suite` (`true` only for the `Full` answer).
 
    e. **Run independent phases in parallel?** — **ask only when the graph has at least one wave wider than one phase.** *"{N} of this plan's phases have no dependency on each other, so they can be implemented at the same time — each in its own worktree with its own DB and compose stack. Widest point is {W} phases at once. Running them in parallel finishes the plan much faster; it costs one extra runnable checkout per lane and makes the run harder to watch step by step."* Options: `Yes — run up to {min(W, 3)} lanes at a time (default)`, `Yes — but cap at 2 lanes`, `No — one phase at a time`. Default = value of `run_options.implement-plan.parallel_phases` in `.vinta-ai-workflows.yaml` (**`true` when unset** — a plan that declares a parallel graph is asking to be run that way). Records `run_options.parallel_phases` + `run_options.max_parallel_lanes`.
 
-      **Skip the question and record `parallel_phases = false`, `max_parallel_lanes = 1` when**: every wave holds exactly one phase (nothing to parallelize — say so in one line, don't ask), or `foundation_skills.prepare-worktree` is `disabled`, or the user answered `No` to question (c). In the last two cases, when the graph *was* parallelizable, tell the user what they are giving up and why: parallel execution cannot share one working tree.
+      **Skip the question and record `parallel_phases = false`, `max_parallel_lanes = 1` when**: every wave holds exactly one phase (nothing to parallelize — say so in one line, don't ask), or worktrees are unavailable (skill `disabled` and no `commands.worktree_prepare`), or the user answered `No` to question (c). In the last two cases, when the graph *was* parallelizable, tell the user what they are giving up and why: parallel execution cannot share one working tree.
 
       `max_parallel_lanes` is capped by the widest wave and by `run_options.implement-plan.max_parallel_lanes` (default `3`). More lanes than the graph can keep busy just burns disk.
 
@@ -149,7 +149,7 @@ Record the **model actually used** in tracking, **and which of the three sources
 
 ## Delegate a mechanical step to a configured model
 
-Two steps the conductor would otherwise run **inline in its own (usually pricier) session** — provisioning the worktree ([prepare-worktree](../prepare-worktree/SKILL.md)) and integrating a phase ([integrate-phase-stacked](../integrate-phase-stacked/SKILL.md) / [integrate-phase-modular](../integrate-phase-modular/SKILL.md): push the branch + open/update the PR through the bundled `open-pr.sh`) — are mechanical, precedent-driven work that a cheap model handles fine. The `agent_models.worktree_prep` / `agent_models.integrate` tiers let a project push that work down.
+Two steps the conductor would otherwise run **inline in its own (usually pricier) session** — provisioning the worktree with the [prepare-worktree](../prepare-worktree/SKILL.md) skill (a project's `commands.worktree_prepare` always runs inline instead, since a shell command needs no model) and integrating a phase ([integrate-phase-stacked](../integrate-phase-stacked/SKILL.md) / [integrate-phase-modular](../integrate-phase-modular/SKILL.md): push the branch + open/update the PR through the bundled `open-pr.sh`) — are mechanical, precedent-driven work that a cheap model handles fine. The `agent_models.worktree_prep` / `agent_models.integrate` tiers let a project push that work down.
 
 - **Tier set** (`worktree_prep` / `integrate`) → **spawn exactly one subagent** at the [resolved model](#resolve-an-agent_models-tier-to-a-spawn-model), hand it the step's SKILL.md plus the same inputs the conductor would use, and consume its returned report exactly as if the conductor had done the work inline. This subagent is a **labor delegate, not a decision-maker**: the conductor still owns git topology (which branch stacks on which base) and still holds every value the step returns (`WORKROOT` / `BASE_BRANCH` / worktree summary for `worktree_prep`; branch + PR-context path + `status` for `integrate`). The delegate executes and reports those back.
 - **Tier unset** → run the step inline in the conductor's own session — today's behavior, no subagent.
@@ -166,35 +166,104 @@ Resolve three values **once per lane**, before any phase runs, and record them i
 
 | Value | `run_options.use_worktree = false` | `run_options.use_worktree = true` |
 |---|---|---|
-| `WORKROOT` | the main checkout root (the repo the skill was invoked from) | `<worktree_path>` returned by prepare-worktree — **this lane's** path under parallel execution |
-| `BASE_BRANCH` | `main` | `<worktree_branch>` prepare-worktree created |
-| `SANDBOX_TIER` | `none` | `enforced` or `none` (probed by prepare-worktree, per lane) |
+| `WORKROOT` | the main checkout root (the repo the skill was invoked from) | `<worktree_path>` returned by the provisioner — **this lane's** path under parallel execution |
+| `BASE_BRANCH` | `main` | `<worktree_branch>` the provisioner created |
+| `SANDBOX_TIER` | `none` | `enforced` or `none` (probed per lane) |
+
+**Pick the provisioner once.** `.vinta-ai-workflows.yaml` decides how a worktree gets made:
+
+| Config | Provisioner |
+|---|---|
+| `commands.worktree_prepare` set | **The project's own command** — see [Provisioning with the project's command](#provisioning-with-the-projects-command). It wins even when the skill is also enabled; the skill is then only offered as a fallback when the command fails. |
+| `commands.worktree_prepare` unset, `foundation_skills.prepare-worktree: enabled` | **The [prepare-worktree](../prepare-worktree/SKILL.md) skill.** |
+| neither | None — worktrees are unavailable, and Step 0 already recorded `use_worktree = false`. |
+
+Record the choice as `run_options.worktree_provisioner: command | skill` in tracking. Both provisioners hand back the same four values (`worktree_path`, `worktree_branch`, `worktree_summary`, `sandbox_tier`), so no later step checks which one ran.
 
 **When `run_options.parallel_phases = true`:** skip the single-worktree path below entirely and provision the pool per [Provision the lane worktree pool](#provision-the-lane-worktree-pool). That step resolves one `WORKROOT` / `SANDBOX_TIER` per lane plus one integration worktree, and refuses the run outright when worktrees are unavailable. `BASE_BRANCH` stays plan-level (`main`, or the worktree base when the whole plan hangs off one); each phase's *own* base is derived from its dependencies, not from `BASE_BRANCH` — see [Lane branch topology](#lane-branch-topology).
 
 **When `use_worktree = false`:** set `WORKROOT` = main checkout, `BASE_BRANCH = main`, `SANDBOX_TIER = none`. Make `BASE_BRANCH` current + up to date: `git -C <WORKROOT> checkout main && git -C <WORKROOT> pull --ff-only`. Jump to Step 1.
 
-**When `use_worktree = true`:** run [prepare-worktree](../prepare-worktree/SKILL.md) **once**. This is a mechanical step: when `agent_models.worktree_prep` is set, **delegate it to a subagent** per the [Delegate a mechanical step to a configured model](#delegate-a-mechanical-step-to-a-configured-model) pattern (hand the subagent prepare-worktree's SKILL.md + the inputs below; consume its returned `worktree_path` / `worktree_branch` / `worktree_summary` / `sandbox_tier` report). When the tier is unset, run it inline — the steps below read the same either way:
+**When `use_worktree = true`:** provision **once**, with the provisioner picked above.
 
-1. **Inputs.** Plan path (so prepare-worktree can read it for deps / migrations / env / compose churn — see prepare-worktree's **Plan inspection** step), suggested worktree name = `plan-{plan-id-kebab}`, plan-driven mode.
-2. **Pre-run sanity.** Confirm no existing worktree at the target path (`git worktree list | grep <name>` — refuse if collision). Confirm `git -C <main_checkout> status` of the main checkout (warn if dirty; defer to prepare-worktree's **Sanity checks** step for the call).
-3. **Run prepare-worktree.** Pass the plan file + worktree name. It returns:
+- **Skill.** This is a mechanical step: when `agent_models.worktree_prep` is set, **delegate it to a subagent** per the [Delegate a mechanical step to a configured model](#delegate-a-mechanical-step-to-a-configured-model) pattern (hand the subagent prepare-worktree's SKILL.md + the inputs below; consume its returned `worktree_path` / `worktree_branch` / `worktree_summary` / `sandbox_tier` report). When the tier is unset, run it inline.
+- **Command.** Run it inline, always. It is a shell command, so there is nothing for a model to do, and `agent_models.worktree_prep` is ignored.
+
+The steps below read the same either way:
+
+1. **Inputs.** Plan path (so the provisioner can read it for deps / migrations / env / compose churn — see prepare-worktree's **Plan inspection** step), suggested worktree name = `plan-{plan-id-kebab}`, plan-driven mode. The command receives these as `VINTA_*` environment variables.
+2. **Pre-run sanity.** Confirm no existing worktree at the target path (`git worktree list | grep <name>` — refuse if collision). Confirm `git -C <main_checkout> status` of the main checkout (warn if dirty; with the skill, defer to prepare-worktree's **Sanity checks** step for the call).
+3. **Run the provisioner.** The skill gets the plan file + worktree name; the command gets [its contract](#provisioning-with-the-projects-command). Either one yields:
    - `worktree_path` → `WORKROOT`.
-   - `worktree_branch` → `BASE_BRANCH` (prepare-worktree based it on `origin/main`, so it is already current).
-   - `worktree_summary` — `.vinta-ai-workflows/worktrees/<name>.yaml` (read by teardown).
-   - `sandbox_tier` → `SANDBOX_TIER`: `enforced` (the [Filesystem sandbox](../prepare-worktree/SKILL.md#step-55--filesystem-sandbox-os-level-write-guard) step found `sandbox-exec` / `bwrap` and will OS-block main-checkout writes) or `none` (no sandbox tool — prevention degrades to the review-phase stray-write backstop).
-4. **Persist to tracking.** Write `run_options.worktree_path`, `run_options.worktree_branch`, `run_options.worktree_summary`, `run_options.sandbox_tier` into `ai-plans/TRACKING_{plan-id}/run.md`. All later phases read them — never re-provision mid-plan.
-5. **Report to user.** Quote the prepare-worktree summary back: which dirs copied vs reinstalled vs forked (dependency dirs are always copied or reinstalled, never symlinked); which DB(s) forked + their names; compose project name; teardown command. Hold here until the user confirms (`AskUserQuestion`: `Looks good — start phase 1 (Recommended)`, `Stop — let me adjust`).
+   - `worktree_branch` → `BASE_BRANCH` (based on `origin/main`, so it is already current).
+   - `worktree_summary` — `<summary_dir>/<name>.yaml` (read by teardown and lane reset). `null` when the project's command wrote none.
+   - `sandbox_tier` → `SANDBOX_TIER`: `enforced` (`sandbox-exec` / `bwrap` was found and the [Filesystem sandbox](../prepare-worktree/SKILL.md#step-55--filesystem-sandbox-os-level-write-guard) wrapper will OS-block main-checkout writes) or `none` (no sandbox tool — prevention degrades to the review-phase stray-write backstop).
+4. **Persist to tracking.** Write `run_options.worktree_provisioner`, `run_options.worktree_path`, `run_options.worktree_branch`, `run_options.worktree_summary`, `run_options.sandbox_tier` into `ai-plans/TRACKING_{plan-id}/run.md`. All later phases read them — never re-provision mid-plan.
+5. **Report to user.** With the skill, quote its summary back: which dirs copied vs reinstalled vs forked (dependency dirs are always copied or reinstalled, never symlinked); which DB(s) forked + their names; compose project name; teardown command. With the command, quote the last ~20 lines of its output, the summary YAML when it wrote one, and the teardown command. Hold here until the user confirms (`AskUserQuestion`: `Looks good — start phase 1 (Recommended)`, `Stop — let me adjust`).
 
 Failure modes:
-- **prepare-worktree returns an error** (disk full, branch exists, DB clone failed) → surface to the user; do NOT fall back to "just run in the main checkout" silently — that defeats the opt-in. Ask via `AskUserQuestion` (header `Worktree`), quoting the error line: `Retry (Recommended)`, `Run in main checkout instead (flip use_worktree to false)`, `Stop`.
-- **User cancels at the confirmation gate** → tear the worktree down (run the teardown command from prepare-worktree's report) before exiting, so the next run starts clean.
+- **The provisioner fails** (disk full, branch exists, DB clone failed, the command exited non-zero or failed its post-checks) → surface to the user; do NOT fall back to "just run in the main checkout" silently — that defeats the opt-in. Ask via `AskUserQuestion` (header `Worktree`), quoting the error line: `Retry (Recommended)`, `Run in main checkout instead (flip use_worktree to false)`, `Stop`. When the failed provisioner was the command **and** `foundation_skills.prepare-worktree` is `enabled`, add `Provision with the prepare-worktree skill instead` as the second option. Before a retry or the skill fallback, tear down whatever the command left behind (see [Teardown with the project's command](#teardown-with-the-projects-command)).
+- **User cancels at the confirmation gate** → tear the worktree down (the skill's reported teardown command, or [the command teardown](#teardown-with-the-projects-command)) before exiting, so the next run starts clean.
+
+### Provisioning with the project's command
+
+`commands.worktree_prepare` is a shell command the team owns. The conductor runs it once per worktree, from `<main_checkout>`, with stdin closed, through `sh -c '<commands.worktree_prepare>'`, and with these variables set in its environment:
+
+| Variable | Value |
+|---|---|
+| `VINTA_WORKTREE_NAME` | The worktree name: `plan-{plan-id-kebab}` for a single worktree, or the lane / integration name from the [pool step](#provision-the-lane-worktree-pool). Distinct per worktree, so the command should derive every DB name, compose project name, cache key and port from it. |
+| `VINTA_WORKTREE_PATH` | Absolute path to create the worktree at: `skills.prepare-worktree.worktree_root` (default `.claude/worktrees`) resolved against `<main_checkout>`, then `/<name>`. A root that ends in `-` (the `../<repo>-wt-` sibling convention) takes `<name>` with no slash. |
+| `VINTA_WORKTREE_BRANCH` | The new branch to create: `plan/{plan-id-kebab}/wt` for a single worktree, `plan/{plan-id-kebab}/wt-<name>` for a pool lane or the integration worktree. Phase branches are cut inside the worktree later. |
+| `VINTA_WORKTREE_BASE_REF` | `origin/main`. |
+| `VINTA_WORKTREE_KIND` | `single`, `lane` or `integration`. |
+| `VINTA_MAIN_CHECKOUT` | Absolute path of `<main_checkout>`. |
+| `VINTA_PLAN_PATH` | Absolute path of the plan file. |
+| `VINTA_WORKTREE_SUMMARY` | Absolute path `<main_checkout>/<summary_dir>/<name>.yaml` (`summary_dir` from `skills.prepare-worktree.summary_dir`, default `.vinta-ai-workflows/worktrees`). |
+
+**The command must:**
+
+- Create a git worktree at `VINTA_WORKTREE_PATH`, on a new branch `VINTA_WORKTREE_BRANCH` based on `VINTA_WORKTREE_BASE_REF`. Fetching first is its call.
+- Leave it runnable. The project's lint, test, build and migrate commands must work inside it without sharing writable state with the main checkout or with another worktree: its own dependency dirs, env files, databases and compose project, whatever the project needs.
+- Exit non-zero on any failure. Never report success for a half-made worktree.
+- Never write to the main checkout's tracked files, and never prompt for input.
+- Succeed when run again for the same name after its teardown ran. Re-provisioning a lane depends on this.
+
+**The command may** write a summary YAML at `VINTA_WORKTREE_SUMMARY`. If it does, the file must follow the summary shape in prepare-worktree's [Write the summary file](../prepare-worktree/SKILL.md#step-6--write-the-summary-file) step in full: every key present, `null` for "none", and only the listed values for each closed set. Other tools parse this file, so a partial summary is worse than none. When the skill is not installed, the shape is documented in the [vinta-ai-workflows source](https://github.com/vintasoftware/vinta-ai-workflows/blob/main/skills/vinta-derive-skills/resources/foundation-skills/prepare-worktree/SKILL.md#step-6--write-the-summary-file). The conductor reads `state.dev_db.reset_cmd` / `state.test_db.reset_cmd` from it for lane reuse. Without a summary, the lane has no reset command, and the [lane reset](#re-orienting-a-member-after-the-reset) re-provisions it instead of reusing it across a migration boundary.
+
+**Check the result. Never trust the exit code alone.** Capture `git -C <main_checkout> status --short` before the command runs; after it exits 0, all three checks must hold:
+
+```bash
+git -C "$VINTA_WORKTREE_PATH" rev-parse --abbrev-ref HEAD                       # prints $VINTA_WORKTREE_BRANCH
+wt_real="$(cd "$VINTA_WORKTREE_PATH" && pwd -P)"                                # git lists resolved paths
+git -C <main_checkout> worktree list --porcelain | grep -Fx "worktree $wt_real"
+git -C <main_checkout> status --short                                           # identical to the capture taken before the command
+```
+
+If any check fails, the provisioning failed; handle it with the failure modes above. Fill the four values:
+
+- `worktree_path` = `VINTA_WORKTREE_PATH`; `worktree_branch` = `VINTA_WORKTREE_BRANCH`.
+- `worktree_summary` = `VINTA_WORKTREE_SUMMARY` when the file exists, else `null`.
+- `sandbox_tier`: probe it yourself, because the sandbox governs how agents are spawned, not how the worktree was made. It is `enforced` when `ai-tools/skills/prepare-worktree/scripts/sandbox-run.sh` exists in the main checkout **and** `sandbox-exec` (macOS) or `bwrap` (Linux) is on `PATH`. Otherwise it is `none`. With the skill disabled, the sandbox scripts are not installed, so the tier is `none` and the review-phase stray-write check is the only guard. Say so once in the report.
+
+**Pools run the command one lane at a time.** The command runs `git worktree add` itself, and concurrent adds against one repository corrupt `.git/worktrees/`. The skill path can overlap the expensive per-lane work. The command path cannot, because the add and the rest of the work happen inside one opaque command.
+
+### Teardown with the project's command
+
+Run `commands.worktree_teardown` from `<main_checkout>` with the same `VINTA_*` environment the worktree was provisioned with. When it is unset, teardown is `git -C <main_checkout> worktree remove <worktree_path>`. That removes only the checkout, so say in the report that anything the prepare command created outside it (forked DBs, compose volumes) is left behind.
+
+**Re-provisioning a lane** runs teardown, then the prepare command with the same `VINTA_WORKTREE_NAME` and `VINTA_WORKTREE_PATH` and a fresh `VINTA_WORKTREE_BRANCH` (`<branch>-r<n>`): the old branch outlives `git worktree remove`, and `git worktree add -b` refuses an existing branch.
+
+The final report prints each worktree's teardown as one ready-to-run line, with the environment inline:
+
+```bash
+VINTA_WORKTREE_NAME=<name> VINTA_WORKTREE_PATH=<path> VINTA_WORKTREE_BRANCH=<branch> VINTA_WORKTREE_KIND=<kind> VINTA_MAIN_CHECKOUT=<main_checkout> VINTA_PLAN_PATH=<plan> VINTA_WORKTREE_SUMMARY=<summary> sh -c '<commands.worktree_teardown>'
+```
 
 ## Provision the lane worktree pool
 
-Parallel execution **requires** [prepare-worktree](../prepare-worktree/SKILL.md). Two agents cannot write two branches in one working tree, and two concurrent test runs cannot share one dev / test database or one compose project name.
+Parallel execution **requires** a worktree provisioner: the project's `commands.worktree_prepare`, or the [prepare-worktree](../prepare-worktree/SKILL.md) skill (see [Pick the provisioner once](#step-05--resolve-workroot)). Two agents cannot write two branches in one working tree, and two concurrent test runs cannot share one dev / test database or one compose project name.
 
-**Hard gate — refuse rather than degrade.** When `run_options.parallel_phases = true` but worktrees are unavailable — `foundation_skills.prepare-worktree` is `disabled`, or the user answered `No` to the worktree question, or provisioning fails — **stop and tell the user why**. Do not silently fall back to sequential; the plan's whole schedule was built around concurrency. Offer: `Enable worktrees and continue in parallel`, `Run this plan sequentially instead (max_parallel_lanes = 1)`, `Stop`. The user picks; the conductor never picks for them.
+**Hard gate — refuse rather than degrade.** When `run_options.parallel_phases = true` but worktrees are unavailable — `foundation_skills.prepare-worktree` is `disabled` and `commands.worktree_prepare` is unset, or the user answered `No` to the worktree question, or provisioning fails — **stop and tell the user why**. Do not silently fall back to sequential; the plan's whole schedule was built around concurrency. Offer: `Enable worktrees and continue in parallel`, `Run this plan sequentially instead (max_parallel_lanes = 1)`, `Stop`. The user picks; the conductor never picks for them.
 
 **Pool, don't provision per phase.** Provisioning a runnable worktree costs a dep install plus a DB fork. A plan with 14 phases must not pay that 14 times. Provision **`max_parallel_lanes` worktrees once** and reuse each one across the phases assigned to it:
 
@@ -207,8 +276,10 @@ Parallel execution **requires** [prepare-worktree](../prepare-worktree/SKILL.md)
    **Reviewers work in the lane they are reviewing.** A reviewer reads the phase's `WORKROOT` directly — the implementer's own worktree, with that phase's changes still uncommitted in it. That is deliberate and is the whole reason review sits where it does in the phase: findings are fixed **before the commit**, in the working tree, rather than recorded as a mistake and then a correction on top of it. A reviewer with a checkout of its own would be reading a committed snapshot, which is strictly less than what is there and too late to act on.
 
    The cost is that a reviewer's directory moves from phase to phase, so its session carries only when two consecutive reviews happen to land in the same lane. Nothing to configure: the runtime decides per turn, the same way it decides for anyone whose lane changed.
-2. **Provision each lane.** Run [prepare-worktree](../prepare-worktree/SKILL.md) once per lane, plan-driven, with worktree name `plan-{plan-id-kebab}-crew-{implementer-id}` (or `plan-{plan-id-kebab}-lane-{i}` on a plan with no roster). This is the mechanical `worktree_prep` step — delegate all of them per the [Delegate a mechanical step to a configured model](#delegate-a-mechanical-step-to-a-configured-model) pattern when `agent_models.worktree_prep` is set, and **dispatch the provisioning calls concurrently** — they are independent.
-3. **Provision the integration worktree.** One more, named `plan-{plan-id-kebab}-integ`. The conductor merges lane branches into wave integration branches here (see [Lane branch topology](#lane-branch-topology)) so a merge never disturbs a lane that is still working.
+2. **Provision each lane.** Run the provisioner once per lane, plan-driven, with worktree name `plan-{plan-id-kebab}-crew-{implementer-id}` (or `plan-{plan-id-kebab}-lane-{i}` on a plan with no roster).
+   - **Skill:** this is the mechanical `worktree_prep` step. Delegate all of them per the [Delegate a mechanical step to a configured model](#delegate-a-mechanical-step-to-a-configured-model) pattern when `agent_models.worktree_prep` is set, and **dispatch the provisioning calls concurrently**, because they are independent.
+   - **Command:** run `commands.worktree_prepare` inline with `VINTA_WORKTREE_KIND=lane`, **one lane at a time**, and post-check each one per [Provisioning with the project's command](#provisioning-with-the-projects-command).
+3. **Provision the integration worktree.** One more, named `plan-{plan-id-kebab}-integ` (`VINTA_WORKTREE_KIND=integration` for the command). The conductor merges lane branches into wave integration branches here (see [Lane branch topology](#lane-branch-topology)) so a merge never disturbs a lane that is still working.
 4. **Record the pool** in `run.md`: for each lane, `workroot`, `branch`, `worktree_summary`, `sandbox_tier`, plus `current_phase` (null when idle). `SANDBOX_TIER` is probed **per lane** — a mixed result is possible in principle and each lane's spawn wrapping follows its own tier.
 5. **Report once, then hold.** Show the user the pool (paths, DB names, compose project names, teardown commands) and the computed wave schedule together. `AskUserQuestion`: `Looks good — start (Recommended)`, `Fewer lanes`, `Stop — let me adjust`.
 
@@ -237,7 +308,7 @@ git -C <lane.workroot> checkout <phase.base_branch>
 git -C <lane.workroot> checkout -b plan/{plan-id-kebab}/phase-{phase.id}
 ```
 
-then **reset that lane's databases to the new base** using the `db_reset_cmd` recorded in the lane's `worktree_summary` (prepare-worktree writes it — drop + recreate from the template, or re-run migrations from zero, per engine). A lane whose summary carries no `db_reset_cmd`, and whose outgoing or incoming phase touches the **Data Model Changes** section, is not safe to reuse: re-provision that lane instead. Never reuse a lane across a migration boundary without the reset.
+then **reset that lane's databases to the new base** using the `reset_cmd`s recorded under `state.dev_db` / `state.test_db` in the lane's `worktree_summary` (prepare-worktree writes them, and so may the project's command — drop + recreate from the template, or re-run migrations from zero, per engine). A lane with no `reset_cmd` (or no summary at all), and whose outgoing or incoming phase touches the **Data Model Changes** section, is not safe to reuse: re-provision that lane instead (with the command: [teardown, then prepare again](#teardown-with-the-projects-command)). Never reuse a lane across a migration boundary without the reset.
 
 Dep churn matters less but is real: when the incoming phase's plan body installs dependencies, re-run the project's install command in that lane before dispatching.
 
@@ -478,7 +549,7 @@ After the scheduler loop exits — every executable phase is `done`, `failed`, o
 1. **Build the final wave branch** if the last completed wave has no branch yet, so one branch carries the whole plan.
 2. **Delete the `TRACKING_{plan-id}/` directory** (`git rm -r`) on that final wave branch, in one commit. The plan file stays.
 3. **Open the plan PR** (per-phase PR strategies only — skip when the commit strategy already keeps one plan-level PR). Only when every phase is `done`: a plan with failed or blocked phases is not ready to land, so list the gap instead. Push the final wave branch, write `.vinta-ai-workflows/prs-context/{feature-kebab}/plan.md` with `kind: plan`, `branch: plan/{plan-id-kebab}/wave-{N}` (the final wave), `base: <BASE_BRANCH>`, and a `# Description` listing every phase and integration PR in merge order (wave by wave; plan order inside a wave; each integration PR right before its phase PR), with the two ways to land it — merge this PR alone, or merge the listed PRs in order and this one last — and the rule to use merge commits, not squash. Run `open-pr.sh` on it under the same PR policy as the phase PRs. This is the PR that lands the plan; a run that ends without it leaves the user to rebuild the merges by hand.
-4. Send the user a final summary: the **plan PR URL** first (or why it was not opened — failed phases, PR policy, missing deps); **If `run_options.commit_strategy_resolved = "modular-commits"`:** single plan branch `plan/{plan-id-kebab}` with commit log organized by phase (parallel runs: plus the lane branches merged into it, per wave) **Else (`stacked-branches`):** branches pushed (with bases, grouped by wave); the **wave branches** in order, and which phase branches merged into each; phases that **failed** and the dependents each one **blocked**; deferred phases (cross-repo + flag-removal); next steps for the human. When `run_options.use_worktree = true`: include **every lane's** path + branch + summary file path + teardown command (`git worktree remove <path>` + the per-engine drop-db / `docker compose -p <project> down -v` lines from that lane's `<worktree_summary>`), and the integration worktree's. Do NOT auto-run teardown — the user may still want a lane to debug review feedback or land follow-ups, and a failed phase's lane is the only place its state survives.
+4. Send the user a final summary: the **plan PR URL** first (or why it was not opened — failed phases, PR policy, missing deps); **If `run_options.commit_strategy_resolved = "modular-commits"`:** single plan branch `plan/{plan-id-kebab}` with commit log organized by phase (parallel runs: plus the lane branches merged into it, per wave) **Else (`stacked-branches`):** branches pushed (with bases, grouped by wave); the **wave branches** in order, and which phase branches merged into each; phases that **failed** and the dependents each one **blocked**; deferred phases (cross-repo + flag-removal); next steps for the human. When `run_options.use_worktree = true`: include **every lane's** path + branch + summary file path + teardown command, and the integration worktree's. With the skill, build the teardown from that lane's `<worktree_summary>`: `git worktree remove <path>`, the per-engine drop-db line for each forked DB, and, when `state.compose` is set, `docker compose -p <state.compose.project_name> down`, then `docker volume rm` for each `state.compose.forked_volumes[].forked_name`, then `rm <state.compose.override_path>`. Never `down -v`: it also deletes the volumes listed in `state.compose.shared_volumes`, which belong to the main checkout (see prepare-worktree's **Teardown** step). With the project's command, it is the ready-to-run line from [Teardown with the project's command](#teardown-with-the-projects-command). Do NOT auto-run teardown — the user may still want a lane to debug review feedback or land follow-ups, and a failed phase's lane is the only place its state survives.
    PR URLs: every phase and integration PR, grouped by wave.
 5. Flag-removal phase deferred → end with `/schedule` offer for the dedicated flag-removal skill.
 
@@ -502,8 +573,8 @@ After the scheduler loop exits — every executable phase is `done`, `failed`, o
 - **Honor opt-in flags.** `run_options.pause_between_phases` controls the [pause gate](#1g-pause-gate-opt-in); `run_options.generate_inline_comments` controls whether the resolved integrate-phase variant — [integrate-phase-stacked](../integrate-phase-stacked/SKILL.md) when `run_options.commit_strategy_resolved = stacked-branches`, else [integrate-phase-modular](../integrate-phase-modular/SKILL.md) drafts inline comments (always writes the file when that step runs at all — empty comments when off); `run_options.use_worktree` controls whether the [Resolve WORKROOT step](#step-05--resolve-workroot) provisions worktrees and thus what `WORKROOT` / `SANDBOX_TIER` resolve to; `run_options.full_test_suite` controls the outer-gate test scope ([Implement](#1a-implement) + [Review](#1b-review) Layer 1) — scoped suite by default, full repo suite when `true`; `run_options.parallel_phases` + `run_options.max_parallel_lanes` control how many phases the [scheduler](#dispatch-loop) keeps in flight.
 - **The graph decides order, not the plan's numbering.** Never run a phase before every id in its `**Depends on**:` set is green, and never serialize two phases the graph says are independent just because one has a lower number.
 - **A lane only ever knows its own dependencies.** Pass a phase the tracking summaries of its transitive dependency closure and nothing more. Telling a lane about a sibling's work that is not in its base branch makes it code against files it cannot see.
-- **One worktree pool per plan run.** Size it once in the [pool step](#provision-the-lane-worktree-pool) and reuse each lane across phases. Never grow the pool mid-run; never silently fall back to the main checkout on prepare-worktree failure, and never fall back to sequential without asking — parallel execution requires worktrees and refusing is the correct move.
-- **Reset a lane's DB before reusing it.** A lane carrying a previous phase's migrations silently invalidates the next phase's tests. No `db_reset_cmd` and a migration on either side → re-provision that lane instead.
+- **One worktree pool per plan run.** Size it once in the [pool step](#provision-the-lane-worktree-pool) and reuse each lane across phases. Never grow the pool mid-run; never silently fall back to the main checkout when provisioning fails (skill or project command), and never fall back to sequential without asking — parallel execution requires worktrees and refusing is the correct move.
+- **Reset a lane's DB before reusing it.** A lane carrying a previous phase's migrations silently invalidates the next phase's tests. No `reset_cmd` in the lane's summary (or no summary) and a migration on either side → re-provision that lane instead.
 - **Don't auto-tear-down any worktree.** Step 2 surfaces every lane's teardown command; the user runs them when ready. A failed phase's lane is the only place its state survives.
 - **`WORKROOT` is resolved once per lane, used everywhere.** Every sub-skill takes `WORKROOT` / `SANDBOX_TIER` as data — no step re-derives worktree state, and no step reads another lane's. OS-level prevention (sandbox wrap in implement-phase when `SANDBOX_TIER = enforced`, denying the whole pool root) plus the review-phase stray-write backstop across the main checkout and every sibling lane keep foreign writes out; see [worktree-seam](../implement-phase/SKILL.md#3-spawn-the-subagent).
 - **The orchestrator never edits code — merge conflicts included.** A conflicted wave or `integ-` merge goes to a fixer subagent in the integration worktree, then back through the outer gate.
