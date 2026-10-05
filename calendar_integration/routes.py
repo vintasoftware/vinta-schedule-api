@@ -1,5 +1,6 @@
 from common.types import RouteDict
 
+from .google_write_access_views import GoogleServiceAccountWriteAccessViewSet
 from .views import (
     AppointmentTypeScopedAvailabilityWindowViewSet,
     AppointmentTypeScopedBlockedTimeViewSet,
@@ -46,6 +47,12 @@ routes: list[RouteDict] = [
         "regex": r"calendar-pools",
         "viewset": CalendarPoolViewSet,
         "basename": "CalendarPools",
+    },
+    # Before ``calendar`` so no ``CalendarViewSet`` route can shadow it.
+    {
+        "regex": r"calendar/google-service-account",
+        "viewset": GoogleServiceAccountWriteAccessViewSet,
+        "basename": "GoogleServiceAccountWriteAccess",
     },
     {
         "regex": r"calendar",

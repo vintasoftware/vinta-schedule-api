@@ -46,6 +46,7 @@ from calendar_integration.services.external_client_identifier_service import (
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
+from calendar_integration.services.google_write_access_service import GoogleWriteAccessService
 from legal.services import ConsentService
 from notifications.notification_adapters.django_email import (
     ReplyToDjangoEmailNotificationAdapter,
@@ -299,6 +300,10 @@ class AppContainer(containers.DeclarativeContainer):
         booking_policy_service=booking_policy_service,
         entitlement_service=entitlement_service,
         external_client_identifier_service=external_client_identifier_service,
+    )
+
+    google_write_access_service = providers.Factory(
+        GoogleWriteAccessService,
     )
 
     bookable_slots_service = providers.Factory(
