@@ -18,7 +18,12 @@
         "server_url": "postgres://db:5432",
         "connection_url_var": "DATABASE_URL"
       }
-    }
+    },
+    "env_files": [
+      ".env",
+      ".env.docker",
+      "vinta_schedule_api/settings/local.py"
+    ]
   },
   "crew": {
     "tier4": {
