@@ -33,6 +33,7 @@ bulk-operation ordering, no algorithmic-complexity change.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import logging
 from typing import TYPE_CHECKING, Literal, Protocol, cast
@@ -40,6 +41,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, cast
 from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from allauth.socialaccount.models import SocialAccount
 from vinta_billing.exceptions import OverLimitError
@@ -64,7 +66,11 @@ from calendar_integration.models import (
     EventExternalAttendance,
     ExternalAttendee,
     GoogleCalendarServiceAccount,
+    MicrosoftOrganizationConnection,
     RecurrenceRule,
+)
+from calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter import (
+    MSOutlookCalendarAdapter,
 )
 from calendar_integration.services.calendar_service_utils import (
     convert_naive_utc_datetime_to_timezone as _convert_naive_utc_datetime_to_timezone,
@@ -75,6 +81,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
     InitializedOrAuthenticatedCalendarService,
 )
 from calendar_integration.services.type_guards import is_authenticated_calendar_service
+from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC, is_enabled
 from organizations.models import ExternalEventUpdatePolicy, OrganizationMembership
 from payments.seams.resource_keys import RESOURCE_CALENDARS
 from payments.seams.scopes import scope_for
@@ -84,6 +91,9 @@ from users.models import User
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from calendar_integration.services.calendar_clients.ms_app_only_token import (
+        MicrosoftAppOnlyTokenProvider,
+    )
     from calendar_integration.services.calendar_service_context import CalendarServiceContext
     from calendar_integration.services.dataclasses import (
         CalendarEventAdapterOutputData,
@@ -102,6 +112,9 @@ logger = logging.getLogger(__name__)
 #: state; a 5000-room organization would otherwise write a multi-hundred-KB string
 #: to the database on every capped import.
 MAX_SKIPPED_EXTERNAL_IDS_IN_WARNING = 20
+
+#: How far ahead of today (UTC) a Microsoft room's events are synced.
+ROOM_EVENT_SYNC_WINDOW = datetime.timedelta(days=90)
 
 
 def _summarize_external_ids(resources: list[CalendarResourceData]) -> str:
@@ -832,7 +845,14 @@ class CalendarSyncService:
         self,
         calendar_sync: CalendarSync,
         sync_token: str | None = None,
+        keep_full_sync_token: bool = False,
     ) -> None:
+        """Run one sync pass for ``calendar_sync``, incremental when given ``sync_token``.
+
+        The adapter's next token is stored after an incremental pass. After a full pass
+        it is stored only with ``keep_full_sync_token``, which a delta source (the
+        Microsoft room sync) sets so its first round's token starts the next round.
+        """
         context = cast("BaseCalendarService", self._context)
         if not is_authenticated_calendar_service(context):
             raise
@@ -882,7 +902,7 @@ class CalendarSyncService:
                 changes.matched_event_ids,
                 start_date,
             )
-        else:
+        if sync_token or keep_full_sync_token:
             calendar_sync.next_sync_token = next_sync_token or ""
             calendar_sync.save(update_fields=["next_sync_token"])
 
@@ -945,6 +965,108 @@ class CalendarSyncService:
                 start_date,
                 end_date,
             )
+
+    def sync_microsoft_room_events(
+        self,
+        calendar: Calendar,
+        token_provider: MicrosoftAppOnlyTokenProvider,
+        trigger_source: CalendarSyncTriggerSource = CalendarSyncTriggerSource.WEBHOOK,
+    ) -> CalendarSync | None:
+        """Sync a Microsoft room's events through the organization's app-only connection.
+
+        Only for a Microsoft resource calendar of a flag-on organization whose
+        ``MicrosoftOrganizationConnection`` is write-enabled; anything else returns
+        ``None`` without calling Microsoft. Delegated-token sync is not involved.
+
+        The window is today (UTC) plus ``ROOM_EVENT_SYNC_WINDOW``. A delta token is
+        tied to the window of its first round, so the last successful sync's token is
+        reused only for the same window: the first sync of each day is a full round,
+        and later ones fetch only what changed. Runs under a lock on the calendar row,
+        so a re-delivered task waits and then finds nothing new to apply.
+
+        Returns the ``CalendarSync`` row, ``SUCCESS`` or ``FAILED``.
+        """
+        organization = self._context.organization
+        if organization is None or calendar.organization_id != organization.id:
+            raise ImproperlyConfigured("The room calendar is not in the bound organization.")
+        if (
+            not calendar.sync_enabled
+            or calendar.provider != CalendarProvider.MICROSOFT
+            or not calendar.is_resource
+            or not calendar.external_id
+        ):
+            return None
+        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, organization.id):
+            logger.info(
+                "Skipping Microsoft room sync for calendar %s: %s is off for organization %s.",
+                calendar.pk,
+                RESOURCE_CALENDAR_PROVIDER_SYNC,
+                organization.pk,
+            )
+            return None
+        connection = MicrosoftOrganizationConnection.objects.filter_by_organization(
+            organization.id
+        ).first()
+        if connection is None or not connection.write_enabled or not connection.tenant_id:
+            logger.info(
+                "Skipping Microsoft room sync for calendar %s: organization %s has no "
+                "write-enabled Microsoft connection.",
+                calendar.pk,
+                organization.pk,
+            )
+            return None
+        self._check_not_restricted()
+
+        room_sync_service = CalendarSyncService(
+            context=dataclasses.replace(
+                self._context,
+                account=connection,
+                calendar_adapter=MSOutlookCalendarAdapter.from_app_only(connection, token_provider),
+            ),
+            calendar_cache=self._calendar_cache,
+            host=self._host,
+            external_event_change_request_service=self._external_event_change_request_service,
+        )
+        start_datetime = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        end_datetime = start_datetime + ROOM_EVENT_SYNC_WINDOW
+        calendar_sync = CalendarSync.objects.create(
+            calendar=calendar,
+            organization_id=organization.id,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+            should_update_events=True,
+            trigger_source=trigger_source,
+            status=CalendarSyncStatus.IN_PROGRESS,
+        )
+        try:
+            with transaction.atomic():
+                # One room sync at a time per calendar: a second one waits here, then
+                # reads the token the first one stored.
+                Calendar.objects.filter_by_organization(organization.id).select_for_update().filter(
+                    pk=calendar.pk
+                ).first()
+                delta_token = CalendarSync.objects.latest_delta_token(
+                    calendar, start_datetime, end_datetime
+                )
+                room_sync_service._execute_calendar_sync(
+                    calendar_sync, delta_token, keep_full_sync_token=True
+                )
+        except Exception as e:  # noqa: BLE001
+            # Same bookkeeping as ``sync_events``: the next notification or run retries.
+            logger.warning(
+                "Microsoft room sync %s for calendar %s failed: %s",
+                calendar_sync.pk,
+                calendar.pk,
+                type(e).__name__,
+            )
+            calendar_sync.status = CalendarSyncStatus.FAILED
+            calendar_sync.error_message = str(e)
+            calendar_sync.save(update_fields=["status", "error_message"])
+            return calendar_sync
+
+        calendar_sync.status = CalendarSyncStatus.SUCCESS
+        calendar_sync.save(update_fields=["status"])
+        return calendar_sync
 
     def _get_existing_calendar_data(
         self,
@@ -1029,6 +1151,11 @@ class CalendarSyncService:
                 self._process_existing_event(event, existing_event, changes, update_events)
             elif existing_blocked_time:
                 self._process_existing_blocked_time(event, existing_blocked_time, changes)
+            elif "@removed" in (event.original_payload or {}):
+                # A Microsoft delta round reports removed events with no times, and it
+                # can report one this calendar never stored. There is nothing to delete,
+                # and it must not be created.
+                continue
             else:
                 self._process_new_event(event, calendar, changes)
 
