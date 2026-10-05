@@ -9,6 +9,7 @@ import pytest
 from freezegun import freeze_time
 
 from calendar_integration.constants import CalendarProvider, ResourceSyncStatus
+from calendar_integration.exceptions import MicrosoftAppOnlyTokenError
 from calendar_integration.models import (
     CalendarWebhookSubscription,
     ResourceCalendarProviderLink,
@@ -19,12 +20,27 @@ from calendar_integration.tasks import (
     renew_microsoft_room_subscriptions_task,
     sweep_microsoft_room_events_task,
 )
-from calendar_integration.tests.ms_room_graph import ROOM_EMAIL, make_room
+from calendar_integration.tests.ms_room_graph import ROOM_EMAIL, TENANT_ID, make_room
 from common.organization_context import organization_context
 from organizations.models import Organization, OrganizationFeatureFlag
 
 
 pytestmark = pytest.mark.django_db
+
+REVOKED_TENANT_ID = "99999999-8888-7777-6666-555555555555"
+
+
+def refuse_tokens_for(tenant_id, token_provider):
+    """Make the token provider fail for one tenant, as when it revoked consent."""
+    working = token_provider.get_token.return_value
+
+    def get_token(requested_tenant_id, force_refresh=False):
+        if requested_tenant_id == tenant_id:
+            raise MicrosoftAppOnlyTokenError()
+        return working
+
+    token_provider.get_token.side_effect = get_token
+
 
 NOW = datetime.datetime(2026, 10, 6, 15, 0, tzinfo=datetime.UTC)
 
@@ -226,6 +242,42 @@ class TestRenewal:
         assert subscription.verification_token != old_client_state
         assert subscription.expires_at == NOW + ROOM_SUBSCRIPTION_LIFETIME
 
+    def test_an_organization_whose_tokens_fail_does_not_stop_the_others(
+        self, ms_room_graph, ms_room_token_provider, django_capture_on_commit_callbacks
+    ):
+        revoked = Organization.objects.create(name="Revoked")
+        self.subscribe(revoked, django_capture_on_commit_callbacks, tenant_id=REVOKED_TENANT_ID)
+        working = Organization.objects.create(name="Working")
+        self.subscribe(working, django_capture_on_commit_callbacks)
+        refuse_tokens_for(REVOKED_TENANT_ID, ms_room_token_provider)
+        ms_room_graph.subscription_requests.clear()
+
+        with freeze_time(NOW):
+            renew_microsoft_room_subscriptions_task()
+
+        assert [(m, p) for m, p, _ in ms_room_graph.subscription_requests] == [
+            ("PATCH", "/subscriptions/sub-2")
+        ]
+        [renewed] = subscriptions_of(working)
+        assert renewed.expires_at == NOW + ROOM_SUBSCRIPTION_LIFETIME
+
+    def test_a_failed_re_create_does_not_stop_the_others(
+        self, ms_room_graph, django_capture_on_commit_callbacks
+    ):
+        dropped = Organization.objects.create(name="Dropped")
+        self.subscribe(dropped, django_capture_on_commit_callbacks)
+        working = Organization.objects.create(name="Working")
+        self.subscribe(working, django_capture_on_commit_callbacks)
+        # Graph lost the first subscription, and refuses to create it again.
+        del ms_room_graph.subscriptions["sub-1"]
+        ms_room_graph.refuse_subscription_creates = True
+
+        with freeze_time(NOW):
+            renew_microsoft_room_subscriptions_task()
+
+        [renewed] = subscriptions_of(working)
+        assert renewed.expires_at == NOW + ROOM_SUBSCRIPTION_LIFETIME
+
 
 @freeze_time(NOW)
 class TestSweep:
@@ -246,4 +298,33 @@ class TestSweep:
 
         delay.assert_called_once_with(calendar.id, organization.id)
         [subscription] = subscriptions_of(organization)
+        assert subscription.is_active is True
+
+    def test_an_organization_whose_tokens_fail_does_not_stop_the_others(
+        self, ms_room_graph, ms_room_token_provider
+    ):
+        rooms = []
+        for name, tenant_id in [("Revoked", REVOKED_TENANT_ID), ("Working", TENANT_ID)]:
+            organization = Organization.objects.create(name=name)
+            calendar = make_room(organization, tenant_id=tenant_id)
+            with organization_context(organization):
+                ResourceCalendarProviderLink.objects.create(
+                    organization=organization,
+                    calendar=calendar,
+                    provider=CalendarProvider.MICROSOFT,
+                    sync_status=ResourceSyncStatus.SYNCED,
+                )
+            rooms.append((organization, calendar))
+        refuse_tokens_for(REVOKED_TENANT_ID, ms_room_token_provider)
+
+        with patch(
+            "calendar_integration.tasks.room_event_sync_tasks.sync_microsoft_room_events_task.delay"
+        ) as delay:
+            sweep_microsoft_room_events_task()
+
+        assert [call.args for call in delay.call_args_list] == [
+            (calendar.id, organization.id) for organization, calendar in rooms
+        ]
+        assert subscriptions_of(rooms[0][0]) == []
+        [subscription] = subscriptions_of(rooms[1][0])
         assert subscription.is_active is True

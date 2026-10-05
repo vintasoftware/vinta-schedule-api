@@ -66,6 +66,8 @@ class FakeRoomCalendarGraph:
         self.subscriptions: dict[str, dict] = {}
         self.subscription_requests: list[tuple[str, str, dict | None]] = []
         self._subscriptions_created = 0
+        # Set to make Graph refuse new subscriptions (403), as without Exchange rights.
+        self.refuse_subscription_creates = False
 
     def edit(self, event_id: str, **fields: Any) -> None:
         self.events[event_id].update(fields)
@@ -101,6 +103,8 @@ class FakeRoomCalendarGraph:
     def _subscription(self, method: str, path: str, body: dict | None) -> Mock:
         self.subscription_requests.append((method, path, body))
         if (method, path) == ("POST", "/subscriptions"):
+            if self.refuse_subscription_creates:
+                return _response(403, {"error": {"code": "ErrorAccessDenied", "message": path}})
             self._subscriptions_created += 1
             subscription = {**(body or {}), "id": f"sub-{self._subscriptions_created}"}
             self.subscriptions[subscription["id"]] = subscription
@@ -141,13 +145,14 @@ def make_room(
     flag_on: bool = True,
     write_enabled: bool = True,
     email: str = ROOM_EMAIL,
+    tenant_id: str = TENANT_ID,
 ):
     """A Microsoft room calendar in ``organization``, with its connection and flag."""
     OrganizationFeatureFlag.objects.create(
         organization=organization, key=RESOURCE_CALENDAR_PROVIDER_SYNC, enabled=flag_on
     )
     MicrosoftOrganizationConnection.objects.create(
-        organization=organization, tenant_id=TENANT_ID, write_enabled=write_enabled
+        organization=organization, tenant_id=tenant_id, write_enabled=write_enabled
     )
     return Calendar.objects.create(
         organization=organization,

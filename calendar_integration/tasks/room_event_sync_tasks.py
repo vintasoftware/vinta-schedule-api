@@ -7,11 +7,11 @@ from vinta_billing.services.entitlement_service import EntitlementService
 
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.models import Calendar, ResourceCalendarProviderLink
-from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_client import (
-    MSGraphAPIError,
-)
 from calendar_integration.services.calendar_service import CalendarService
-from calendar_integration.services.calendar_webhook_service import MicrosoftRoomWebhookService
+from calendar_integration.services.calendar_webhook_service import (
+    ROOM_GRAPH_ERRORS,
+    MicrosoftRoomWebhookService,
+)
 from calendar_integration.tasks.calendar_sync_tasks import _restricted_or_skip
 from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC, organization_ids_with_flag
 from common.organization_context import organization_context
@@ -139,12 +139,15 @@ def sweep_microsoft_room_events_task(
                     CalendarProvider.MICROSOFT
                 ).values("calendar_fk_id")
             ):
+                # One room's failure, or an organization whose consent was revoked,
+                # must not stop the sweep for everyone else.
                 try:
                     microsoft_room_webhook_service.subscribe_microsoft_room(calendar)
-                except MSGraphAPIError as exc:
+                except ROOM_GRAPH_ERRORS as exc:
                     logger.warning(
-                        "Could not subscribe Microsoft room calendar %s: HTTP %s",
+                        "Could not subscribe Microsoft room calendar %s of organization %s: %s",
                         calendar.pk,
-                        exc.status_code,
+                        organization_id,
+                        type(exc).__name__,
                     )
                 sync_microsoft_room_events_task.delay(calendar.pk, organization_id)

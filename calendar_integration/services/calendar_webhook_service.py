@@ -71,6 +71,8 @@ from calendar_integration.constants import (
     microsoft_room_subscription_resource,
 )
 from calendar_integration.exceptions import (
+    MicrosoftAppOnlyTokenError,
+    MicrosoftConnectionNotConfiguredError,
     ServiceNotAuthenticatedError,
     WebhookIgnoredError,
 )
@@ -852,7 +854,10 @@ class MicrosoftRoomWebhookService:
             )
         else:
             # One subscription row per calendar and provider: a lapsed or delegated
-            # one is taken over by the room subscription.
+            # one is taken over by the room subscription. In a flag-on organization the
+            # app-only sync replaces delegated sync for rooms; a delegated Graph
+            # subscription cannot be deleted without its user's token, so it posts
+            # notifications nothing matches until it expires.
             for name, value in fields.items():
                 setattr(existing, name, value)
             existing.save(update_fields=[*fields, "modified"])
@@ -909,27 +914,40 @@ class MicrosoftRoomWebhookService:
                 .select_related("calendar")
             )
             for subscription in expiring:
+                # One subscription's failure, or an organization whose consent was
+                # revoked, must not stop the renewal of everyone else's.
                 try:
-                    subscription_data = client.update_subscription(
-                        subscription.external_subscription_id, now + ROOM_SUBSCRIPTION_LIFETIME
-                    )
-                except MSGraphAPIError as exc:
-                    if exc.status_code != 404:  # noqa: PLR2004
-                        logger.warning(
-                            "Could not renew Microsoft room subscription %s: HTTP %s",
-                            subscription.pk,
-                            exc.status_code,
-                        )
-                        continue
-                    subscription.is_active = False
-                    subscription.save(update_fields=["is_active", "modified"])
-                    if self.subscribe_microsoft_room(subscription.calendar) is not None:
+                    if self._renew_room_subscription(client, subscription, now):
                         renewed += 1
-                    continue
-                subscription.expires_at = _graph_expiration(subscription_data, now)
-                subscription.save(update_fields=["expires_at", "modified"])
-                renewed += 1
+                except ROOM_GRAPH_ERRORS as exc:
+                    logger.warning(
+                        "Could not renew Microsoft room subscription %s of organization %s: %s",
+                        subscription.pk,
+                        organization_id,
+                        _describe_graph_error(exc),
+                    )
         return renewed
+
+    def _renew_room_subscription(
+        self,
+        client: MSOutlookCalendarAPIClient,
+        subscription: CalendarWebhookSubscription,
+        now: datetime.datetime,
+    ) -> bool:
+        """Extend one subscription, or create it again if Graph no longer has it."""
+        try:
+            subscription_data = client.update_subscription(
+                subscription.external_subscription_id, now + ROOM_SUBSCRIPTION_LIFETIME
+            )
+        except MSGraphAPIError as exc:
+            if exc.status_code != 404:  # noqa: PLR2004
+                raise
+            subscription.is_active = False
+            subscription.save(update_fields=["is_active", "modified"])
+            return self.subscribe_microsoft_room(subscription.calendar) is not None
+        subscription.expires_at = _graph_expiration(subscription_data, now)
+        subscription.save(update_fields=["expires_at", "modified"])
+        return True
 
     def handle_room_notifications(
         self, organization_id: int, body: bytes
@@ -1000,6 +1018,21 @@ class MicrosoftRoomWebhookService:
 
     def _client(self, connection: MicrosoftOrganizationConnection) -> MSOutlookCalendarAPIClient:
         return MSOutlookCalendarAPIClient.app_only(self.token_provider, connection.tenant_id)
+
+
+#: What a Graph call through the app-only client can raise: Graph's own errors, and
+#: the token provider's when the tenant revoked consent or the app is not configured.
+ROOM_GRAPH_ERRORS = (
+    MSGraphAPIError,
+    MicrosoftAppOnlyTokenError,
+    MicrosoftConnectionNotConfiguredError,
+)
+
+
+def _describe_graph_error(exc: Exception) -> str:
+    """A log-safe description: the class and, for Graph errors, the HTTP status."""
+    status = getattr(exc, "status_code", None)
+    return type(exc).__name__ if status is None else f"{type(exc).__name__} (HTTP {status})"
 
 
 def _room_notification_url(organization_id: int) -> str:
