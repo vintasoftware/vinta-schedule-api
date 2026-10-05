@@ -14,6 +14,7 @@ from calendar_integration.exceptions import (
     MicrosoftAppOnlyTokenError,
     MicrosoftConnectionNotConfiguredError,
     MicrosoftSignInError,
+    MicrosoftSignInNotAdminError,
 )
 from calendar_integration.services.calendar_clients import ms_app_only_token
 from calendar_integration.services.calendar_clients.ms_app_only_token import (
@@ -327,10 +328,23 @@ class TestDecodeRoles:
         assert decode_roles(token) == frozenset()
 
 
+GLOBAL_ADMINISTRATOR = "62e90394-69f5-4237-9190-012177145e10"
+PRIVILEGED_ROLE_ADMINISTRATOR = "e8611ab8-c189-46e8-94e1-60213ab1f814"
+APPLICATION_ADMINISTRATOR = "9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3"
+
+
 def sign_in_response(**claims: Any) -> Mock:
     response = Mock(status_code=200)
     response.json.return_value = {
-        "id_token": make_jwt({"aud": CLIENT_ID, "nonce": "nonce-1", "tid": TENANT_ID, **claims}),
+        "id_token": make_jwt(
+            {
+                "aud": CLIENT_ID,
+                "nonce": "nonce-1",
+                "tid": TENANT_ID,
+                "wids": [GLOBAL_ADMINISTRATOR],
+                **claims,
+            }
+        ),
         "access_token": ACCESS_TOKEN,
     }
     return response
@@ -381,6 +395,34 @@ class TestTenantFromSignIn:
         post.return_value = sign_in_response(**claims)
 
         with pytest.raises(MicrosoftSignInError):
+            make_provider().tenant_from_sign_in(
+                "auth-code", redirect_uri=self.REDIRECT_URI, nonce="nonce-1"
+            )
+
+    def test_privileged_role_administrator_may_sign_in(self, post):
+        post.return_value = sign_in_response(
+            wids=[APPLICATION_ADMINISTRATOR, PRIVILEGED_ROLE_ADMINISTRATOR]
+        )
+
+        tenant = make_provider().tenant_from_sign_in(
+            "auth-code", redirect_uri=self.REDIRECT_URI, nonce="nonce-1"
+        )
+
+        assert tenant == TENANT_ID
+
+    @pytest.mark.parametrize(
+        "claims",
+        [
+            {"wids": []},
+            {"wids": [APPLICATION_ADMINISTRATOR]},
+            {"wids": GLOBAL_ADMINISTRATOR},
+            {"wids": None},
+        ],
+    )
+    def test_sign_in_by_a_non_administrator_is_refused(self, post, claims):
+        post.return_value = sign_in_response(**claims)
+
+        with pytest.raises(MicrosoftSignInNotAdminError):
             make_provider().tenant_from_sign_in(
                 "auth-code", redirect_uri=self.REDIRECT_URI, nonce="nonce-1"
             )

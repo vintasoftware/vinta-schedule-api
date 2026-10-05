@@ -36,6 +36,7 @@ from calendar_integration.exceptions import (
     MicrosoftConsentDeniedError,
     MicrosoftConsentStateError,
     MicrosoftSignInError,
+    MicrosoftSignInNotAdminError,
 )
 from calendar_integration.serializers import (
     MicrosoftConnectionVerificationSerializer,
@@ -63,6 +64,7 @@ CONSENT_STATUS_ERROR = "error"
 CONSENT_REASON_INVALID_STATE = "invalid_state"
 CONSENT_REASON_DENIED = "consent_denied"
 CONSENT_REASON_SIGN_IN_FAILED = "sign_in_failed"
+CONSENT_REASON_NOT_ADMIN = "not_admin"
 
 
 def _acting_organization(request: Request) -> Organization:
@@ -192,6 +194,8 @@ class MicrosoftConsentCallbackView(View):
             return _consent_result_redirect(CONSENT_STATUS_ERROR, CONSENT_REASON_INVALID_STATE)
         except MicrosoftConsentDeniedError:
             return _consent_result_redirect(CONSENT_STATUS_ERROR, CONSENT_REASON_DENIED)
+        except MicrosoftSignInNotAdminError:
+            return _consent_result_redirect(CONSENT_STATUS_ERROR, CONSENT_REASON_NOT_ADMIN)
         except (MicrosoftSignInError, MicrosoftConnectionNotConfiguredError):
             return _consent_result_redirect(CONSENT_STATUS_ERROR, CONSENT_REASON_SIGN_IN_FAILED)
         return _consent_result_redirect(CONSENT_STATUS_CONNECTED)

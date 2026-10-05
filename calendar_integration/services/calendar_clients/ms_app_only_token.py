@@ -10,8 +10,9 @@ here, as everywhere else: when it is missing or its circuit is open, every call 
 Microsoft for a fresh token.
 
 The same Entra app also redeems the authorization code of the admin-consent sign-in
-(``tenant_from_sign_in``). That is how Vinta learns which tenant consented: from the
-``id_token`` Microsoft returns to this server, never from the browser.
+(``tenant_from_sign_in``). That is how Vinta learns which tenant consented, and that a
+tenant administrator signed in: from the ``id_token`` Microsoft returns to this server,
+never from the browser.
 
 Neither the client secret, an authorization code, nor any token is ever logged.
 """
@@ -35,6 +36,7 @@ from calendar_integration.exceptions import (
     MicrosoftAppOnlyTokenError,
     MicrosoftConnectionNotConfiguredError,
     MicrosoftSignInError,
+    MicrosoftSignInNotAdminError,
 )
 from common.redis import CircuitBreakerOpenError, get_redis_connection, redis_breaker
 
@@ -47,6 +49,16 @@ GRAPH_DEFAULT_SCOPE = "https://graph.microsoft.com/.default"
 SIGN_IN_TOKEN_URL = "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"  # noqa: S105 - a URL
 # `openid` makes Microsoft return an id_token, whose `tid` claim names the tenant.
 SIGN_IN_SCOPE = f"openid {GRAPH_DEFAULT_SCOPE}"
+# Role template ids of the Entra directory roles that can grant admin consent for
+# Microsoft Graph application permissions: Global Administrator and Privileged Role
+# Administrator. The id_token lists the signer's roles in its `wids` claim, which the
+# Entra app emits once its groups claim includes directory roles.
+ADMIN_CONSENT_ROLE_IDS = frozenset(
+    {
+        "62e90394-69f5-4237-9190-012177145e10",
+        "e8611ab8-c189-46e8-94e1-60213ab1f814",
+    }
+)
 CACHE_EXPIRY_MARGIN_SECONDS = 5 * 60
 REQUEST_TIMEOUT_SECONDS = 15
 CACHE_KEY_PREFIX = "ms_app_only_token"
@@ -170,7 +182,8 @@ class MicrosoftAppOnlyTokenProvider:
 
         The tenant is the ``tid`` claim of the ``id_token`` in Microsoft's answer. That
         token is accepted only when it was issued to Vinta's app (``aud``) for this
-        consent attempt (``nonce``). The delegated access token in the same answer is
+        consent attempt (``nonce``) and the user who signed in holds a role that can
+        grant admin consent (``wids``). The delegated access token in the same answer is
         dropped unused.
 
         Raises:
@@ -178,6 +191,8 @@ class MicrosoftAppOnlyTokenProvider:
                 is empty.
             MicrosoftSignInError: Microsoft refused or did not answer, or the id_token
                 does not match this app and attempt, or names no tenant.
+            MicrosoftSignInNotAdminError: the user who signed in is not a Global
+                Administrator or Privileged Role Administrator of the tenant.
         """
         if not self.is_configured:
             raise MicrosoftConnectionNotConfiguredError()
@@ -219,6 +234,15 @@ class MicrosoftAppOnlyTokenProvider:
         ):
             logger.warning("Microsoft sign-in returned an id_token not issued for this attempt")
             raise MicrosoftSignInError()
+        # Any user of a tenant that already consented gets a code back without seeing a
+        # consent screen, so a valid sign-in alone does not prove control of the tenant.
+        # The signer must hold a role that can grant admin consent.
+        directory_roles = claims.get("wids")
+        if not isinstance(directory_roles, list) or not ADMIN_CONSENT_ROLE_IDS.intersection(
+            role for role in directory_roles if isinstance(role, str)
+        ):
+            logger.warning("Microsoft sign-in was not made by a tenant administrator")
+            raise MicrosoftSignInNotAdminError()
         return tenant_id.lower()
 
     def _cache_key(self, tenant_id: str) -> str:

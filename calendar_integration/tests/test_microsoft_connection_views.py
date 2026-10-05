@@ -68,12 +68,16 @@ def connection_of(organization: Organization) -> MicrosoftOrganizationConnection
 
 
 @contextlib.contextmanager
-def microsoft_sign_in(state: str, tid: str) -> Iterator[Mock]:
-    """Answer the code redemption the way Microsoft would for an admin of tid."""
+def microsoft_sign_in(state: str, tid: str, wids: list[str] | None = None) -> Iterator[Mock]:
+    """Answer the code redemption the way Microsoft would for a user of tid.
+
+    The user is a Global Administrator unless ``wids`` names other directory roles.
+    """
     claims = {
         "aud": "vinta-client-id",
         "nonce": signing.loads(state, salt=CONSENT_STATE_SALT)["nonce"],
         "tid": tid,
+        "wids": ["62e90394-69f5-4237-9190-012177145e10"] if wids is None else wids,
     }
     payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
     response = Mock(status_code=200)
@@ -282,6 +286,21 @@ class TestCallback:
             {"status": "error", "reason": "consent_denied"}, settings
         )
         post.assert_not_called()
+        connection = connection_of(organization)
+        assert (connection.tenant_id, connection.consent_state) == ("", "")
+
+    def test_sign_in_by_a_non_administrator_stores_nothing(
+        self, admin_client, organization, settings
+    ):
+        """A user of a tenant that already consented gets a code without any consent screen."""
+        state = state_from(consent_url_for(admin_client))
+
+        with microsoft_sign_in(state, tid=TENANT_ID, wids=[]):
+            response = Client().get(CALLBACK_PATH, {"code": "auth-code", "state": state})
+
+        assert response["Location"] == expected_redirect(
+            {"status": "error", "reason": "not_admin"}, settings
+        )
         connection = connection_of(organization)
         assert (connection.tenant_id, connection.consent_state) == ("", "")
 

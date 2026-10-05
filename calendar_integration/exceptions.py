@@ -634,3 +634,13 @@ class MicrosoftSignInError(CalendarIntegrationError):
     """
 
     default_message = "Could not confirm the Microsoft sign-in."
+
+
+class MicrosoftSignInNotAdminError(MicrosoftSignInError):
+    """The user who signed in is not an administrator who can grant admin consent.
+
+    Their ``id_token`` carries neither the Global Administrator nor the Privileged Role
+    Administrator role, so the sign-in does not prove control of the tenant.
+    """
+
+    default_message = "The Microsoft sign-in was not made by a tenant administrator."

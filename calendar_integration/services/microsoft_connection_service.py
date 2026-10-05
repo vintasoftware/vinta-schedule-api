@@ -144,6 +144,8 @@ class MicrosoftConnectionService:
                 was not issued to the organization it names.
             MicrosoftConsentDeniedError: the admin declined (no code came back).
             MicrosoftSignInError: Microsoft did not confirm the sign-in for this attempt.
+            MicrosoftSignInNotAdminError: the user who signed in is not a tenant
+                administrator who can grant admin consent.
         """
         organization_id, nonce = self._read_state(state)
         with transaction.atomic():

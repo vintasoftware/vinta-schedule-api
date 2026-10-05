@@ -23,6 +23,7 @@ from calendar_integration.exceptions import (
     MicrosoftConsentDeniedError,
     MicrosoftConsentStateError,
     MicrosoftSignInError,
+    MicrosoftSignInNotAdminError,
 )
 from calendar_integration.factories import create_microsoft_organization_connection
 from calendar_integration.models import MicrosoftOrganizationConnection
@@ -109,6 +110,9 @@ def token_endpoint_response(roles: list[str]) -> Mock:
     return response
 
 
+GLOBAL_ADMINISTRATOR = "62e90394-69f5-4237-9190-012177145e10"
+
+
 @contextlib.contextmanager
 def microsoft_sign_in(state: str, tid: str | None, **overrides: Any) -> Iterator[Mock]:
     """Answer the code redemption the way Microsoft would for an admin of ``tid``."""
@@ -116,6 +120,7 @@ def microsoft_sign_in(state: str, tid: str | None, **overrides: Any) -> Iterator
         "aud": "vinta-client-id",
         "nonce": signing.loads(state, salt=CONSENT_STATE_SALT)["nonce"],
         "tid": tid,
+        "wids": [GLOBAL_ADMINISTRATOR],
         **overrides,
     }
     response = Mock(status_code=200)
@@ -265,6 +270,22 @@ class TestCompleteConsent:
 
         connection = connection_of(organization)
         assert (connection.tenant_id, connection.consent_state) == ("", "")
+
+    def test_sign_in_by_a_non_administrator_stores_nothing(self, service, organization):
+        state = state_from(service.build_consent_url(organization, redirect_uri=REDIRECT_URI))
+
+        with (
+            microsoft_sign_in(state, tid=TENANT_ID, wids=[]),
+            pytest.raises(MicrosoftSignInNotAdminError),
+        ):
+            service.complete_consent(state, code="auth-code", redirect_uri=REDIRECT_URI)
+
+        connection = connection_of(organization)
+        assert (connection.tenant_id, connection.consented_at, connection.consent_state) == (
+            "",
+            None,
+            "",
+        )
 
     def test_refused_code_stores_nothing(self, service, organization):
         state = state_from(service.build_consent_url(organization, redirect_uri=REDIRECT_URI))
