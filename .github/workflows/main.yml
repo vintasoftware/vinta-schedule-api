@@ -186,10 +186,19 @@ jobs:
       - run: uv sync --frozen
       # `pytest-split` assigns each test to exactly one shard, so the four shards
       # together run the whole suite -- adding an app or a test file needs no change
-      # here. With no `.test_durations` file committed it splits by test count, which
-      # measured within ~13% of a duration-balanced split (worst shard 99s vs 88s of
-      # a 350s suite) -- not worth the 900KB generated file that duration balancing
-      # would need. If the shards ever drift far apart, re-measure with
+      # here. No `.test_durations` file is committed (it would be ~900KB), so every
+      # test weighs the same.
+      #
+      # `least_duration` is required, not a tuning choice. The default algorithm,
+      # `duration_based_chunks`, cuts the list into four contiguous slices, and it runs
+      # after pytest-django has sorted that list: plain `db` tests first, then every
+      # `transaction=True` test, then the tests with no database. So the last shard got
+      # all ~50 transactional tests. About a dozen of those replay migrations and take
+      # ~30s each, and that shard ran ~10 minutes while the others ran ~3.
+      # `least_duration` deals tests out one at a time in nodeid order instead, so a
+      # file of slow tests is spread over all four shards. Each shard still runs its
+      # own tests in the original order, so the transactional ones still run last.
+      # If the shards drift apart again, re-measure with
       # `uv run pytest --store-durations --clean-durations --no-cov` (single process;
       # the flag does not work under `-n auto`) and commit `.test_durations`.
       # `-n auto` still parallelizes *within* a shard across the runner's cores.
@@ -197,6 +206,7 @@ jobs:
         run: |
           uv run pytest -vs --no-header -n auto \
             --splits ${{ strategy.job-total }} --group ${{ matrix.shard }} \
+            --splitting-algorithm least_duration \
             --cov=. --cov-report=xml:junit/test-results.xml \
             --junitxml=junit.xml -o junit_family=legacy
 
