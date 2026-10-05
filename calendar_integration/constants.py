@@ -162,3 +162,35 @@ class CalendarManagementTokenKind(TextChoices):
 
     BOOKING_CODE = "booking_code", "Booking Code"
     MANAGEMENT_TOKEN = "management_token", "Management Token"
+
+
+class ResourceSyncStatus(TextChoices):
+    """Where a provider-backed room is in its sync lifecycle.
+
+    Stored on ``ResourceCalendarProviderLink.sync_status``. Rooms with no link
+    (manual ``INTERNAL`` rooms, and every room in an organization with the
+    ``resource_calendar_provider_sync`` flag off) have no status at all. See the
+    state diagram in ``ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_SPEC.md``.
+    """
+
+    PENDING_CREATION = "pending_creation", "Pending Creation"
+    SYNCED = "synced", "Synced"
+    PENDING_UPDATE = "pending_update", "Pending Update"
+    PENDING_DELETION = "pending_deletion", "Pending Deletion"
+    SYNC_FAILED = "sync_failed", "Sync Failed"
+    ARCHIVED = "archived", "Archived"
+
+
+class ResourceSyncOperation(TextChoices):
+    """The provider write a room link is waiting on, or failed on."""
+
+    CREATE = "create", "Create"
+    UPDATE = "update", "Update"
+    DELETE = "delete", "Delete"
+
+
+# The room fields Vinta Schedule and the provider both write. These are the keys of
+# ``ResourceCalendarProviderLink.provider_snapshot`` and ``.pending_fields``.
+# ``location_ref`` is a ``{"external_building_id": ..., "external_floor_id": ...}``
+# dict, or ``None`` for a room with no location.
+RESOURCE_SYNCED_FIELDS: tuple[str, ...] = ("name", "description", "capacity", "location_ref")

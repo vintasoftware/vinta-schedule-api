@@ -28,6 +28,8 @@ from calendar_integration.constants import (
     CalendarType,
     CalendarVisibility,
     ExternalEventChangeRequestStatus,
+    ResourceSyncOperation,
+    ResourceSyncStatus,
 )
 from calendar_integration.database_functions import (
     GetAvailableTimeOccurrencesJSON,
@@ -1423,3 +1425,84 @@ class BookingPolicyQuerySet(OrganizationScopedQuerySet):
     def org_default(self) -> "BookingPolicyQuerySet":
         """Narrow the queryset to the organization-default policy."""
         return self.filter(is_organization_default=True)
+
+
+class ResourceLocationQuerySet(OrganizationScopedQuerySet):
+    """QuerySet for :class:`~calendar_integration.models.ResourceLocation`."""
+
+    def active(self) -> "ResourceLocationQuerySet":
+        """Locations the last resync still saw on the provider."""
+        return self.filter(is_active=True)
+
+    def for_provider(self, provider: str) -> "ResourceLocationQuerySet":
+        """Locations synced from ``provider``."""
+        return self.filter(provider=provider)
+
+
+class ResourceCalendarProviderLinkQuerySet(OrganizationScopedQuerySet):
+    """QuerySet for :class:`~calendar_integration.models.ResourceCalendarProviderLink`."""
+
+    def due_for_push(self) -> "ResourceCalendarProviderLinkQuerySet":
+        """Links waiting on a provider write: pending creation, update or deletion.
+
+        A ``SYNC_FAILED`` link is not due. It waits for a manual retry, which moves
+        it back to one of the pending statuses.
+        """
+        return self.filter(
+            sync_status__in=(
+                ResourceSyncStatus.PENDING_CREATION,
+                ResourceSyncStatus.PENDING_UPDATE,
+                ResourceSyncStatus.PENDING_DELETION,
+            )
+        )
+
+    def for_resync(self, provider: str) -> "ResourceCalendarProviderLinkQuerySet":
+        """Links of ``provider`` whose room exists on the provider and may take its changes.
+
+        That is ``SYNCED``, ``PENDING_UPDATE``, and ``SYNC_FAILED`` on an update.
+        Left out:
+
+        - ``PENDING_CREATION`` and ``SYNC_FAILED`` on a create: the room may not
+          exist on the provider yet, so a resync would wrongly read it as deleted.
+        - ``PENDING_DELETION`` and ``SYNC_FAILED`` on a delete: the room is on its
+          way out, so there is nothing to import.
+        - ``ARCHIVED``: archived rooms never change again.
+        """
+        return self.filter(provider=provider).filter(
+            Q(sync_status__in=(ResourceSyncStatus.SYNCED, ResourceSyncStatus.PENDING_UPDATE))
+            | Q(
+                sync_status=ResourceSyncStatus.SYNC_FAILED,
+                failed_operation=ResourceSyncOperation.UPDATE,
+            )
+        )
+
+    def locked_for_update(
+        self, link_id: int, skip_locked: bool = False
+    ) -> "ResourceCalendarProviderLinkQuerySet":
+        """The link ``link_id``, row-locked with ``SELECT ... FOR UPDATE``.
+
+        Evaluate it inside ``transaction.atomic()``; Django raises
+        ``TransactionManagementError`` otherwise. ``skip_locked=True`` gives an
+        empty result instead of waiting when another transaction holds the lock.
+        The resync uses that to skip a link the push engine is working on.
+        ``of=("self",)`` locks only the link row, never the calendar it joins to.
+        """
+        return self.filter(pk=link_id).select_for_update(skip_locked=skip_locked, of=("self",))
+
+    def with_flagged_bookings(self) -> "ResourceCalendarProviderLinkQuerySet":
+        """Links whose room was deleted on the provider while it still had future bookings."""
+        return self.filter(flagged_bookings_at__isnull=False)
+
+
+class ResourceCalendarCreateRequestQuerySet(OrganizationScopedQuerySet):
+    """QuerySet for :class:`~calendar_integration.models.ResourceCalendarCreateRequest`."""
+
+    def expired(
+        self, now: datetime.datetime | None = None
+    ) -> "ResourceCalendarCreateRequestQuerySet":
+        """Requests whose idempotency window has closed."""
+        return self.filter(expires_at__lte=now or timezone.now())
+
+    def live(self, now: datetime.datetime | None = None) -> "ResourceCalendarCreateRequestQuerySet":
+        """Requests whose idempotency key can still be replayed."""
+        return self.filter(expires_at__gt=now or timezone.now())

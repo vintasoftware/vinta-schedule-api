@@ -1,6 +1,8 @@
 import datetime
 import secrets
+import uuid
 import zoneinfo
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from django.contrib.contenttypes.fields import GenericForeignKey, GenericRelation
@@ -13,6 +15,7 @@ from encrypted_fields.fields import EncryptedCharField, EncryptedTextField  # ty
 from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from calendar_integration.constants import (
+    RESOURCE_SYNCED_FIELDS,
     CalendarManagementTokenKind,
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
@@ -27,6 +30,8 @@ from calendar_integration.constants import (
     QuotaPeriod,
     RecurrenceFrequency,
     RecurrenceWeekday,
+    ResourceSyncOperation,
+    ResourceSyncStatus,
     RSVPStatus,
 )
 from calendar_integration.local_time import local_wall_clock_to_utc
@@ -47,6 +52,9 @@ from calendar_integration.managers import (
     CalendarPoolMembershipManager,
     CalendarSyncManager,
     ExternalEventChangeRequestManager,
+    ResourceCalendarCreateRequestManager,
+    ResourceCalendarProviderLinkManager,
+    ResourceLocationManager,
 )
 from common.fields import (
     NaiveDateTimeField,
@@ -2265,6 +2273,23 @@ class GoogleCalendarServiceAccount(
     )
     private_key_id = EncryptedCharField(max_length=255)
     private_key = EncryptedTextField()
+    # ``db_default`` as well as ``default``: during a rolling deploy, containers that
+    # predate this column still insert service accounts, and they leave it out.
+    write_enabled = models.BooleanField(
+        default=False,
+        db_default=False,
+        help_text=(
+            "True once the service account was verified to hold the "
+            "admin.directory.resource.calendar scope, so Vinta Schedule can create, "
+            "edit and delete rooms in Google Workspace. Only the organization-level "
+            "account (no calendar) is used for room writes."
+        ),
+    )
+    write_verified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When write access was last verified successfully.",
+    )
 
     def __str__(self):
         return f"Service Account for {self.calendar} ({self.email})"
@@ -2869,3 +2894,280 @@ class ExternalClientIdentifier(SingleOrganizationModelMixin, SafeRelationNullIni
 
     def __str__(self):
         return f"{self.system}#{self.identifier}"
+
+
+class ResourceLocation(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
+    """A building and floor a provider-backed room can sit in.
+
+    Synced from the provider by the hourly room resync and read locally, so listing
+    locations never calls the provider. Vinta Schedule never creates or edits
+    buildings and floors; it only mirrors them.
+
+    Google: ``external_building_id`` is the Directory ``buildingId`` and
+    ``external_floor_id`` is the ``floorName`` (Google has no floor id).
+    Microsoft: ``external_building_id`` is the building place id and
+    ``external_floor_id`` is the floor or section place id. ``external_floor_id``
+    is blank for a building with no floors.
+    """
+
+    provider = models.CharField(max_length=50, choices=CalendarProvider)
+    external_building_id = models.CharField(max_length=255)
+    building_name = models.CharField(max_length=255)
+    external_floor_id = models.CharField(max_length=255, blank=True)
+    floor_name = models.CharField(max_length=255, blank=True)
+    is_active = models.BooleanField(
+        default=True,
+        help_text=(
+            "False once a resync no longer sees this location on the provider. "
+            "Rows still referenced by a room are kept, inactive, rather than deleted."
+        ),
+    )
+    last_seen_at = models.DateTimeField(
+        help_text="When a resync last saw this location on the provider."
+    )
+
+    objects: ClassVar[ResourceLocationManager] = ResourceLocationManager()
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("organization", "provider", "external_building_id", "external_floor_id"),
+                name="resourcelocation_uniq_provider_ref",
+            ),
+        )
+
+    def __str__(self):
+        if self.floor_name:
+            return f"{self.building_name} / {self.floor_name}"
+        return self.building_name
+
+    @property
+    def location_ref(self) -> dict[str, str]:
+        """The provider-side reference stored under ``location_ref`` in link snapshots."""
+        return {
+            "external_building_id": self.external_building_id,
+            "external_floor_id": self.external_floor_id,
+        }
+
+
+class ResourceCalendarProviderLink(
+    SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel
+):
+    """The sync state of a room that lives in Google Workspace or Microsoft 365.
+
+    A side table rather than columns on ``Calendar``, so manual rooms and every
+    existing ``Calendar`` read stay untouched. A room with no link is a manual
+    room, or belongs to an organization with the ``resource_calendar_provider_sync``
+    flag off, and behaves exactly as before.
+
+    ``provider_snapshot`` and ``pending_fields`` share one shape: a dict keyed by
+    ``RESOURCE_SYNCED_FIELDS`` (``name``, ``description``, ``capacity``,
+    ``location_ref``). The snapshot holds the provider's values at the last
+    successful sync. ``pending_fields`` holds the Vinta Schedule edits not yet
+    pushed. Comparing the provider's current values with the snapshot tells which
+    fields the provider changed since then, and for those the provider wins.
+    """
+
+    calendar = OrganizationSafeOneToOneField(
+        Calendar,
+        on_delete=models.CASCADE,
+        related_name="provider_link",
+    )
+    provider = models.CharField(max_length=50, choices=CalendarProvider)
+    sync_status = models.CharField(max_length=32, choices=ResourceSyncStatus, db_index=True)
+    failed_operation = models.CharField(
+        max_length=16,
+        choices=ResourceSyncOperation,
+        blank=True,
+        help_text="The provider write that failed. Set only while sync_status is sync_failed.",
+    )
+    last_error = models.TextField(
+        blank=True,
+        help_text="The last provider error, shown to admins. Never holds credentials.",
+    )
+    location = OrganizationSafeForeignKey(
+        ResourceLocation,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="provider_links",
+    )
+    provider_snapshot = models.JSONField(default=dict, blank=True)
+    pending_fields = models.JSONField(default=dict, blank=True)
+    provisional_key = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+        help_text=(
+            "Stable id sent to the provider so a replayed create finds the room it "
+            "already made: Google resourceId vinta-<key>, Microsoft tag vinta-link-<key>."
+        ),
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
+    retry_deadline = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="After this moment a failing push stops retrying and the link goes to sync failed.",
+    )
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    flagged_bookings_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Set when the provider deleted the room while it still had future "
+            "bookings, which an admin must resolve."
+        ),
+    )
+
+    objects: ClassVar[ResourceCalendarProviderLinkManager] = ResourceCalendarProviderLinkManager()
+
+    def __str__(self):
+        return f"ResourceCalendarProviderLink({self.provider}:{self.calendar_fk_id}, {self.sync_status})"
+
+    @property
+    def is_bookable(self) -> bool:
+        """Whether new bookings may allocate this room.
+
+        Bookable while the room exists on the provider and is not on its way out:
+        ``SYNCED``, ``PENDING_UPDATE``, or ``SYNC_FAILED`` on an update. Not bookable
+        while pending creation, after a failed create, while pending deletion,
+        after a failed delete, or once archived.
+        """
+        if self.sync_status in (ResourceSyncStatus.SYNCED, ResourceSyncStatus.PENDING_UPDATE):
+            return True
+        return (
+            self.sync_status == ResourceSyncStatus.SYNC_FAILED
+            and self.failed_operation == ResourceSyncOperation.UPDATE
+        )
+
+    def fields_changed_by_provider(self, provider_values: Mapping[str, Any]) -> set[str]:
+        """The synced fields whose provider value differs from the last-sync snapshot.
+
+        ``provider_values`` maps synced field names to the provider's current values,
+        in the snapshot's shape (``RoomDirectoryData.synced_values()`` builds it). A
+        field the provider does not report is left out of ``provider_values`` and is
+        never counted as changed. A field missing from the snapshot counts as changed
+        unless the provider reports ``None`` for it.
+        """
+        return {
+            field
+            for field, value in provider_values.items()
+            if field in RESOURCE_SYNCED_FIELDS and self.provider_snapshot.get(field) != value
+        }
+
+    def mark_pushed(
+        self,
+        pushed_fields: Mapping[str, Any],
+        provider_values: Mapping[str, Any] | None = None,
+    ) -> set[str]:
+        """Record a successful push of ``pushed_fields``. Does not save.
+
+        ``pushed_fields`` is the copy of ``pending_fields`` the push sent.
+        ``provider_values`` is what the provider returned for the room, when it
+        returned anything; otherwise the pushed values are taken as the provider's.
+
+        A pending field is cleared only when its value still equals the value that
+        was pushed. A field edited again while the push was in flight keeps its newer
+        value, so the next push sends it. The snapshot takes the provider's values,
+        and ``last_synced_at`` is set to now.
+
+        Returns the names of the cleared fields. Status, attempts and the retry
+        deadline are the push engine's to change.
+        """
+        cleared = {
+            field
+            for field, value in pushed_fields.items()
+            if field in self.pending_fields and self.pending_fields[field] == value
+        }
+        self.pending_fields = {
+            field: value for field, value in self.pending_fields.items() if field not in cleared
+        }
+        synced_values = pushed_fields if provider_values is None else provider_values
+        self.provider_snapshot = {
+            **self.provider_snapshot,
+            **{
+                field: value
+                for field, value in synced_values.items()
+                if field in RESOURCE_SYNCED_FIELDS
+            },
+        }
+        self.last_synced_at = timezone.now()
+        return cleared
+
+
+class ResourceCalendarCreateRequest(
+    SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel
+):
+    """A client idempotency key for a synced-room create, kept for 24 hours.
+
+    Replaying a key with the same payload (same ``request_fingerprint``) returns the
+    room the first request made. Replaying it with a different payload is rejected.
+    A daily beat task deletes rows past ``expires_at``.
+    """
+
+    idempotency_key = models.CharField(max_length=255)
+    request_fingerprint = models.CharField(
+        max_length=64, help_text="sha256 hex digest of the normalized create payload."
+    )
+    calendar = OrganizationSafeForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        related_name="create_requests",
+    )
+    expires_at = models.DateTimeField(db_index=True)
+
+    objects: ClassVar[ResourceCalendarCreateRequestManager] = ResourceCalendarCreateRequestManager()
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("organization", "idempotency_key"),
+                name="resourcecalcreatereq_uniq_key",
+            ),
+        )
+
+    def __str__(self):
+        return f"ResourceCalendarCreateRequest(calendar={self.calendar_fk_id})"
+
+
+class MicrosoftOrganizationConnection(
+    SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel
+):
+    """An organization's app-only connection to its Microsoft 365 tenant.
+
+    A tenant admin grants admin consent to Vinta's multi-tenant Entra app, and
+    Vinta Schedule stores the tenant id. App-only tokens are minted with Vinta's
+    own client credentials plus ``tenant_id``, so no secret is stored here. One
+    connection per organization.
+    """
+
+    tenant_id = models.CharField(max_length=64, blank=True)
+    consent_state = models.CharField(
+        max_length=128,
+        blank=True,
+        help_text="Single-use nonce for the admin-consent round trip. Cleared once used.",
+    )
+    consented_at = models.DateTimeField(null=True, blank=True)
+    write_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "True once the app-only token was verified to carry Place.ReadWrite.All "
+            "and Calendars.Read and a Places read succeeded."
+        ),
+    )
+    verified_at = models.DateTimeField(null=True, blank=True)
+    last_verification_error = models.TextField(blank=True)
+
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("organization",),
+                name="msorgconnection_uniq_organization",
+            ),
+        )
+
+    def __str__(self):
+        return f"MicrosoftOrganizationConnection(org={self.organization_id})"

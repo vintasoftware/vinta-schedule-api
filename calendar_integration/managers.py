@@ -29,6 +29,9 @@ from calendar_integration.querysets import (
     CalendarSyncQuerySet,
     ExternalEventChangeRequestQuerySet,
     RecurringQuerySetMixin,
+    ResourceCalendarCreateRequestQuerySet,
+    ResourceCalendarProviderLinkQuerySet,
+    ResourceLocationQuerySet,
 )
 from common.managers import OrganizationScopedManager
 
@@ -78,6 +81,13 @@ _ExternalEventChangeRequestManagerBase = OrganizationScopedManager.from_queryset
 )
 _AvailableTimeManagerBase = OrganizationScopedManager.from_queryset(AvailableTimeQuerySet)
 _BlockedTimeManagerBase = OrganizationScopedManager.from_queryset(BlockedTimeQuerySet)
+_ResourceLocationManagerBase = OrganizationScopedManager.from_queryset(ResourceLocationQuerySet)
+_ResourceCalendarProviderLinkManagerBase = OrganizationScopedManager.from_queryset(
+    ResourceCalendarProviderLinkQuerySet
+)
+_ResourceCalendarCreateRequestManagerBase = OrganizationScopedManager.from_queryset(
+    ResourceCalendarCreateRequestQuerySet
+)
 
 
 class RecurringManagerMixin:
@@ -616,3 +626,51 @@ class BookingPolicyManager(_BookingPolicyManagerBase):  # type: ignore[misc,vali
         """
         # See :meth:`for_target` on why this is the manager's ``filter_by_organization``.
         return self.filter_by_organization(organization_id).org_default().first()
+
+
+class ResourceLocationManager(_ResourceLocationManagerBase):  # type: ignore[misc,valid-type]
+    """Manager for ResourceLocation."""
+
+    def active(self) -> ResourceLocationQuerySet:
+        """Wraps :meth:`ResourceLocationQuerySet.active`."""
+        return self.get_queryset().active()
+
+    def for_provider(self, provider: str) -> ResourceLocationQuerySet:
+        """Wraps :meth:`ResourceLocationQuerySet.for_provider`."""
+        return self.get_queryset().for_provider(provider)
+
+
+class ResourceCalendarProviderLinkManager(_ResourceCalendarProviderLinkManagerBase):  # type: ignore[misc,valid-type]
+    """Manager for ResourceCalendarProviderLink."""
+
+    def due_for_push(self) -> ResourceCalendarProviderLinkQuerySet:
+        """Wraps :meth:`ResourceCalendarProviderLinkQuerySet.due_for_push`."""
+        return self.get_queryset().due_for_push()
+
+    def for_resync(self, provider: str) -> ResourceCalendarProviderLinkQuerySet:
+        """Wraps :meth:`ResourceCalendarProviderLinkQuerySet.for_resync`."""
+        return self.get_queryset().for_resync(provider)
+
+    def locked_for_update(
+        self, link_id: int, skip_locked: bool = False
+    ) -> ResourceCalendarProviderLinkQuerySet:
+        """Wraps :meth:`ResourceCalendarProviderLinkQuerySet.locked_for_update`."""
+        return self.get_queryset().locked_for_update(link_id, skip_locked=skip_locked)
+
+    def with_flagged_bookings(self) -> ResourceCalendarProviderLinkQuerySet:
+        """Wraps :meth:`ResourceCalendarProviderLinkQuerySet.with_flagged_bookings`."""
+        return self.get_queryset().with_flagged_bookings()
+
+
+class ResourceCalendarCreateRequestManager(_ResourceCalendarCreateRequestManagerBase):  # type: ignore[misc,valid-type]
+    """Manager for ResourceCalendarCreateRequest."""
+
+    def expired(
+        self, now: datetime.datetime | None = None
+    ) -> ResourceCalendarCreateRequestQuerySet:
+        """Wraps :meth:`ResourceCalendarCreateRequestQuerySet.expired`."""
+        return self.get_queryset().expired(now)
+
+    def live(self, now: datetime.datetime | None = None) -> ResourceCalendarCreateRequestQuerySet:
+        """Wraps :meth:`ResourceCalendarCreateRequestQuerySet.live`."""
+        return self.get_queryset().live(now)
