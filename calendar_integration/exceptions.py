@@ -523,3 +523,64 @@ class ExternalClientIdentifierDuplicateSystemError(ExternalClientIdentifierError
     """
 
     default_message = "Duplicate system in identifiers list; each system must appear at most once."
+
+
+class ResourceDirectoryError(CalendarIntegrationError):
+    """Raised when a provider's room directory (Google Directory, Microsoft Places) fails.
+
+    ``is_transient`` tells the push engine whether to retry. A transient error is
+    retried with backoff until the link's retry deadline; a non-transient one moves
+    the link to sync failed right away. The base class defaults to transient, so an
+    unclassified provider failure (5xx, 429, a timeout) is retried rather than
+    dropped.
+    """
+
+    default_message = "The room directory provider returned an error."
+    default_is_transient = True
+
+    def __init__(self, message: str | None = None, *, is_transient: bool | None = None):
+        super().__init__(message)
+        self.is_transient = self.default_is_transient if is_transient is None else is_transient
+
+
+class ResourceDirectoryInvalidInputError(ResourceDirectoryError):
+    """The provider rejected the request itself (HTTP 400 / 409 / 412 / 422).
+
+    Never transient: sending the same payload again fails the same way.
+    """
+
+    default_message = "The room directory provider rejected the request as invalid."
+    default_is_transient = False
+
+
+class ResourceDirectoryPermissionError(ResourceDirectoryError):
+    """The provider refused the credentials or the scope (HTTP 401 / 403).
+
+    Transient by design: an IT admin can restore the permission while the push is
+    still inside its retry window.
+    """
+
+    default_message = "The room directory provider denied access."
+    default_is_transient = True
+
+
+class ResourceDirectoryNotFoundError(ResourceDirectoryError):
+    """The room or location does not exist on the provider (HTTP 404).
+
+    Not transient. Callers decide what a missing room means: a delete treats it as
+    already done, an update treats it as a sync failure.
+    """
+
+    default_message = "The room or location was not found on the provider."
+    default_is_transient = False
+
+
+class ResourceDirectoryNotWriteEnabledError(ResourceDirectoryPermissionError):
+    """The organization has no write-enabled connection for the provider.
+
+    Raised by ``ResourceDirectoryAdapterResolver.adapter_for``. It is a permission
+    error, and so transient, because an org admin can verify write access again
+    while a push is still being retried.
+    """
+
+    default_message = "Room writes are not enabled for this organization and provider."
