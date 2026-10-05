@@ -162,3 +162,50 @@ class CalendarManagementTokenKind(TextChoices):
 
     BOOKING_CODE = "booking_code", "Booking Code"
     MANAGEMENT_TOKEN = "management_token", "Management Token"
+
+
+class ResourceSyncStatus(TextChoices):
+    """Where a provider-backed room is in its sync lifecycle.
+
+    Stored on ``ResourceCalendarProviderLink.sync_status``. Rooms with no link
+    (manual ``INTERNAL`` rooms, and every room in an organization with the
+    ``resource_calendar_provider_sync`` flag off) have no status at all. See the
+    state diagram in ``ai-plans/2026-10-04-RESOURCE_CALENDAR_PROVIDER_SYNC_SPEC.md``.
+    """
+
+    PENDING_CREATION = "pending_creation", "Pending Creation"
+    SYNCED = "synced", "Synced"
+    PENDING_UPDATE = "pending_update", "Pending Update"
+    PENDING_DELETION = "pending_deletion", "Pending Deletion"
+    SYNC_FAILED = "sync_failed", "Sync Failed"
+    ARCHIVED = "archived", "Archived"
+
+
+class ResourceSyncOperation(TextChoices):
+    """The provider write a room link is waiting on, or failed on."""
+
+    CREATE = "create", "Create"
+    UPDATE = "update", "Update"
+    DELETE = "delete", "Delete"
+
+
+# The room fields Vinta Schedule and the provider both write. These are the keys of
+# ``ResourceCalendarProviderLink.provider_snapshot`` and ``.pending_fields``.
+# ``location_ref`` is a ``{"external_building_id": ..., "external_floor_id": ...}``
+# dict, or ``None`` for a room with no location.
+RESOURCE_SYNCED_FIELDS: tuple[str, ...] = ("name", "description", "capacity", "location_ref")
+
+
+# The ``(sync_status, failed_operation)`` states in which a provider-backed room
+# exists on the provider and is not on its way out. ``failed_operation`` is only
+# read for ``SYNC_FAILED``; for every other status it is ``""`` here. This is the
+# one definition of the rule: ``ResourceCalendarProviderLink.is_bookable`` checks
+# an instance against it and ``ResourceCalendarProviderLinkQuerySet.on_provider``
+# builds its filter from it.
+ROOM_ON_PROVIDER_STATES: frozenset[tuple[str, str]] = frozenset(
+    {
+        (ResourceSyncStatus.SYNCED, ""),
+        (ResourceSyncStatus.PENDING_UPDATE, ""),
+        (ResourceSyncStatus.SYNC_FAILED, ResourceSyncOperation.UPDATE),
+    }
+)
