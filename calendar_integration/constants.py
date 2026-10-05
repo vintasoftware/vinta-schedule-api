@@ -239,3 +239,7 @@ class BookingRejectionReason(TextChoices):
     )
     TARGET_TOO_SMALL = "target_too_small", "target room is too small"
     TARGET_BUSY = "target_busy", "target room is busy"
+    ON_ROOM_CALENDAR = (
+        "on_room_calendar",
+        "booking is on the room's own calendar and can only be cancelled",
+    )

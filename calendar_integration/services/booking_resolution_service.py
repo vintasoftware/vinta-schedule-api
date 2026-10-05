@@ -228,9 +228,11 @@ class BookingResolutionService:
           ``SERIES_BUSY_CHECK_HORIZON`` after its first affected occurrence. Two
           bookings moved to the same target must not overlap each other either.
 
+        - a move or a remove-room of a booking on the room's own calendar: it holds the
+          room by being on it, so it can only be cancelled.
+
         A booking whose event already books the target is not checked for capacity
-        or busy: moving it only takes the deleted room off it. Neither is an event on
-        the room's own calendar: ``apply`` deletes that copy instead of moving it.
+        or busy: moving it only takes the deleted room off it.
 
         A provider error while reading a target's free/busy is raised, so an
         unchecked move is never accepted.
@@ -249,10 +251,30 @@ class BookingResolutionService:
             ResolvedBooking(booking, overrides.get(booking.event_id, default_resolution))
             for booking in preview.bookings
         ]
+        # A booking on the room's own calendar holds the room by being on it, not by
+        # an allocation, so there is no allocation to swap or drop: only cancelling
+        # the event (or the deletion) applies to it.
+        on_room_calendar = {
+            entry.booking.event_id
+            for entry in resolved
+            if entry.booking.calendar_id == room.id
+            and (
+                isinstance(entry.resolution, MoveBooking)
+                or (
+                    isinstance(entry.resolution, CancelBooking)
+                    and entry.resolution.mode == BookingCancelMode.REMOVE_ROOM
+                )
+            )
+        }
+        rejected.extend(
+            RejectedBooking(event_id=event_id, reason=BookingRejectionReason.ON_ROOM_CALENDAR)
+            for event_id in sorted(on_room_calendar)
+        )
         moves = [
             (entry.booking, entry.resolution)
             for entry in resolved
             if isinstance(entry.resolution, MoveBooking)
+            and entry.booking.event_id not in on_room_calendar
         ]
         rejected.extend(self._validate_moves(room, moves))
 
@@ -284,12 +306,6 @@ class BookingResolutionService:
         - cancel, remove the room: the same, with the room dropped instead;
         - cancel the event: ``delete_event`` (a whole series is deleted), or
           ``cancel_recurring_event_from_date`` for a series that started before now.
-
-        An event on the room's own calendar is the room's copy of a booking (synced
-        from the provider), not an event that allocates the room. Whatever its
-        resolution, the copy is deleted the way a cancelled event is, and no one is
-        notified: the room calendar's owner is not the booking's organizer, and an
-        organizer's own event is resolved, and notified, as its own booking.
 
         The organizer (the default owner of the event's calendar) is notified of each
         change. A cancelled event is notified before it is deleted, since the notifier
@@ -342,10 +358,6 @@ class BookingResolutionService:
         ):
             # Already split at ``series_from`` by an earlier run: only the past
             # occurrences, which keep the room, are left on this row.
-            return
-
-        if event.calendar_fk_id == room.id:
-            self._cancel(event, series_from)
             return
 
         organizer_user_id = self._organizer_user_id(event)
@@ -421,17 +433,13 @@ class BookingResolutionService:
 
     @staticmethod
     def _organizer_user_id(event: CalendarEvent) -> int | None:
-        """The default owner of the event's calendar, else its lowest-id owner, else ``None``.
-
-        The same rule the ICS export uses for the organizer.
-        """
-        return (
-            CalendarOwnership.objects.filter_by_organization(event.organization_id)
-            .filter(calendar__id=event.calendar_fk_id, membership_user_id__isnull=False)
-            .order_by("-is_default", "membership_user_id")
-            .values_list("membership_user_id", flat=True)
-            .first()
+        """The user id of the event's organizer: ``CalendarOwnership.default_of`` its calendar."""
+        ownership = CalendarOwnership.default_of(
+            CalendarOwnership.objects.filter_by_organization(event.organization_id).filter(
+                calendar__id=event.calendar_fk_id
+            )
         )
+        return ownership.membership_user_id if ownership is not None else None
 
     def _validate_moves(
         self, room: Calendar, moves: list[tuple[RoomBooking, MoveBooking]]
@@ -486,9 +494,7 @@ class BookingResolutionService:
                 reasons[booking.event_id] = BookingRejectionReason.TARGET_NOT_BOOKABLE
             elif target.provider != room.provider:
                 reasons[booking.event_id] = BookingRejectionReason.TARGET_ON_DIFFERENT_PROVIDER
-            elif event.id in already_booking_target[target.id] or event.calendar_fk_id == room.id:
-                # Already in the target, or the room's own copy of a booking, which
-                # ``apply`` deletes rather than moves: neither books the target anew.
+            elif event.id in already_booking_target[target.id]:
                 continue
             elif target.capacity is not None and event.attendee_count > target.capacity:  # type: ignore[attr-defined]
                 reasons[booking.event_id] = BookingRejectionReason.TARGET_TOO_SMALL

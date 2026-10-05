@@ -434,42 +434,33 @@ class TestApply:
             third.id,
         ]
 
-    @pytest.mark.parametrize(
-        "resolution",
-        [
-            MoveBooking(0),
-            CancelBooking(BookingCancelMode.REMOVE_ROOM),
-            CancelBooking(BookingCancelMode.CANCEL_EVENT),
-        ],
-        ids=["move", "remove_room", "cancel_event"],
-    )
-    def test_room_calendar_copy_is_deleted_whatever_the_resolution(
+    def test_booking_on_the_rooms_own_calendar_is_cancelled(
         self,
         service: BookingResolutionService,
         notifier: MagicMock,
         organizer_calendar: Calendar,
         room_a: Calendar,
-        room_b: Calendar,
-        resolution: BookingResolution,
     ):
-        if isinstance(resolution, MoveBooking):
-            resolution = MoveBooking(room_b.id)
-        meeting = _event(organizer_calendar, _wall_clock(1), room_a, title="Meeting")
-        # The room's copy of the same booking, as the room calendar's sync stores it.
-        copy = _event(room_a, _wall_clock(1), title="Meeting")
-        plan = _plan(service, room_a, resolution)
-        assert set(_plan_ids(plan)) == {meeting.id, copy.id}
+        meeting = _event(organizer_calendar, _wall_clock(1), room_a)
+        on_room = _event(room_a, _wall_clock(2))
+        plan = _plan(
+            service,
+            room_a,
+            CancelBooking(BookingCancelMode.REMOVE_ROOM),
+            {on_room.id: CancelBooking(BookingCancelMode.CANCEL_EVENT)},
+        )
 
         result = service.apply(plan)
 
         assert result == ApplyResult(applied=_plan_ids(plan), pending=(), failed_at=None)
         assert (
-            not CalendarEvent.objects.filter_by_organization(copy.organization_id)
-            .filter(id=copy.id)
+            not CalendarEvent.objects.filter_by_organization(on_room.organization_id)
+            .filter(id=on_room.id)
             .exists()
         )
+        assert _room_ids(meeting) == set()
         assert service.preview(room_a).bookings == ()
-        # Only the organizer's own event is notified.
+        # The room's calendar has no owner, so only the meeting's organizer hears of it.
         assert [c.args[0] for c in notifier.notify_booking_room_changed.call_args_list] == [
             meeting.id
         ]

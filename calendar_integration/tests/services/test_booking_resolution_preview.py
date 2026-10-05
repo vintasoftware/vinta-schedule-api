@@ -554,19 +554,27 @@ class TestValidate:
 
         assert isinstance(result, BookingResolutionPlan)
 
-    def test_room_calendar_copy_is_not_checked_against_the_target(
-        self, service, directory, organizer_calendar, room_a, room_b
+    @pytest.mark.parametrize(
+        "resolution",
+        [None, CancelBooking(BookingCancelMode.REMOVE_ROOM)],
+        ids=["move", "remove_room"],
+    )
+    def test_booking_on_the_rooms_own_calendar_can_only_be_cancelled(
+        self, service, directory, room_a, room_b, resolution
     ):
-        # The meeting and the room's copy of it share a slot; ``apply`` deletes the
-        # copy rather than moving it, so only the meeting books room B.
-        _booking(organizer_calendar, room_a, _wall_clock(2, 10))
-        _event(room_a, _wall_clock(2, 10))
+        on_room = _event(room_a, _wall_clock(2, 10))
         preview = service.preview(room_a)
 
-        result = service.validate(room_a, preview.fingerprint, MoveBooking(room_b.id), {})
+        result = service.validate(
+            room_a, preview.fingerprint, resolution or MoveBooking(room_b.id), {}
+        )
+        cancelled = service.validate(
+            room_a, preview.fingerprint, CancelBooking(BookingCancelMode.CANCEL_EVENT), {}
+        )
 
-        assert isinstance(result, BookingResolutionPlan)
-        assert directory.free_busy_calls == [room_b.email]
+        assert result == [RejectedBooking(on_room.id, BookingRejectionReason.ON_ROOM_CALENDAR)]
+        assert directory.free_busy_calls == []
+        assert isinstance(cancelled, BookingResolutionPlan)
 
     def test_target_too_small(self, service, organization, organizer_calendar, room_a):
         booking = _booking(organizer_calendar, room_a, _wall_clock(2, 10))
@@ -603,8 +611,10 @@ class TestValidate:
             ),
         ],
     )
-    def test_invalid_target(self, service, organization, room_a, target_kwargs, reason):
-        booking = _event(room_a, _wall_clock(2, 10))
+    def test_invalid_target(
+        self, service, organization, organizer_calendar, room_a, target_kwargs, reason
+    ):
+        booking = _booking(organizer_calendar, room_a, _wall_clock(2, 10))
         target = _room(organization, "Target", **target_kwargs)
         preview = service.preview(room_a)
 
@@ -612,8 +622,8 @@ class TestValidate:
 
         assert result == [RejectedBooking(booking.id, reason)]
 
-    def test_target_is_the_room_itself(self, service, room_a):
-        booking = _event(room_a, _wall_clock(2, 10))
+    def test_target_is_the_room_itself(self, service, organizer_calendar, room_a):
+        booking = _booking(organizer_calendar, room_a, _wall_clock(2, 10))
         preview = service.preview(room_a)
 
         result = service.validate(room_a, preview.fingerprint, MoveBooking(room_a.id), {})
@@ -621,7 +631,7 @@ class TestValidate:
         assert result == [RejectedBooking(booking.id, BookingRejectionReason.TARGET_IS_SAME_ROOM)]
 
     def test_target_that_is_not_a_room_is_not_found(self, service, organizer_calendar, room_a):
-        booking = _event(room_a, _wall_clock(2, 10))
+        booking = _booking(organizer_calendar, room_a, _wall_clock(2, 10))
         preview = service.preview(room_a)
 
         result = service.validate(
