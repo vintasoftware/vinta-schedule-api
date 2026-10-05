@@ -88,6 +88,11 @@ tenant finishes it.
    (`/settings/integrations/microsoft?status=connected`, or `status=error` with
    `reason=invalid_state`, `reason=consent_denied` or `reason=sign_in_failed`).
 
+One Microsoft tenant can be connected to more than one Vinta Schedule organization.
+This is on purpose (decided 2026-10-05). Each connection still needs a Global
+Administrator of that tenant to sign in and accept, so only someone who controls the
+tenant can link it.
+
 ### 2. Assign the Exchange roles
 
 Admin consent alone is not enough to write rooms. Room mailboxes live in Exchange
