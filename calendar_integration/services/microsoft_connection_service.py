@@ -16,7 +16,8 @@ The round trip:
 
    The tenant never comes from the callback's query string. Anyone holding a state
    could write that, and would then connect a tenant they never signed in to.
-4. ``verify`` mints an app-only token for the tenant, checks its ``roles`` claim and
+4. ``verify`` mints a new app-only token for the tenant (never a cached one), checks
+   its ``roles`` claim and
    reads one building from Microsoft Places. Only then is ``write_enabled`` set.
 """
 
@@ -224,7 +225,9 @@ class MicrosoftConnectionService:
     def _check_write_access(self, tenant_id: str) -> str | None:
         """Return a remediation message, or ``None`` when the tenant passes every check."""
         try:
-            token = self.token_provider.get_token(tenant_id)
+            # Always a new token: a cached one keeps the roles it was minted with, so a
+            # permission granted or revoked since would go unseen until it expires.
+            token = self.token_provider.get_token(tenant_id, force_refresh=True)
         except MicrosoftAppOnlyTokenError:
             return (
                 "Vinta Schedule could not get an access token for your Microsoft 365 "

@@ -140,8 +140,12 @@ class MicrosoftAppOnlyTokenProvider:
         """Whether Vinta's Entra app credentials are set."""
         return bool(self._client_id and self._client_secret)
 
-    def get_token(self, tenant_id: str) -> MicrosoftAppOnlyToken:
+    def get_token(self, tenant_id: str, force_refresh: bool = False) -> MicrosoftAppOnlyToken:
         """Return a token for ``tenant_id`` that is valid for at least five more minutes.
+
+        With ``force_refresh``, the cached token is skipped and the new one replaces it.
+        Use it when the answer must reflect what the tenant grants right now, since a
+        cached token keeps the ``roles`` it was minted with until it expires.
 
         Raises:
             MicrosoftConnectionNotConfiguredError: ``MS_CLIENT_ID`` or ``MS_CLIENT_SECRET``
@@ -154,7 +158,7 @@ class MicrosoftAppOnlyTokenProvider:
         if not is_tenant_id(tenant_id):
             raise MicrosoftAppOnlyTokenError("The Microsoft tenant id is not a valid GUID.")
 
-        cached = self._read_cache(tenant_id)
+        cached = None if force_refresh else self._read_cache(tenant_id)
         if cached is not None:
             return cached
         token = self._request_token(tenant_id)

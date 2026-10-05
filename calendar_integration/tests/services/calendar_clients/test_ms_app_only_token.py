@@ -244,6 +244,21 @@ class TestTokenCache:
 
         assert post.call_count == 1
 
+    def test_forced_refresh_skips_the_cache_and_replaces_its_entry(self, post):
+        old_token = make_jwt({"roles": ["Calendars.Read"]})
+        cache = FakeCache()
+        provider = make_provider(cache=cache)
+        post.return_value = token_response(access_token=old_token)
+        provider.get_token(TENANT_ID)
+
+        post.return_value = token_response()
+        refreshed = provider.get_token(TENANT_ID, force_refresh=True)
+        served_next = provider.get_token(TENANT_ID)
+
+        assert post.call_count == 2
+        assert refreshed.access_token == ACCESS_TOKEN
+        assert served_next == refreshed
+
     def test_short_lived_token_is_not_cached(self, post):
         post.return_value = token_response(expires_in=200)
         cache = FakeCache()

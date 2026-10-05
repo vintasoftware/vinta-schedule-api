@@ -227,6 +227,19 @@ class TestVerify:
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("path", [CONSENT_URL_PATH, VERIFY_PATH])
+def test_flag_off_hides_the_endpoint_from_non_admin_members_too(member_client, organization, path):
+    set_flag(organization, enabled=False)
+
+    response = member_client.post(path)
+
+    assert response.status_code == 404
+    assert response.data == {
+        "detail": "Resource calendar provider sync is not enabled for this organization."
+    }
+
+
+@pytest.mark.django_db
 class TestCallback:
     def test_valid_callback_stores_the_signed_in_tenant_and_redirects_to_the_frontend(
         self, admin_client, organization, settings

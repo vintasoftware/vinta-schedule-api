@@ -85,6 +85,30 @@ def id_token(claims: dict[str, Any]) -> str:
     return f"eyJhbGciOiJub25lIn0.{payload}.signature"
 
 
+class InMemoryCache:
+    """Stands in for Redis behind a real token provider."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def get(self, name: str) -> str | None:
+        return self.values.get(name)
+
+    def set(self, name: str, value: str, ex: int) -> bool:
+        self.values[name] = value
+        return True
+
+
+def token_endpoint_response(roles: list[str]) -> Mock:
+    """Microsoft's client-credentials answer: an hour-long token carrying ``roles``."""
+    response = Mock(status_code=200)
+    response.json.return_value = {
+        "access_token": id_token({"roles": roles}),
+        "expires_in": 3600,
+    }
+    return response
+
+
 @contextlib.contextmanager
 def microsoft_sign_in(state: str, tid: str | None, **overrides: Any) -> Iterator[Mock]:
     """Answer the code redemption the way Microsoft would for an admin of ``tid``."""
@@ -398,7 +422,7 @@ class TestVerify:
         assert result == MicrosoftConnectionVerification(
             write_enabled=True, verified_at=verified_at, error=""
         )
-        get.assert_called_once_with(TENANT_ID)
+        get.assert_called_once_with(TENANT_ID, force_refresh=True)
         graph_get.assert_called_once_with(
             "https://graph.microsoft.com/v1.0/places/microsoft.graph.building",
             params={"$top": "1"},
@@ -439,6 +463,76 @@ class TestVerify:
             expected_error,
         )
         assert "TenantPlacesManagement" in expected_error
+
+    def test_reverify_sees_a_permission_granted_after_the_last_check(
+        self, organization, connection
+    ):
+        cache = InMemoryCache()
+        service = MicrosoftConnectionService(
+            token_provider=MicrosoftAppOnlyTokenProvider(
+                client_id="vinta-client-id",
+                client_secret="vinta-client-secret",  # noqa: S106 - test value
+                cache_getter=lambda: cache,
+            )
+        )
+
+        with (
+            patch.object(
+                token_module.requests,
+                "post",
+                return_value=token_endpoint_response(["Calendars.Read"]),
+            ),
+            patch.object(service_module.requests, "get", return_value=graph_response(200)),
+        ):
+            first = service.verify(organization)
+        # The admin consents again, and Microsoft now grants both roles.
+        with (
+            patch.object(
+                token_module.requests,
+                "post",
+                return_value=token_endpoint_response(sorted(BOTH_ROLES)),
+            ) as token_post,
+            patch.object(service_module.requests, "get", return_value=graph_response(200)),
+        ):
+            second = service.verify(organization)
+
+        assert (first.write_enabled, second.write_enabled, second.error) == (False, True, "")
+        token_post.assert_called_once()
+
+    def test_reverify_sees_a_permission_revoked_after_the_last_check(
+        self, organization, connection
+    ):
+        cache = InMemoryCache()
+        service = MicrosoftConnectionService(
+            token_provider=MicrosoftAppOnlyTokenProvider(
+                client_id="vinta-client-id",
+                client_secret="vinta-client-secret",  # noqa: S106 - test value
+                cache_getter=lambda: cache,
+            )
+        )
+
+        with (
+            patch.object(
+                token_module.requests,
+                "post",
+                return_value=token_endpoint_response(sorted(BOTH_ROLES)),
+            ),
+            patch.object(service_module.requests, "get", return_value=graph_response(200)),
+        ):
+            first = service.verify(organization)
+        with (
+            patch.object(
+                token_module.requests,
+                "post",
+                return_value=token_endpoint_response(["Calendars.Read"]),
+            ),
+            patch.object(service_module.requests, "get", return_value=graph_response(200)),
+        ):
+            second = service.verify(organization)
+
+        assert (first.write_enabled, second.write_enabled) == (True, False)
+        connection.refresh_from_db()
+        assert connection.write_enabled is False
 
     def test_failed_check_turns_off_a_previously_enabled_connection(
         self, service, organization, connection

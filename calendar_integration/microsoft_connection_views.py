@@ -75,19 +75,33 @@ def _callback_uri(request: HttpRequest) -> str:
     return request.build_absolute_uri(reverse("microsoft-connection-callback"))
 
 
-def _require_flag(organization: Organization) -> None:
-    if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, organization.pk):
-        raise NotFound(FLAG_OFF_MESSAGE)
-
-
 def _not_configured_response() -> Response:
     return Response({"detail": NOT_CONFIGURED_MESSAGE}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
-class MicrosoftConsentUrlView(TenantScopedViewMixin, APIView):
-    """Return the admin-consent link for the acting organization's Microsoft tenant."""
+class _FlagGatedAdminView(TenantScopedViewMixin, APIView):
+    """An org-admin endpoint that does not exist while the flag is off.
+
+    The flag is checked before the admin permission, so any member of an organization
+    without the flag gets 404, not a 403 that would reveal the endpoint.
+    """
 
     permission_classes = (IsOrganizationAdmin,)
+
+    def check_permissions(self, request: Request) -> None:
+        """Answer 404 for the resolved organization while the flag is off."""
+        # TenantScopedViewMixin resolved the organization during authentication. With
+        # none resolved there is no flag to read, and the permission refuses anyway.
+        organization = getattr(request, "organization", None)
+        if organization is not None and not is_enabled(
+            RESOURCE_CALENDAR_PROVIDER_SYNC, organization.pk
+        ):
+            raise NotFound(FLAG_OFF_MESSAGE)
+        super().check_permissions(request)
+
+
+class MicrosoftConsentUrlView(_FlagGatedAdminView):
+    """Return the admin-consent link for the acting organization's Microsoft tenant."""
 
     @extend_schema(request=None, responses={200: MicrosoftConsentUrlSerializer})
     @inject
@@ -100,7 +114,6 @@ class MicrosoftConsentUrlView(TenantScopedViewMixin, APIView):
     ) -> Response:
         """Issue a new single-use consent link. Older links stop working."""
         organization = _acting_organization(request)
-        _require_flag(organization)
         try:
             consent_url = microsoft_connection_service.build_consent_url(
                 organization, redirect_uri=_callback_uri(request)
@@ -110,10 +123,8 @@ class MicrosoftConsentUrlView(TenantScopedViewMixin, APIView):
         return Response(MicrosoftConsentUrlSerializer({"consent_url": consent_url}).data)
 
 
-class MicrosoftConnectionVerifyView(TenantScopedViewMixin, APIView):
+class MicrosoftConnectionVerifyView(_FlagGatedAdminView):
     """Check that the connected tenant allows room writes, and record the outcome."""
-
-    permission_classes = (IsOrganizationAdmin,)
 
     @extend_schema(request=None, responses={200: MicrosoftConnectionVerificationSerializer})
     @inject
@@ -126,7 +137,6 @@ class MicrosoftConnectionVerifyView(TenantScopedViewMixin, APIView):
     ) -> Response:
         """Verify write access. A failed check answers 200 with ``error`` set."""
         organization = _acting_organization(request)
-        _require_flag(organization)
         try:
             result = microsoft_connection_service.verify(organization)
         except MicrosoftConnectionNotConfiguredError:
