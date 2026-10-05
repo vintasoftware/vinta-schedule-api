@@ -1,8 +1,9 @@
 import datetime
-from collections.abc import Iterable
+import uuid
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -615,3 +616,133 @@ class EffectivePolicy:
             buffer_before=max_buffer_before,
             buffer_after=max_buffer_after,
         )
+
+
+@dataclass(frozen=True)
+class ResourceLocationRef:
+    """Where a room sits on the provider: a building, plus a floor when it has one.
+
+    Google: the Directory ``buildingId`` and the ``floorName`` (Google has no floor
+    id). Microsoft: the building place id and the floor or section place id.
+    ``external_floor_id`` is ``""`` for a building with no floors.
+
+    Stored as a dict under ``location_ref`` in a link's ``provider_snapshot`` and
+    ``pending_fields``; ``to_dict`` / ``from_dict`` convert between the two.
+    """
+
+    external_building_id: str
+    external_floor_id: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        """The JSON shape stored under ``location_ref``."""
+        return {
+            "external_building_id": self.external_building_id,
+            "external_floor_id": self.external_floor_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any] | None) -> "ResourceLocationRef | None":
+        """Read a stored ``location_ref`` back. ``None`` means the room has no location."""
+        if data is None:
+            return None
+        return cls(
+            external_building_id=data["external_building_id"],
+            external_floor_id=data.get("external_floor_id", ""),
+        )
+
+
+@dataclass(frozen=True)
+class ResourceLocationData:
+    """A building and floor as the provider's directory lists it."""
+
+    external_building_id: str
+    building_name: str
+    external_floor_id: str = ""
+    floor_name: str = ""
+
+    @property
+    def ref(self) -> ResourceLocationRef:
+        """The provider-side reference rooms use to point at this location."""
+        return ResourceLocationRef(
+            external_building_id=self.external_building_id,
+            external_floor_id=self.external_floor_id,
+        )
+
+
+@dataclass
+class RoomDirectoryData:
+    """A room as the provider's directory returns it.
+
+    ``description`` is ``None`` when the provider has no room description field.
+    That is how Microsoft rooms are read until the Phase 0 spike says otherwise.
+    A ``None`` description is left out of ``synced_values()``, so the resync never
+    reads it as the provider clearing the description.
+    """
+
+    external_id: str
+    email: str
+    name: str
+    description: str | None
+    capacity: int | None
+    location_ref: ResourceLocationRef | None
+    provider_payload: dict[str, Any] = dataclass_field(default_factory=dict)
+
+    def synced_values(self) -> dict[str, Any]:
+        """The room's synced fields in the shape of a link's ``provider_snapshot``.
+
+        Pass the result to ``ResourceCalendarProviderLink.fields_changed_by_provider``
+        or ``mark_pushed``.
+        """
+        values: dict[str, Any] = {
+            "name": self.name,
+            "capacity": self.capacity,
+            "location_ref": self.location_ref.to_dict() if self.location_ref else None,
+        }
+        if self.description is not None:
+            values["description"] = self.description
+        return values
+
+
+@dataclass(frozen=True)
+class RoomWriteData:
+    """The room fields Vinta Schedule sends on a provider create or update.
+
+    ``provisional_key`` is the link's ``provisional_key``. Adapters derive the
+    provider-side idempotency id from it (Google ``resourceId`` ``vinta-<key>``,
+    Microsoft tag ``vinta-link-<key>``), so a replayed create finds the room it
+    already made instead of making a second one.
+    """
+
+    name: str
+    description: str
+    capacity: int | None
+    location_ref: ResourceLocationRef | None
+    provisional_key: uuid.UUID
+
+    @classmethod
+    def from_synced_values(
+        cls, values: Mapping[str, Any], provisional_key: uuid.UUID
+    ) -> "RoomWriteData":
+        """Build from a dict in the ``provider_snapshot`` / ``pending_fields`` shape.
+
+        ``values`` must hold ``name``. A missing ``description`` is ``""`` and a
+        missing ``capacity`` or ``location_ref`` is ``None``.
+        """
+        return cls(
+            name=values["name"],
+            description=values.get("description") or "",
+            capacity=values.get("capacity"),
+            location_ref=ResourceLocationRef.from_dict(values.get("location_ref")),
+            provisional_key=provisional_key,
+        )
+
+
+@dataclass(frozen=True)
+class BusyWindow:
+    """A time range in which the provider reports a room as busy.
+
+    ``start`` and ``end`` are timezone-aware. The range is half-open: ``[start, end)``.
+    """
+
+    start: datetime.datetime
+    end: datetime.datetime
