@@ -465,6 +465,33 @@ class TestApply:
             meeting.id
         ]
 
+    def test_organizer_is_the_member_owner_beside_an_owner_less_ownership(
+        self,
+        service: BookingResolutionService,
+        notifier: MagicMock,
+        organizer: User,
+        organization: Organization,
+        organizer_calendar: Calendar,
+        room_a: Calendar,
+        room_b: Calendar,
+    ):
+        # Calendar sync leaves an owner-less ownership behind when the provider's
+        # owner was not a member yet; neither ownership is the default.
+        CalendarOwnership.objects.create(
+            organization=organization,
+            calendar=organizer_calendar,
+            membership_user_id=None,
+            is_default=False,
+        )
+        meeting = _event(organizer_calendar, _wall_clock(1), room_a)
+
+        result = service.apply(_plan(service, room_a, MoveBooking(room_b.id)))
+
+        assert result == ApplyResult(applied=(meeting.id,), pending=(), failed_at=None)
+        notifier.notify_booking_room_changed.assert_called_once_with(
+            meeting.id, organizer.id, BookingRoomChange.MOVED
+        )
+
     def test_plan_that_cancels_the_deletion_is_refused(
         self,
         service: BookingResolutionService,

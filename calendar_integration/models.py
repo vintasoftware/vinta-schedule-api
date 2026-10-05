@@ -338,15 +338,17 @@ class CalendarOwnership(SingleOrganizationModelMixin, SafeRelationNullInitMixin,
     def default_of(ownerships: Iterable["CalendarOwnership"]) -> "CalendarOwnership | None":
         """The ownership that stands for a calendar's organizer, among ``ownerships``.
 
-        The first default one, otherwise the one with the lowest ``membership_user_id``,
-        otherwise ``None``. Takes an iterable rather than querying, so a caller that
-        prefetched ``calendar.ownerships`` (the ICS export) picks from its cache.
+        Only member ownerships count: an owner-less one (``membership_user_id`` is
+        ``None``) names nobody. Among them, the first default one, otherwise the one
+        with the lowest ``membership_user_id``, otherwise ``None``. Takes an iterable
+        rather than querying, so a caller that prefetched ``calendar.ownerships`` (the
+        ICS export) picks from its cache.
         """
-        ownerships = list(ownerships)
-        default = next((o for o in ownerships if o.is_default), None)
+        members = [o for o in ownerships if o.membership_user_id is not None]
+        default = next((o for o in members if o.is_default), None)
         if default is not None:
             return default
-        return min(ownerships, key=lambda o: o.membership_user_id, default=None)  # type: ignore[arg-type,return-value]
+        return min(members, key=lambda o: o.membership_user_id or 0, default=None)
 
 
 def generate_public_booking_slug() -> str:
