@@ -1,4 +1,6 @@
 import datetime
+import uuid
+from collections.abc import Iterator
 from unittest.mock import Mock, patch
 
 from django.core.exceptions import ImproperlyConfigured
@@ -7,9 +9,21 @@ import pytest
 import requests
 
 from calendar_integration.constants import CalendarProvider
+from calendar_integration.exceptions import (
+    MicrosoftAppOnlyTokenError,
+    ResourceDirectoryError,
+    ResourceDirectoryInvalidInputError,
+    ResourceDirectoryNotFoundError,
+    ResourceDirectoryNotWriteEnabledError,
+    ResourceDirectoryPermissionError,
+)
+from calendar_integration.services.calendar_adapters import ms_outlook_calendar_adapter
 from calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter import (
     MSOutlookCalendarAdapter,
     MSOutlookCredentialTypedDict,
+)
+from calendar_integration.services.calendar_clients.ms_app_only_token import (
+    MicrosoftAppOnlyTokenProvider,
 )
 from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_client import (
     MSGraphAPIError,
@@ -20,10 +34,15 @@ from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_clie
 )
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
+    BusyWindow,
     CalendarEventAdapterInputData,
     CalendarEventAdapterOutputData,
     CalendarResourceData,
     EventAttendeeData,
+    ResourceLocationData,
+    ResourceLocationRef,
+    RoomDirectoryData,
+    RoomWriteData,
 )
 
 
@@ -2516,3 +2535,436 @@ class TestRRuleConversion:
         result = adapter._convert_ms_recurrence_to_rrule(ms_recurrence)
 
         assert result == "RRULE:FREQ=DAILY;INTERVAL=2;COUNT=5"
+
+
+# Room directory (ResourceDirectoryAdapter) on an app-only connection
+
+
+GRAPH_URL = "https://graph.microsoft.com/v1.0"
+CLIENT_MODULE = "calendar_integration.services.calendar_clients.ms_outlook_calendar_api_client"
+LINK_KEY = uuid.UUID("0b6c2d6e-6f4a-4c43-9d55-5d1e0e4b8a11")
+
+
+def graph_response(status_code: int, body: dict | None = None) -> Mock:
+    response = Mock(status_code=status_code, ok=status_code < 400, headers={})
+    response.json.return_value = body or {}
+    response.content = b"" if body is None else b"{}"
+    return response
+
+
+class FakeGraphPlaces:
+    """The slice of Microsoft Places the room directory adapter calls, kept in memory."""
+
+    def __init__(self, places: list[dict] | None = None):
+        self.places = {place["id"]: place for place in places or []}
+        self.requests: list[tuple[str, str, dict | None]] = []
+        self.fail_with: Mock | None = None
+        self.schedule: list[dict] = []
+        self._created = 0
+
+    def __call__(self, method, url, params=None, json=None, headers=None, timeout=None):
+        path = url.removeprefix(GRAPH_URL)
+        self.requests.append((method, path, json))
+        if self.fail_with is not None:
+            return self.fail_with
+        if method == "GET" and path.startswith("/places/microsoft.graph."):
+            kind = f"#microsoft.graph.{path.rsplit('.', 1)[1]}"
+            matching = [place for place in self.places.values() if place["@odata.type"] == kind]
+            page = matching[params["$skip"] : params["$skip"] + params["$top"]]
+            return graph_response(200, {"value": page})
+        if method == "POST" and path == "/places":
+            self._created += 1
+            place_id = f"new-room-{self._created}"
+            self.places[place_id] = {
+                **json,
+                "@odata.type": "#microsoft.graph.room",
+                "id": place_id,
+                "emailAddress": f"{place_id}@contoso.com",
+            }
+            return graph_response(201, self.places[place_id])
+        if method == "POST" and path.endswith("/calendar/getSchedule"):
+            return graph_response(200, {"value": self.schedule})
+        place_id = path.removeprefix("/places/")
+        if place_id not in self.places:
+            return graph_response(404, {"error": {"code": "ErrorItemNotFound", "message": "Gone"}})
+        if method == "GET":
+            return graph_response(200, self.places[place_id])
+        if method == "PATCH":
+            self.places[place_id].update({k: v for k, v in json.items() if k != "@odata.type"})
+            return graph_response(200, self.places[place_id])
+        del self.places[place_id]
+        return graph_response(204)
+
+    def posts(self) -> list[dict | None]:
+        return [
+            body for method, path, body in self.requests if (method, path) == ("POST", "/places")
+        ]
+
+
+def building(place_id: str, name: str) -> dict:
+    return {"@odata.type": "#microsoft.graph.building", "id": place_id, "displayName": name}
+
+
+def floor(place_id: str, name: str, parent_id: str) -> dict:
+    return {
+        "@odata.type": "#microsoft.graph.floor",
+        "id": place_id,
+        "displayName": name,
+        "parentId": parent_id,
+    }
+
+
+def section(place_id: str, name: str, parent_id: str) -> dict:
+    return {
+        "@odata.type": "#microsoft.graph.section",
+        "id": place_id,
+        "displayName": name,
+        "parentId": parent_id,
+    }
+
+
+def room(place_id: str, parent_id: str, **fields) -> dict:
+    return {
+        "@odata.type": "#microsoft.graph.room",
+        "id": place_id,
+        "displayName": fields.pop("displayName", place_id),
+        "emailAddress": f"{place_id}@contoso.com",
+        "parentId": parent_id,
+        **fields,
+    }
+
+
+HQ_PLACES = [
+    building("hq", "HQ"),
+    floor("hq-1", "1", "hq"),
+    floor("hq-2", "2", "hq"),
+    section("hq-2-north", "North wing", "hq-2"),
+    building("annex", "Annex"),
+    floor("orphan-floor", "9", "unknown-building"),
+    section("orphan-section", "Nowhere", "unknown-floor"),
+]
+
+
+@pytest.fixture
+def graph() -> FakeGraphPlaces:
+    return FakeGraphPlaces(HQ_PLACES)
+
+
+@pytest.fixture
+def directory_token_provider() -> Mock:
+    provider = Mock(spec=MicrosoftAppOnlyTokenProvider)
+    provider.get_token.return_value = Mock(access_token="app-only-token")
+    return provider
+
+
+@pytest.fixture
+def directory(graph, directory_token_provider, monkeypatch) -> Iterator[MSOutlookCalendarAdapter]:
+    # The root conftest replaces the Graph client with a MagicMock. These tests fake
+    # Graph one level lower, at the HTTP session, so they run the real client code.
+    monkeypatch.setattr(
+        ms_outlook_calendar_adapter, "MSOutlookCalendarAPIClient", MSOutlookCalendarAPIClient
+    )
+    connection = Mock(tenant_id="11111111-2222-3333-4444-555555555555", write_enabled=True)
+    adapter = MSOutlookCalendarAdapter.from_app_only(connection, directory_token_provider)
+    adapter.client.session = Mock(headers={})
+    adapter.client.session.request.side_effect = graph
+    with patch(f"{CLIENT_MODULE}.quote_limiter"), patch(f"{CLIENT_MODULE}.time.sleep"):
+        yield adapter
+
+
+def write_data(**overrides) -> RoomWriteData:
+    values = {
+        "name": "Room A",
+        "description": "Has a projector",
+        "capacity": 8,
+        "location_ref": ResourceLocationRef(external_building_id="hq", external_floor_id="hq-1"),
+        "provisional_key": LINK_KEY,
+        **overrides,
+    }
+    return RoomWriteData(**values)
+
+
+class TestFromAppOnly:
+    def test_authenticates_every_request_with_the_tenants_app_only_token(
+        self, directory, graph, directory_token_provider
+    ):
+        directory.list_locations()
+
+        directory_token_provider.get_token.assert_called_with(
+            "11111111-2222-3333-4444-555555555555"
+        )
+        headers = directory.client.session.request.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer app-only-token"
+
+    @pytest.mark.parametrize(
+        ("tenant_id", "write_enabled"),
+        [("", True), ("11111111-2222-3333-4444-555555555555", False)],
+    )
+    def test_connection_without_verified_write_access_is_refused(
+        self, directory_token_provider, tenant_id, write_enabled
+    ):
+        connection = Mock(tenant_id=tenant_id, write_enabled=write_enabled)
+
+        with pytest.raises(ResourceDirectoryNotWriteEnabledError):
+            MSOutlookCalendarAdapter.from_app_only(connection, directory_token_provider)
+
+
+class TestCreateRoom:
+    def test_replayed_create_returns_the_same_room_and_posts_once(self, directory, graph):
+        first = directory.create_room(write_data())
+        second = directory.create_room(write_data())
+
+        assert first.external_id == second.external_id == "new-room-1"
+        assert graph.posts() == [
+            {
+                "@odata.type": "microsoft.graph.room",
+                "displayName": "Room A",
+                "parentId": "hq-1",
+                "tags": [f"vinta-link-{LINK_KEY}"],
+                "capacity": 8,
+            }
+        ]
+
+    def test_room_an_earlier_attempt_created_is_returned_without_a_post(self, directory, graph):
+        graph.places["existing"] = room(
+            "existing", "hq-2-north", tags=[f"vinta-link-{LINK_KEY}"], capacity=8
+        )
+
+        created = directory.create_room(write_data())
+
+        assert created.external_id == "existing"
+        assert graph.posts() == []
+
+    def test_returns_the_room_as_microsoft_stored_it(self, directory):
+        location = ResourceLocationRef(external_building_id="hq", external_floor_id="hq-2-north")
+
+        created = directory.create_room(write_data(location_ref=location))
+
+        assert created == RoomDirectoryData(
+            external_id="new-room-1",
+            email="new-room-1@contoso.com",
+            name="Room A",
+            description=None,
+            capacity=8,
+            location_ref=location,
+            provider_payload=created.provider_payload,
+        )
+        assert created.provider_payload["parentId"] == "hq-2-north"
+
+    def test_room_without_a_location_is_invalid_input(self, directory, graph):
+        with pytest.raises(ResourceDirectoryInvalidInputError):
+            directory.create_room(write_data(location_ref=None))
+
+        assert graph.requests == []
+
+
+class TestListLocations:
+    def test_flattens_buildings_floors_and_sections(self, directory):
+        assert directory.list_locations() == [
+            ResourceLocationData("hq", "HQ", "hq-1", "1"),
+            ResourceLocationData("hq", "HQ", "hq-2", "2"),
+            ResourceLocationData("hq", "HQ", "hq-2-north", "2 / North wing"),
+            ResourceLocationData("annex", "Annex"),
+        ]
+
+
+class TestListRooms:
+    def test_lists_every_room_with_its_location(self, directory, graph):
+        graph.places.update(
+            {
+                "on-floor": room("on-floor", "hq-1", displayName="Room 1", capacity=4),
+                "in-section": room("in-section", "hq-2-north", capacity=None),
+                "in-building": room("in-building", "annex"),
+                "unplaced": room("unplaced", "somewhere-else"),
+            }
+        )
+
+        rooms = directory.list_rooms()
+
+        assert [(r.external_id, r.name, r.capacity, r.location_ref) for r in rooms] == [
+            ("on-floor", "Room 1", 4, ResourceLocationRef("hq", "hq-1")),
+            ("in-section", "in-section", None, ResourceLocationRef("hq", "hq-2-north")),
+            ("in-building", "in-building", None, ResourceLocationRef("annex", "")),
+            ("unplaced", "unplaced", None, None),
+        ]
+        assert {(r.email, r.description) for r in rooms} == {
+            ("on-floor@contoso.com", None),
+            ("in-section@contoso.com", None),
+            ("in-building@contoso.com", None),
+            ("unplaced@contoso.com", None),
+        }
+
+
+class TestUpdateRoom:
+    @pytest.fixture(autouse=True)
+    def existing_room(self, graph):
+        graph.places["room-1"] = room("room-1", "hq-1", displayName="Old name", capacity=4)
+
+    def test_sends_only_the_named_fields(self, directory, graph):
+        updated = directory.update_room(
+            "room-1",
+            write_data(name="New name", capacity=99),
+            fields=["name", "description"],
+        )
+
+        assert graph.requests[-1] == (
+            "PATCH",
+            "/places/room-1",
+            {"@odata.type": "microsoft.graph.room", "displayName": "New name"},
+        )
+        assert (updated.name, updated.capacity, updated.location_ref) == (
+            "New name",
+            4,
+            ResourceLocationRef("hq", "hq-1"),
+        )
+
+    def test_moving_the_room_sets_its_parent(self, directory, graph):
+        location = ResourceLocationRef(external_building_id="hq", external_floor_id="hq-2-north")
+
+        updated = directory.update_room(
+            "room-1",
+            write_data(location_ref=location, capacity=6),
+            fields=["location_ref", "capacity"],
+        )
+
+        assert graph.requests[-1][2] == {
+            "@odata.type": "microsoft.graph.room",
+            "capacity": 6,
+            "parentId": "hq-2-north",
+        }
+        assert updated.location_ref == location
+
+    def test_description_alone_is_not_sent(self, directory, graph):
+        updated = directory.update_room("room-1", write_data(), fields=["description"])
+
+        assert [(method, path) for method, path, _ in graph.requests] == [("GET", "/places/room-1")]
+        assert updated.name == "Old name"
+
+    def test_room_moved_on_the_provider_is_read_back_where_it_is(self, directory, graph):
+        graph.places["room-1"]["parentId"] = "hq-2"
+
+        updated = directory.update_room("room-1", write_data(name="Renamed"), fields=["name"])
+
+        assert updated.location_ref == ResourceLocationRef("hq", "hq-2")
+
+
+class TestDeleteRoom:
+    def test_deletes_the_room(self, directory, graph):
+        graph.places["room-1"] = room("room-1", "hq-1")
+
+        directory.delete_room("room-1")
+
+        assert "room-1" not in graph.places
+
+    def test_room_already_gone_is_not_found(self, directory):
+        with pytest.raises(ResourceDirectoryNotFoundError):
+            directory.delete_room("room-1")
+
+
+class TestGetFreeBusy:
+    def test_every_non_free_item_is_a_busy_window(self, directory, graph):
+        graph.schedule = [
+            {
+                "scheduleId": "room-1@contoso.com",
+                "scheduleItems": [
+                    {
+                        "status": "busy",
+                        "start": {"dateTime": "2026-10-06T12:00:00.0000000", "timeZone": "UTC"},
+                        "end": {"dateTime": "2026-10-06T13:00:00.0000000", "timeZone": "UTC"},
+                    },
+                    {
+                        "status": "free",
+                        "start": {"dateTime": "2026-10-06T13:00:00.0000000", "timeZone": "UTC"},
+                        "end": {"dateTime": "2026-10-06T14:00:00.0000000", "timeZone": "UTC"},
+                    },
+                    {
+                        "status": "tentative",
+                        "start": {"dateTime": "2026-10-06T15:30:00.0000000", "timeZone": "UTC"},
+                        "end": {"dateTime": "2026-10-06T16:00:00.0000000", "timeZone": "UTC"},
+                    },
+                ],
+            }
+        ]
+        start = datetime.datetime(2026, 10, 6, 12, 0, tzinfo=datetime.UTC)
+
+        windows = directory.get_free_busy(
+            "room-1@contoso.com", start, start + datetime.timedelta(hours=6)
+        )
+
+        assert windows == [
+            BusyWindow(
+                datetime.datetime(2026, 10, 6, 12, 0, tzinfo=datetime.UTC),
+                datetime.datetime(2026, 10, 6, 13, 0, tzinfo=datetime.UTC),
+            ),
+            BusyWindow(
+                datetime.datetime(2026, 10, 6, 15, 30, tzinfo=datetime.UTC),
+                datetime.datetime(2026, 10, 6, 16, 0, tzinfo=datetime.UTC),
+            ),
+        ]
+
+    def test_schedule_microsoft_could_not_read_is_a_transient_error(self, directory, graph):
+        graph.schedule = [
+            {
+                "scheduleId": "room-1@contoso.com",
+                "error": {"responseCode": "ErrorMailRecipientNotFound", "message": "..."},
+            }
+        ]
+        start = datetime.datetime(2026, 10, 6, 12, 0, tzinfo=datetime.UTC)
+
+        with pytest.raises(ResourceDirectoryError) as exc_info:
+            directory.get_free_busy("room-1@contoso.com", start, start)
+
+        assert type(exc_info.value) is ResourceDirectoryError
+        assert exc_info.value.is_transient is True
+        assert "ErrorMailRecipientNotFound" in str(exc_info.value)
+
+
+class TestErrorClassification:
+    @pytest.mark.parametrize(
+        ("status_code", "error_class", "is_transient"),
+        [
+            (400, ResourceDirectoryInvalidInputError, False),
+            (409, ResourceDirectoryInvalidInputError, False),
+            (412, ResourceDirectoryInvalidInputError, False),
+            (422, ResourceDirectoryInvalidInputError, False),
+            (401, ResourceDirectoryPermissionError, True),
+            (403, ResourceDirectoryPermissionError, True),
+            (404, ResourceDirectoryNotFoundError, False),
+            (500, ResourceDirectoryError, True),
+            (503, ResourceDirectoryError, True),
+        ],
+    )
+    def test_graph_status_maps_to_a_directory_error(
+        self, directory, graph, status_code, error_class, is_transient
+    ):
+        graph.fail_with = graph_response(
+            status_code, {"error": {"code": "Something", "message": "Refused"}}
+        )
+
+        with pytest.raises(ResourceDirectoryError) as exc_info:
+            directory.list_locations()
+
+        assert (type(exc_info.value), exc_info.value.is_transient) == (error_class, is_transient)
+
+    def test_persistent_throttling_is_a_transient_error(self, directory, graph):
+        throttled = graph_response(429, {"error": {"code": "TooManyRequests"}})
+        throttled.headers = {"Retry-After": "1"}
+        graph.fail_with = throttled
+
+        with pytest.raises(ResourceDirectoryError) as exc_info:
+            directory.list_rooms()
+
+        assert (type(exc_info.value), exc_info.value.is_transient) == (
+            ResourceDirectoryError,
+            True,
+        )
+
+    def test_unavailable_token_is_a_transient_permission_error(
+        self, directory, directory_token_provider
+    ):
+        directory_token_provider.get_token.side_effect = MicrosoftAppOnlyTokenError()
+
+        with pytest.raises(ResourceDirectoryPermissionError) as exc_info:
+            directory.delete_room("room-1")
+
+        assert exc_info.value.is_transient is True

@@ -10,10 +10,13 @@ import pytest
 import requests
 
 from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_client import (
+    MAX_RETRY_AFTER_SECONDS,
+    THROTTLE_RETRIES,
     MSGraphAPIError,
     MSGraphCalendar,
     MSGraphEvent,
     MSGraphRoom,
+    MSGraphThrottledError,
     MSOutlookCalendarAPIClient,
 )
 
@@ -1726,3 +1729,272 @@ def test_error_propagation_in_new_methods(client):
         # Test list_rooms_in_room_list error handling
         with pytest.raises(MSGraphAPIError):
             client.list_rooms_in_room_list("building@example.com")
+
+
+MODULE = "calendar_integration.services.calendar_clients.ms_outlook_calendar_api_client"
+GRAPH = "https://graph.microsoft.com/v1.0"
+
+
+def throttled_response(retry_after: str | None) -> Mock:
+    response = create_mock_response(429, {"error": {"code": "TooManyRequests"}})
+    response.headers = {} if retry_after is None else {"Retry-After": retry_after}
+    return response
+
+
+@pytest.fixture
+def no_rate_limit():
+    with patch(f"{MODULE}.quote_limiter"):
+        yield
+
+
+@pytest.fixture
+def token_provider():
+    provider = Mock()
+    provider.get_token.return_value = Mock(access_token="app-token")
+    return provider
+
+
+@pytest.fixture
+def app_only_client(mock_session, no_rate_limit, token_provider):
+    with patch(f"{MODULE}.requests.Session", return_value=mock_session):
+        return MSOutlookCalendarAPIClient.app_only(token_provider, "tenant-1")
+
+
+class TestAppOnlyAuth:
+    def test_each_request_carries_the_tenants_current_app_only_token(
+        self, app_only_client, token_provider
+    ):
+        app_only_client.session.request.return_value = create_mock_response(200, {"value": []})
+        token_provider.get_token.side_effect = [
+            Mock(access_token="first-token"),
+            Mock(access_token="refreshed-token"),
+        ]
+
+        app_only_client.list_buildings()
+        app_only_client.list_buildings()
+
+        token_provider.get_token.assert_called_with("tenant-1")
+        sent = [
+            call.kwargs["headers"]["Authorization"]
+            for call in app_only_client.session.request.call_args_list
+        ]
+        assert sent == ["Bearer first-token", "Bearer refreshed-token"]
+
+
+class TestThrottling:
+    def test_429_is_retried_after_the_delay_graph_asks_for(self, app_only_client):
+        app_only_client.session.request.side_effect = [
+            throttled_response("7"),
+            create_mock_response(200, {"id": "room-1"}),
+        ]
+
+        with patch(f"{MODULE}.time.sleep") as sleep:
+            result = app_only_client._make_request("GET", "/places/room-1")
+
+        assert result == {"id": "room-1"}
+        sleep.assert_called_once_with(7)
+
+    def test_429_without_retry_after_backs_off_exponentially(self, app_only_client):
+        app_only_client.session.request.side_effect = [
+            throttled_response(None),
+            throttled_response("not-a-number"),
+            create_mock_response(200, {}),
+        ]
+
+        with patch(f"{MODULE}.time.sleep") as sleep:
+            app_only_client._make_request("GET", "/places/room-1")
+
+        assert [call.args for call in sleep.call_args_list] == [(1,), (2,)]
+
+    def test_persistent_429_raises_a_throttled_error_after_bounded_retries(self, app_only_client):
+        app_only_client.session.request.side_effect = [throttled_response("1")] * 10
+
+        with (
+            patch(f"{MODULE}.time.sleep") as sleep,
+            pytest.raises(MSGraphThrottledError) as exc_info,
+        ):
+            app_only_client._make_request("GET", "/places/room-1")
+
+        assert (exc_info.value.status_code, exc_info.value.retry_after) == (429, 1)
+        assert sleep.call_count == THROTTLE_RETRIES
+        assert app_only_client.session.request.call_count == THROTTLE_RETRIES + 1
+
+    def test_retry_after_longer_than_the_cap_is_not_waited_out(self, app_only_client):
+        app_only_client.session.request.side_effect = [
+            throttled_response(str(MAX_RETRY_AFTER_SECONDS + 1))
+        ]
+
+        with (
+            patch(f"{MODULE}.time.sleep") as sleep,
+            pytest.raises(MSGraphThrottledError) as exc_info,
+        ):
+            app_only_client._make_request("GET", "/places/room-1")
+
+        assert exc_info.value.retry_after == MAX_RETRY_AFTER_SECONDS + 1
+        sleep.assert_not_called()
+        assert app_only_client.session.request.call_count == 1
+
+
+def room_payload(**overrides):
+    return {
+        "id": "room-1",
+        "displayName": "Room A",
+        "emailAddress": "room-a@contoso.com",
+        "capacity": 8,
+        "parentId": "floor-1",
+        "tags": [],
+        **overrides,
+    }
+
+
+class TestRoomDirectoryRequests:
+    def sent(self, client, index=-1):
+        call = client.session.request.call_args_list[index]
+        return call.kwargs["method"], call.kwargs["url"], call.kwargs["params"], call.kwargs["json"]
+
+    def test_create_room_posts_a_tagged_room_under_its_parent(self, app_only_client):
+        app_only_client.session.request.return_value = create_mock_response(
+            201, room_payload(tags=["vinta-link-abc"])
+        )
+
+        room = app_only_client.create_room(
+            display_name="Room A", parent_id="floor-1", capacity=8, tags=["vinta-link-abc"]
+        )
+
+        assert self.sent(app_only_client) == (
+            "POST",
+            f"{GRAPH}/places",
+            None,
+            {
+                "@odata.type": "microsoft.graph.room",
+                "displayName": "Room A",
+                "parentId": "floor-1",
+                "tags": ["vinta-link-abc"],
+                "capacity": 8,
+            },
+        )
+        assert (room.id, room.email_address, room.capacity) == ("room-1", "room-a@contoso.com", 8)
+
+    def test_create_room_without_capacity_leaves_it_out(self, app_only_client):
+        app_only_client.session.request.return_value = create_mock_response(
+            201, room_payload(emailAddress=None)
+        )
+
+        room = app_only_client.create_room(
+            display_name="Room A", parent_id="floor-1", capacity=None, tags=[]
+        )
+
+        assert "capacity" not in self.sent(app_only_client)[3]
+        assert room.email_address == ""
+
+    def test_update_room_patches_only_the_changes(self, app_only_client):
+        app_only_client.session.request.return_value = create_mock_response(
+            200, room_payload(displayName="Room B")
+        )
+
+        room = app_only_client.update_room("room-1", {"displayName": "Room B"})
+
+        assert self.sent(app_only_client) == (
+            "PATCH",
+            f"{GRAPH}/places/room-1",
+            None,
+            {"@odata.type": "microsoft.graph.room", "displayName": "Room B"},
+        )
+        assert room.display_name == "Room B"
+
+    def test_update_room_answered_with_no_content_reads_the_room_back(self, app_only_client):
+        app_only_client.session.request.side_effect = [
+            create_mock_response(204),
+            create_mock_response(200, room_payload(capacity=12)),
+        ]
+
+        room = app_only_client.update_room("room-1", {"capacity": 12})
+
+        assert self.sent(app_only_client)[:2] == ("GET", f"{GRAPH}/places/room-1")
+        assert room.capacity == 12
+
+    def test_delete_room(self, app_only_client):
+        app_only_client.session.request.return_value = create_mock_response(204)
+
+        app_only_client.delete_room("room-1")
+
+        assert self.sent(app_only_client) == ("DELETE", f"{GRAPH}/places/room-1", None, None)
+
+    def test_find_room_by_tag(self, app_only_client):
+        app_only_client.session.request.return_value = create_mock_response(
+            200,
+            {
+                "value": [
+                    room_payload(id="other", tags=["vinta-link-other"]),
+                    room_payload(id="mine", tags=["team", "vinta-link-abc"]),
+                ]
+            },
+        )
+
+        found = app_only_client.find_room_by_tag("vinta-link-abc")
+        missing = app_only_client.find_room_by_tag("vinta-link-zzz")
+
+        assert (found.id if found else None, missing) == ("mine", None)
+        assert self.sent(app_only_client)[:3] == (
+            "GET",
+            f"{GRAPH}/places/microsoft.graph.room",
+            {"$top": 100, "$skip": 0},
+        )
+
+    def test_list_buildings(self, app_only_client):
+        app_only_client.session.request.return_value = create_mock_response(
+            200, {"value": [{"id": "b-1", "displayName": "HQ"}]}
+        )
+
+        assert app_only_client.list_buildings() == [{"id": "b-1", "displayName": "HQ"}]
+        assert self.sent(app_only_client)[1] == f"{GRAPH}/places/microsoft.graph.building"
+
+    def test_list_floors_and_sections(self, app_only_client):
+        app_only_client.session.request.side_effect = [
+            create_mock_response(200, {"value": [{"id": "f-1", "parentId": "b-1"}]}),
+            create_mock_response(200, {"value": [{"id": "s-1", "parentId": "f-1"}]}),
+        ]
+
+        floors, sections = app_only_client.list_floors_and_sections()
+
+        assert (floors, sections) == (
+            [{"id": "f-1", "parentId": "b-1"}],
+            [{"id": "s-1", "parentId": "f-1"}],
+        )
+        assert [self.sent(app_only_client, i)[1] for i in (0, 1)] == [
+            f"{GRAPH}/places/microsoft.graph.floor",
+            f"{GRAPH}/places/microsoft.graph.section",
+        ]
+
+    def test_get_schedule_asks_through_the_rooms_mailbox_in_utc(self, app_only_client):
+        schedule = [{"scheduleId": "room-a@contoso.com", "scheduleItems": []}]
+        app_only_client.session.request.return_value = create_mock_response(
+            200, {"value": schedule}
+        )
+        sao_paulo = datetime.timezone(datetime.timedelta(hours=-3))
+
+        result = app_only_client.get_schedule(
+            ["room-a@contoso.com"],
+            datetime.datetime(2026, 10, 6, 9, 0, tzinfo=sao_paulo),
+            datetime.datetime(2026, 10, 6, 10, 0, tzinfo=sao_paulo),
+        )
+
+        call = app_only_client.session.request.call_args
+        assert result == schedule
+        assert (call.kwargs["method"], call.kwargs["url"]) == (
+            "POST",
+            f"{GRAPH}/users/room-a@contoso.com/calendar/getSchedule",
+        )
+        assert call.kwargs["json"] == {
+            "schedules": ["room-a@contoso.com"],
+            "startTime": {"dateTime": "2026-10-06T12:00:00.000", "timeZone": "UTC"},
+            "endTime": {"dateTime": "2026-10-06T13:00:00.000", "timeZone": "UTC"},
+            "availabilityViewInterval": 30,
+        }
+        assert call.kwargs["headers"]["Prefer"] == 'outlook.timezone="UTC"'
+
+    def test_get_schedule_with_no_rooms_makes_no_request(self, app_only_client):
+        now = datetime.datetime(2026, 10, 6, tzinfo=datetime.UTC)
+
+        assert app_only_client.get_schedule([], now, now) == []
+        app_only_client.session.request.assert_not_called()
