@@ -1,13 +1,20 @@
-"""Admin for ``Organization`` and ``OrganizationBranding`` -- intentionally cross-organization.
+"""Admin for ``Organization``, ``OrganizationBranding`` and ``OrganizationFeatureFlag`` --
+intentionally cross-organization.
 
 The convention across this codebase is that an admin over organization-scoped models
 routes its querysets through ``original_manager`` rather than binding an
 ``organization_context``, so the cross-org intent is written down rather than
-inferred (see ``audit/admin.py::AuditAdmin.get_queryset`` for the precedent this mirrors).
-There is nothing to change in *this* file to satisfy that: neither ``Organization`` nor
-``OrganizationBranding`` is organization-scoped -- ``Organization`` is the tenant itself,
-and ``OrganizationBranding`` is a plain ``models.Model`` keyed on it, so neither inherits
-``vinta_orgs.mixins.SingleOrganizationModelMixin``. Every ``.objects`` query below
+inferred (see ``public_api/admin/system_user.py::SystemUserAdmin.get_queryset`` for the
+precedent this mirrors).
+
+``OrganizationFeatureFlagAdmin`` is the one admin here over an organization-scoped model
+(it inherits ``vinta_orgs.mixins.SingleOrganizationModelMixin``), so its ``get_queryset``
+reads through ``original_manager``: ops toggle flags for every organization and a staff
+request binds none.
+
+``Organization`` and ``OrganizationBranding`` are not organization-scoped --
+``Organization`` is the tenant itself, and ``OrganizationBranding`` is a plain
+``models.Model`` keyed on it. Every ``.objects`` query for them below
 (``Organization.objects.filter(slug=...)`` in ``OrganizationAdminForm.clean_slug``, and
 the admin's own unfiltered changelist queries) therefore already runs on Django's stock,
 unscoped manager rather than on a context-scoped one. This note exists so that fact is
@@ -19,6 +26,7 @@ from typing import Annotated, Any
 from django import forms
 from django.contrib import admin
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import QuerySet
 from django.http import HttpRequest
 
 # Imported for its registration side effect, so the unregistration below runs
@@ -29,7 +37,12 @@ import vinta_orgs.admin  # noqa: F401
 from dependency_injector.wiring import Provide, inject
 from vinta_billing.services.subscription_service import SubscriptionService
 
-from organizations.models import Organization, OrganizationBranding, OrganizationMembership
+from organizations.models import (
+    Organization,
+    OrganizationBranding,
+    OrganizationFeatureFlag,
+    OrganizationMembership,
+)
 from organizations.slug_generation import opaque_organization_slug
 from organizations.slug_validation import validate_organization_slug
 from payments.seams.scopes import scope_for
@@ -340,3 +353,17 @@ class OrganizationBrandingAdmin(admin.ModelAdmin):
             },
         ),
     )
+
+
+@admin.register(OrganizationFeatureFlag)
+class OrganizationFeatureFlagAdmin(admin.ModelAdmin):
+    """Ops toggle for per-organization feature flags -- intentionally cross-organization."""
+
+    list_display = ("id", "organization", "key", "enabled", "created", "modified")
+    list_filter = ("key", "enabled")
+    search_fields = ("key", "organization__name")
+    readonly_fields = ("created", "modified", "id")
+
+    def get_queryset(self, request: HttpRequest) -> QuerySet[OrganizationFeatureFlag]:
+        """Every flag row in every organization; no organization is bound to a staff request."""
+        return OrganizationFeatureFlag.original_manager.all()
