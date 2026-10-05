@@ -58,6 +58,8 @@ from calendar_integration.models import (
     CalendarOwnership,
     CalendarPool,
     ExternalEventChangeRequest,
+    ResourceCalendarProviderLink,
+    ResourceLocation,
 )
 from calendar_integration.permissions import (
     AppointmentTypePermission,
@@ -112,6 +114,8 @@ from calendar_integration.serializers import (
     EventRecurringExceptionSerializer,
     ExternalEventChangeRequestSerializer,
     ResourceCalendarCreateSerializer,
+    ResourceCalendarProviderSyncSerializer,
+    ResourceLocationSerializer,
     StaleSelectionSerializer,
     UnavailableTimeWindowSerializer,
 )
@@ -126,6 +130,7 @@ from calendar_integration.services.external_event_change_request_service import 
     ExternalEventChangeRequestService,
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
+from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC, is_enabled
 from common.utils.view_utils import (
     ReadOnlyVintaScheduleModelViewSet,
     TenantScopedViewMixin,
@@ -468,12 +473,16 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         )
 
     @extend_schema(
-        summary="Create a manual resource calendar",
+        summary="Create a resource calendar",
         description=(
-            "Org admins create an internal (manual) resource calendar — a shared bookable "
-            "resource (room, equipment, etc.) owned by the organization rather than synced "
-            "from an external provider. Sets provider=internal and calendar_type=resource. "
-            "Admin only. Returns the created calendar."
+            "Org admins create a resource calendar — a shared bookable resource (room, "
+            "equipment, etc.). With provider omitted or internal it is a manual room owned "
+            "by the organization rather than synced from an external provider. With "
+            "provider google or microsoft (requires the resource calendar provider sync "
+            "feature, a write-enabled connection and location_id) the room is created in "
+            "the provider in the background: the response is returned right away, with a "
+            "provider_sync object whose status is pending_creation. Sets "
+            "calendar_type=resource. Admin only. Returns the created calendar."
         ),
         request=ResourceCalendarCreateSerializer,
         responses={201: CalendarSerializer},
@@ -495,10 +504,57 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         calendar = serializer.save()
 
         optimized_calendar = self.get_queryset().get(id=calendar.id)
-        return Response(
-            self.get_serializer_class()(instance=optimized_calendar).data,
-            status=status.HTTP_201_CREATED,
+        data = self.get_serializer_class()(instance=optimized_calendar).data
+        if optimized_calendar.provider != CalendarProvider.INTERNAL:
+            link = ResourceCalendarProviderLink.objects.filter_by_organization(
+                optimized_calendar.organization_id
+            ).get(calendar=optimized_calendar)
+            data["provider_sync"] = ResourceCalendarProviderSyncSerializer(instance=link).data
+        return Response(data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        summary="List resource locations",
+        description=(
+            "List the provider buildings and floors a new room can be created in, read "
+            "from the local copy the hourly room resync keeps. Only active locations are "
+            "listed. Admin only. Returns 404 when the resource calendar provider sync "
+            "feature is off for the organization."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="provider",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                enum=[CalendarProvider.GOOGLE, CalendarProvider.MICROSOFT],
+                description="List only this provider's locations.",
+            ),
+        ],
+        responses={200: ResourceLocationSerializer(many=True)},
+    )
+    @action(
+        methods=["get"],
+        detail=False,
+        url_path="resource-locations",
+        url_name="resource-locations",
+        permission_classes=[IsOrganizationAdmin],
+        # The calendar filterset does not apply to locations.
+        filter_backends=[],
+    )
+    def resource_locations(self, request, *args, **kwargs):
+        """GET /calendar/resource-locations/ — admins list provider room locations."""
+        organization_id = request.organization_membership.organization_id
+        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, organization_id):
+            # 404 rather than 403, so the endpoint is not advertised while the flag is off.
+            raise Http404
+        provider = request.query_params.get("provider") or None
+        if provider is not None and provider not in CalendarProvider.values:
+            raise ValidationError({"provider": f"Unknown provider {provider!r}."})
+        queryset = ResourceLocation.objects.filter_by_organization(organization_id).listable(
+            provider
         )
+        page = self.paginate_queryset(queryset)
+        return self.get_paginated_response(ResourceLocationSerializer(page, many=True).data)
 
     @extend_schema(
         summary="Update a bundle calendar's children and primary",

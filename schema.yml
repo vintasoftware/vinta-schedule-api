@@ -11100,11 +11100,15 @@ paths:
   /calendar/resource/:
     post:
       operationId: calendar_resource_create
-      description: Org admins create an internal (manual) resource calendar — a shared
-        bookable resource (room, equipment, etc.) owned by the organization rather
-        than synced from an external provider. Sets provider=internal and calendar_type=resource.
-        Admin only. Returns the created calendar.
-      summary: Create a manual resource calendar
+      description: 'Org admins create a resource calendar — a shared bookable resource
+        (room, equipment, etc.). With provider omitted or internal it is a manual
+        room owned by the organization rather than synced from an external provider.
+        With provider google or microsoft (requires the resource calendar provider
+        sync feature, a write-enabled connection and location_id) the room is created
+        in the provider in the background: the response is returned right away, with
+        a provider_sync object whose status is pending_creation. Sets calendar_type=resource.
+        Admin only. Returns the created calendar.'
+      summary: Create a resource calendar
       parameters:
       - in: header
         name: X-Organization-Id
@@ -11143,11 +11147,15 @@ paths:
   /calendar/resource{format}:
     post:
       operationId: calendar_resource_formatted_create
-      description: Org admins create an internal (manual) resource calendar — a shared
-        bookable resource (room, equipment, etc.) owned by the organization rather
-        than synced from an external provider. Sets provider=internal and calendar_type=resource.
-        Admin only. Returns the created calendar.
-      summary: Create a manual resource calendar
+      description: 'Org admins create a resource calendar — a shared bookable resource
+        (room, equipment, etc.). With provider omitted or internal it is a manual
+        room owned by the organization rather than synced from an external provider.
+        With provider google or microsoft (requires the resource calendar provider
+        sync feature, a write-enabled connection and location_id) the room is created
+        in the provider in the background: the response is returned right away, with
+        a provider_sync object whose status is pending_creation. Sets calendar_type=resource.
+        Admin only. Returns the created calendar.'
+      summary: Create a resource calendar
       parameters:
       - in: header
         name: X-Organization-Id
@@ -11189,6 +11197,115 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Calendar'
+          description: ''
+  /calendar/resource-locations/:
+    get:
+      operationId: calendar_resource_locations_list
+      description: List the provider buildings and floors a new room can be created
+        in, read from the local copy the hourly room resync keeps. Only active locations
+        are listed. Admin only. Returns 404 when the resource calendar provider sync
+        feature is off for the organization.
+      summary: List resource locations
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: provider
+        schema:
+          type: string
+          enum:
+          - google
+          - microsoft
+        description: List only this provider's locations.
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResourceLocationList'
+          description: ''
+  /calendar/resource-locations{format}:
+    get:
+      operationId: calendar_resource_locations_formatted_list
+      description: List the provider buildings and floors a new room can be created
+        in, read from the local copy the hourly room resync keeps. Only active locations
+        are listed. Admin only. Returns 404 when the resource calendar provider sync
+        feature is off for the organization.
+      summary: List resource locations
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: provider
+        schema:
+          type: string
+          enum:
+          - google
+          - microsoft
+        description: List only this provider's locations.
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResourceLocationList'
           description: ''
   /change-requests/:
     get:
@@ -18521,6 +18638,7 @@ components:
       - disable_resource_calendar
       - update_resource_calendar
       - import_resource_calendars
+      - list_resource_locations
       - create_availability_window
       - update_availability_window
       - delete_availability_window
@@ -18574,6 +18692,7 @@ components:
         * `disable_resource_calendar` - Disable Resource Calendar
         * `update_resource_calendar` - Update Resource Calendar
         * `import_resource_calendars` - Import Resource Calendars
+        * `list_resource_locations` - List Resource Locations
         * `create_availability_window` - Create Availability Window
         * `update_availability_window` - Update Availability Window
         * `delete_availability_window` - Delete Availability Window
@@ -21673,6 +21792,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PolicyDocument'
+    PaginatedResourceLocationList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceLocation'
     PaginatedServiceAccountReadList:
       type: object
       required:
@@ -22874,8 +23016,14 @@ components:
       - status
     ResourceCalendarCreate:
       type: object
-      description: Create an internal (manual) resource calendar. Admin-gated at the
-        view layer.
+      description: |-
+        Create a resource calendar. Admin-gated at the view layer.
+
+        ``provider`` defaults to ``internal``, a manual room that exists only in Vinta
+        Schedule. ``google`` or ``microsoft`` creates the room in the organization's
+        Google Workspace or Microsoft 365, which needs the resource calendar provider
+        sync feature, a write-enabled connection and ``location_id``.
+        ``idempotency_key`` makes a retried provider create safe to repeat.
       properties:
         name:
           type: string
@@ -22894,6 +23042,19 @@ components:
           description: If true, this calendar can manage its own available time windows.
             If not, it will use the available time windows of the external calendar
             it's attached to.
+        provider:
+          allOf:
+          - $ref: '#/components/schemas/ProviderEnum'
+          default: internal
+        location_id:
+          type: integer
+          writeOnly: true
+          nullable: true
+        idempotency_key:
+          type: string
+          writeOnly: true
+          nullable: true
+          maxLength: 255
       required:
       - name
     ResourceKeyEnum:
@@ -22916,6 +23077,29 @@ components:
         * `webhook_subscriptions` - Webhook subscriptions
         * `public_api_system_users` - Public API system users
         * `event_occurrences` - Event occurrences
+    ResourceLocation:
+      type: object
+      description: A building and floor in the provider's directory that a new room
+        can be placed in.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        provider:
+          allOf:
+          - $ref: '#/components/schemas/ProviderEnum'
+          readOnly: true
+        building_name:
+          type: string
+          readOnly: true
+        floor_name:
+          type: string
+          readOnly: true
+      required:
+      - building_name
+      - floor_name
+      - id
+      - provider
     RetryPaymentRequest:
       type: object
       description: |-

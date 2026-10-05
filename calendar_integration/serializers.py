@@ -51,6 +51,8 @@ from calendar_integration.models import (
     GoogleCalendarServiceAccount,
     RecurrenceRule,
     ResourceAllocation,
+    ResourceCalendarProviderLink,
+    ResourceLocation,
 )
 from calendar_integration.services.calendar_service_utils import wall_clock_to_utc
 from calendar_integration.services.dataclasses import (
@@ -356,13 +358,75 @@ class CalendarSerializer(VirtualModelSerializer):
         )
 
 
+class ResourceLocationSerializer(serializers.ModelSerializer):
+    """A building and floor in the provider's directory that a new room can be placed in."""
+
+    class Meta:
+        model = ResourceLocation
+        fields = ("id", "provider", "building_name", "floor_name")
+        read_only_fields = fields
+
+
+class ResourceCalendarProviderSyncSerializer(serializers.ModelSerializer):
+    """Where a room created in Google Workspace or Microsoft 365 is in its sync lifecycle."""
+
+    status = serializers.CharField(source="sync_status", read_only=True)
+    location = ResourceLocationSerializer(read_only=True, allow_null=True)
+
+    class Meta:
+        model = ResourceCalendarProviderLink
+        fields = (
+            "status",
+            "failed_operation",
+            "last_error",
+            "last_synced_at",
+            "location",
+            "flagged_bookings_at",
+        )
+        read_only_fields = fields
+
+
 class ResourceCalendarCreateSerializer(VirtualModelSerializer):
-    """Create an internal (manual) resource calendar. Admin-gated at the view layer."""
+    """Create a resource calendar. Admin-gated at the view layer.
+
+    ``provider`` defaults to ``internal``, a manual room that exists only in Vinta
+    Schedule. ``google`` or ``microsoft`` creates the room in the organization's
+    Google Workspace or Microsoft 365, which needs the resource calendar provider
+    sync feature, a write-enabled connection and ``location_id``.
+    ``idempotency_key`` makes a retried provider create safe to repeat.
+    """
+
+    provider = serializers.ChoiceField(
+        choices=CalendarProvider.choices, required=False, default=CalendarProvider.INTERNAL
+    )
+    location_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
+    idempotency_key = serializers.CharField(
+        required=False, allow_null=True, max_length=255, write_only=True
+    )
 
     class Meta:
         model = Calendar
         virtual_model = CalendarVirtualModel
-        fields = ("name", "description", "capacity", "manage_available_windows")
+        fields = (
+            "name",
+            "description",
+            "capacity",
+            "manage_available_windows",
+            "provider",
+            "location_id",
+            "idempotency_key",
+        )
+
+    def validate(self, attrs: dict) -> dict:
+        attrs = super().validate(attrs)
+        if attrs.get("provider", CalendarProvider.INTERNAL) == CalendarProvider.INTERNAL and (
+            attrs.get("location_id") is not None or attrs.get("idempotency_key") is not None
+        ):
+            raise serializers.ValidationError(
+                "location_id and idempotency_key only apply to rooms created on "
+                "Google or Microsoft."
+            )
+        return attrs
 
     @inject
     def __init__(
@@ -386,6 +450,20 @@ class ResourceCalendarCreateSerializer(VirtualModelSerializer):
             user_or_token=self.context["request"].user,
             organization=membership.organization,
         )
+        provider = validated_data.get("provider", CalendarProvider.INTERNAL)
+        if provider != CalendarProvider.INTERNAL:
+            try:
+                return self.calendar_service.create_synced_resource_calendar(
+                    provider=provider,
+                    location_id=validated_data.get("location_id"),
+                    name=validated_data["name"],
+                    description=validated_data.get("description"),
+                    capacity=validated_data.get("capacity"),
+                    idempotency_key=validated_data.get("idempotency_key"),
+                    manage_available_windows=validated_data.get("manage_available_windows", False),
+                )
+            except CalendarIntegrationError as e:
+                raise serializers.ValidationError({"non_field_errors": [str(e)]}) from e
         return self.calendar_service.create_resource_calendar(
             name=validated_data.get("name"),
             description=validated_data.get("description"),
