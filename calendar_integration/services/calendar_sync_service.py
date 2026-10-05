@@ -846,12 +846,15 @@ class CalendarSyncService:
         calendar_sync: CalendarSync,
         sync_token: str | None = None,
         keep_full_sync_token: bool = False,
+        provider_calendar_id: str | None = None,
     ) -> None:
         """Run one sync pass for ``calendar_sync``, incremental when given ``sync_token``.
 
         The adapter's next token is stored after an incremental pass. After a full pass
         it is stored only with ``keep_full_sync_token``, which a delta source (the
         Microsoft room sync) sets so its first round's token starts the next round.
+        ``provider_calendar_id`` overrides the id the adapter reads the calendar by,
+        which is ``calendar.provider_calendar_id`` otherwise.
         """
         context = cast("BaseCalendarService", self._context)
         if not is_authenticated_calendar_service(context):
@@ -863,7 +866,11 @@ class CalendarSyncService:
         should_update_events = calendar_sync.should_update_events
 
         events_dict = context.calendar_adapter.get_events(
-            calendar.provider_calendar_id, calendar.is_resource, start_date, end_date, sync_token
+            provider_calendar_id or calendar.provider_calendar_id,
+            calendar.is_resource,
+            start_date,
+            end_date,
+            sync_token,
         )
         # Materialize so we can collect the incoming external ids up front; the
         # batch is already held fully in memory while building `changes` below.
@@ -1049,8 +1056,17 @@ class CalendarSyncService:
                     calendar, start_datetime, end_datetime
                 )
                 room_sync_service._execute_calendar_sync(
-                    calendar_sync, delta_token, keep_full_sync_token=True
+                    calendar_sync,
+                    delta_token,
+                    keep_full_sync_token=True,
+                    # The stored mailbox spares a Places lookup; without one, the
+                    # adapter resolves it from the Places id.
+                    provider_calendar_id=calendar.email or calendar.external_id,
                 )
+                # SUCCESS commits with the token, under the lock, so a sync waiting on
+                # the lock finds this round's token when it reads.
+                calendar_sync.status = CalendarSyncStatus.SUCCESS
+                calendar_sync.save(update_fields=["status"])
         except Exception as e:  # noqa: BLE001
             # Same bookkeeping as ``sync_events``: the next notification or run retries.
             logger.warning(
@@ -1064,8 +1080,6 @@ class CalendarSyncService:
             calendar_sync.save(update_fields=["status", "error_message"])
             return calendar_sync
 
-        calendar_sync.status = CalendarSyncStatus.SUCCESS
-        calendar_sync.save(update_fields=["status"])
         return calendar_sync
 
     def _get_existing_calendar_data(

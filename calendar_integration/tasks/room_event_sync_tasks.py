@@ -30,8 +30,8 @@ def sync_microsoft_room_events_task(
 ) -> None:
     """Sync one Microsoft room's events into Vinta Schedule.
 
-    Safe to run again or twice at once: the sync locks the room's calendar and applies
-    only what Microsoft reports as changed since the last stored delta token. Does
+    Safe to run again or twice at once: the sync locks the room's calendar, and a run
+    that waited on the lock starts from the delta token the other run stored. Does
     nothing for a missing organization or calendar, a restricted organization, a
     flag-off organization, or one without a write-enabled Microsoft connection.
     """

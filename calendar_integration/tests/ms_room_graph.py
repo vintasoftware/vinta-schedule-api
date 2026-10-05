@@ -113,7 +113,13 @@ class FakeRoomCalendarGraph:
         }
 
 
-def make_room(organization: Organization, *, flag_on: bool = True, write_enabled: bool = True):
+def make_room(
+    organization: Organization,
+    *,
+    flag_on: bool = True,
+    write_enabled: bool = True,
+    email: str = ROOM_EMAIL,
+):
     """A Microsoft room calendar in ``organization``, with its connection and flag."""
     OrganizationFeatureFlag.objects.create(
         organization=organization, key=RESOURCE_CALENDAR_PROVIDER_SYNC, enabled=flag_on
@@ -125,7 +131,7 @@ def make_room(organization: Organization, *, flag_on: bool = True, write_enabled
         organization=organization,
         name="Room A",
         external_id=ROOM_PLACE_ID,
-        email=ROOM_EMAIL,
+        email=email,
         provider=CalendarProvider.MICROSOFT,
         calendar_type=CalendarType.RESOURCE,
     )

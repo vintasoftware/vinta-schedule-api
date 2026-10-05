@@ -93,6 +93,18 @@ class TestFirstSync:
 
         ms_room_token_provider.get_token.assert_called_with("11111111-2222-3333-4444-555555555555")
         assert [path for _, path, _ in ms_room_graph.requests] == [
+            f"/users/{ROOM_EMAIL}/calendarView/delta",
+        ]
+
+    def test_room_with_no_stored_mailbox_looks_it_up_by_places_id(
+        self, di_container, organization, ms_room_graph
+    ):
+        calendar = make_room(organization, email="")
+
+        calendar_sync = sync(di_container, organization, calendar)
+
+        assert calendar_sync.status == CalendarSyncStatus.SUCCESS
+        assert [path for _, path, _ in ms_room_graph.requests] == [
             "/places/place-room-a",
             f"/users/{ROOM_EMAIL}/calendarView/delta",
         ]
