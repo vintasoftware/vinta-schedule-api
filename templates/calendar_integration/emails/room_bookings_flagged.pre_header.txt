@@ -1,0 +1,1 @@
+{% load i18n %}{% blocktrans %}The room was deleted in your calendar provider and its future bookings need a new room.{% endblocktrans %}
