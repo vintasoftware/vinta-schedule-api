@@ -5,6 +5,7 @@ from typing import Any
 
 from django.core.management.base import BaseCommand, CommandParser
 
+from calendar_integration.constants import CalendarProvider
 from calendar_integration.models import CalendarWebhookSubscription
 from common.organization_context import organization_context
 from organizations.models import Organization
@@ -120,6 +121,22 @@ class Command(BaseCommand):
                     )
 
                     if not dry_run:
+                        # Renewing a Google channel opens a new one at Google, which
+                        # needs the account the channel belongs to.
+                        if subscription.provider == CalendarProvider.GOOGLE:
+                            account = subscription.account
+                            if account is None:
+                                self.stdout.write(
+                                    self.style.ERROR(
+                                        "  ✗ Failed to refresh - no account recorded on "
+                                        "this subscription to renew it as"
+                                    )
+                                )
+                                failed_count += 1
+                                continue
+                            calendar_service.authenticate(
+                                account=account, organization=subscription.organization
+                            )
                         refreshed_subscription = calendar_service.refresh_webhook_subscription(
                             subscription_id=subscription.id
                         )

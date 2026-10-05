@@ -11,6 +11,7 @@ from vinta_billing.services.entitlement_service import EntitlementService
 
 from calendar_integration.constants import (
     CalendarOrganizationResourceImportStatus,
+    CalendarSyncStatus,
     CalendarSyncTriggerSource,
 )
 from calendar_integration.models import (
@@ -95,6 +96,27 @@ def _authenticate_or_skip(calendar_service, account, organization) -> bool:
         )
         return False
     return True
+
+
+def ensure_watch_channel_or_log(calendar_service: CalendarService, calendar: Calendar) -> None:
+    """Open or renew ``calendar``'s Google push channel, logging instead of raising.
+
+    Push notifications are what keep a calendar fresh after its first sync, so this
+    runs after every successful sync, as the account the sync ran as. It must not fail
+    the task that called it: the sync itself already succeeded, and the next sync or
+    the hourly renewal retries the channel.
+    """
+    try:
+        calendar_service.ensure_calendar_watch_channel(calendar)
+    # Any provider error (HTTP, auth, quota) lands here; none of them should fail the
+    # caller. Only the exception type is logged, since provider messages can name the
+    # calendar's email.
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not open or renew the Google push channel for calendar %s: %s",
+            calendar.id,
+            type(exc).__name__,
+        )
 
 
 # The injected services in the tasks below are declared with `Provide[...]` as the
@@ -186,6 +208,8 @@ def sync_calendar_task(
         if not _authenticate_or_skip(calendar_service, account, organization):
             return
         calendar_service.sync_events(calendar_sync)
+        if calendar_sync.status == CalendarSyncStatus.SUCCESS:
+            ensure_watch_channel_or_log(calendar_service, calendar_sync.calendar)
 
 
 @app.task

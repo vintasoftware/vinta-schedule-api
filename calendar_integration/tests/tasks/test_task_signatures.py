@@ -18,6 +18,8 @@ from celery import Task
 from calendar_integration.tasks import (
     import_account_calendars_task,
     import_organization_calendar_resources_task,
+    renew_google_calendar_watch_channel_task,
+    renew_google_calendar_watch_channels_task,
     sync_calendar_task,
 )
 from calendar_integration.tasks.calendar_sync_tasks import resync_organization_calendars_task
@@ -65,6 +67,18 @@ from calendar_integration.tasks.calendar_sync_tasks import resync_organization_c
             (),
             {"organization_id": 1},
             id="resync_organization_calendars-payments.seams.resync",
+        ),
+        pytest.param(
+            renew_google_calendar_watch_channels_task,
+            (),
+            {},
+            id="renew_google_calendar_watch_channels-celerybeat",
+        ),
+        pytest.param(
+            renew_google_calendar_watch_channel_task,
+            (1, 1),
+            {},
+            id="renew_google_calendar_watch_channel-renew_google_calendar_watch_channels",
         ),
     ],
 )

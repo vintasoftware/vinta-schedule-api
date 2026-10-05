@@ -1,6 +1,7 @@
 import datetime
 import logging
 import re
+import urllib.parse
 import uuid
 from collections.abc import Iterable
 from typing import Any, Literal, NotRequired, TypedDict
@@ -34,6 +35,17 @@ logger = logging.getLogger(__name__)
 
 # Precompiled regex for extracting calendar ID from Google Calendar resource URIs
 _CALENDAR_ID_RE = re.compile(r"/calendars/([^/]+)/events")
+
+
+def _calendar_id_from_resource_uri(resource_uri: str) -> str:
+    """The calendar id in a notification's ``X-Goog-Resource-URI``, or "" if none.
+
+    Unquoted in case Google percent-encodes it (``%40`` for the ``@`` in an email
+    id). Google's own example shows it plain, and unquoting a plain id is a no-op.
+    """
+    match = _CALENDAR_ID_RE.search(resource_uri)
+    return urllib.parse.unquote(match.group(1)) if match else ""
+
 
 read_quote_limiter = build_resilient_limiter(
     [
@@ -217,7 +229,12 @@ class GoogleCalendarAdapter(CalendarAdapter):
 
     @staticmethod
     def extract_calendar_external_id_from_webhook_request(request: HttpRequest) -> str:
-        return request.headers.get("X-Goog-Resource-ID", "")
+        """The calendar id named in the notification's resource URI.
+
+        Not ``X-Goog-Resource-ID``: that header is an opaque id for the watched
+        resource, the same value ``events.watch`` returns as ``resourceId``.
+        """
+        return _calendar_id_from_resource_uri(request.headers.get("X-Goog-Resource-URI", ""))
 
     def get_account_calendars(self) -> Iterable[CalendarResourceData]:
         read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
@@ -734,6 +751,17 @@ class GoogleCalendarAdapter(CalendarAdapter):
         except Exception as e:  # noqa: BLE001
             raise ValueError(f"Failed to unsubscribe from calendar events: {e!s}") from e
 
+    def stop_webhook_subscription(self, subscription_id: str, resource_id: str) -> None:
+        """Stop a push channel so Google sends no more notifications on it.
+
+        Google identifies a channel by its id together with the ``resourceId`` that
+        ``events.watch`` returned; ``channels.stop`` needs both.
+        """
+        write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
+        self.client.channels().stop(
+            body={"id": subscription_id, "resourceId": resource_id}
+        ).execute()
+
     def validate_webhook_notification(
         self,
         headers: dict[str, str],
@@ -793,12 +821,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 f"Channel ID mismatch: expected {expected_channel_id}, got {channel_id}"
             )
 
-        match = _CALENDAR_ID_RE.search(resource_uri)
-        if not match:
+        calendar_id = _calendar_id_from_resource_uri(resource_uri)
+        if not calendar_id:
             raise WebhookProcessingFailedError(
                 f"Could not extract calendar ID from resource URI: {resource_uri}"
             )
-        calendar_id = match.group(1)
 
         return {
             "provider": "google",
@@ -843,6 +870,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
         """
         channel_id = tracking_params.get("channel_id") if tracking_params else None
         ttl_seconds = tracking_params.get("ttl_seconds") if tracking_params else 3600
+        token = tracking_params.get("token") if tracking_params else None
 
         if not channel_id:
             # Google caps a channel id at 64 characters, which a room's calendar id (its
@@ -850,7 +878,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
             # which calendar the channel belongs to.
             channel_id = f"calendar-{uuid.uuid4().hex}"
 
-        body = {
+        body: dict[str, Any] = {
             "id": channel_id,
             "type": "web_hook",
             "address": callback_url,
@@ -858,6 +886,9 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 "ttl": str(ttl_seconds),
             },
         }
+        if token:
+            # Google echoes this back as X-Goog-Channel-Token on every notification.
+            body["token"] = token
 
         write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
         response = self.client.events().watch(calendarId=resource_id, body=body).execute()

@@ -1,4 +1,6 @@
 import datetime
+import hashlib
+import hmac
 import secrets
 import zoneinfo
 from typing import TYPE_CHECKING, Any, ClassVar, Self
@@ -60,6 +62,7 @@ from organizations.models import Organization, OrganizationMembership
 
 
 if TYPE_CHECKING:
+    from allauth.socialaccount.models import SocialAccount
     from django_stubs_ext.db.models.manager import RelatedManager
 
 
@@ -2458,11 +2461,52 @@ class CalendarWebhookSubscription(
         max_length=500, default="", blank=True, help_text="Google Calendar resource URI"
     )
     verification_token = models.CharField(
-        max_length=255, default="", blank=True, help_text="Webhook verification token"
+        max_length=255,
+        default="",
+        blank=True,
+        help_text=(
+            "SHA-256 hex digest of the secret token sent with the channel. Google echoes "
+            "the token on every notification; only the digest is stored."
+        ),
+    )
+    # The account that opened the channel. Renewing the channel and syncing on a
+    # notification both authenticate as it, because a provider push carries no user.
+    # Rooms have no owner, so this is the only way to know whose access reads them.
+    social_account = models.ForeignKey(
+        "socialaccount.SocialAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Account that opened the channel, when it is a user's social account",
+    )
+    google_service_account = OrganizationSafeForeignKey(
+        GoogleCalendarServiceAccount,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="webhook_subscriptions",
+        help_text="Account that opened the channel, when it is a Google service account",
     )
     expires_at = models.DateTimeField(null=True, blank=True, help_text="When subscription expires")
     is_active = models.BooleanField(default=True)
     last_notification_at = models.DateTimeField(null=True, blank=True)
+
+    @property
+    def account(self) -> "SocialAccount | GoogleCalendarServiceAccount | None":
+        """The account that opened the channel, if it still exists."""
+        return self.google_service_account or self.social_account
+
+    @staticmethod
+    def hash_verification_token(token: str) -> str:
+        """The digest stored in ``verification_token`` for ``token``."""
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    def matches_verification_token(self, token: str) -> bool:
+        """Whether ``token`` is the secret this channel was opened with."""
+        if not self.verification_token or not token:
+            return False
+        return hmac.compare_digest(self.verification_token, self.hash_verification_token(token))
 
     class Meta:
         unique_together = (("organization", "calendar_fk", "provider"),)

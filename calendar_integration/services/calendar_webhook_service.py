@@ -48,13 +48,16 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import secrets
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 from django.conf import settings
 from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.urls import reverse
+from django.utils import timezone
 
+from allauth.socialaccount.models import SocialAccount
 from vinta_billing.exceptions import OverLimitError
 
 from calendar_integration.constants import (
@@ -66,12 +69,14 @@ from calendar_integration.constants import (
 from calendar_integration.exceptions import (
     ServiceNotAuthenticatedError,
     WebhookIgnoredError,
+    WebhookProcessingFailedError,
 )
 from calendar_integration.models import (
     Calendar,
     CalendarSync,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
+    GoogleCalendarServiceAccount,
 )
 from calendar_integration.services.protocols.authenticated_calendar_service import (
     AuthenticatedCalendarService,
@@ -93,6 +98,13 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+#: How long a new Google push channel is asked to live. Google caps the lifetime
+#: and returns the expiry it actually granted, which is what gets stored.
+GOOGLE_CHANNEL_TTL = datetime.timedelta(days=7)
+#: Renew a Google channel once it expires within this window. Much wider than the
+#: hourly renewal beat, so every channel gets several chances to renew before it lapses.
+GOOGLE_CHANNEL_RENEW_WITHIN = datetime.timedelta(hours=24)
 
 
 class WebhookHealthStatus(TypedDict):
@@ -146,6 +158,7 @@ class WebhookServiceHost(Protocol):
         external_calendar_id: str,
         webhook_event: CalendarWebhookEvent,
         sync_window_hours: int = 24,
+        calendar: Calendar | None = None,
     ) -> CalendarSync | None: ...
 
     def _get_calendar_adapter_cls_for_provider(self, provider: CalendarProvider) -> Any: ...
@@ -179,6 +192,7 @@ class CalendarWebhookService:
         external_calendar_id: str,
         webhook_event: CalendarWebhookEvent,
         sync_window_hours: int = 24,
+        calendar: Calendar | None = None,
     ) -> CalendarSync | None:
         """Request calendar sync triggered by webhook notification.
 
@@ -188,6 +202,9 @@ class CalendarWebhookService:
             external_calendar_id: External calendar ID from webhook
             webhook_event: The webhook event that triggered this sync
             sync_window_hours: Hours around current time to sync
+            calendar: The calendar the notification belongs to, when the caller already
+                knows it (a Google notification resolved through its channel). Otherwise
+                it is looked up from ``external_calendar_id``.
 
         Returns:
             CalendarSync instance if sync was triggered, None if skipped
@@ -226,11 +243,12 @@ class CalendarWebhookService:
         # Find the calendar by the id the provider knows it by (a Google room's email,
         # otherwise its external ID). ``first()``: a room can match twice; the queryset
         # orders the room row first.
-        calendar = (
-            Calendar.objects.filter_by_organization(narrowed.organization.id)
-            .for_provider_calendar_id(webhook_event.provider, external_calendar_id)
-            .first()
-        )
+        if calendar is None:
+            calendar = (
+                Calendar.objects.filter_by_organization(narrowed.organization.id)
+                .for_provider_calendar_id(webhook_event.provider, external_calendar_id)
+                .first()
+            )
         if calendar is None:
             logger.warning("Calendar not found for provider calendar id: %s", external_calendar_id)
             return None
@@ -316,36 +334,25 @@ class CalendarWebhookService:
         if not auth_context.calendar_adapter:
             raise ValueError("Calendar adapter not available")
 
-        # Generate callback URL if not provided
         if not callback_url:
-            if calendar.provider == CalendarProvider.GOOGLE:
-                callback_url = reverse(
-                    "calendar_integration:google_webhook",
-                    kwargs={"organization_id": calendar.organization_id},
-                )
-            elif calendar.provider == CalendarProvider.MICROSOFT:
-                callback_url = reverse(
-                    "calendar_integration:microsoft_webhook",
-                    kwargs={"organization_id": calendar.organization_id},
-                )
-            else:
-                raise ValueError(
-                    f"Webhook subscriptions not supported for provider: {calendar.provider}"
-                )
+            callback_url = self._build_callback_url(calendar)
 
-            # Convert to absolute URL if needed
-            # In production, you might want to configure the domain via settings
-            if callback_url.startswith("/"):
-                domain = getattr(settings, "WEBHOOK_DOMAIN", "https://your-domain.com")
-                callback_url = f"{domain.rstrip('/')}{callback_url}"
+        # A secret only Google and this row know: Google echoes it on every
+        # notification, which is what lets the unauthenticated webhook endpoint tell a
+        # real notification from a forged one. Only its digest is stored.
+        channel_token = ""
 
         # Use adapter-specific subscription creation
         if calendar.provider == CalendarProvider.GOOGLE:
+            channel_token = secrets.token_urlsafe(32)
             subscription_data = (
                 auth_context.calendar_adapter.create_webhook_subscription_with_tracking(
                     resource_id=calendar.provider_calendar_id,
                     callback_url=callback_url,
-                    tracking_params={"ttl_seconds": expiration_hours * 3600},
+                    tracking_params={
+                        "ttl_seconds": expiration_hours * 3600,
+                        "token": channel_token,
+                    },
                 )
             )
         elif calendar.provider == CalendarProvider.MICROSOFT:
@@ -379,27 +386,152 @@ class CalendarWebhookService:
             except (ValueError, TypeError):
                 # Log or handle malformed expiration value gracefully
                 expires_at = None
-                # Log or handle malformed expiration value gracefully
-                expires_at = None
 
-        # Create tracking record
-        webhook_subscription = CalendarWebhookSubscription.objects.create(
-            calendar=calendar,
-            organization_id=calendar.organization_id,
-            provider=calendar.provider,
-            external_subscription_id=subscription_data.get("subscription_id")
-            or subscription_data.get("channel_id"),
-            external_resource_id=subscription_data.get("resource_id", ""),
-            callback_url=callback_url,
-            channel_id=subscription_data.get("channel_id", ""),
-            resource_uri=subscription_data.get("resource_uri", ""),
-            verification_token=subscription_data.get("client_state")
+        channel_token = (
+            channel_token
+            or subscription_data.get("client_state")
             or subscription_data.get("channel_token")
-            or "",
-            expires_at=expires_at,
+            or ""
+        )
+        account = auth_context.account
+
+        # One row per calendar and provider (``unique_together``), so opening a channel
+        # for a calendar that already had one -- a renewal, or a channel that was
+        # deactivated -- updates that row in place.
+        webhook_subscription, _ = CalendarWebhookSubscription.objects.filter_by_organization(
+            calendar.organization_id
+        ).update_or_create(
+            calendar=calendar,
+            provider=calendar.provider,
+            defaults={
+                "organization_id": calendar.organization_id,
+                "external_subscription_id": subscription_data.get("subscription_id")
+                or subscription_data.get("channel_id"),
+                "external_resource_id": subscription_data.get("resource_id", ""),
+                "callback_url": callback_url,
+                "channel_id": subscription_data.get("channel_id", ""),
+                "resource_uri": subscription_data.get("resource_uri", ""),
+                "verification_token": (
+                    CalendarWebhookSubscription.hash_verification_token(channel_token)
+                    if channel_token
+                    else ""
+                ),
+                "social_account": account if isinstance(account, SocialAccount) else None,
+                "google_service_account": (
+                    account if isinstance(account, GoogleCalendarServiceAccount) else None
+                ),
+                "expires_at": expires_at,
+                "is_active": True,
+            },
         )
 
         return webhook_subscription
+
+    @staticmethod
+    def _build_callback_url(calendar: Calendar) -> str:
+        """The absolute URL the provider should send ``calendar``'s notifications to."""
+        if calendar.provider == CalendarProvider.GOOGLE:
+            url_name = "calendar_integration:google_webhook"
+        elif calendar.provider == CalendarProvider.MICROSOFT:
+            url_name = "calendar_integration:microsoft_webhook"
+        else:
+            raise ValueError(
+                f"Webhook subscriptions not supported for provider: {calendar.provider}"
+            )
+        path = reverse(url_name, kwargs={"organization_id": calendar.organization_id})
+        # Deployed environments set API_DOMAIN with its scheme (``https://api...``);
+        # local and CI values are a bare host.
+        api_domain = settings.API_DOMAIN
+        base_url = (
+            api_domain if "://" in api_domain else f"{settings.DEFAULT_PROTOCOL}://{api_domain}"
+        )
+        return f"{base_url.rstrip('/')}{path}"
+
+    def ensure_calendar_watch_channel(
+        self, calendar: Calendar
+    ) -> CalendarWebhookSubscription | None:
+        """Make sure Google pushes ``calendar``'s changes to this app.
+
+        Opens a push channel when the calendar has none, and renews it when it expires
+        within ``GOOGLE_CHANNEL_RENEW_WITHIN`` or has no account recorded to sync as.
+        Otherwise does nothing, so calling it after every sync is cheap. The channel is
+        opened as the account this service is authenticated as, which is recorded on the
+        subscription and used for every later renewal and notification.
+
+        Returns the calendar's subscription, or ``None`` for a calendar that does not get
+        one: not a Google calendar, sync disabled, or no provider id to watch.
+
+        Raises:
+            ServiceNotAuthenticatedError: If the service is not authenticated.
+        """
+        if (
+            calendar.provider != CalendarProvider.GOOGLE
+            or not calendar.sync_enabled
+            or not calendar.provider_calendar_id
+        ):
+            return None
+
+        subscription = (
+            CalendarWebhookSubscription.objects.filter_by_organization(calendar.organization_id)
+            .filter(calendar=calendar, provider=CalendarProvider.GOOGLE)
+            .first()
+        )
+        if subscription is None or not subscription.is_active:
+            return self.create_calendar_webhook_subscription(
+                calendar, expiration_hours=self._google_channel_ttl_hours()
+            )
+
+        renew_after = timezone.now() + GOOGLE_CHANNEL_RENEW_WITHIN
+        if (
+            subscription.account is not None
+            and subscription.expires_at is not None
+            and subscription.expires_at > renew_after
+        ):
+            return subscription
+        return self.refresh_webhook_subscription(subscription.id)
+
+    @staticmethod
+    def _google_channel_ttl_hours() -> int:
+        return int(GOOGLE_CHANNEL_TTL.total_seconds() // 3600)
+
+    def verify_google_channel(self, headers: dict[str, str]) -> CalendarWebhookSubscription:
+        """The active subscription a Google notification belongs to.
+
+        The webhook endpoint is unauthenticated, so a notification is trusted only when
+        its ``X-Goog-Channel-ID`` names an active channel of this organization and its
+        ``X-Goog-Channel-Token`` is the secret that channel was opened with.
+
+        Raises:
+            WebhookIgnoredError: For the ``sync`` handshake Google sends when a channel
+                opens. It carries no change.
+            WebhookProcessingFailedError: For an unknown channel or a token mismatch.
+        """
+        context = cast("InitializedOrAuthenticatedCalendarService", self._context)
+        if not context.organization:
+            raise ValueError("Organization must be set")
+
+        if headers.get("X-Goog-Resource-State") == "sync":
+            raise WebhookIgnoredError("Skip sync notification")
+
+        channel_id = headers.get("X-Goog-Channel-ID", "")
+        # ``external_subscription_id`` holds the channel id for Google, and is the
+        # column the subscription lookup index covers.
+        subscription = (
+            CalendarWebhookSubscription.objects.filter_by_organization(context.organization)
+            .filter(
+                provider=CalendarProvider.GOOGLE,
+                external_subscription_id=channel_id,
+                is_active=True,
+            )
+            .first()
+            if channel_id
+            else None
+        )
+        if subscription is None or not subscription.matches_verification_token(
+            headers.get("X-Goog-Channel-Token", "")
+        ):
+            raise WebhookProcessingFailedError("Unknown Google channel or channel token mismatch")
+        return subscription
 
     def process_webhook_notification(
         self,
@@ -408,6 +540,7 @@ class CalendarWebhookService:
         headers: dict[str, str],
         payload: dict | str | None = None,
         validation_token: str | None = None,
+        subscription: CalendarWebhookSubscription | None = None,
     ) -> CalendarWebhookEvent | None:
         """Process incoming webhook notification using adapter validation.
 
@@ -439,7 +572,12 @@ class CalendarWebhookService:
         calendar_adapter = None
 
         try:
-            calendar = self._host._get_calendar_by_external_id(calendar_external_id)
+            # A verified Google channel already names its calendar.
+            calendar = (
+                subscription.calendar
+                if subscription is not None
+                else self._host._get_calendar_by_external_id(calendar_external_id)
+            )
             calendar_adapter = self._host._get_write_adapter_for_calendar(calendar)
         except (ServiceNotAuthenticatedError, Calendar.DoesNotExist):
             # Calendar not found or not authenticated - we'll still record the webhook event
@@ -490,7 +628,11 @@ class CalendarWebhookService:
             external_event_id=parsed_data.get("event_id", ""),
             raw_payload=payload if isinstance(payload, dict) else {"raw": str(payload or "")},
             headers=headers,
+            subscription=subscription,
         )
+        if subscription is not None:
+            subscription.last_notification_at = timezone.now()
+            subscription.save(update_fields=["last_notification_at", "modified"])
 
         # Trigger calendar sync only if service is authenticated
         # For webhook processing, we record the event even if sync can't be triggered immediately
@@ -502,7 +644,9 @@ class CalendarWebhookService:
                 # _get_webhook_service().request_webhook_triggered_sync(), which is correct when
                 # unpatched; when patched on the facade, the mock fires first.
                 calendar_sync = self._host.request_webhook_triggered_sync(
-                    external_calendar_id=parsed_data["calendar_id"], webhook_event=webhook_event
+                    external_calendar_id=parsed_data["calendar_id"],
+                    webhook_event=webhook_event,
+                    calendar=subscription.calendar if subscription is not None else None,
                 )
 
                 if calendar_sync:
@@ -533,7 +677,10 @@ class CalendarWebhookService:
         return webhook_event
 
     def handle_webhook(
-        self, provider: CalendarProvider, request: HttpRequest
+        self,
+        provider: CalendarProvider,
+        request: HttpRequest,
+        subscription: CalendarWebhookSubscription | None = None,
     ) -> CalendarWebhookEvent | None:
         """Handle calendar webhook processing with organization context.
 
@@ -567,6 +714,7 @@ class CalendarWebhookService:
                 provider=provider,
                 calendar_external_id=calendar_external_id,
                 headers=headers,
+                subscription=subscription,
             )
         except WebhookIgnoredError:
             return None
@@ -653,13 +801,13 @@ class CalendarWebhookService:
         except CalendarWebhookSubscription.DoesNotExist:
             return None
 
-        # TODO: Implement provider-specific subscription renewal
+        if subscription.provider == CalendarProvider.GOOGLE:
+            return self._renew_google_channel(subscription)
+
+        # TODO: Implement Microsoft subscription renewal (PATCH expirationDateTime).
         # For now, extend expiration by default duration based on provider
         now = datetime.datetime.now(tz=datetime.UTC)
-        if subscription.provider == CalendarProvider.GOOGLE:
-            # Google allows max 7 days (604800 seconds)
-            new_expiration = now + datetime.timedelta(days=7)
-        elif subscription.provider == CalendarProvider.MICROSOFT:
+        if subscription.provider == CalendarProvider.MICROSOFT:
             # Microsoft allows max ~70 hours (4230 minutes)
             new_expiration = now + datetime.timedelta(minutes=4230)
         else:
@@ -670,6 +818,37 @@ class CalendarWebhookService:
         subscription.save(update_fields=["expires_at", "modified"])
 
         return subscription
+
+    def _renew_google_channel(
+        self, subscription: CalendarWebhookSubscription
+    ) -> CalendarWebhookSubscription:
+        """Replace a Google push channel with a fresh one.
+
+        Google channels cannot be extended. Renewing opens a new channel first and only
+        then stops the old one, so there is no window without a channel. Requires an
+        authenticated service; the new channel is opened as that account.
+        """
+        old_channel_id = subscription.channel_id
+        old_resource_id = subscription.external_resource_id
+        renewed = self.create_calendar_webhook_subscription(
+            subscription.calendar, expiration_hours=self._google_channel_ttl_hours()
+        )
+        if old_channel_id and old_resource_id:
+            auth_context = cast("AuthenticatedCalendarService", self._context)
+            try:
+                auth_context.calendar_adapter.stop_webhook_subscription(
+                    old_channel_id, old_resource_id
+                )
+            # Best effort: the old channel has expired or will, and its notifications
+            # are rejected once the row holds the new channel id. Any provider error
+            # here (HTTP, auth, quota) must not undo a renewal that already succeeded.
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Could not stop replaced Google channel for subscription %s: %s",
+                    subscription.id,
+                    type(exc).__name__,
+                )
+        return renewed
 
     def get_webhook_health_status(self) -> WebhookHealthStatus:
         """Get webhook system health status for the organization.

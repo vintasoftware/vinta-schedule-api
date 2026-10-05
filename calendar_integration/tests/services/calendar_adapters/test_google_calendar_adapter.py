@@ -1018,6 +1018,74 @@ class TestWebhookSubscriptions:
         assert watch.call_args.kwargs["calendarId"] == room_email
         assert len(watch.call_args.kwargs["body"]["id"]) <= 64
 
+    def test_create_webhook_subscription_with_tracking_sends_the_channel_token(
+        self, adapter, mock_rate_limiters
+    ):
+        watch = adapter.client.events.return_value.watch
+        watch.return_value.execute.return_value = {"id": "returned-channel"}
+
+        adapter.create_webhook_subscription_with_tracking(
+            "cal@example.com",
+            "https://example.com/webhook",
+            {"ttl_seconds": 600, "token": "s3cret"},
+        )
+
+        body = watch.call_args.kwargs["body"]
+        assert (body["token"], body["params"], body["address"]) == (
+            "s3cret",
+            {"ttl": "600"},
+            "https://example.com/webhook",
+        )
+
+    def test_stop_webhook_subscription_names_channel_and_resource(
+        self, adapter, mock_rate_limiters
+    ):
+        """``channels.stop`` identifies a channel by its id and the resourceId together."""
+        adapter.client.channels.return_value.stop.return_value.execute.return_value = {}
+
+        adapter.stop_webhook_subscription("calendar-abc", "opaque-resource-id")
+
+        adapter.client.channels.return_value.stop.assert_called_once_with(
+            body={"id": "calendar-abc", "resourceId": "opaque-resource-id"}
+        )
+        mock_rate_limiters[1].try_acquire.assert_called_once()
+
+    def test_extract_calendar_id_from_webhook_request_reads_the_resource_uri(self):
+        """``X-Goog-Resource-ID`` is the watched resource's opaque id, not a calendar
+        id; the calendar id is in the resource URI, unquoted."""
+        request = Mock()
+        request.headers = {
+            "X-Goog-Resource-ID": "opaque-resource-id",
+            "X-Goog-Resource-URI": (
+                "https://www.googleapis.com/calendar/v3/calendars/"
+                "room%40resource.calendar.google.com/events?alt=json"
+            ),
+        }
+
+        assert (
+            GoogleCalendarAdapter.extract_calendar_external_id_from_webhook_request(request)
+            == "room@resource.calendar.google.com"
+        )
+
+    @pytest.mark.parametrize(
+        "encoded_id",
+        ["room%40resource.calendar.google.com", "room@resource.calendar.google.com"],
+    )
+    def test_webhook_notification_calendar_id_is_unquoted(self, encoded_id):
+        parsed = GoogleCalendarAdapter.validate_webhook_notification_static(
+            {
+                "X-Goog-Resource-ID": "opaque-resource-id",
+                "X-Goog-Resource-URI": (
+                    f"https://www.googleapis.com/calendar/v3/calendars/{encoded_id}/events"
+                ),
+                "X-Goog-Resource-State": "exists",
+                "X-Goog-Channel-ID": "calendar-abc",
+            },
+            "",
+        )
+
+        assert parsed["calendar_id"] == "room@resource.calendar.google.com"
+
     def test_unsubscribe_from_calendar_events(self, adapter, mock_rate_limiters):
         """Test unsubscribing from calendar events."""
         adapter.client.channels.return_value.stop.return_value.execute.return_value = {}

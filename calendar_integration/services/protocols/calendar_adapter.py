@@ -136,6 +136,14 @@ class CalendarAdapter(Protocol):
         """
         ...
 
+    def stop_webhook_subscription(self, subscription_id: str, resource_id: str) -> None:
+        """
+        Stop a webhook subscription at the provider so it sends no more notifications.
+        :param subscription_id: The provider's id for the subscription (a Google channel id).
+        :param resource_id: The provider's id for the watched resource, where it needs one.
+        """
+        ...
+
     def validate_webhook_notification(
         self,
         headers: dict[str, str],
