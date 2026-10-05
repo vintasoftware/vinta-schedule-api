@@ -203,8 +203,8 @@ def _state(link: ResourceCalendarProviderLink) -> dict[str, Any]:
     }
 
 
-def _queued(link: ResourceCalendarProviderLink) -> Any:
-    return call(link_id=link.pk, organization_id=link.organization_id)
+def _queued(link: ResourceCalendarProviderLink, attempt_count: int = 0) -> Any:
+    return call(link_id=link.pk, organization_id=link.organization_id, attempt_count=attempt_count)
 
 
 # ---------------------------------------------------------------------------
@@ -253,12 +253,15 @@ class TestRequestPush:
         enqueued: MagicMock,
         django_capture_on_commit_callbacks: Callable[..., Any],
     ) -> None:
-        link = _synced_on_provider(room, directory, location, pending_fields={"capacity": 10})
+        link = _synced_on_provider(room, directory, location, pending_fields={"name": "Annex"})
 
         with django_capture_on_commit_callbacks(execute=True):
-            service.request_push(link, ResourceSyncOperation.UPDATE)
+            service.request_push(link, ResourceSyncOperation.UPDATE, {"capacity": 10})
 
         assert link.sync_status == ResourceSyncStatus.PENDING_UPDATE
+        assert link.pending_fields == {"name": "Annex", "capacity": 10}
+        link.refresh_from_db()
+        assert link.pending_fields == {"name": "Annex", "capacity": 10}
         assert _state(link) == {
             "sync_status": ResourceSyncStatus.PENDING_UPDATE,
             "failed_operation": "",
@@ -292,7 +295,9 @@ class TestRequestPush:
 
         assert _state(link)["retry_deadline"] == deadline
         assert _state(link)["attempt_count"] == 3
-        assert enqueued.call_args_list == [_queued(link)]
+        # Queued with the current count: it takes over the chain the scheduled
+        # attempt belongs to, and whichever of the two runs second does nothing.
+        assert enqueued.call_args_list == [_queued(link, attempt_count=3)]
 
     def test_update_while_pending_creation_is_merged_into_the_create(
         self,
@@ -307,15 +312,17 @@ class TestRequestPush:
             calendar=room,
             location=location,
             sync_status=ResourceSyncStatus.PENDING_CREATION,
+            pending_fields=_values(location),
             retry_deadline=deadline,
         )
 
         with django_capture_on_commit_callbacks(execute=True):
-            service.request_push(link, ResourceSyncOperation.UPDATE)
+            service.request_push(link, ResourceSyncOperation.UPDATE, {"capacity": 10})
 
         assert _state(link)["sync_status"] == ResourceSyncStatus.PENDING_CREATION
         assert _state(link)["retry_deadline"] == deadline
-        assert enqueued.call_count == 0
+        assert link.pending_fields == _values(location, capacity=10)
+        assert enqueued.call_args_list == [_queued(link)]
 
     @pytest.mark.parametrize(
         "failed_operation", [ResourceSyncOperation.CREATE, ResourceSyncOperation.UPDATE]
@@ -338,10 +345,11 @@ class TestRequestPush:
         )
 
         with django_capture_on_commit_callbacks(execute=True):
-            service.request_push(link, ResourceSyncOperation.UPDATE)
+            service.request_push(link, ResourceSyncOperation.UPDATE, {"capacity": 10})
 
         assert _state(link)["sync_status"] == ResourceSyncStatus.SYNC_FAILED
         assert _state(link)["failed_operation"] == failed_operation
+        assert link.pending_fields == {"capacity": 10}
         assert enqueued.call_count == 0
 
     @pytest.mark.parametrize(
@@ -369,9 +377,10 @@ class TestRequestPush:
         )
 
         with pytest.raises(RoomSyncStateError):
-            service.request_push(link, ResourceSyncOperation.UPDATE)
+            service.request_push(link, ResourceSyncOperation.UPDATE, {"capacity": 10})
 
         assert _state(link)["sync_status"] == sync_status
+        assert link.pending_fields == {}
         assert enqueued.call_count == 0
 
     @pytest.mark.parametrize(
@@ -394,6 +403,7 @@ class TestRequestPush:
             service.request_push(link, ResourceSyncOperation.DELETE)
 
         assert _state(link)["sync_status"] == ResourceSyncStatus.PENDING_DELETION
+        assert link.archived_at == NOW
         assert enqueued.call_args_list == [_queued(link)]
 
     @pytest.mark.parametrize(
@@ -451,7 +461,7 @@ class TestRequestPush:
         with pytest.raises(RoomSyncStateError):
             service.request_push(link, ResourceSyncOperation.CREATE)
 
-    def test_does_not_overwrite_the_callers_unsaved_pending_fields(
+    def test_field_outside_the_synced_set_is_refused(
         self,
         service: RoomSyncService,
         room: Calendar,
@@ -459,14 +469,44 @@ class TestRequestPush:
         location: ResourceLocation,
         enqueued: MagicMock,
     ) -> None:
-        link = _synced_on_provider(room, directory, location, pending_fields={"capacity": 10})
-        link.pending_fields = {"capacity": 12}
+        link = _synced_on_provider(room, directory, location)
 
-        service.request_push(link, ResourceSyncOperation.UPDATE)
+        with pytest.raises(ValueError, match="is_private"):
+            service.request_push(link, ResourceSyncOperation.UPDATE, {"is_private": True})
 
-        assert link.pending_fields == {"capacity": 12}
-        link.refresh_from_db()
-        assert link.pending_fields == {"capacity": 10}
+        assert _state(link)["sync_status"] == ResourceSyncStatus.SYNCED
+        assert enqueued.call_count == 0
+
+    def test_repeated_edits_of_a_failing_push_keep_one_retry_chain(
+        self,
+        service: RoomSyncService,
+        room: Calendar,
+        directory: FakeRoomDirectory,
+        location: ResourceLocation,
+        enqueued: MagicMock,
+        django_capture_on_commit_callbacks: Callable[..., Any],
+    ) -> None:
+        link = _synced_on_provider(room, directory, location)
+        with django_capture_on_commit_callbacks(execute=True):
+            service.request_push(link, ResourceSyncOperation.UPDATE, {"capacity": 10})
+            service.request_push(link, ResourceSyncOperation.UPDATE, {"capacity": 11})
+            service.request_push(link, ResourceSyncOperation.UPDATE, {"name": "Annex"})
+        assert enqueued.call_count == 3
+        directory.failures = [ResourceDirectoryError("Rate limited")] * 3
+
+        outcomes = [
+            service.push(queued.kwargs["link_id"], queued.kwargs["attempt_count"])
+            for queued in enqueued.call_args_list
+        ]
+
+        # The first task fails and queues attempt 1; the other two are stale.
+        assert outcomes == [
+            RoomPushOutcome(retry_attempt=1, retry_deadline=NOW + PUSH_RETRY_WINDOW),
+            RoomPushOutcome(),
+            RoomPushOutcome(),
+        ]
+        assert directory.calls == ["update_room"]
+        assert _state(link)["attempt_count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +536,7 @@ class TestPushSuccess:
         )
 
         with django_capture_on_commit_callbacks(execute=True):
-            outcome = service.push(link.pk)
+            outcome = service.push(link.pk, link.attempt_count)
 
         assert outcome == RoomPushOutcome()
         external_id = f"vinta-{link.provisional_key}"
@@ -550,7 +590,7 @@ class TestPushSuccess:
             pending_fields={"name": "Boardroom West"},
         )
 
-        service.push(link.pk)
+        service.push(link.pk, link.attempt_count)
 
         created = directory.rooms[f"vinta-{link.provisional_key}"]
         assert (created.name, created.description, created.capacity) == (
@@ -575,9 +615,9 @@ class TestPushSuccess:
             sync_status=ResourceSyncStatus.PENDING_CREATION,
             pending_fields=_values(location),
         )
-        service.push(link.pk)
+        service.push(link.pk, link.attempt_count)
 
-        outcome = service.push(link.pk)
+        outcome = service.push(link.pk, link.attempt_count)
 
         assert outcome == RoomPushOutcome()
         assert directory.calls == ["create_room"]
@@ -603,7 +643,7 @@ class TestPushSuccess:
             RoomWriteData.from_synced_values(_values(location), link.provisional_key)
         )
 
-        service.push(link.pk)
+        service.push(link.pk, link.attempt_count)
 
         assert list(directory.rooms) == [f"vinta-{link.provisional_key}"]
         assert _state(link)["sync_status"] == ResourceSyncStatus.SYNCED
@@ -630,7 +670,7 @@ class TestPushSuccess:
         directory.rooms[room.external_id].name = "Renamed by IT"
 
         with django_capture_on_commit_callbacks(execute=True):
-            service.push(link.pk)
+            service.push(link.pk, link.attempt_count)
 
         provider_room = directory.rooms[room.external_id]
         assert (provider_room.name, provider_room.capacity) == ("Renamed by IT", 10)
@@ -657,51 +697,10 @@ class TestPushSuccess:
             room, directory, location, sync_status=ResourceSyncStatus.PENDING_UPDATE
         )
 
-        service.push(link.pk)
+        service.push(link.pk, link.attempt_count)
 
         assert directory.calls == []
         assert _state(link)["sync_status"] == ResourceSyncStatus.SYNCED
-
-    def test_field_edited_again_while_the_push_was_in_flight_is_kept(
-        self,
-        service: RoomSyncService,
-        room: Calendar,
-        directory: FakeRoomDirectory,
-        location: ResourceLocation,
-        enqueued: MagicMock,
-        django_capture_on_commit_callbacks: Callable[..., Any],
-    ) -> None:
-        link = _synced_on_provider(
-            room,
-            directory,
-            location,
-            sync_status=ResourceSyncStatus.PENDING_UPDATE,
-            pending_fields={"capacity": 10, "name": "Boardroom West"},
-            retry_deadline=NOW + datetime.timedelta(minutes=5),
-        )
-
-        def edit_capacity_mid_push(method: str) -> None:
-            ResourceCalendarProviderLink.objects.filter(pk=link.pk).update(
-                pending_fields={"capacity": 12, "name": "Boardroom West"}
-            )
-
-        directory.on_write = edit_capacity_mid_push
-
-        with django_capture_on_commit_callbacks(execute=True):
-            service.push(link.pk)
-
-        link.refresh_from_db()
-        assert link.pending_fields == {"capacity": 12}
-        assert link.provider_snapshot == _values(location, capacity=10, name="Boardroom West")
-        # Still pending, with a fresh window, and the remaining edit is queued.
-        assert _state(link) == {
-            "sync_status": ResourceSyncStatus.PENDING_UPDATE,
-            "failed_operation": "",
-            "last_error": "",
-            "attempt_count": 0,
-            "retry_deadline": NOW + PUSH_RETRY_WINDOW,
-        }
-        assert enqueued.call_args_list == [_queued(link)]
 
     def test_delete(
         self,
@@ -718,7 +717,7 @@ class TestPushSuccess:
         )
 
         with django_capture_on_commit_callbacks(execute=True):
-            service.push(link.pk)
+            service.push(link.pk, link.attempt_count)
 
         assert directory.rooms == {}
         link.refresh_from_db()
@@ -745,7 +744,7 @@ class TestPushSuccess:
             archived_at=accepted_at,
         )
 
-        service.push(link.pk)
+        service.push(link.pk, link.attempt_count)
 
         link.refresh_from_db()
         assert link.archived_at == accepted_at
@@ -763,7 +762,7 @@ class TestPushSuccess:
         )
         directory.rooms.clear()
 
-        service.push(link.pk)
+        service.push(link.pk, link.attempt_count)
 
         assert _state(link)["sync_status"] == ResourceSyncStatus.ARCHIVED
         assert notifier.notify_sync_failed.call_count == 0
@@ -795,7 +794,7 @@ class TestPushSuccess:
         )
         before = _state(link)
 
-        assert service.push(link.pk) == RoomPushOutcome()
+        assert service.push(link.pk, link.attempt_count) == RoomPushOutcome()
 
         assert directory.calls == []
         assert _state(link) == before
@@ -803,8 +802,32 @@ class TestPushSuccess:
     def test_push_of_a_missing_link_does_nothing(
         self, service: RoomSyncService, bound: None, directory: FakeRoomDirectory
     ) -> None:
-        assert service.push(999_999) == RoomPushOutcome()
+        assert service.push(999_999, 0) == RoomPushOutcome()
         assert directory.calls == []
+
+    def test_push_with_a_stale_attempt_count_does_nothing(
+        self,
+        service: RoomSyncService,
+        room: Calendar,
+        directory: FakeRoomDirectory,
+        location: ResourceLocation,
+    ) -> None:
+        # Attempt 3 already ran and queued attempt 4; this is a leftover task.
+        link = _synced_on_provider(
+            room,
+            directory,
+            location,
+            sync_status=ResourceSyncStatus.PENDING_UPDATE,
+            pending_fields={"capacity": 10},
+            attempt_count=4,
+            retry_deadline=NOW + datetime.timedelta(hours=1),
+        )
+        before = _state(link)
+
+        assert service.push(link.pk, 3) == RoomPushOutcome()
+
+        assert directory.calls == []
+        assert _state(link) == before
 
 
 # ---------------------------------------------------------------------------
@@ -844,7 +867,7 @@ class TestPushFailure:
         )
         directory.failures = [error]
 
-        outcome = service.push(link.pk)
+        outcome = service.push(link.pk, link.attempt_count)
 
         assert outcome == RoomPushOutcome(retry_attempt=3, retry_deadline=deadline)
         assert _state(link) == {
@@ -879,7 +902,7 @@ class TestPushFailure:
         with patch.object(
             resolver, "adapter_for", side_effect=ResourceDirectoryNotWriteEnabledError()
         ):
-            outcome = service.push(link.pk)
+            outcome = service.push(link.pk, link.attempt_count)
 
         assert outcome == RoomPushOutcome(
             retry_attempt=1, retry_deadline=NOW + datetime.timedelta(hours=1)
@@ -909,7 +932,7 @@ class TestPushFailure:
         directory.failures = [ResourceDirectoryError("Provider unavailable")]
 
         with django_capture_on_commit_callbacks(execute=True):
-            outcome = service.push(link.pk)
+            outcome = service.push(link.pk, link.attempt_count)
 
         assert outcome == RoomPushOutcome()
         assert _state(link) == {
@@ -958,7 +981,7 @@ class TestPushFailure:
             django_capture_on_commit_callbacks(execute=True),
         ):
             new_scope.return_value.__enter__.return_value = scope
-            service.push(link.pk)
+            service.push(link.pk, link.attempt_count)
 
         tags = {call.args[0]: call.args[1] for call in scope.set_tag.call_args_list}
         assert tags == {
@@ -1019,7 +1042,7 @@ class TestPushFailure:
         directory.failures = [error]
 
         with django_capture_on_commit_callbacks(execute=True):
-            outcome = service.push(link.pk)
+            outcome = service.push(link.pk, link.attempt_count)
 
         assert outcome == RoomPushOutcome()
         assert _state(link) == {
@@ -1051,7 +1074,7 @@ class TestPushFailure:
         )
         directory.failures = [KeyError("capacity")]
 
-        outcome = service.push(link.pk)
+        outcome = service.push(link.pk, link.attempt_count)
 
         assert outcome == RoomPushOutcome(retry_attempt=1, retry_deadline=NOW + PUSH_RETRY_WINDOW)
         assert _state(link)["last_error"] == (
@@ -1074,7 +1097,7 @@ class TestPushFailure:
         )
         directory.failures = [ResourceDirectoryError("Provider unavailable")]
 
-        assert service.push(link.pk) == RoomPushOutcome(
+        assert service.push(link.pk, link.attempt_count) == RoomPushOutcome(
             retry_attempt=1, retry_deadline=NOW + PUSH_RETRY_WINDOW
         )
         assert _state(link)["retry_deadline"] == NOW + PUSH_RETRY_WINDOW
@@ -1100,7 +1123,7 @@ class TestPushFailure:
         resolver.write_enabled = False
         before = _state(link)
 
-        assert service.push(link.pk) == RoomPushOutcome()
+        assert service.push(link.pk, link.attempt_count) == RoomPushOutcome()
 
         assert _state(link) == before
         link.refresh_from_db()
@@ -1157,6 +1180,33 @@ class TestRetry:
         }
         assert enqueued.call_args_list == [_queued(link)]
 
+    def test_retry_of_a_failed_update_sends_the_edits_made_while_it_was_failed(
+        self,
+        service: RoomSyncService,
+        room: Calendar,
+        directory: FakeRoomDirectory,
+        location: ResourceLocation,
+        enqueued: MagicMock,
+        django_capture_on_commit_callbacks: Callable[..., Any],
+    ) -> None:
+        link = _synced_on_provider(
+            room,
+            directory,
+            location,
+            sync_status=ResourceSyncStatus.SYNC_FAILED,
+            failed_operation=ResourceSyncOperation.UPDATE,
+            pending_fields={"capacity": 10},
+        )
+        service.request_push(link, ResourceSyncOperation.UPDATE, {"name": "Annex"})
+
+        with django_capture_on_commit_callbacks(execute=True):
+            service.retry(link)
+        service.push(link.pk, 0)
+
+        provider_room = directory.rooms[room.external_id]
+        assert (provider_room.name, provider_room.capacity) == ("Annex", 10)
+        assert _state(link)["sync_status"] == ResourceSyncStatus.SYNCED
+
     @pytest.mark.parametrize(
         "sync_status",
         [
@@ -1212,19 +1262,21 @@ def test_transient_failures_past_the_window_end_in_sync_failed_and_one_email(
         resource_directory_adapter_resolver=resolver,
         room_sync_notifier=RoomSyncNotifier(notification_service=notification_service),
     )
-    link = _synced_on_provider(room, directory, location, pending_fields={"capacity": 10})
+    link = _synced_on_provider(room, directory, location)
 
     with freeze_time(NOW) as frozen, django_capture_on_commit_callbacks(execute=True):
-        service.request_push(link, ResourceSyncOperation.UPDATE)
+        service.request_push(link, ResourceSyncOperation.UPDATE, {"capacity": 10})
         # Fails transiently on every attempt until 6 hours and 1 minute have passed.
         give_up_at = NOW + PUSH_RETRY_WINDOW + datetime.timedelta(minutes=1)
         statuses = [_state(link)["sync_status"]]
+        attempt_count = 0
         for _attempt in range(100):  # bounded, so a regression fails instead of hanging
             if timezone.now() < give_up_at:
                 directory.failures = [ResourceDirectoryError("Provider unavailable")]
-            outcome = service.push(link.pk)
+            outcome = service.push(link.pk, attempt_count)
             if outcome.retry_attempt is None:
                 break
+            attempt_count = outcome.retry_attempt
             statuses.append(_state(link)["sync_status"])
             countdown = push_retry_countdown(outcome.retry_attempt, outcome.retry_deadline)
             frozen.tick(datetime.timedelta(seconds=countdown))

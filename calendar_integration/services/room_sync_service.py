@@ -5,11 +5,11 @@ the room's ``ResourceCalendarProviderLink``. ``RoomSyncService`` then writes it 
 the provider (Google Workspace or Microsoft 365) from a Celery task, retrying with
 backoff, and moves the link through its lifecycle:
 
-- ``request_push(link, operation)`` marks the link pending and queues a push once
-  the caller's transaction commits.
-- ``push(link_id)`` runs in ``push_room_to_provider_task``. It locks the link row,
-  calls the provider through the ``ResourceDirectoryAdapterResolver``, and records
-  the result. It returns a ``RoomPushOutcome`` that tells the task whether to
+- ``request_push(link, operation, fields)`` records the change on the link, marks
+  it pending and queues a push once the caller's transaction commits.
+- ``push(link_id, attempt_count)`` runs in ``push_room_to_provider_task``. It
+  locks the link row, calls the provider through the
+  ``ResourceDirectoryAdapterResolver``, and records the result. It returns a ``RoomPushOutcome`` that tells the task whether to
   queue another attempt; the task owns the backoff countdown.
 - ``retry(link)`` starts a failed link over, from the operation that failed.
 
@@ -91,9 +91,8 @@ _OPERATION_BY_PENDING_STATUS: dict[str, str] = {
     status: operation for operation, status in _PENDING_STATUS_BY_OPERATION.items()
 }
 
-# The link columns this service owns. ``request_push`` and ``retry`` re-read them
-# under the row lock and save only them, so a caller's unsaved ``pending_fields``
-# edit on the same instance is neither lost nor overwritten.
+# The link's sync state columns. ``request_push`` and ``retry`` re-read them (and
+# ``pending_fields``) under the row lock and save only those columns.
 _STATE_FIELDS: tuple[str, ...] = (
     "sync_status",
     "failed_operation",
@@ -110,8 +109,9 @@ class RoomPushOutcome:
 
     ``retry_attempt`` is set when the push failed transiently before its deadline:
     it is the link's new ``attempt_count``, and the task queues the next attempt
-    with the backoff countdown for it. ``retry_deadline`` is the link's deadline,
-    so the task can run the last attempt at the deadline rather than after it.
+    with that count and the backoff countdown for it. ``retry_deadline`` is the
+    link's deadline, so the task can run the last attempt at the deadline rather
+    than after it.
     ``retry_attempt`` ``None`` means nothing more to schedule.
     """
 
@@ -139,16 +139,24 @@ class RoomSyncService:
     # Public API
     # ------------------------------------------------------------------
 
-    def request_push(self, link: ResourceCalendarProviderLink, operation: str) -> None:
-        """Mark ``link`` as waiting on ``operation`` and queue a push after commit.
+    def request_push(
+        self,
+        link: ResourceCalendarProviderLink,
+        operation: str,
+        fields: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Record ``operation`` on ``link`` and queue a push after commit.
 
-        Call it in the same transaction that wrote the change: for an edit, after
-        saving the new values into ``link.pending_fields``. The push is queued with
-        ``transaction.on_commit``, so a rolled-back write pushes nothing.
+        ``fields`` is the edit to send, keyed by ``RESOURCE_SYNCED_FIELDS``. It is
+        merged into ``pending_fields`` here, under the link's row lock, so pass the
+        edit in rather than writing ``pending_fields`` yourself: an edit saved
+        outside the lock can overwrite what a push in flight records. A delete
+        stamps ``archived_at`` when it is not set yet.
 
-        The link row is locked first, which waits for a push already in flight, and
-        the status is decided from the row as that push left it. Only the sync
-        state columns are written; ``link`` is updated in place to match.
+        The row lock waits for a push already in flight, and the status is decided
+        from the row as that push left it. ``link`` is refreshed from the row and
+        updated in place. The push is queued with ``transaction.on_commit``, so a
+        rolled-back write pushes nothing.
 
         Transitions (spec **State transitions & edge cases**):
 
@@ -156,71 +164,87 @@ class RoomSyncService:
           creation.
         - ``UPDATE``: from synced or pending update to pending update. While the
           create is still pending, the edit is merged into the create and the
-          status stays. While the link is in sync failed, the edit waits for a
-          manual ``retry``.
+          status stays. While the link is in sync failed, the edit is kept and
+          waits for a manual ``retry``.
         - ``DELETE``: to pending deletion. A room whose create was never
           confirmed (pending creation, or sync failed on a create) goes straight
           to archived, with no provider call.
 
         ``retry_deadline`` is set to now + ``PUSH_RETRY_WINDOW`` when the link was
         not already pending, and kept otherwise, so a stream of edits cannot keep a
-        failing push retrying forever.
+        failing push retrying forever. Every request that leaves the link pending
+        queues a push with the link's ``attempt_count``; ``push`` drops any task
+        whose count is stale, so a link never has more than one retry chain.
 
         Raises:
             RoomSyncStateError: the operation is not allowed from the link's status,
                 for example an edit of a room that is pending deletion or archived.
+            ValueError: ``fields`` names a field that is not synced to the provider.
         """
+        unknown = set(fields or {}) - set(RESOURCE_SYNCED_FIELDS)
+        if unknown:
+            raise ValueError(f"Not synced to the provider: {sorted(unknown)!r}")
+
         with transaction.atomic():
             self._lock_and_refresh(link)
-            self._request_push_locked(link, operation, retrying=False)
+            status = link.sync_status
+            failed_operation = (
+                link.failed_operation if status == ResourceSyncStatus.SYNC_FAILED else ""
+            )
+            create_unconfirmed = (
+                status == ResourceSyncStatus.PENDING_CREATION
+                or failed_operation == ResourceSyncOperation.CREATE
+            )
 
-    def _request_push_locked(
-        self, link: ResourceCalendarProviderLink, operation: str, *, retrying: bool
-    ) -> None:
-        """``request_push`` once the row is locked. ``retrying`` lifts the sync-failed hold."""
-        status = link.sync_status
-        failed_operation = link.failed_operation if status == ResourceSyncStatus.SYNC_FAILED else ""
-        create_unconfirmed = (
-            status == ResourceSyncStatus.PENDING_CREATION
-            or failed_operation == ResourceSyncOperation.CREATE
-        )
+            if status == ResourceSyncStatus.ARCHIVED:
+                raise RoomSyncStateError("An archived room cannot be changed.")
+            if operation == ResourceSyncOperation.UPDATE:
+                if status == ResourceSyncStatus.PENDING_DELETION or (
+                    failed_operation == ResourceSyncOperation.DELETE
+                ):
+                    raise RoomSyncStateError("A room that is being deleted cannot be edited.")
+            elif operation == ResourceSyncOperation.CREATE:
+                if not create_unconfirmed:
+                    raise RoomSyncStateError("This room was already created on the provider.")
+            elif operation != ResourceSyncOperation.DELETE:
+                raise ValueError(f"Unknown room sync operation: {operation!r}")
 
-        if status == ResourceSyncStatus.ARCHIVED:
-            raise RoomSyncStateError("An archived room cannot be changed.")
+            if fields:
+                link.pending_fields = {**link.pending_fields, **fields}
 
-        if operation == ResourceSyncOperation.DELETE:
-            if create_unconfirmed:
-                # The create was never confirmed: a confirmed create moves the link
-                # to synced in the same transaction that records the provider id.
-                # So there is no known provider room to delete.
-                self._archive_without_provider(link)
-                return
-        elif operation == ResourceSyncOperation.UPDATE:
-            if status == ResourceSyncStatus.PENDING_DELETION or (
-                failed_operation == ResourceSyncOperation.DELETE
+            if operation == ResourceSyncOperation.DELETE:
+                link.archived_at = link.archived_at or timezone.now()
+                if create_unconfirmed:
+                    # The create was never confirmed: a confirmed create moves the
+                    # link to synced in the same transaction that records the
+                    # provider id. So there is no known provider room to delete.
+                    self._archive_without_provider(link)
+                else:
+                    self._mark_pending(link, ResourceSyncStatus.PENDING_DELETION)
+            elif operation == ResourceSyncOperation.CREATE or not (
+                create_unconfirmed or status == ResourceSyncStatus.SYNC_FAILED
             ):
-                raise RoomSyncStateError("A room that is being deleted cannot be edited.")
-            if create_unconfirmed or (status == ResourceSyncStatus.SYNC_FAILED and not retrying):
-                # Pending creation: the queued create sends the merged values.
-                # Sync failed: the edit goes out with the manual retry.
-                return
-        elif operation == ResourceSyncOperation.CREATE:
-            if not create_unconfirmed:
-                raise RoomSyncStateError("This room was already created on the provider.")
-        else:
-            raise ValueError(f"Unknown room sync operation: {operation!r}")
+                self._mark_pending(link, _PENDING_STATUS_BY_OPERATION[operation])
+            # Otherwise an update while the create is pending (the create sends the
+            # merged values) or while sync failed (the edit goes out with the retry).
 
-        self._mark_pending(link, _PENDING_STATUS_BY_OPERATION[operation])
-        link.save(update_fields=[*_STATE_FIELDS, "modified"])
-        self._enqueue(link)
+            link.save(update_fields=[*_STATE_FIELDS, "pending_fields", "modified"])
+            if link.sync_status in _OPERATION_BY_PENDING_STATUS:
+                self._enqueue(link)
 
-    def push(self, link_id: int) -> RoomPushOutcome:
+    def push(self, link_id: int, attempt_count: int) -> RoomPushOutcome:
         """Push the change ``link_id`` is waiting on to the provider.
 
         Holds the link's row lock for the whole push, provider call included, so
         two pushes of one link run one after the other and the second sees what
         the first did. A link that is not pending (already synced, failed or
         archived, or deleted) is left as it is: that is a replayed task.
+
+        ``attempt_count`` is the link's ``attempt_count`` when the task was
+        queued. A task whose count no longer matches is stale and does nothing:
+        another task with the same count already ran, and either finished the
+        push or queued the next attempt. That keeps one retry chain per link, no
+        matter how many times ``request_push`` queued a task.
 
         A link whose organization is no longer write-enabled for its provider is
         also left untouched. ``is_write_enabled`` is False when the
@@ -232,7 +256,11 @@ class RoomSyncService:
         """
         with transaction.atomic():
             link = ResourceCalendarProviderLink.objects.locked_for_update(link_id).first()
-            if link is None or link.sync_status not in _OPERATION_BY_PENDING_STATUS:
+            if (
+                link is None
+                or link.sync_status not in _OPERATION_BY_PENDING_STATUS
+                or link.attempt_count != attempt_count
+            ):
                 return RoomPushOutcome()
             organization = link.organization
             if not self.resolver.is_write_enabled(organization, link.provider):
@@ -266,10 +294,10 @@ class RoomSyncService:
     def retry(self, link: ResourceCalendarProviderLink) -> None:
         """Start a failed link over from the operation that failed.
 
-        Requests a push of ``failed_operation``, as ``request_push`` does: sync
-        failed goes back to pending creation, pending update or pending deletion,
-        with the attempts reset and a fresh retry deadline. Unlike ``request_push``,
-        a failed update is pushed again rather than held for this retry.
+        Sync failed goes back to pending creation, pending update or pending
+        deletion, with the attempts reset and a fresh retry deadline, and a push
+        is queued after commit. Edits made while the link was in sync failed are
+        still in ``pending_fields`` and go out with it.
 
         Raises:
             RoomSyncStateError: the link is not in sync failed.
@@ -278,7 +306,9 @@ class RoomSyncService:
             self._lock_and_refresh(link)
             if link.sync_status != ResourceSyncStatus.SYNC_FAILED or not link.failed_operation:
                 raise RoomSyncStateError("Only a room whose sync failed can be retried.")
-            self._request_push_locked(link, link.failed_operation, retrying=True)
+            self._mark_pending(link, _PENDING_STATUS_BY_OPERATION[link.failed_operation])
+            link.save(update_fields=[*_STATE_FIELDS, "modified"])
+            self._enqueue(link)
 
     # ------------------------------------------------------------------
     # Status changes
@@ -287,7 +317,7 @@ class RoomSyncService:
     def _lock_and_refresh(self, link: ResourceCalendarProviderLink) -> None:
         # Waits for a push in flight, then reads the state that push left.
         ResourceCalendarProviderLink.objects.locked_for_update(link.pk).get()
-        link.refresh_from_db(fields=list(_STATE_FIELDS))
+        link.refresh_from_db(fields=[*_STATE_FIELDS, "pending_fields"])
 
     def _mark_pending(self, link: ResourceCalendarProviderLink, status: str) -> None:
         already_pending = link.sync_status in _OPERATION_BY_PENDING_STATUS
@@ -328,21 +358,12 @@ class RoomSyncService:
             link.archived_at = link.archived_at or timezone.now()
             link.last_synced_at = timezone.now()
         else:
-            # A writer that skipped the row lock may have changed pending_fields
-            # while the provider call ran. Re-read them so ``mark_pushed`` keeps
-            # such an edit instead of clearing it.
-            link.refresh_from_db(fields=["pending_fields"])
             link.mark_pushed(pushed_fields, room.synced_values() if room is not None else None)
             link.sync_status = ResourceSyncStatus.SYNCED
         link.failed_operation = ""
         link.last_error = ""
         link.attempt_count = 0
         link.retry_deadline = None
-
-        leftover_edit = operation != ResourceSyncOperation.DELETE and bool(link.pending_fields)
-        if leftover_edit:
-            # Edited again during the push: the remaining fields go out next.
-            self._mark_pending(link, ResourceSyncStatus.PENDING_UPDATE)
         link.save(
             update_fields=[
                 *_STATE_FIELDS,
@@ -352,8 +373,6 @@ class RoomSyncService:
                 "modified",
             ]
         )
-        if leftover_edit:
-            self._enqueue(link)
 
         logger.info("Room link %s pushed to the provider (%s).", link.pk, operation)
         self._audit(
@@ -486,9 +505,10 @@ class RoomSyncService:
 
         link_id = link.pk
         organization_id = link.organization_id
+        attempt_count = link.attempt_count
         transaction.on_commit(
             lambda: push_room_to_provider_task.delay(  # type: ignore[attr-defined]
-                link_id=link_id, organization_id=organization_id
+                link_id=link_id, organization_id=organization_id, attempt_count=attempt_count
             )
         )
 

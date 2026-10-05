@@ -3,7 +3,7 @@
 The task binds the link's organization, runs ``RoomSyncService.push`` and queues
 the next attempt with a backoff countdown. These tests cover the binding, the
 countdown sequence, the wiring through the DI container, and that two pushes of
-one link serialize on the link's row lock.
+one link, or a push and an edit, serialize on the link's row lock.
 """
 
 import datetime
@@ -62,10 +62,10 @@ class _RecordingService:
 
     def __init__(self, outcome: RoomPushOutcome) -> None:
         self.outcome = outcome
-        self.calls: list[tuple[int, Organization | None]] = []
+        self.calls: list[tuple[int, int, Organization | None]] = []
 
-    def push(self, link_id: int) -> RoomPushOutcome:
-        self.calls.append((link_id, get_current_organization()))
+    def push(self, link_id: int, attempt_count: int) -> RoomPushOutcome:
+        self.calls.append((link_id, attempt_count, get_current_organization()))
         return self.outcome
 
 
@@ -83,10 +83,11 @@ class TestPushTask:
         push_room_to_provider_task(
             link_id=7,
             organization_id=organization.id,
+            attempt_count=2,
             room_sync_service=service,  # type: ignore[arg-type]
         )
 
-        assert service.calls == [(7, organization)]
+        assert service.calls == [(7, 2, organization)]
         assert get_current_organization() is None
 
     def test_missing_organization_does_nothing(self, db: Any) -> None:
@@ -95,6 +96,7 @@ class TestPushTask:
         push_room_to_provider_task(
             link_id=7,
             organization_id=999_999,
+            attempt_count=0,
             room_sync_service=service,  # type: ignore[arg-type]
         )
 
@@ -112,11 +114,13 @@ class TestPushTask:
             push_room_to_provider_task(
                 link_id=7,
                 organization_id=organization.id,
+                attempt_count=2,
                 room_sync_service=service,  # type: ignore[arg-type]
             )
 
         apply_async.assert_called_once_with(
-            kwargs={"link_id": 7, "organization_id": organization.id}, countdown=240
+            kwargs={"link_id": 7, "organization_id": organization.id, "attempt_count": 3},
+            countdown=240,
         )
 
     def test_nothing_is_queued_when_the_push_is_done(self, organization: Organization) -> None:
@@ -126,6 +130,7 @@ class TestPushTask:
             push_room_to_provider_task(
                 link_id=7,
                 organization_id=organization.id,
+                attempt_count=0,
                 room_sync_service=service,  # type: ignore[arg-type]
             )
 
@@ -144,6 +149,7 @@ class TestPushTask:
                 kwargs={
                     "link_id": 7,
                     "organization_id": organization.id,
+                    "attempt_count": 0,
                     "room_sync_service": service,
                 }
             )
@@ -219,6 +225,7 @@ def test_two_pushes_of_one_link_serialize_on_the_row_lock() -> None:
             push_room_to_provider_task(
                 link_id=link.pk,
                 organization_id=organization.id,
+                attempt_count=0,
                 room_sync_service=service,  # type: ignore[arg-type]
             )
         except BaseException as exc:  # noqa: BLE001 -- a thread error must fail the test
@@ -233,18 +240,7 @@ def test_two_pushes_of_one_link_serialize_on_the_row_lock() -> None:
     second.start()
 
     # The second push must be waiting on the link's row lock, not running.
-    waiting = 0
-    for _poll in range(100):
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT count(*) FROM pg_stat_activity "
-                "WHERE datname = current_database() AND wait_event_type = 'Lock'"
-            )
-            waiting = cursor.fetchone()[0]
-        if waiting:
-            break
-        threading.Event().wait(0.05)
-    assert waiting == 1
+    assert _wait_for_a_lock_waiter() == 1
     assert directory.calls == ["create_room"]
 
     release_first.set()
@@ -257,3 +253,89 @@ def test_two_pushes_of_one_link_serialize_on_the_row_lock() -> None:
     with organization_context(organization):
         link.refresh_from_db()
     assert link.sync_status == ResourceSyncStatus.SYNCED
+
+
+def _wait_for_a_lock_waiter() -> int:
+    waiting = 0
+    for _poll in range(100):
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            )
+            waiting = cursor.fetchone()[0]
+        if waiting:
+            break
+        threading.Event().wait(0.05)
+    return waiting
+
+
+@pytest.mark.django_db(transaction=True)
+def test_edit_made_while_a_push_is_in_flight_is_pushed_next() -> None:
+    organization = Organization.objects.create(name="Room Edit Lock Org")
+    link = _make_pending_room(organization)
+    directory = FakeRoomDirectory()
+    service = RoomSyncService(
+        resource_directory_adapter_resolver=FakeRoomDirectoryResolver(directory),
+        room_sync_notifier=MagicMock(spec=RoomSyncNotifier),
+    )
+    in_provider = threading.Event()
+    release = threading.Event()
+
+    def hold_the_update(method: str) -> None:
+        if method == "update_room" and not in_provider.is_set():
+            in_provider.set()
+            assert release.wait(timeout=10)
+
+    errors: list[BaseException] = []
+
+    def in_thread(target: Callable[[], object]) -> threading.Thread:
+        def run() -> None:
+            try:
+                with organization_context(organization):
+                    target()
+            except BaseException as exc:  # noqa: BLE001 -- a thread error must fail the test
+                errors.append(exc)
+            finally:
+                connection.close()
+
+        return threading.Thread(target=run)
+
+    def edit() -> None:
+        editor_copy = ResourceCalendarProviderLink.objects.get(pk=link.pk)
+        service.request_push(editor_copy, ResourceSyncOperation.UPDATE, {"capacity": 12})
+
+    # Pushes are run by hand here, so nothing queued may run on its own.
+    with patch.object(push_room_to_provider_task, "delay"):
+        with organization_context(organization):
+            service.push(link.pk, 0)
+            link.refresh_from_db()
+            service.request_push(link, ResourceSyncOperation.UPDATE, {"capacity": 10})
+        directory.on_write = hold_the_update
+
+        pusher = in_thread(lambda: service.push(link.pk, 0))
+        editor = in_thread(edit)
+        pusher.start()
+        assert in_provider.wait(timeout=10)
+        editor.start()
+        # The edit waits for the push to finish instead of writing under it.
+        assert _wait_for_a_lock_waiter() == 1
+        release.set()
+        pusher.join(timeout=10)
+        editor.join(timeout=10)
+
+        assert errors == []
+        with organization_context(organization):
+            link.refresh_from_db()
+            assert link.sync_status == ResourceSyncStatus.PENDING_UPDATE
+            assert link.pending_fields == {"capacity": 12}
+            assert link.provider_snapshot["capacity"] == 10
+
+            service.push(link.pk, 0)
+
+            link.refresh_from_db()
+
+    assert directory.calls == ["create_room", "update_room", "update_room"]
+    assert directory.rooms[f"vinta-{link.provisional_key}"].capacity == 12
+    assert link.sync_status == ResourceSyncStatus.SYNCED
+    assert link.pending_fields == {}

@@ -51,31 +51,38 @@ def push_retry_countdown(attempt: int, deadline: datetime.datetime | None = None
 def push_room_to_provider_task(
     link_id: int,
     organization_id: int,
+    attempt_count: int,
     room_sync_service: RoomSyncService = Provide["room_sync_service"],
 ):
     """Push the change a ``ResourceCalendarProviderLink`` is waiting on to the provider.
 
     Binds the link's organization, runs ``RoomSyncService.push`` and, when the push
     failed transiently before its deadline, queues the next attempt with the backoff
-    countdown. Safe to run twice: a link that is no longer pending is left alone.
+    countdown. ``attempt_count`` is the link's attempt count when the task was
+    queued; ``push`` ignores a task whose count is stale. Safe to run twice: a link
+    that is no longer pending is left alone.
     """
     organization = Organization.objects.filter(id=organization_id).first()
     if organization is None:
         return
 
     with organization_context(organization):
-        outcome = room_sync_service.push(link_id)
+        outcome = room_sync_service.push(link_id, attempt_count)
 
     if outcome.retry_attempt is None:
         return
     if push_room_to_provider_task.request.is_eager:
         # This run was eager (``CELERY_TASK_ALWAYS_EAGER``, the local default), so
         # the retry would run inline too, ignoring the countdown, and every retry
-        # would run back to back until the deadline. The link stays pending; a
-        # later request_push or retry pushes it again.
+        # would run back to back until the deadline. The link stays pending, and
+        # the next request_push queues a push with its current attempt count.
         logger.warning("Not retrying room link %s push: Celery runs eagerly.", link_id)
         return
     push_room_to_provider_task.apply_async(
-        kwargs={"link_id": link_id, "organization_id": organization_id},
+        kwargs={
+            "link_id": link_id,
+            "organization_id": organization_id,
+            "attempt_count": outcome.retry_attempt,
+        },
         countdown=push_retry_countdown(outcome.retry_attempt, outcome.retry_deadline),
     )

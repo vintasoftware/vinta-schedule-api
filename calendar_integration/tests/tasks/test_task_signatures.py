@@ -64,7 +64,7 @@ from calendar_integration.tasks.calendar_sync_tasks import resync_organization_c
         pytest.param(
             push_room_to_provider_task,
             (),
-            {"link_id": 1, "organization_id": 1},
+            {"link_id": 1, "organization_id": 1, "attempt_count": 0},
             # Also the kwargs the task's own retry passes to `apply_async`.
             id="push_room_to_provider-RoomSyncService._enqueue",
         ),
