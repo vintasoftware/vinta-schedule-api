@@ -13,9 +13,9 @@
     "databases": {
       "dev": {
         "engine": "postgres",
-        "delivery": "external",
+        "delivery": "compose",
         "name": "vinta_schedule_api",
-        "server_url": "postgres://localhost:5432",
+        "server_url": "postgres://db:5432",
         "connection_url_var": "DATABASE_URL"
       }
     }
