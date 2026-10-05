@@ -1,5 +1,6 @@
 """Tests for AppointmentType GraphQL types, queries, and mutations."""
 
+import json
 from datetime import timedelta
 from unittest.mock import Mock, patch
 
@@ -8,6 +9,7 @@ from django.utils import timezone
 import pytest
 from graphql import GraphQLError
 from model_bakery import baker
+from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
@@ -31,8 +33,11 @@ from calendar_integration.mutations import (
 from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization
+from public_api.constants import PublicAPIResources
+from public_api.models import ResourceAccess
 from public_api.queries import DateTimeRangeInput, Query, QueryDependencies
 from public_api.schema import schema
+from public_api.services import PublicAPIAuthService
 
 
 @pytest.fixture
@@ -134,6 +139,37 @@ def test_appointment_types_query_lists_org_scoped(organization, clinic_appointme
     info = _mock_info_with_org(organization)
     results = Query().appointment_types(info=info)
     assert [g.id for g in results] == [clinic_appointment_type.id]
+
+
+@pytest.mark.django_db
+@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+def test_appointment_types_query_returns_duration_seconds(
+    mock_rate_limiter, organization, clinic_appointment_type
+):
+    mock_rate_limiter.return_value = iter([None])
+    no_duration = AppointmentType.objects.create(organization=organization, name="No duration")
+    system_user, token = PublicAPIAuthService().create_system_user(
+        integration_name="test_integration", organization=organization
+    )
+    ResourceAccess.objects.create(
+        system_user=system_user, resource_name=PublicAPIResources.APPOINTMENT_TYPE
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {system_user.id}:{token}")
+
+    response = client.post(
+        "/graphql/",
+        data=json.dumps({"query": "{ appointmentTypes { id durationSeconds } }"}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert sorted(
+        response.json()["data"]["appointmentTypes"], key=lambda item: int(item["id"])
+    ) == [
+        {"id": str(clinic_appointment_type.id), "durationSeconds": 3600},
+        {"id": str(no_duration.id), "durationSeconds": None},
+    ]
 
 
 @pytest.mark.django_db
