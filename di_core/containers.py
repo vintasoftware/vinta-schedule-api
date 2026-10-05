@@ -37,6 +37,7 @@ from calendar_integration.services.booking_policy_permission_service import (
     BookingPolicyPermissionService,
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
+from calendar_integration.services.booking_resolution_service import BookingResolutionService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
@@ -299,6 +300,15 @@ class AppContainer(containers.DeclarativeContainer):
         booking_policy_service=booking_policy_service,
         entitlement_service=entitlement_service,
         external_client_identifier_service=external_client_identifier_service,
+    )
+
+    booking_resolution_service = providers.Factory(
+        BookingResolutionService,
+        # Left undefined, so building the service raises until the room directory
+        # adapter resolver exists: Phase 7 of the resource calendar provider sync plan
+        # declares the ``resource_directory_adapter_resolver`` provider and Phase 8
+        # binds it. Point this argument at that provider then.
+        resource_directory_adapter_resolver=providers.Dependency(),
     )
 
     bookable_slots_service = providers.Factory(

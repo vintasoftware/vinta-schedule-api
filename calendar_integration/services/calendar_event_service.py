@@ -44,10 +44,11 @@ from vinta_billing.exceptions import OverLimitError
 from vinta_billing.services.subscription_service import resolve_billing_period
 
 from audit_integration.constants import AuditAction, AuditActorType
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import CalendarType, ResourceSyncStatus
 from calendar_integration.exceptions import (
     EventManagementError,
     NoAvailableTimeWindowsError,
+    RoomNotBookableError,
 )
 from calendar_integration.models import (
     Calendar,
@@ -62,6 +63,7 @@ from calendar_integration.models import (
     RecurrenceRule,
     RecurringMixin,
     ResourceAllocation,
+    ResourceCalendarProviderLink,
 )
 from calendar_integration.services.calendar_service_utils import (
     convert_naive_utc_datetime_to_timezone as _convert_naive_utc_datetime_to_timezone,
@@ -474,6 +476,39 @@ class CalendarEventService:
             return None
         return self._context.entitlement_service
 
+    @staticmethod
+    def _check_added_rooms_bookable(
+        organization_id: int, room_ids: Iterable[int], already_held: Iterable[int] = ()
+    ) -> None:
+        """Raise ``RoomNotBookableError`` if the write adds a room that cannot be booked.
+
+        A room is checked only when it has a provider link: pending creation, failed
+        on create, pending deletion, failed on delete and archived rooms are
+        rejected (``ResourceCalendarProviderLink.is_bookable``). A room with no link,
+        a manual room or any room in an organization with the
+        ``resource_calendar_provider_sync`` flag off, books exactly as before.
+
+        ``already_held`` are rooms the event (or, for an occurrence exception, its
+        series) already books. They are not checked, so editing an event that holds
+        an archived room is not blocked by that room.
+        """
+        added = set(room_ids) - set(already_held)
+        if not added:
+            return
+        for link in (
+            ResourceCalendarProviderLink.objects.filter_by_organization(organization_id)
+            .filter(calendar__id__in=added)
+            .select_related("calendar")
+        ):
+            if link.is_bookable:
+                continue
+            state = (
+                f"sync failed on {link.failed_operation}"
+                if link.sync_status == ResourceSyncStatus.SYNC_FAILED
+                else link.get_sync_status_display().lower()
+            )
+            raise RoomNotBookableError(f"Room {link.calendar.name} is not bookable: {state}.")
+
     def _check_not_restricted(self) -> None:
         """Raise ``OverLimitError`` if the context's organization's billing root is
         ``RESTRICTED``.
@@ -650,6 +685,19 @@ class CalendarEventService:
             )
         ):
             raise PermissionDenied("You do not have permission to update this event.")
+
+        # An occurrence exception carries its series' rooms over; those are held already.
+        self._check_added_rooms_bookable(
+            context.organization.id,
+            [r.resource_id for r in event_data.resource_allocations],
+            already_held=(
+                ResourceAllocation.objects.filter_by_organization(context.organization.id)
+                .filter(event__id=event_data.parent_event_id)
+                .values_list("calendar_fk_id", flat=True)
+                if event_data.parent_event_id
+                else ()
+            ),
+        )
 
         if calendar.calendar_type == CalendarType.BUNDLE:
             return self._host._create_bundle_event(
@@ -954,6 +1002,12 @@ class CalendarEventService:
             appointment_type_id=event.appointment_type_fk_id,
         ):
             raise PermissionDenied("You do not have permission to update this event.")
+
+        self._check_added_rooms_bookable(
+            context.organization.id,
+            [r.resource_id for r in event_data.resource_allocations],
+            already_held=[r.calendar_fk_id for r in event.resource_allocations.all()],
+        )
 
         if event.is_bundle_primary:
             return self._host._update_bundle_event(event, event_data)
