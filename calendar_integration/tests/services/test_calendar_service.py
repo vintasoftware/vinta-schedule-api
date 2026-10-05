@@ -3607,6 +3607,85 @@ def test_update_event_with_resource_allocations(
 
 
 @pytest.mark.django_db
+def test_update_event_removing_resource_keeps_its_allocations_on_other_events(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar_event,
+    calendar,
+    organization,
+    event_management_token,
+):
+    """Removing a resource from one event must only drop that event's allocation.
+
+    Regression: the stale-allocation delete in ``update_event`` filtered on the
+    resource alone, so removing room R from E1 also deleted R's allocation on every
+    other event in the organization.
+    """
+    room = Calendar.objects.create(
+        organization=organization,
+        external_id="shared_room_123",
+        name="Shared Room",
+        provider=CalendarProvider.GOOGLE,
+        calendar_type=CalendarType.RESOURCE,
+    )
+    other_event = CalendarEvent.objects.create(
+        calendar_fk=calendar,
+        title="Other Event",
+        description="Also books the room",
+        start_time_tz_unaware=datetime.datetime(2025, 6, 23, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 23, 11, 0),
+        timezone="UTC",
+        external_id="other_event_456",
+        organization=organization,
+    )
+    ResourceAllocation.objects.create(
+        organization=organization, event=calendar_event, calendar=room
+    )
+    other_event_allocation = ResourceAllocation.objects.create(
+        organization=organization, event=other_event, calendar=room
+    )
+
+    mock_google_adapter.update_event.return_value = CalendarEventAdapterOutputData(
+        calendar_external_id=calendar.external_id,
+        external_id=calendar_event.external_id,
+        title="Room Removed",
+        description="",
+        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendees=[],
+        resources=[],
+        original_payload={},
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=organization)
+    service.update_event(
+        calendar.id,
+        calendar_event.id,
+        CalendarEventInputData(
+            title="Room Removed",
+            description="",
+            start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            attendances=[],
+            external_attendances=[],
+            resource_allocations=[],
+        ),
+    )
+
+    room_allocation_ids = set(
+        ResourceAllocation.objects.filter_by_organization(organization.id)
+        .filter(calendar=room)
+        .values_list("id", flat=True)
+    )
+    # E1's allocation is gone; E2's survives.
+    assert room_allocation_ids == {other_event_allocation.id}
+
+
+@pytest.mark.django_db
 def test_delete_event(
     social_account, social_token, mock_google_adapter, calendar_event, event_management_token
 ):

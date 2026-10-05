@@ -1436,7 +1436,7 @@ class CalendarEventService:
         ResourceAllocation.objects.bulk_create(resource_allocations_to_create)
         resources_to_delete = set(existing_resource_allocation) - set(maintained_resources_ids)
         ResourceAllocation.objects.filter_by_organization(context.organization.id).filter(
-            calendar_fk_id__in=resources_to_delete
+            event=event, calendar__id__in=resources_to_delete
         ).delete()
 
         def call_side_effects():
