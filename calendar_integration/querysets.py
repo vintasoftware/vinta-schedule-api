@@ -803,7 +803,7 @@ class CalendarEventQuerySet(OrganizationScopedQuerySet, RecurringQuerySetMixin):
         )
 
     def future_bookings_of_room(
-        self, room: "Calendar", now: datetime.datetime
+        self, room: "CalendarModelType", now: datetime.datetime
     ) -> "CalendarEventQuerySet":
         """Bookings of the room ``room`` that can still take place after ``now``.
 
