@@ -1,0 +1,22 @@
+{% load i18n %}
+{% block email_header %}
+  <h1>{% trans "Some room edits were not applied" %}</h1>
+{% endblock %}
+
+{% block email_content %}
+<p>
+{% blocktrans with room_name=room_name room_id=room_id %}Room "{{ room_name }}" (id {{ room_id }}) was changed in your calendar provider before a pending edit from Vinta Schedule could be pushed. The provider's values were kept for these fields:{% endblocktrans %}
+</p>
+<ul>
+{% for field in fields %}
+  <li>{{ field }}</li>
+{% endfor %}
+</ul>
+<p>
+{% blocktrans %}Any other pending edits were still applied. If the discarded values are the ones you want, edit the room again.{% endblocktrans %}
+</p>
+{% endblock %}
+
+{% block email_footer %}
+  <p><small>{% blocktrans %}This is an automated message. Please do not reply to this email.{% endblocktrans %}</small></p>
+{% endblock %}
