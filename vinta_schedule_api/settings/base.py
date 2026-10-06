@@ -1142,3 +1142,9 @@ PUBLIC_API_RATE_LIMITER_KEY = config("PUBLIC_API_RATE_LIMITER_KEY", default="pub
 
 GOOGLE_CLIENT_ID = config("GOOGLE_CLIENT_ID", default="")
 GOOGLE_CLIENT_SECRET = config("GOOGLE_CLIENT_SECRET", default="")
+
+# Vinta's multi-tenant Microsoft Entra app. The Outlook calendar adapter uses it, and so
+# does Microsoft room sync, which mints app-only tokens for a customer's tenant after a
+# tenant admin grants admin consent. Empty leaves both turned off.
+MS_CLIENT_ID = config("MS_CLIENT_ID", default="")
+MS_CLIENT_SECRET = config("MS_CLIENT_SECRET", default="")

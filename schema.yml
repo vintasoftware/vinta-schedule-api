@@ -11414,6 +11414,134 @@ paths:
           description: ''
         '404':
           description: No default calendar for this user
+  /calendar/google-service-account/verify-write-access/:
+    post:
+      operationId: calendar_google_service_account_verify_write_access_create
+      description: Builds a client for the organization-level Google service account
+        with the admin.directory.resource.calendar scope and makes one Directory call.
+        On success write_enabled is set; otherwise error says how to fix it. Admin
+        only.
+      summary: Verify Google room write access
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleWriteAccessResult'
+          description: ''
+        '404':
+          description: Room provider sync is off for this organization.
+  /calendar/google-service-account/verify-write-access{format}:
+    post:
+      operationId: calendar_google_service_account_verify_write_access_formatted_create
+      description: Builds a client for the organization-level Google service account
+        with the admin.directory.resource.calendar scope and makes one Directory call.
+        On success write_enabled is set; otherwise error says how to fix it. Admin
+        only.
+      summary: Verify Google room write access
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleWriteAccessResult'
+          description: ''
+        '404':
+          description: Room provider sync is off for this organization.
+  /calendar/microsoft-connection/consent-url/:
+    post:
+      operationId: calendar_microsoft_connection_consent_url_create
+      description: Issue a new single-use consent link. Older links stop working.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicrosoftConsentUrl'
+          description: ''
+  /calendar/microsoft-connection/verify/:
+    post:
+      operationId: calendar_microsoft_connection_verify_create
+      description: Verify write access. A failed check answers 200 with ``error``
+        set.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicrosoftConnectionVerification'
+          description: ''
   /calendar/request-import/:
     post:
       operationId: calendar_request_import_create
@@ -21219,6 +21347,22 @@ components:
         * `WEEKLY` - Weekly
         * `MONTHLY` - Monthly
         * `YEARLY` - Yearly
+    GoogleWriteAccessResult:
+      type: object
+      description: Response body of ``POST /calendar/google-service-account/verify-write-access/``.
+      properties:
+        write_enabled:
+          type: boolean
+        write_verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          type: string
+      required:
+      - error
+      - write_enabled
+      - write_verified_at
     GroupsEnum:
       enum:
       - organization_admin
@@ -21328,6 +21472,37 @@ components:
       required:
       - id
       - name
+    MicrosoftConnectionVerification:
+      type: object
+      description: The outcome of checking that the connected Microsoft tenant allows
+        room writes.
+      properties:
+        write_enabled:
+          type: boolean
+          readOnly: true
+        verified_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        error:
+          type: string
+          readOnly: true
+      required:
+      - error
+      - verified_at
+      - write_enabled
+    MicrosoftConsentUrl:
+      type: object
+      description: The admin-consent link an org admin hands to their tenant's Global
+        Administrator.
+      properties:
+        consent_url:
+          type: string
+          format: uri
+          readOnly: true
+      required:
+      - consent_url
     MyMembership:
       type: object
       description: |-
