@@ -35,7 +35,11 @@ def subscription(organization, ms_room_graph, django_capture_on_commit_callbacks
     calendar = make_room(organization)
     with django_capture_on_commit_callbacks(execute=True):
         resource_room_synced.send(
-            sender=None, calendar_id=calendar.id, provider=CalendarProvider.MICROSOFT, created=True
+            sender=None,
+            calendar_id=calendar.id,
+            organization_id=calendar.organization_id,
+            provider=CalendarProvider.MICROSOFT,
+            created=True,
         )
     with organization_context(organization):
         return CalendarWebhookSubscription.objects.get(calendar=calendar)
