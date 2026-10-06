@@ -613,7 +613,7 @@ class RoomResyncService:
             },
         )
         if created:
-            _send_on_commit_synced(calendar.id, organization.id, provider)
+            _send_on_commit_synced(calendar.id, calendar.organization_id, provider)
         return created
 
 

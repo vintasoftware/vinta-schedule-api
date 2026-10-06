@@ -308,19 +308,19 @@ class AppContainer(containers.DeclarativeContainer):
         )
     )
 
+    room_sync_service = providers.Factory(
+        RoomSyncService,
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
+        room_sync_notifier=room_sync_notifier,
+        audit_service=audit_service,
+    )
+
     room_resync_service = providers.Factory(
         RoomResyncService,
         resource_directory_adapter_resolver=resource_directory_adapter_resolver,
         room_sync_notifier=room_sync_notifier,
         audit_service=audit_service,
         entitlement_service=entitlement_service,
-    )
-
-    room_sync_service = providers.Factory(
-        RoomSyncService,
-        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
-        room_sync_notifier=room_sync_notifier,
-        audit_service=audit_service,
     )
 
     booking_policy_service = providers.Factory(
@@ -352,6 +352,10 @@ class AppContainer(containers.DeclarativeContainer):
         microsoft_app_only_token_provider=microsoft_app_only_token_provider,
     )
 
+    google_write_access_service = providers.Factory(
+        GoogleWriteAccessService,
+    )
+
     booking_resolution_service = providers.Factory(
         BookingResolutionService,
         resource_directory_adapter_resolver=resource_directory_adapter_resolver,
@@ -363,10 +367,6 @@ class AppContainer(containers.DeclarativeContainer):
     # neither is built until a synced room is deleted.
     calendar_service.add_kwargs(
         booking_resolution_service_factory=booking_resolution_service.provider
-    )
-
-    google_write_access_service = providers.Factory(
-        GoogleWriteAccessService,
     )
 
     bookable_slots_service = providers.Factory(
