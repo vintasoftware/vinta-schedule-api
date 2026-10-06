@@ -87,6 +87,11 @@ class CalendarServiceContext:
     # (without DI) still construct; a checked call site skips the write entirely when
     # this is ``None``, mirroring ``audit_service``'s no-op-when-absent convention.
     external_client_identifier_service: ExternalClientIdentifierService | None = None
+    # Set only by ``CalendarService.initialize_for_room_resolution``: the context acts
+    # as the system resolving the bookings of a room that is being deleted, so
+    # ``CalendarEventService`` skips the per-event permission checks on create, update
+    # and delete. The caller authorized the room deletion itself.
+    is_room_resolution: bool = False
 
     @property
     def bound_organization(self) -> "Organization":

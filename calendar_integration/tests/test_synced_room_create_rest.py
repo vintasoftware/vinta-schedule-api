@@ -16,7 +16,7 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from calendar_integration.constants import CalendarProvider
+from calendar_integration.constants import CalendarProvider, CalendarVisibility
 from calendar_integration.factories import create_resource_location
 from calendar_integration.models import Calendar, ResourceLocation
 from calendar_integration.tests.room_sync_fakes import FakeRoomDirectory, FakeRoomDirectoryResolver
@@ -181,13 +181,15 @@ class TestCreateSyncedRoomEndpoint:
             "idempotency_key": "K1",
         }
         created = admin_client.post(reverse(self.url), payload, format="json")
-        disabled = admin_client.delete(
-            reverse("api:Calendars-detail", kwargs={"pk": created.data["id"]})
-        )
+        # The generic DELETE /calendar/{id}/ rejects a synced room, so make it inactive
+        # directly, as archiving it does.
+        with organization_context(organization):
+            Calendar.objects.filter(id=created.data["id"]).update(
+                visibility=CalendarVisibility.INACTIVE
+            )
 
         replay = admin_client.post(reverse(self.url), payload, format="json")
 
-        assert disabled.status_code == status.HTTP_204_NO_CONTENT
         assert replay.status_code == status.HTTP_201_CREATED
         assert replay.data["id"] == created.data["id"]
         assert replay.data["visibility"] == "inactive"

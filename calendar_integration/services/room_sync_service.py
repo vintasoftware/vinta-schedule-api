@@ -199,9 +199,7 @@ class RoomSyncService:
             if status == ResourceSyncStatus.ARCHIVED:
                 raise RoomSyncStateError("An archived room cannot be changed.")
             if operation == ResourceSyncOperation.UPDATE:
-                if status == ResourceSyncStatus.PENDING_DELETION or (
-                    failed_operation == ResourceSyncOperation.DELETE
-                ):
+                if not link.is_editable:
                     raise RoomSyncStateError("A room that is being deleted cannot be edited.")
             elif operation == ResourceSyncOperation.CREATE:
                 if not create_unconfirmed:

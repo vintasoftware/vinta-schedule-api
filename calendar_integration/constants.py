@@ -209,3 +209,37 @@ ROOM_ON_PROVIDER_STATES: frozenset[tuple[str, str]] = frozenset(
         (ResourceSyncStatus.SYNC_FAILED, ResourceSyncOperation.UPDATE),
     }
 )
+
+
+class BookingCancelMode(TextChoices):
+    """How a booking of a room that is being deleted is cancelled."""
+
+    REMOVE_ROOM = "remove_room", "Remove only the room"
+    CANCEL_EVENT = "cancel_event", "Cancel the whole event"
+
+
+class BookingRoomChange(TextChoices):
+    """What happened to a booking's room when a room was deleted. Sent to the organizer."""
+
+    MOVED = "moved", "Moved to another room"
+    ROOM_REMOVED = "room_removed", "Room removed from the booking"
+    EVENT_CANCELLED = "event_cancelled", "Booking cancelled"
+
+
+class BookingRejectionReason(TextChoices):
+    """Why a booking's resolution was rejected. The label is the message shown to callers."""
+
+    NOT_IN_PREVIEW = "not_in_preview", "booking is not in the deletion preview"
+    TARGET_NOT_FOUND = "target_not_found", "target room not found"
+    TARGET_IS_SAME_ROOM = "target_is_same_room", "target room is the room being deleted"
+    TARGET_NOT_BOOKABLE = "target_not_bookable", "target room is not bookable"
+    TARGET_ON_DIFFERENT_PROVIDER = (
+        "target_on_different_provider",
+        "target room is on a different provider",
+    )
+    TARGET_TOO_SMALL = "target_too_small", "target room is too small"
+    TARGET_BUSY = "target_busy", "target room is busy"
+    ON_ROOM_CALENDAR = (
+        "on_room_calendar",
+        "booking is on the room's own calendar and can only be cancelled",
+    )
