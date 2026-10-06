@@ -11,7 +11,7 @@ from django.utils.html import format_html
 
 from dependency_injector.wiring import Provide, inject
 
-from calendar_integration.constants import IncomingWebhookProcessingStatus, ResourceSyncStatus
+from calendar_integration.constants import IncomingWebhookProcessingStatus
 from calendar_integration.exceptions import (
     MicrosoftConnectionNotConfiguredError,
     RoomSyncStateError,
@@ -890,14 +890,11 @@ class ResourceCalendarProviderLinkAdmin(admin.ModelAdmin):
         retried = 0
         skipped = 0
         for link in queryset:
-            if link.sync_status != ResourceSyncStatus.SYNC_FAILED:
-                skipped += 1
-                continue
             with organization_context(link.organization):
                 try:
                     room_sync_service.retry(link)
                 except RoomSyncStateError:
-                    # Its status changed since the changelist loaded.
+                    # The service owns the rule: only a sync-failed link can be retried.
                     skipped += 1
                     continue
             retried += 1
