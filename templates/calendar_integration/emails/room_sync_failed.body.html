@@ -1,0 +1,20 @@
+{% load i18n %}
+{% block email_header %}
+  <h1>{% trans "A room could not be synced" %}</h1>
+{% endblock %}
+
+{% block email_content %}
+<p>
+{% blocktrans with room_name=room_name room_id=room_id operation_label=operation_label %}We could not push the "{{ operation_label }}" change for room "{{ room_name }}" (id {{ room_id }}) to your calendar provider, and we have stopped retrying.{% endblocktrans %}
+</p>
+<p>
+{% blocktrans with reason=reason %}Reason: {{ reason }}{% endblocktrans %}
+</p>
+<p>
+{% blocktrans %}Please check the room in Vinta Schedule and retry the sync. If the problem is a missing permission on the provider side, an IT admin can restore it and then retry.{% endblocktrans %}
+</p>
+{% endblock %}
+
+{% block email_footer %}
+  <p><small>{% blocktrans %}This is an automated message. Please do not reply to this email.{% endblocktrans %}</small></p>
+{% endblock %}

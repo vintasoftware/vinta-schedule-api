@@ -1,0 +1,1 @@
+{% load i18n %}{% blocktrans with room_name=room_name %}Some edits to room "{{ room_name }}" were not applied{% endblocktrans %}
