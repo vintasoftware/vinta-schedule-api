@@ -460,7 +460,7 @@ class RoomResyncService:
 
         if flagged_count:
             self.room_sync_notifier.notify_bookings_flagged(calendar.id, flagged_count)
-        _send_on_commit_archived(calendar.id, link.provider)
+        _send_on_commit_archived(calendar.id, calendar.organization_id, link.provider)
 
     # ------------------------------------------------------------------
     # New rooms: (a) link existing calendars, (b) import unknown rooms
@@ -613,7 +613,7 @@ class RoomResyncService:
             },
         )
         if created:
-            _send_on_commit_synced(calendar.id, provider)
+            _send_on_commit_synced(calendar.id, organization.id, provider)
         return created
 
 
@@ -668,17 +668,24 @@ def _is_claimed_by_a_link(room: RoomDirectoryData, create_markers: set[str]) -> 
     return False
 
 
-def _send_on_commit_synced(calendar_id: int, provider: str) -> None:
+def _send_on_commit_synced(calendar_id: int, organization_id: int, provider: str) -> None:
     transaction.on_commit(
         lambda: resource_room_synced.send(
-            sender=RoomResyncService, calendar_id=calendar_id, provider=provider, created=False
+            sender=RoomResyncService,
+            calendar_id=calendar_id,
+            organization_id=organization_id,
+            provider=provider,
+            created=False,
         )
     )
 
 
-def _send_on_commit_archived(calendar_id: int, provider: str) -> None:
+def _send_on_commit_archived(calendar_id: int, organization_id: int, provider: str) -> None:
     transaction.on_commit(
         lambda: resource_room_archived.send(
-            sender=RoomResyncService, calendar_id=calendar_id, provider=provider
+            sender=RoomResyncService,
+            calendar_id=calendar_id,
+            organization_id=organization_id,
+            provider=provider,
         )
     )
