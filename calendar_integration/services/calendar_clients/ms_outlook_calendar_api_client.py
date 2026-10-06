@@ -57,6 +57,7 @@ from typing import TYPE_CHECKING, Any
 import requests
 from pyrate_limiter import Duration, Rate
 
+from calendar_integration.constants import microsoft_room_subscription_resource
 from common.redis import build_resilient_limiter
 
 
@@ -1304,6 +1305,26 @@ class MSOutlookCalendarAPIClient:
             subscription_data["clientState"] = client_state
 
         return self._make_request("POST", "/subscriptions", data=subscription_data)
+
+    def create_room_events_subscription(
+        self,
+        room_email: str,
+        notification_url: str,
+        client_state: str,
+        expiration_datetime: datetime.datetime,
+    ) -> dict[str, Any]:
+        """Subscribe to created, updated and deleted events in a room's own mailbox.
+
+        Works with an app-only token. Graph sends ``client_state`` back with every
+        notification, so the receiver can tell a real notification from a forged one.
+        """
+        return self.create_subscription(
+            resource=microsoft_room_subscription_resource(room_email),
+            change_type="created,updated,deleted",
+            notification_url=notification_url,
+            expiration_datetime=expiration_datetime,
+            client_state=client_state,
+        )
 
     def list_subscriptions(self) -> list[dict[str, Any]]:
         """
