@@ -502,9 +502,13 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         serializer.is_valid(raise_exception=True)
         calendar = serializer.save()
 
-        optimized_calendar = (
-            self.get_queryset().select_related("provider_link__location").get(id=calendar.id)
-        )
+        # Re-read by id, not through `get_queryset()`: an idempotent replay returns
+        # the original room even if it was disabled since, and `get_queryset()`
+        # leaves inactive calendars out of this action.
+        response_serializer = ResourceCalendarCreateResponseSerializer()
+        optimized_calendar = response_serializer.get_optimized_queryset(
+            Calendar.objects.filter_by_organization(calendar.organization_id)
+        ).get(id=calendar.id)
         return Response(
             ResourceCalendarCreateResponseSerializer(instance=optimized_calendar).data,
             status=status.HTTP_201_CREATED,

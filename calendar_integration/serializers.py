@@ -92,6 +92,7 @@ from calendar_integration.virtual_models import (
     ExternalEventChangeRequestVirtualModel,
     RecurrenceRuleVirtualModel,
     ResourceAllocationVirtualModel,
+    ResourceCalendarCreateResponseVirtualModel,
 )
 from common.utils.serializer_utils import VirtualModelSerializer
 from organizations.models import (
@@ -401,7 +402,7 @@ class ResourceCalendarCreateResponseSerializer(CalendarSerializer):
 
     class Meta:
         model = Calendar
-        virtual_model = CalendarVirtualModel
+        virtual_model = ResourceCalendarCreateResponseVirtualModel
         fields = (*CalendarSerializer.Meta.fields, "provider_sync")
         read_only_fields = CalendarSerializer.Meta.read_only_fields
 

@@ -21,6 +21,7 @@ from model_bakery import baker
 from vinta_billing.constants import BillingState, LimitKind
 from vinta_billing.exceptions import OverLimitError
 from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from vinta_billing.services.entitlement_service import EntitlementService
 
 from audit_integration.constants import AuditAction
 from calendar_integration.constants import (
@@ -452,6 +453,62 @@ def test_over_the_limit_is_rejected_with_nothing_created(
         assert [room.external_id for room in _rooms(organization)] == ["seed-room"]
         assert ResourceCalendarProviderLink.objects.count() == 0
         assert ResourceCalendarCreateRequest.objects.count() == 0
+
+
+@pytest.mark.no_auto_subscription
+@pytest.mark.django_db
+def test_concurrent_replay_at_the_limit_returns_the_room_the_first_request_made(
+    di_container: Any, resolver: FakeRoomDirectoryResolver
+) -> None:
+    """A retry waiting on the billing lock gets the first request's room, not a 402.
+
+    The org has room for one more. Request B is sent with the key while request A
+    is still running: when B gets the billing lock, A has committed its room,
+    which now uses the last slot. Simulated by running A inside B's lock call.
+    """
+    organization = baker.make(Organization, parent=None, can_invite_organizations=False)
+    _enable_flag(organization)
+    now = timezone.now()
+    subscription = baker.make(
+        Subscription,
+        scope=scope_for(organization),
+        plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
+        billing_state=BillingState.FREE,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+    )
+    baker.make(
+        SubscriptionPlanLimit,
+        subscription=subscription,
+        resource_key=RESOURCE_CALENDARS,
+        limit_value=1,
+        kind=LimitKind.PREPAID,
+    )
+    service = di_container.calendar_service()
+    service.initialize_without_provider(organization=organization)
+    lock_row = EntitlementService._lock_billing_root_row
+    first_request: list[Calendar] = []
+    first_request_started = False
+
+    def lock_after_the_first_request_commits(root: Any) -> None:
+        nonlocal first_request_started
+        lock_row(root)
+        if not first_request_started:
+            first_request_started = True
+            first_request.append(_create(service, room_location))
+
+    with organization_context(organization):
+        room_location = create_resource_location(organization=organization)
+        with patch.object(
+            EntitlementService,
+            "_lock_billing_root_row",
+            side_effect=lock_after_the_first_request_commits,
+        ):
+            replayed = _create(service, room_location)
+
+        assert replayed.id == first_request[0].id
+        assert _rooms(organization) == first_request
+        assert ResourceCalendarCreateRequest.objects.count() == 1
 
 
 # ---------------------------------------------------------------------------

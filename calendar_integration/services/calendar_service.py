@@ -1131,8 +1131,15 @@ class CalendarService(BaseCalendarService):
                 "accepts_public_scheduling": accepts_public_scheduling,
             }
         )
+        if entitlement_service is not None:
+            # Taken before the replay below, and held until commit. It serializes
+            # creates in this organization, so a concurrent request with the same key
+            # has committed by the time we look for it: its room is returned, rather
+            # than this request being counted against the limit its room now uses.
+            entitlement_service.lock_billing_root(scope_for(organization))
         # A replay returns the original room before any other check, so it still
-        # works if the location or the connection changed since the first request.
+        # works if the location, the connection or the limit changed since the first
+        # request.
         if idempotency_key:
             replayed = replay_create(idempotency_key, fingerprint)
             if replayed is not None:
@@ -1157,19 +1164,12 @@ class CalendarService(BaseCalendarService):
             raise InvalidResourceLocationError()
 
         if entitlement_service is not None:
+            # Re-locking the row locked above is a no-op.
             result = entitlement_service.check_limit(
                 scope_for(organization), RESOURCE_CALENDARS, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
-
-        if idempotency_key:
-            # Checked again under the limit lock above, which serializes creates in
-            # this organization: a concurrent request with the same key has
-            # committed by now, so its room is returned instead of a second one.
-            replayed = replay_create(idempotency_key, fingerprint)
-            if replayed is not None:
-                return replayed
 
         provisional_key = uuid.uuid4()
         calendar = Calendar.objects.create(

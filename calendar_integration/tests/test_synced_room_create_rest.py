@@ -166,6 +166,33 @@ class TestCreateSyncedRoomEndpoint:
         assert replay.data["id"] == response.data["id"]
         assert Calendar.objects.filter_by_organization(organization.id).count() == 1
 
+    def test_replay_of_a_disabled_room_returns_it(
+        self,
+        admin_client: APIClient,
+        organization: Organization,
+        directory: FakeRoomDirectory,
+    ) -> None:
+        _enable_flag(organization)
+        location = _location(organization)
+        payload = {
+            "name": "Conf Room 4B",
+            "provider": "google",
+            "location_id": location.id,
+            "idempotency_key": "K1",
+        }
+        created = admin_client.post(reverse(self.url), payload, format="json")
+        disabled = admin_client.delete(
+            reverse("api:Calendars-detail", kwargs={"pk": created.data["id"]})
+        )
+
+        replay = admin_client.post(reverse(self.url), payload, format="json")
+
+        assert disabled.status_code == status.HTTP_204_NO_CONTENT
+        assert replay.status_code == status.HTTP_201_CREATED
+        assert replay.data["id"] == created.data["id"]
+        assert replay.data["visibility"] == "inactive"
+        assert replay.data["provider_sync"]["status"] == "pending_creation"
+
     def test_provider_room_with_the_flag_off_is_400(
         self, admin_client: APIClient, organization: Organization
     ) -> None:

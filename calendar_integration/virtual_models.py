@@ -23,6 +23,8 @@ from calendar_integration.models import (
     ExternalEventChangeRequest,
     RecurrenceRule,
     ResourceAllocation,
+    ResourceCalendarProviderLink,
+    ResourceLocation,
 )
 from common.virtual_models import OrganizationScopedVirtualModel
 from organizations.virtual_models import OrganizationMembershipVirtualModel
@@ -38,6 +40,27 @@ class CalendarOwnershipVirtualModel(OrganizationScopedVirtualModel):
 class CalendarVirtualModel(OrganizationScopedVirtualModel):
     memberships = OrganizationMembershipVirtualModel(many=True)
     calendar_ownerships = CalendarOwnershipVirtualModel(many=True)
+
+    class Meta:
+        model = Calendar
+
+
+class ResourceLocationVirtualModel(OrganizationScopedVirtualModel):
+    class Meta:
+        model = ResourceLocation
+
+
+class ResourceCalendarProviderLinkVirtualModel(OrganizationScopedVirtualModel):
+    location = ResourceLocationVirtualModel()
+
+    class Meta:
+        model = ResourceCalendarProviderLink
+
+
+class ResourceCalendarCreateResponseVirtualModel(CalendarVirtualModel):
+    """``CalendarVirtualModel`` plus the room's provider sync link and its location."""
+
+    provider_link = ResourceCalendarProviderLinkVirtualModel()
 
     class Meta:
         model = Calendar
