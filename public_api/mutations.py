@@ -567,8 +567,15 @@ class UpdateResourceCalendarInput:
     """Input for partially updating a resource calendar.
 
     Only provided (non-None) fields are updated; omitted fields leave the calendar unchanged.
-    The target calendar must be of type RESOURCE and must have provider INTERNAL (not synced
-    from an external provider).
+    The target calendar must be of type RESOURCE. It must have provider INTERNAL, unless it is
+    a room created or imported through the resource calendar provider sync feature (it has a
+    ``providerSync``) and that feature is on. A synced room's name, description, capacity and
+    location are pushed to the provider in the background, with ``providerSync.status``
+    PENDING_UPDATE until the provider confirms them. A synced room cannot be set INACTIVE
+    here: delete it with ``deleteResourceCalendar``.
+
+    location_id: An active location of the room's provider, from ``resourceLocations``, to
+        move a synced room to. Synced rooms only.
 
     is_private: If provided (non-None), updates the calendar's privacy.
         True  -> accepts_public_scheduling=False (private, codeless booking disallowed).
@@ -588,11 +595,29 @@ class UpdateResourceCalendarInput:
     manage_available_windows: bool | None = None
     is_private: bool | None = None
     visibility: str | None = None
+    location_id: int | None = None
 
 
 @strawberry.type
 class UpdateResourceCalendarResult:
     """Result of the updateResourceCalendar mutation."""
+
+    success: bool
+    error_message: str | None = None
+    calendar: CalendarGraphQLType | None = None
+
+
+@strawberry.input
+class RetryResourceCalendarSyncInput:
+    """Input for retrying a synced room's failed provider sync."""
+
+    organization_id: int
+    calendar_id: int
+
+
+@strawberry.type
+class RetryResourceCalendarSyncResult:
+    """Result of the retryResourceCalendarSync mutation."""
 
     success: bool
     error_message: str | None = None
@@ -2252,6 +2277,10 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
     ) -> DisableResourceCalendarResult:
         """Disable a resource calendar by setting its visibility to INACTIVE.
 
+        A room synced with Google or Microsoft cannot be disabled while the resource
+        calendar provider sync feature is on: it returns success=False, and the room is
+        deleted through ``deleteResourceCalendar`` instead.
+
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
         2. Delegates to CalendarService.disable_resource_calendar with the supplied calendar_id.
@@ -2289,9 +2318,10 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         3. Returns the updated CalendarGraphQLType on success, or success=False + errorMessage
            on failure.
 
-        The target calendar must be of type RESOURCE and have provider INTERNAL; synced
-        calendars and non-RESOURCE types raise ValueError → success=False with the reason.
-        Cross-org / missing calendar surfaces as "Calendar not found." (no existence leak).
+        The target calendar must be of type RESOURCE and have provider INTERNAL, or be a
+        synced room while the resource calendar provider sync feature is on; anything else
+        returns success=False with the reason. Cross-org / missing calendar surfaces as
+        "Calendar not found." (no existence leak).
 
         The token's OrganizationResourceAccess must include the UPDATE_RESOURCE_CALENDAR resource.
         """
@@ -2318,13 +2348,47 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                 manage_available_windows=input.manage_available_windows,
                 accepts_public_scheduling=accepts_public_scheduling,
                 visibility=input.visibility,
+                location_id=input.location_id,
             )
         except Calendar.DoesNotExist:
             return UpdateResourceCalendarResult(success=False, error_message="Calendar not found.")
-        except (ValueError, DjangoValidationError, IntegrityError) as e:
+        except (
+            ValueError,
+            CalendarIntegrationError,
+            DjangoValidationError,
+            IntegrityError,
+        ) as e:
             return UpdateResourceCalendarResult(success=False, error_message=str(e))
 
         return UpdateResourceCalendarResult(success=True, calendar=calendar)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def retry_resource_calendar_sync(
+        self,
+        info: strawberry.Info,
+        input: RetryResourceCalendarSyncInput,  # noqa: A002
+    ) -> RetryResourceCalendarSyncResult:
+        """Retry a synced room's failed provider sync (org-scoped).
+
+        The room's ``providerSync.status`` goes from SYNC_FAILED back to the pending
+        status of the operation that failed, and the push runs again in the background.
+        Needs the resource calendar provider sync feature.
+
+        The token's OrganizationResourceAccess must include the RETRY_RESOURCE_CALENDAR_SYNC
+        resource.
+        """
+        calendar_service, _org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = calendar_service.retry_resource_calendar_sync(calendar_id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return RetryResourceCalendarSyncResult(
+                success=False, error_message="Calendar not found."
+            )
+        except CalendarIntegrationError as e:
+            return RetryResourceCalendarSyncResult(success=False, error_message=str(e))
+
+        return RetryResourceCalendarSyncResult(success=True, calendar=calendar)  # type: ignore[arg-type]
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def import_resource_calendars(
