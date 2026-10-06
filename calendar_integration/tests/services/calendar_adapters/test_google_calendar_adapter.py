@@ -1,25 +1,45 @@
 import datetime
-from unittest.mock import Mock, patch
+import json
+import uuid
+from unittest.mock import Mock, call, patch
 
 from django.core.exceptions import ImproperlyConfigured
 
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
+from google.auth.exceptions import RefreshError
+from googleapiclient.errors import HttpError
 
 from calendar_integration.constants import CalendarProvider
+from calendar_integration.exceptions import (
+    ResourceDirectoryError,
+    ResourceDirectoryInvalidInputError,
+    ResourceDirectoryNotFoundError,
+    ResourceDirectoryPermissionError,
+)
+from calendar_integration.models import GoogleCalendarServiceAccount
 from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
     _SA_SCOPES,
+    _SA_WRITE_SCOPES,
     GoogleCalendarAdapter,
     GoogleCredentialTypedDict,
     GoogleServiceAccountCredentialsTypedDict,
 )
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
+    BusyWindow,
     CalendarEventAdapterInputData,
     CalendarEventAdapterOutputData,
     CalendarEventsSyncTypedDict,
     CalendarResourceData,
     EventAttendeeData,
+    ResourceLocationData,
+    ResourceLocationRef,
+    RoomDirectoryData,
+    RoomWriteData,
+)
+from calendar_integration.services.protocols.resource_directory_adapter import (
+    ResourceDirectoryAdapter,
 )
 from common.redis import ResilientLimiter
 from users.models import User
@@ -1326,3 +1346,407 @@ class TestGoogleEventDatetimeParsing:
         events = list(adapter.get_events("cal", False, start, end)["events"])
 
         assert [e.external_id for e in events] == ["real"]
+
+
+def _http_error(status: int, message: str = "error") -> HttpError:
+    # A stand-in for ``httplib2.Response``: HttpError reads only ``status`` and ``reason``.
+    return HttpError(
+        Mock(status=status, reason=""),
+        json.dumps({"error": {"message": message}}).encode(),
+    )
+
+
+_ROOM_KEY = uuid.UUID("12345678-1234-5678-1234-567812345678")
+_ROOM_RESOURCE = {
+    "resourceId": f"vinta-{_ROOM_KEY}",
+    "resourceName": "Huddle",
+    "resourceDescription": "Small room",
+    "resourceEmail": "huddle@resource.calendar.google.com",
+    "resourceCategory": "CONFERENCE_ROOM",
+    "capacity": 4,
+    "buildingId": "hq",
+    "floorName": "2",
+}
+_ROOM_DATA = RoomDirectoryData(
+    external_id=f"vinta-{_ROOM_KEY}",
+    email="huddle@resource.calendar.google.com",
+    name="Huddle",
+    description="Small room",
+    capacity=4,
+    location_ref=ResourceLocationRef("hq", "2"),
+    provider_payload=_ROOM_RESOURCE,
+)
+_ROOM_WRITE = RoomWriteData(
+    name="Huddle",
+    description="Small room",
+    capacity=4,
+    location_ref=ResourceLocationRef("hq", "2"),
+    provisional_key=_ROOM_KEY,
+)
+
+
+class TestServiceAccountWriteScope:
+    """``from_service_account`` asks for the write scope only when told to."""
+
+    @pytest.mark.parametrize(
+        ("write", "expected_scopes"), [(False, _SA_SCOPES), (True, _SA_WRITE_SCOPES)]
+    )
+    def test_scopes(self, service_account_credentials, write, expected_scopes):
+        with (
+            patch(
+                "calendar_integration.services.calendar_adapters.google_calendar_adapter.google_service_account.Credentials.from_service_account_info"
+            ) as mock_from_info,
+            patch("calendar_integration.services.calendar_adapters.google_calendar_adapter.build"),
+        ):
+            GoogleCalendarAdapter.from_service_account(service_account_credentials, write=write)
+
+        assert mock_from_info.call_args.kwargs["scopes"] == expected_scopes
+
+    def test_default_is_read_only(self, service_account_credentials):
+        with (
+            patch(
+                "calendar_integration.services.calendar_adapters.google_calendar_adapter.google_service_account.Credentials.from_service_account_info"
+            ) as mock_from_info,
+            patch("calendar_integration.services.calendar_adapters.google_calendar_adapter.build"),
+        ):
+            GoogleCalendarAdapter.from_service_account(service_account_credentials)
+
+        assert mock_from_info.call_args.kwargs["scopes"] == [
+            "https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly",
+            "https://www.googleapis.com/auth/calendar.readonly",
+        ]
+        assert _SA_WRITE_SCOPES == [
+            "https://www.googleapis.com/auth/admin.directory.resource.calendar",
+            "https://www.googleapis.com/auth/calendar.readonly",
+        ]
+
+
+class TestFromServiceAccountModel:
+    """``from_service_account_model`` builds the credentials from a stored row."""
+
+    @pytest.mark.parametrize(
+        ("write", "expected_scopes"), [(False, _SA_SCOPES), (True, _SA_WRITE_SCOPES)]
+    )
+    def test_maps_the_row(self, write, expected_scopes):
+        account = GoogleCalendarServiceAccount(
+            id=7,
+            email="service@example.com",
+            admin_email="admin@example.com",
+            private_key_id="key-id",
+            private_key="private-key",
+        )
+        with (
+            patch(
+                "calendar_integration.services.calendar_adapters.google_calendar_adapter.google_service_account.Credentials.from_service_account_info"
+            ) as mock_from_info,
+            patch("calendar_integration.services.calendar_adapters.google_calendar_adapter.build"),
+        ):
+            adapter = GoogleCalendarAdapter.from_service_account_model(account, write=write)
+
+        assert adapter.account_id == "service-7"
+        mock_from_info.assert_called_once_with(
+            {
+                "type": "service_account",
+                "private_key_id": "key-id",
+                "private_key": "private-key",
+                "client_email": "service@example.com",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            },
+            scopes=expected_scopes,
+        )
+        mock_from_info.return_value.with_subject.assert_called_once_with("admin@example.com")
+
+
+class TestResourceDirectoryAdapter:
+    """The ``ResourceDirectoryAdapter`` methods against a mocked Directory and Calendar client."""
+
+    def test_satisfies_the_protocol(self, mock_rate_limiters) -> None:
+        directory: ResourceDirectoryAdapter = _make_sa_adapter(mock_rate_limiters)
+
+        assert directory.provider == "google"
+
+    def test_list_locations_flattens_buildings_and_floors(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        buildings_list = sa_adapter.admin_client.resources.return_value.buildings.return_value.list
+        buildings_list.return_value.execute.side_effect = [
+            {
+                "buildings": [],
+                "items": [
+                    {"buildingId": "hq", "buildingName": "HQ", "floorNames": ["1", "2"]},
+                ],
+                "nextPageToken": "page-2",
+            },
+            {"items": [{"buildingId": "annex", "buildingName": "Annex"}]},
+        ]
+
+        locations = sa_adapter.list_locations()
+
+        assert locations == [
+            ResourceLocationData("hq", "HQ", "1", "1"),
+            ResourceLocationData("hq", "HQ", "2", "2"),
+            ResourceLocationData("annex", "Annex", "", ""),
+        ]
+        assert buildings_list.call_args_list == [
+            call(customer="my_customer", maxResults=500),
+            call(customer="my_customer", maxResults=500, pageToken="page-2"),
+        ]
+
+    def test_list_rooms_returns_only_conference_rooms(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        calendars = sa_adapter.admin_client.resources.return_value.calendars.return_value
+        unlocated = {
+            "resourceId": "r2",
+            "resourceName": "Phone booth",
+            "resourceEmail": "booth@resource.calendar.google.com",
+            "resourceCategory": "CONFERENCE_ROOM",
+        }
+        calendars.list.return_value.execute.return_value = {
+            "items": [
+                _ROOM_RESOURCE,
+                unlocated,
+                {"resourceId": "p1", "resourceName": "Projector", "resourceCategory": "OTHER"},
+            ]
+        }
+
+        rooms = sa_adapter.list_rooms()
+
+        assert rooms == [
+            _ROOM_DATA,
+            RoomDirectoryData(
+                external_id="r2",
+                email="booth@resource.calendar.google.com",
+                name="Phone booth",
+                description="",
+                capacity=None,
+                location_ref=None,
+                provider_payload=unlocated,
+            ),
+        ]
+        calendars.list.assert_called_once_with(customer="my_customer", maxResults=500)
+
+    def test_create_room_uses_a_deterministic_resource_id(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        calendars = sa_adapter.admin_client.resources.return_value.calendars.return_value
+        calendars.insert.return_value.execute.return_value = _ROOM_RESOURCE
+
+        room = sa_adapter.create_room(_ROOM_WRITE)
+
+        assert room == _ROOM_DATA
+        calendars.insert.assert_called_once_with(
+            customer="my_customer",
+            body={
+                "resourceId": f"vinta-{_ROOM_KEY}",
+                "resourceName": "Huddle",
+                "resourceDescription": "Small room",
+                "resourceCategory": "CONFERENCE_ROOM",
+                "capacity": 4,
+                "buildingId": "hq",
+                "floorName": "2",
+            },
+        )
+        calendars.get.assert_not_called()
+        mock_rate_limiters[1].try_acquire.assert_called_once_with(
+            "google_calendar_write_service-test_sa"
+        )
+
+    def test_create_room_without_capacity_or_location(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        calendars = sa_adapter.admin_client.resources.return_value.calendars.return_value
+        calendars.insert.return_value.execute.return_value = _ROOM_RESOURCE
+
+        sa_adapter.create_room(RoomWriteData("Huddle", "", None, None, provisional_key=_ROOM_KEY))
+
+        assert calendars.insert.call_args.kwargs["body"] == {
+            "resourceId": f"vinta-{_ROOM_KEY}",
+            "resourceName": "Huddle",
+            "resourceDescription": "",
+            "resourceCategory": "CONFERENCE_ROOM",
+        }
+
+    def test_create_room_replay_409_returns_the_existing_room(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        calendars = sa_adapter.admin_client.resources.return_value.calendars.return_value
+        calendars.insert.return_value.execute.side_effect = _http_error(
+            409, "Entity already exists."
+        )
+        calendars.get.return_value.execute.return_value = _ROOM_RESOURCE
+
+        room = sa_adapter.create_room(_ROOM_WRITE)
+
+        assert room == _ROOM_DATA
+        calendars.get.assert_called_once_with(
+            customer="my_customer", calendarResourceId=f"vinta-{_ROOM_KEY}"
+        )
+
+    def test_update_room_patches_only_the_given_fields(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        calendars = sa_adapter.admin_client.resources.return_value.calendars.return_value
+        calendars.patch.return_value.execute.return_value = _ROOM_RESOURCE
+
+        room = sa_adapter.update_room("room-1", _ROOM_WRITE, ["name", "location_ref"])
+
+        assert room == _ROOM_DATA
+        calendars.patch.assert_called_once_with(
+            customer="my_customer",
+            calendarResourceId="room-1",
+            body={"resourceName": "Huddle", "buildingId": "hq", "floorName": "2"},
+        )
+
+    def test_update_room_sends_null_to_clear_capacity_and_location(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        calendars = sa_adapter.admin_client.resources.return_value.calendars.return_value
+        calendars.patch.return_value.execute.return_value = _ROOM_RESOURCE
+
+        sa_adapter.update_room(
+            "room-1",
+            RoomWriteData("Huddle", "", None, None, provisional_key=_ROOM_KEY),
+            ["capacity", "location_ref", "description"],
+        )
+
+        assert calendars.patch.call_args.kwargs["body"] == {
+            "capacity": None,
+            "buildingId": None,
+            "floorName": None,
+            "resourceDescription": "",
+        }
+
+    def test_delete_room(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        calendars = sa_adapter.admin_client.resources.return_value.calendars.return_value
+
+        sa_adapter.delete_room("room-1")
+
+        calendars.delete.assert_called_once_with(
+            customer="my_customer", calendarResourceId="room-1"
+        )
+
+    def test_get_free_busy(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        email = "huddle@resource.calendar.google.com"
+        start = datetime.datetime(2026, 10, 5, 9, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 10, 5, 18, tzinfo=datetime.UTC)
+        sa_adapter.client.freebusy.return_value.query.return_value.execute.return_value = {
+            "calendars": {
+                email: {"busy": [{"start": "2026-10-05T10:00:00Z", "end": "2026-10-05T11:00:00Z"}]}
+            }
+        }
+
+        windows = sa_adapter.get_free_busy(email, start, end)
+
+        assert windows == [
+            BusyWindow(
+                start=datetime.datetime(2026, 10, 5, 10, tzinfo=datetime.UTC),
+                end=datetime.datetime(2026, 10, 5, 11, tzinfo=datetime.UTC),
+            )
+        ]
+        sa_adapter.client.freebusy.return_value.query.assert_called_once_with(
+            body={
+                "timeMin": start.isoformat(),
+                "timeMax": end.isoformat(),
+                "items": [{"id": email}],
+            }
+        )
+
+    def test_get_free_busy_calendar_error_is_not_found(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        email = "gone@resource.calendar.google.com"
+        sa_adapter.client.freebusy.return_value.query.return_value.execute.return_value = {
+            "calendars": {email: {"errors": [{"domain": "global", "reason": "notFound"}]}}
+        }
+
+        with pytest.raises(ResourceDirectoryNotFoundError, match="notFound"):
+            sa_adapter.get_free_busy(
+                email,
+                datetime.datetime(2026, 10, 5, 9, tzinfo=datetime.UTC),
+                datetime.datetime(2026, 10, 5, 18, tzinfo=datetime.UTC),
+            )
+
+    @pytest.mark.parametrize("reason", ["internalError", "backendError"])
+    def test_get_free_busy_other_calendar_errors_are_transient(self, mock_rate_limiters, reason):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        email = "huddle@resource.calendar.google.com"
+        sa_adapter.client.freebusy.return_value.query.return_value.execute.return_value = {
+            "calendars": {email: {"errors": [{"domain": "global", "reason": reason}]}}
+        }
+
+        with pytest.raises(ResourceDirectoryError) as excinfo:
+            sa_adapter.get_free_busy(
+                email,
+                datetime.datetime(2026, 10, 5, 9, tzinfo=datetime.UTC),
+                datetime.datetime(2026, 10, 5, 18, tzinfo=datetime.UTC),
+            )
+
+        assert type(excinfo.value) is ResourceDirectoryError
+        assert excinfo.value.is_transient is True
+        assert str(excinfo.value) == (f"Google free/busy returned an error for the room: {reason}")
+
+    def test_verify_room_write_access_lists_one_building(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        buildings = sa_adapter.admin_client.resources.return_value.buildings.return_value
+
+        sa_adapter.verify_room_write_access()
+
+        buildings.list.assert_called_once_with(customer="my_customer", maxResults=1)
+
+    def test_methods_require_a_service_account_adapter(self, adapter):
+        with pytest.raises(NotImplementedError):
+            adapter.list_rooms()
+
+    @pytest.mark.parametrize(
+        ("status", "error_class", "is_transient"),
+        [
+            (400, ResourceDirectoryInvalidInputError, False),
+            (409, ResourceDirectoryInvalidInputError, False),
+            (412, ResourceDirectoryInvalidInputError, False),
+            (422, ResourceDirectoryInvalidInputError, False),
+            (401, ResourceDirectoryPermissionError, True),
+            (403, ResourceDirectoryPermissionError, True),
+            (404, ResourceDirectoryNotFoundError, False),
+            (429, ResourceDirectoryError, True),
+            (500, ResourceDirectoryError, True),
+            (503, ResourceDirectoryError, True),
+        ],
+    )
+    def test_http_errors_are_classified(
+        self, mock_rate_limiters, status, error_class, is_transient
+    ):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        calendars = sa_adapter.admin_client.resources.return_value.calendars.return_value
+        calendars.patch.return_value.execute.side_effect = _http_error(status, "nope")
+
+        with pytest.raises(ResourceDirectoryError) as excinfo:
+            sa_adapter.update_room("room-1", _ROOM_WRITE, ["name"])
+
+        assert type(excinfo.value) is error_class
+        assert excinfo.value.is_transient is is_transient
+        assert str(excinfo.value) == f"Google Directory API returned HTTP {status}: nope"
+
+    def test_create_room_non_409_error_is_classified(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        calendars = sa_adapter.admin_client.resources.return_value.calendars.return_value
+        calendars.insert.return_value.execute.side_effect = _http_error(400, "Invalid building")
+
+        with pytest.raises(ResourceDirectoryInvalidInputError):
+            sa_adapter.create_room(_ROOM_WRITE)
+        calendars.get.assert_not_called()
+
+    def test_refused_token_is_a_permission_error(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        buildings = sa_adapter.admin_client.resources.return_value.buildings.return_value
+        buildings.list.return_value.execute.side_effect = RefreshError(
+            "unauthorized_client: Client is unauthorized to retrieve access tokens"
+        )
+
+        with pytest.raises(ResourceDirectoryPermissionError):
+            sa_adapter.verify_room_write_access()
+
+    def test_network_failure_is_transient(self, mock_rate_limiters):
+        sa_adapter = _make_sa_adapter(mock_rate_limiters)
+        calendars = sa_adapter.admin_client.resources.return_value.calendars.return_value
+        calendars.delete.return_value.execute.side_effect = TimeoutError("timed out")
+
+        with pytest.raises(ResourceDirectoryError) as excinfo:
+            sa_adapter.delete_room("room-1")
+
+        assert type(excinfo.value) is ResourceDirectoryError
+        assert excinfo.value.is_transient is True

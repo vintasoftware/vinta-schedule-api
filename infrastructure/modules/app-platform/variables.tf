@@ -411,6 +411,13 @@ variable "billing_default_grace_period_days" {
   nullable    = false
 }
 
+variable "ms_client_id" {
+  description = "MS_CLIENT_ID -- application (client) id of Vinta's multi-tenant Entra app. Empty turns Microsoft room sync off."
+  type        = string
+  default     = ""
+  nullable    = false
+}
+
 variable "extra_environment" {
   description = "Additional non-secret env vars merged into every container. Later keys win over the module's own."
   type        = map(string)
