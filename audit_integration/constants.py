@@ -52,3 +52,11 @@ class AuditAction(models.TextChoices):
         "calendar.resource.external_change_edit_discarded",
         "Room edit discarded for a provider change",
     )
+    ROOM_PROVIDER_SYNCED = (
+        "calendar.resource.provider_synced",
+        "Room pushed to provider",
+    )
+    ROOM_PROVIDER_SYNC_FAILED = (
+        "calendar.resource.provider_sync_failed",
+        "Room push to provider failed",
+    )

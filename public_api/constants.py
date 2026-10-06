@@ -40,6 +40,16 @@ class PublicAPIResources(TextChoices):
     DISABLE_RESOURCE_CALENDAR = "disable_resource_calendar", "Disable Resource Calendar"
     UPDATE_RESOURCE_CALENDAR = "update_resource_calendar", "Update Resource Calendar"
     IMPORT_RESOURCE_CALENDARS = "import_resource_calendars", "Import Resource Calendars"
+    LIST_RESOURCE_LOCATIONS = "list_resource_locations", "List Resource Locations"
+    RETRY_RESOURCE_CALENDAR_SYNC = (
+        "retry_resource_calendar_sync",
+        "Retry Resource Calendar Sync",
+    )
+    PREVIEW_RESOURCE_CALENDAR_DELETION = (
+        "preview_resource_calendar_deletion",
+        "Preview Resource Calendar Deletion",
+    )
+    DELETE_RESOURCE_CALENDAR = "delete_resource_calendar", "Delete Resource Calendar"
     CREATE_AVAILABILITY_WINDOW = "create_availability_window", "Create Availability Window"
     UPDATE_AVAILABILITY_WINDOW = "update_availability_window", "Update Availability Window"
     DELETE_AVAILABILITY_WINDOW = "delete_availability_window", "Delete Availability Window"

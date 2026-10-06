@@ -30,9 +30,12 @@ services such as ``AppointmentTypeService``.
 """
 
 import datetime
+import hashlib
+import json
 import logging
-from collections.abc import Callable, Collection, Iterable
-from typing import TYPE_CHECKING, Annotated
+import uuid
+from collections.abc import Callable, Collection, Iterable, Mapping
+from typing import TYPE_CHECKING, Annotated, Any
 
 from django.db import transaction
 from django.db.models import QuerySet
@@ -50,11 +53,21 @@ from calendar_integration.constants import (
     CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
+    ResourceSyncOperation,
+    ResourceSyncStatus,
+    RoomDeletionOutcome,
 )
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
+    CalendarServiceNotInjectedError,
     CalendarServiceOrganizationNotSetError,
     InvalidCalendarTokenError,
+    InvalidResourceCalendarProviderError,
+    InvalidResourceLocationError,
+    ResourceCalendarIdempotencyKeyReusedError,
+    ResourceCalendarProviderSyncNotEnabledError,
+    ResourceDirectoryNotWriteEnabledError,
+    RoomSyncStateError,
 )
 from calendar_integration.models import (
     AvailableTime,
@@ -71,6 +84,9 @@ from calendar_integration.models import (
     EventExternalAttendance,
     GoogleCalendarServiceAccount,
     RecurrenceRule,
+    ResourceCalendarCreateRequest,
+    ResourceCalendarProviderLink,
+    ResourceLocation,
 )
 from calendar_integration.querysets import CalendarEventQuerySet
 from calendar_integration.services import slot_engine
@@ -117,9 +133,11 @@ from calendar_integration.services.calendar_webhook_service import (
     WebhookHealthStatus,
 )
 from calendar_integration.services.dataclasses import (
+    AbortDeletion,
     ApplicationCalendarData,
     AvailableTimeWindow,
     BookableSlotProposal,
+    BookingResolution,
     CalendarEventAdapterOutputData,
     CalendarEventData,
     CalendarEventInputData,
@@ -131,6 +149,8 @@ from calendar_integration.services.dataclasses import (
     EventInternalAttendeeData,
     EventsSyncChanges,
     ResourceAllocationInputData,
+    RoomBookingPreview,
+    RoomDeletionResult,
     UnavailableTimeWindow,
 )
 from calendar_integration.services.external_client_identifier_service import (
@@ -143,6 +163,7 @@ from calendar_integration.services.type_guards import (
     is_authenticated_calendar_service,
     is_initialized_or_authenticated_calendar_service,
 )
+from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC, is_enabled
 from organizations.models import Organization, OrganizationMembership
 from payments.seams.resource_keys import (
     EXTERNAL_CALENDAR_GOOGLE,
@@ -158,15 +179,48 @@ if TYPE_CHECKING:
     from vinta_billing.services.entitlement_service import EntitlementService
 
     from audit_integration.services import OrganizationAuditService
+    from calendar_integration.services.booking_resolution_service import (
+        BookingResolutionService,
+    )
     from calendar_integration.services.external_event_change_request_service import (
         ExternalEventChangeRequestService,
     )
+    from calendar_integration.services.protocols.resource_directory_adapter import (
+        ResourceDirectoryAdapterResolver,
+    )
+    from calendar_integration.services.room_sync_service import RoomSyncService
 
 
 logger = logging.getLogger(__name__)
 
 # Sentinel for partial updates: distinguishes "omit capacity" from "explicit null"
 _UNCHANGED = object()
+
+# The providers whose room directory Vinta Schedule can write, with the product name
+# used in error messages.
+_ROOM_WRITE_PROVIDER_NAMES: dict[str, str] = {
+    CalendarProvider.GOOGLE: "Google Workspace",
+    CalendarProvider.MICROSOFT: "Microsoft 365",
+}
+
+# Why a room synced with a provider cannot be set INACTIVE like a manual room: that
+# would free its plan slot while the provider room and its link stay live.
+SYNCED_ROOM_DISABLE_ERROR = (
+    "A room synced with a provider cannot be disabled: use deleteResourceCalendar."
+)
+
+# How long a synced-room create idempotency key can be replayed.
+RESOURCE_CALENDAR_CREATE_REQUEST_TTL = datetime.timedelta(hours=24)
+
+
+def _synced_room_create_fingerprint(payload: dict[str, object]) -> str:
+    """The sha256 hex digest of a synced-room create payload, for idempotency checks.
+
+    Keys are sorted, so the same values always give the same digest.
+    """
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
 
 # The boolean entitlement required for each external provider, checked in
 # `authenticate()` -- the chokepoint both the Google and Microsoft connection paths
@@ -244,8 +298,26 @@ class CalendarService(BaseCalendarService):
             "ExternalClientIdentifierService | None",
             Provide["external_client_identifier_service"],
         ] = None,
+        room_sync_service_factory: Annotated[
+            "Callable[[], RoomSyncService] | None", Provide["room_sync_service.provider"]
+        ] = None,
+        resource_directory_adapter_resolver_factory: Annotated[
+            "Callable[[], ResourceDirectoryAdapterResolver] | None",
+            Provide["resource_directory_adapter_resolver.provider"],
+        ] = None,
+        booking_resolution_service_factory: Annotated[
+            "Callable[[], BookingResolutionService] | None",
+            Provide["booking_resolution_service.provider"],
+        ] = None,
     ) -> None:
-        """Initialize a CalendarService instance. Call authenticate() before using calendar operations."""
+        """Initialize a CalendarService instance. Call authenticate() before using calendar operations.
+
+        The room sync service, the room directory resolver and the booking resolution
+        service arrive as factories, not instances: only the synced-room writes need
+        them, building them eagerly would fail on every ``CalendarService`` until a
+        resolver is configured, and the booking resolution service is itself built
+        with a ``CalendarService``.
+        """
         self.organization = None
         self.user_or_token = None
         self.account = None
@@ -257,6 +329,11 @@ class CalendarService(BaseCalendarService):
         self.booking_policy_service = booking_policy_service
         self.entitlement_service = entitlement_service
         self.external_client_identifier_service = external_client_identifier_service
+        self.room_sync_service_factory = room_sync_service_factory
+        self.resource_directory_adapter_resolver_factory = (
+            resource_directory_adapter_resolver_factory
+        )
+        self.booking_resolution_service_factory = booking_resolution_service_factory
         # Set by authenticate(bypass_limits=True); disables every provider entitlement
         # guard on this instance, not just the authenticate-time one.
         self._bypass_entitlement_limits = False
@@ -1019,6 +1096,213 @@ class CalendarService(BaseCalendarService):
         return calendar
 
     @transaction.atomic()
+    def create_synced_resource_calendar(
+        self,
+        provider: str,
+        location_id: int | None,
+        name: str,
+        description: str | None = None,
+        capacity: int | None = None,
+        idempotency_key: str | None = None,
+        manage_available_windows: bool = False,
+        accepts_public_scheduling: bool = False,
+    ) -> Calendar:
+        """Create a room in Google Workspace or Microsoft 365 through Vinta Schedule.
+
+        The room is accepted right away: the ``Calendar`` and its
+        ``ResourceCalendarProviderLink`` are written in ``PENDING_CREATION``, and the
+        provider create is queued for after commit (``RoomSyncService.request_push``).
+        The room counts against the ``resource_calendars`` limit from now on and is
+        not bookable until the push confirms it.
+
+        With an ``idempotency_key``, a replay of the same payload within
+        ``RESOURCE_CALENDAR_CREATE_REQUEST_TTL`` returns the room the first request
+        made, and creates nothing.
+
+        Manual rooms keep using ``create_resource_calendar``.
+
+        :param provider: ``CalendarProvider.GOOGLE`` or ``CalendarProvider.MICROSOFT``.
+        :param location_id: Id of an active ``ResourceLocation`` of the same provider.
+            Required; ``None`` is rejected with ``InvalidResourceLocationError``.
+        :param name: Name of the room.
+        :param description: Description of the room.
+        :param capacity: How many people the room holds.
+        :param idempotency_key: Client key that makes a retried request safe to repeat.
+        :param manage_available_windows: Whether the room manages its own available windows.
+            Vinta Schedule only; never sent to the provider.
+        :param accepts_public_scheduling: Whether the room can be booked through codeless
+            public scheduling links. Vinta Schedule only; never sent to the provider.
+        :raises ResourceCalendarProviderSyncNotEnabledError: The feature flag is off.
+        :raises InvalidResourceCalendarProviderError: ``provider`` is not Google or Microsoft.
+        :raises ResourceCalendarIdempotencyKeyReusedError: The key was used with a different
+            payload.
+        :raises ResourceDirectoryNotWriteEnabledError: The organization has no write-enabled
+            connection for ``provider``.
+        :raises InvalidResourceLocationError: The location is missing, inactive, or from
+            another provider.
+        :raises OverLimitError: The organization is at its ``resource_calendars`` limit.
+        :return: The new room, or the room the first request with ``idempotency_key`` made.
+        """
+        # Read before the type-guard narrows `self` below: the narrowed Protocol type
+        # declares none of these (see `create_resource_calendar`).
+        entitlement_service = self.entitlement_service
+        resolver_factory = self.resource_directory_adapter_resolver_factory
+        replay_create = self._replay_synced_room_create
+        get_room_sync_service = self._get_room_sync_service
+
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+
+        organization = self.organization
+        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, organization.id):
+            raise ResourceCalendarProviderSyncNotEnabledError()
+        provider_name = _ROOM_WRITE_PROVIDER_NAMES.get(provider)
+        if provider_name is None:
+            raise InvalidResourceCalendarProviderError()
+
+        description = description or ""
+        fingerprint = _synced_room_create_fingerprint(
+            {
+                "provider": provider,
+                "location_id": location_id,
+                "name": name,
+                "description": description,
+                "capacity": capacity,
+                "manage_available_windows": manage_available_windows,
+                "accepts_public_scheduling": accepts_public_scheduling,
+            }
+        )
+        if entitlement_service is not None:
+            # Taken before the replay below, and held until commit. It serializes
+            # creates in this organization, so a concurrent request with the same key
+            # has committed by the time we look for it: its room is returned, rather
+            # than this request being counted against the limit its room now uses.
+            entitlement_service.lock_billing_root(scope_for(organization))
+        # A replay returns the original room before any other check, so it still
+        # works if the location, the connection or the limit changed since the first
+        # request.
+        if idempotency_key:
+            replayed = replay_create(idempotency_key, fingerprint)
+            if replayed is not None:
+                return replayed
+
+        if resolver_factory is None or not resolver_factory().is_write_enabled(
+            organization, provider
+        ):
+            raise ResourceDirectoryNotWriteEnabledError(
+                f"{provider_name} write access is not enabled for this organization."
+            )
+
+        if location_id is None:
+            raise InvalidResourceLocationError("A location is required to create a room.")
+        location = (
+            ResourceLocation.objects.filter_by_organization(organization.id)
+            .listable(provider)
+            .filter(pk=location_id)
+            .first()
+        )
+        if location is None:
+            raise InvalidResourceLocationError()
+
+        if entitlement_service is not None:
+            # Re-locking the row locked above is a no-op.
+            result = entitlement_service.check_limit(
+                scope_for(organization), RESOURCE_CALENDARS, lock=True
+            )
+            if not result.allowed:
+                raise OverLimitError.from_check_result(result)
+
+        provisional_key = uuid.uuid4()
+        calendar = Calendar.objects.create(
+            organization=organization,
+            name=name,
+            description=description,
+            provider=provider,
+            # Unique per organization and provider until the push stores the
+            # provider's id here.
+            external_id=f"pending-{provisional_key}",
+            calendar_type=CalendarType.RESOURCE,
+            visibility=CalendarVisibility.ACTIVE,
+            capacity=capacity,
+            manage_available_windows=manage_available_windows,
+            accepts_public_scheduling=accepts_public_scheduling,
+        )
+
+        # Same ownership rule as `create_resource_calendar`.
+        if isinstance(self.user_or_token, User):
+            CalendarOwnership.objects.create(
+                organization=organization,
+                calendar=calendar,
+                membership_user_id=_resolve_owner_membership_user_id(
+                    self.user_or_token, organization
+                ),
+                is_default=False,
+            )
+
+        self._grant_calendar_owner_permissions(calendar)
+
+        link = ResourceCalendarProviderLink.objects.create(
+            organization=organization,
+            calendar=calendar,
+            provider=provider,
+            sync_status=ResourceSyncStatus.PENDING_CREATION,
+            location=location,
+            provisional_key=provisional_key,
+        )
+        if idempotency_key:
+            ResourceCalendarCreateRequest.objects.create(
+                organization=organization,
+                idempotency_key=idempotency_key,
+                request_fingerprint=fingerprint,
+                calendar=calendar,
+                expires_at=_tz.now() + RESOURCE_CALENDAR_CREATE_REQUEST_TTL,
+            )
+
+        room_sync_service = get_room_sync_service()
+        room_sync_service.request_push(
+            link,
+            ResourceSyncOperation.CREATE,
+            {
+                "name": name,
+                "description": description,
+                "capacity": capacity,
+                "location_ref": location.location_ref,
+            },
+        )
+
+        self._audit_calendar_write(AuditAction.CREATE, calendar)
+
+        return calendar
+
+    def _replay_synced_room_create(self, idempotency_key: str, fingerprint: str) -> Calendar | None:
+        """The room an earlier create with ``idempotency_key`` made, or ``None``.
+
+        An expired request is deleted here, so the key can be used again before the
+        daily purge runs.
+
+        :raises ResourceCalendarIdempotencyKeyReusedError: The earlier request had a
+            different payload.
+        """
+        if self.organization is None:
+            raise CalendarServiceOrganizationNotSetError()
+        requests = ResourceCalendarCreateRequest.objects.filter_by_organization(
+            self.organization.id
+        ).filter(idempotency_key=idempotency_key)
+        requests.expired().delete()
+        earlier = requests.live().first()
+        if earlier is None:
+            return None
+        if earlier.request_fingerprint != fingerprint:
+            raise ResourceCalendarIdempotencyKeyReusedError()
+        return earlier.calendar
+
+    def _get_room_sync_service(self) -> "RoomSyncService":
+        """Build the room sync service from its DI factory."""
+        if self.room_sync_service_factory is None:
+            raise CalendarServiceNotInjectedError("room_sync_service is not configured.")
+        return self.room_sync_service_factory()
+
+    @transaction.atomic()
     def create_calendar(
         self,
         name: str,
@@ -1145,8 +1429,12 @@ class CalendarService(BaseCalendarService):
         :param calendar_id: Primary key of the Calendar to disable.
         :return: The updated Calendar instance.
         :raises Calendar.DoesNotExist: If no calendar with this id exists within the org.
-        :raises ValueError: If the calendar is not of type RESOURCE.
+        :raises ValueError: If the calendar is not of type RESOURCE, or is a room synced
+            with a provider (those are deleted through the room deletion flow).
         """
+        # Read before the type-guard narrows `self` below.
+        synced_room_link = self.synced_room_link
+
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
         self._check_not_restricted()
@@ -1158,6 +1446,8 @@ class CalendarService(BaseCalendarService):
                 f"Calendar {calendar_id} is not a resource calendar "
                 f"(type={calendar.calendar_type})."
             )
+        if synced_room_link(calendar) is not None:
+            raise ValueError(SYNCED_ROOM_DISABLE_ERROR)
 
         old_visibility = calendar.visibility
         calendar.visibility = CalendarVisibility.INACTIVE
@@ -1182,12 +1472,23 @@ class CalendarService(BaseCalendarService):
         manage_available_windows: bool | None = None,
         accepts_public_scheduling: bool | None = None,
         visibility: str | None = None,
+        location_id: int | None = None,
     ) -> Calendar:
         """Partially update a resource calendar.
 
         Only the provided (non-None, non-_UNCHANGED) fields are written; omitted fields
-        remain unchanged. The target calendar must be of type RESOURCE and must have
-        provider INTERNAL (not synced from an external provider).
+        remain unchanged. The target calendar must be of type RESOURCE. It must have
+        provider INTERNAL, unless it is a room Vinta Schedule syncs with Google or
+        Microsoft (it has a ``ResourceCalendarProviderLink``) and the
+        ``resource_calendar_provider_sync`` flag is on.
+
+        For a synced room the edit applies to the ``Calendar`` right away, and the
+        name, description, capacity and location are pushed to the provider in the
+        background (``RoomSyncService.request_push`` with ``UPDATE``). While the
+        create is still pending, the edit is merged into it. ``manage_available_windows``,
+        ``accepts_public_scheduling`` and ``visibility`` stay in Vinta Schedule only,
+        and a synced room cannot be set INACTIVE here: it is deleted through
+        ``deleteResourceCalendar``.
 
         Special handling for capacity: if ``capacity`` is explicitly ``None``, it clears
         the capacity to unlimited (null). If ``capacity`` is the sentinel ``_UNCHANGED``
@@ -1203,28 +1504,68 @@ class CalendarService(BaseCalendarService):
         :param accepts_public_scheduling: New scheduling flag, or None to leave unchanged.
         :param visibility: New visibility string (e.g. ACTIVE/INACTIVE), or None to
             leave unchanged.
+        :param location_id: Id of an active ``ResourceLocation`` of the room's provider
+            to move a synced room to, or None to leave unchanged. Synced rooms only.
         :return: The updated Calendar instance.
         :raises Calendar.DoesNotExist: If no calendar with this id exists within the org.
-        :raises ValueError: If the calendar is not of type RESOURCE or is synced from
-            an external provider (not INTERNAL).
+        :raises ValueError: If the calendar is not of type RESOURCE, is synced from
+            an external provider without being an editable synced room, is a synced
+            room being set INACTIVE, or gets a ``location_id`` while it is a manual room.
+        :raises RoomSyncStateError: The synced room is archived or being deleted.
+        :raises InvalidResourceLocationError: The location is inactive, missing, or of
+            another provider.
         """
+        # Read before the type-guard narrows `self` below: the narrowed Protocol type
+        # declares neither (see `create_resource_calendar`).
+        synced_room_link = self.synced_room_link
+        get_room_sync_service = self._get_room_sync_service
+
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
         self._check_not_restricted()
 
         calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=calendar_id)
 
+        link = None
         if calendar.provider != CalendarProvider.INTERNAL:
-            raise ValueError(
-                f"Calendar {calendar_id} is synced from an external provider "
-                f"(provider={calendar.provider}) and cannot be edited."
-            )
+            link = synced_room_link(calendar)
+            if link is None:
+                raise ValueError(
+                    f"Calendar {calendar_id} is synced from an external provider "
+                    f"(provider={calendar.provider}) and cannot be edited."
+                )
 
         if calendar.calendar_type != CalendarType.RESOURCE:
             raise ValueError(
                 f"Calendar {calendar_id} is not a resource calendar "
                 f"(type={calendar.calendar_type})."
             )
+
+        location = None
+        if link is None:
+            if location_id is not None:
+                raise ValueError(
+                    "location_id only applies to rooms synced with Google or Microsoft."
+                )
+        else:
+            if visibility == CalendarVisibility.INACTIVE:
+                raise ValueError(SYNCED_ROOM_DISABLE_ERROR)
+            # `request_push` decides this again under the link's row lock. Checked here
+            # too so an edit of only Vinta Schedule fields, which pushes nothing, is
+            # rejected the same way.
+            if not link.is_editable:
+                raise RoomSyncStateError(
+                    "An archived room, or one being deleted, cannot be edited."
+                )
+            if location_id is not None:
+                location = (
+                    ResourceLocation.objects.filter_by_organization(self.organization.id)
+                    .listable(link.provider)
+                    .filter(pk=location_id)
+                    .first()
+                )
+                if location is None:
+                    raise InvalidResourceLocationError()
 
         before = {
             "name": calendar.name,
@@ -1259,8 +1600,28 @@ class CalendarService(BaseCalendarService):
             calendar.visibility = visibility
             update_fields.append("visibility")
 
-        if update_fields:
-            calendar.save(update_fields=update_fields)
+        location_changed = False
+        if link is not None:
+            before["location_id"] = link.location_fk_id
+            synced_fields: dict[str, Any] = {
+                field: getattr(calendar, field)
+                for field in ("name", "description", "capacity")
+                if field in update_fields
+            }
+            if location is not None:
+                synced_fields["location_ref"] = location.location_ref
+            if synced_fields:
+                get_room_sync_service().request_push(
+                    link, ResourceSyncOperation.UPDATE, synced_fields
+                )
+            if location is not None and location.pk != link.location_fk_id:
+                link.location = location
+                link.save(update_fields=["location_fk", "modified"])
+                location_changed = True
+
+        if update_fields or location_changed:
+            if update_fields:
+                calendar.save(update_fields=update_fields)
             after = {
                 "name": calendar.name,
                 "description": calendar.description,
@@ -1269,11 +1630,194 @@ class CalendarService(BaseCalendarService):
                 "accepts_public_scheduling": calendar.accepts_public_scheduling,
                 "visibility": calendar.visibility,
             }
+            if link is not None:
+                after["location_id"] = link.location_fk_id
             self._audit_calendar_write(
                 AuditAction.UPDATE, calendar, diff=compute_diff(before, after)
             )
 
         return calendar
+
+    def synced_room_link(self, calendar: Calendar) -> ResourceCalendarProviderLink | None:
+        """The provider link of a room Vinta Schedule syncs, or ``None``.
+
+        ``None`` too when the ``resource_calendar_provider_sync`` flag is off, so with
+        the flag off a synced room is treated like any other provider calendar. A
+        synced room is edited through ``update_resource_calendar`` and deleted through
+        the room deletion flow; every path that would change it without telling the
+        provider asks this first. Reads the organization off ``calendar``, so it needs
+        no initialized service.
+        """
+        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, calendar.organization_id):
+            return None
+        return (
+            ResourceCalendarProviderLink.objects.filter_by_organization(calendar.organization_id)
+            .filter(calendar=calendar)
+            .first()
+        )
+
+    @transaction.atomic()
+    def retry_resource_calendar_sync(self, calendar_id: int) -> Calendar:
+        """Start a synced room's failed provider sync over.
+
+        The link goes from sync failed back to pending, with a fresh retry window, and
+        a push is queued after commit (``RoomSyncService.retry``). Edits made while the
+        sync was failed go out with it.
+
+        :param calendar_id: Primary key of the room.
+        :return: The room.
+        :raises Calendar.DoesNotExist: No calendar with this id in the organization.
+        :raises ResourceCalendarProviderSyncNotEnabledError: The feature flag is off.
+        :raises RoomSyncStateError: The calendar is not a synced room, or its sync has
+            not failed.
+        """
+        # Read before the type-guard narrows `self` below.
+        synced_room_link = self.synced_room_link
+        get_room_sync_service = self._get_room_sync_service
+
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+        self._check_not_restricted()
+
+        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, self.organization.id):
+            raise ResourceCalendarProviderSyncNotEnabledError()
+        calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=calendar_id)
+        link = synced_room_link(calendar)
+        if link is None:
+            raise RoomSyncStateError("This calendar is not a room synced with a provider.")
+        get_room_sync_service().retry(link)
+        return calendar
+
+    def preview_synced_resource_calendar_deletion(self, calendar_id: int) -> RoomBookingPreview:
+        """The future bookings of a synced room, and the fingerprint its delete must send.
+
+        :raises ResourceCalendarProviderSyncNotEnabledError: The feature flag is off.
+        :raises Calendar.DoesNotExist: No calendar with this id in the organization.
+        :raises ValueError: The calendar is not a room synced with a provider.
+        """
+        # Read before the type-guard narrows `self` below.
+        synced_room = self._synced_room_for_deletion
+        get_booking_resolution_service = self._get_booking_resolution_service
+
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+        calendar, _link = synced_room(calendar_id)
+        return get_booking_resolution_service().preview(calendar)
+
+    def _synced_room_for_deletion(
+        self, calendar_id: int
+    ) -> tuple[Calendar, ResourceCalendarProviderLink]:
+        """The synced room ``calendar_id`` and its link, for the deletion preview and delete.
+
+        :raises ResourceCalendarProviderSyncNotEnabledError: The feature flag is off.
+        :raises Calendar.DoesNotExist: No calendar with this id in the organization.
+        :raises ValueError: The calendar is not a resource calendar, or is a manual room.
+        """
+        if self.organization is None:
+            raise CalendarServiceOrganizationNotSetError()
+        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, self.organization.id):
+            raise ResourceCalendarProviderSyncNotEnabledError()
+        calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=calendar_id)
+        if calendar.calendar_type != CalendarType.RESOURCE:
+            raise ValueError(
+                f"Calendar {calendar_id} is not a resource calendar "
+                f"(type={calendar.calendar_type})."
+            )
+        link = self.synced_room_link(calendar)
+        if link is None:
+            raise ValueError(
+                "This room is not synced with a provider: use disableResourceCalendar."
+            )
+        return calendar, link
+
+    def delete_synced_resource_calendar(
+        self,
+        calendar_id: int,
+        fingerprint: str,
+        default_resolution: BookingResolution,
+        overrides: Mapping[int, BookingResolution] | None = None,
+    ) -> RoomDeletionResult:
+        """Delete a room synced with Google or Microsoft, resolving its future bookings first.
+
+        ``fingerprint`` is the one ``BookingResolutionService.preview`` returned for the
+        room. Every booking takes ``default_resolution`` unless ``overrides`` names a
+        resolution for its event id. Then:
+
+        - The resolutions are validated, all or nothing; an invalid one changes
+          nothing and is returned in ``rejected``.
+        - If any booking's resolution is ``AbortDeletion``, nothing changes and the
+          bookings are returned with ``aborted``.
+        - Otherwise the plan is applied one booking at a time. If it stops part way,
+          the result carries ``apply_result`` and the room is left as it is.
+        - Once every booking is resolved, the room is set INACTIVE, which frees its
+          plan slot, and its provider delete is queued
+          (``RoomSyncService.request_push`` with ``DELETE``). A room that never
+          reached the provider is archived at once. The deletion is audited.
+
+        A room that is already archived or being deleted returns ``deleted`` with no
+        change, so a repeated delete succeeds.
+
+        Not a single transaction: each booking is applied in its own, because each
+        one calls the provider.
+
+        :raises ResourceCalendarProviderSyncNotEnabledError: The feature flag is off.
+        :raises Calendar.DoesNotExist: No calendar with this id in the organization.
+        :raises ValueError: The calendar is not a resource calendar, or is a manual
+            room (those are disabled with ``disableResourceCalendar``).
+        :raises StaleBookingPreviewError: The room's bookings changed since the preview.
+        """
+        # Read before the type-guard narrows `self` below.
+        synced_room = self._synced_room_for_deletion
+        get_room_sync_service = self._get_room_sync_service
+        get_booking_resolution_service = self._get_booking_resolution_service
+        audit_calendar_write = self._audit_calendar_write
+
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+        self._check_not_restricted()
+
+        calendar, link = synced_room(calendar_id)
+        if not link.is_editable:
+            # Already archived, or its deletion is under way.
+            return RoomDeletionResult(outcome=RoomDeletionOutcome.DELETED)
+
+        resolution_service = get_booking_resolution_service()
+        validated = resolution_service.validate(
+            calendar, fingerprint, default_resolution, overrides or {}
+        )
+        if isinstance(validated, list):
+            return RoomDeletionResult(
+                outcome=RoomDeletionOutcome.REJECTED, rejected=tuple(validated)
+            )
+        if any(isinstance(entry.resolution, AbortDeletion) for entry in validated.bookings):
+            return RoomDeletionResult(
+                outcome=RoomDeletionOutcome.ABORTED,
+                bookings=tuple(entry.booking for entry in validated.bookings),
+            )
+
+        apply_result = resolution_service.apply(validated)
+        if apply_result.failed_at is not None:
+            return RoomDeletionResult(
+                outcome=RoomDeletionOutcome.INCOMPLETE, apply_result=apply_result
+            )
+
+        with transaction.atomic():
+            old_visibility = calendar.visibility
+            calendar.visibility = CalendarVisibility.INACTIVE
+            calendar.save(update_fields=["visibility"])
+            get_room_sync_service().request_push(link, ResourceSyncOperation.DELETE)
+            audit_calendar_write(
+                AuditAction.DELETE,
+                calendar,
+                diff={"visibility": {"old": old_visibility, "new": calendar.visibility}},
+            )
+        return RoomDeletionResult(outcome=RoomDeletionOutcome.DELETED, apply_result=apply_result)
+
+    def _get_booking_resolution_service(self) -> "BookingResolutionService":
+        """Build the booking resolution service from its DI factory."""
+        if self.booking_resolution_service_factory is None:
+            raise CalendarServiceNotInjectedError("booking_resolution_service is not configured.")
+        return self.booking_resolution_service_factory()
 
     def disable_bundle_calendar(self, bundle_id: int) -> Calendar:
         """Disable a bundle calendar by setting its visibility to INACTIVE.

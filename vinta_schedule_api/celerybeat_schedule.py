@@ -62,4 +62,13 @@ CELERYBEAT_SCHEDULE = {
         "schedule": crontab(minute=45),
         "task": "calendar_integration.tasks.room_resync_tasks.resync_rooms_for_flagged_organizations_task",
     },
+    # Synced-room create idempotency keys live 24 hours. Daily is enough: an expired
+    # key that is still in the table is already ignored (and replaced) by the create.
+    "purge_expired_resource_calendar_create_requests": {
+        "schedule": crontab(hour=4, minute=15),
+        "task": (
+            "calendar_integration.tasks.room_create_request_tasks."
+            "purge_expired_resource_calendar_create_requests_task"
+        ),
+    },
 }

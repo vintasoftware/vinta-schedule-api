@@ -218,6 +218,30 @@ class BookingCancelMode(TextChoices):
     CANCEL_EVENT = "cancel_event", "Cancel the whole event"
 
 
+class BookingResolutionKind(TextChoices):
+    """How a booking of a room that is being deleted is resolved, as callers name it.
+
+    ``MOVE`` needs a target room. See ``booking_resolution_from``.
+    """
+
+    ABORT = "abort", "Cancel the room deletion"
+    MOVE = "move", "Move to another room"
+    REMOVE_ROOM = "remove_room", "Remove only the room"
+    CANCEL_EVENT = "cancel_event", "Cancel the whole event"
+
+
+class RoomDeletionOutcome(TextChoices):
+    """What a synced-room delete did. The label is the message to show the caller."""
+
+    DELETED = "deleted", "The room was deleted."
+    ABORTED = "aborted", "The room has bookings and the resolution cancelled the deletion."
+    REJECTED = "rejected", "Some bookings cannot be resolved as asked."
+    INCOMPLETE = (
+        "incomplete",
+        "Resolving the bookings stopped part way; preview again and retry.",
+    )
+
+
 class BookingRoomChange(TextChoices):
     """What happened to a booking's room when a room was deleted. Sent to the organizer."""
 
