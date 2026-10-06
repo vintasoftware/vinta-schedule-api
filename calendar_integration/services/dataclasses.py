@@ -754,18 +754,6 @@ class BusyWindow:
 
 
 @dataclass(frozen=True)
-class GoogleWriteAccessResult:
-    """The outcome of verifying room write access for an organization's Google service account.
-
-    ``error`` is ``""`` on success, otherwise a message an org admin can act on.
-    """
-
-    write_enabled: bool
-    write_verified_at: datetime.datetime | None
-    error: str
-
-
-@dataclass(frozen=True)
 class RoomBooking:
     """One future booking of a room, as a deletion preview lists it.
 
@@ -969,7 +957,6 @@ class FlaggedBookingsResult(BookingResolutionReport):
     @property
     def resolved(self) -> bool:
         return self.outcome == FlaggedBookingsOutcome.RESOLVED
-
 
     @property
     def failed_at_event_id(self) -> int | None:

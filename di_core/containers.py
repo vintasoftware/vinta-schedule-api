@@ -336,8 +336,6 @@ class AppContainer(containers.DeclarativeContainer):
         ExternalClientIdentifierService,
     )
 
-    microsoft_app_only_token_provider = providers.Factory(MicrosoftAppOnlyTokenProvider)
-
     calendar_service = providers.Factory(
         CalendarService,
         calendar_side_effects_service=calendar_side_effects_service,
