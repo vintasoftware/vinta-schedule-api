@@ -1,15 +1,21 @@
 """Django admin interface for calendar integration webhook management."""
 
 import datetime
-from typing import ClassVar
+from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from django import forms
-from django.contrib import admin
-from django.db.models import Count
+from django.contrib import admin, messages
+from django.db.models import Count, QuerySet
 from django.http import HttpRequest
 from django.utils.html import format_html
 
-from calendar_integration.constants import IncomingWebhookProcessingStatus
+from dependency_injector.wiring import Provide, inject
+
+from calendar_integration.constants import IncomingWebhookProcessingStatus, ResourceSyncStatus
+from calendar_integration.exceptions import (
+    MicrosoftConnectionNotConfiguredError,
+    RoomSyncStateError,
+)
 from calendar_integration.external_client_identifiers import normalize_system
 from calendar_integration.models import (
     AppointmentType,
@@ -26,7 +32,18 @@ from calendar_integration.models import (
     CalendarWebhookSubscription,
     ExternalClientIdentifier,
     ExternalEventChangeRequest,
+    MicrosoftOrganizationConnection,
+    ResourceCalendarProviderLink,
+    ResourceLocation,
 )
+from common.organization_context import organization_context
+
+
+if TYPE_CHECKING:
+    from calendar_integration.services.microsoft_connection_service import (
+        MicrosoftConnectionService,
+    )
+    from calendar_integration.services.room_sync_service import RoomSyncService
 
 
 class CalendarWebhookEventInline(admin.TabularInline):
@@ -780,3 +797,240 @@ class ExternalClientIdentifierAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request: HttpRequest):
         return super().get_queryset(request).select_related("organization", "content_type")
+
+
+# The three room sync admins below are deliberately cross-organization: Vinta ops
+# watch every organization's rooms from here, and nothing binds an organization to a
+# staff request. So their querysets read through ``original_manager`` (the
+# convention ``organizations/admin.py`` records), and each action binds the row's
+# own organization before it calls a service. Every field is read-only, so no form
+# builds a foreign-key field and ``unscoped_default_manager()`` is not needed.
+
+
+@admin.register(ResourceCalendarProviderLink)
+class ResourceCalendarProviderLinkAdmin(admin.ModelAdmin):
+    """Sync status, last error and flagged bookings of every provider-backed room.
+
+    Read-only: links change only through ``RoomSyncService``. The "Retry sync"
+    action is the one write, and it goes through ``RoomSyncService.retry``.
+    """
+
+    list_display = (
+        "id",
+        "calendar",
+        "organization",
+        "provider",
+        "sync_status",
+        "failed_operation",
+        "attempt_count",
+        "last_synced_at",
+        "flagged_bookings_at",
+        "archived_at",
+    )
+    list_filter = (
+        "sync_status",
+        "provider",
+        "organization",
+        ("flagged_bookings_at", admin.EmptyFieldListFilter),
+    )
+    list_select_related = ("calendar", "organization", "location")
+    search_fields = ("calendar__name", "calendar__external_id")
+    fields = (
+        "organization",
+        "calendar",
+        "provider",
+        "sync_status",
+        "failed_operation",
+        "last_error",
+        "location",
+        "provider_snapshot",
+        "pending_fields",
+        "provisional_key",
+        "attempt_count",
+        "retry_deadline",
+        "last_synced_at",
+        "archived_at",
+        "flagged_bookings_at",
+        "created",
+        "modified",
+    )
+    readonly_fields = fields
+    actions = ("retry_sync",)
+
+    def get_queryset(self, request: HttpRequest) -> QuerySet[ResourceCalendarProviderLink]:
+        """Every link in every organization; no organization is bound to a staff request."""
+        return ResourceCalendarProviderLink.original_manager.select_related(
+            "calendar", "organization", "location"
+        )
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        """Links are created by the room create flow, never by hand."""
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: ResourceCalendarProviderLink | None = None
+    ) -> bool:
+        """Deleting a link would orphan the provider room; rooms are deleted through the API."""
+        return False
+
+    @admin.action(description="Retry sync", permissions=("change",))
+    @inject
+    def retry_sync(
+        self,
+        request: HttpRequest,
+        queryset: QuerySet[ResourceCalendarProviderLink],
+        room_sync_service: Annotated["RoomSyncService | None", Provide["room_sync_service"]] = None,
+    ) -> None:
+        """Start each selected sync-failed link over; links in any other status are skipped."""
+        # Injected per call, not on __init__: admin autodiscovery instantiates this
+        # class before di_core wires the container (see SystemUserAdmin.save_model).
+        if room_sync_service is None:
+            raise ValueError("RoomSyncService is not provided")
+
+        retried = 0
+        skipped = 0
+        for link in queryset:
+            if link.sync_status != ResourceSyncStatus.SYNC_FAILED:
+                skipped += 1
+                continue
+            with organization_context(link.organization):
+                try:
+                    room_sync_service.retry(link)
+                except RoomSyncStateError:
+                    # Its status changed since the changelist loaded.
+                    skipped += 1
+                    continue
+            retried += 1
+
+        if retried:
+            self.message_user(request, f"Queued a retry for {retried} room link(s).")
+        if skipped:
+            self.message_user(
+                request,
+                f"Skipped {skipped} room link(s) that are not in sync failed.",
+                messages.WARNING,
+            )
+
+
+@admin.register(ResourceLocation)
+class ResourceLocationAdmin(admin.ModelAdmin):
+    """Buildings and floors mirrored from the providers by the hourly resync. Read-only."""
+
+    list_display = (
+        "id",
+        "building_name",
+        "floor_name",
+        "organization",
+        "provider",
+        "is_active",
+        "last_seen_at",
+    )
+    list_filter = ("provider", "is_active", "organization")
+    list_select_related = ("organization",)
+    search_fields = ("building_name", "floor_name", "external_building_id")
+    fields = (
+        "organization",
+        "provider",
+        "external_building_id",
+        "building_name",
+        "external_floor_id",
+        "floor_name",
+        "is_active",
+        "last_seen_at",
+        "created",
+        "modified",
+    )
+    readonly_fields = fields
+
+    def get_queryset(self, request: HttpRequest) -> QuerySet[ResourceLocation]:
+        """Every location in every organization; no organization is bound to a staff request."""
+        return ResourceLocation.original_manager.select_related("organization")
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(
+        self, request: HttpRequest, obj: ResourceLocation | None = None
+    ) -> bool:
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: ResourceLocation | None = None
+    ) -> bool:
+        return False
+
+
+@admin.register(MicrosoftOrganizationConnection)
+class MicrosoftOrganizationConnectionAdmin(admin.ModelAdmin):
+    """Each organization's Microsoft 365 tenant connection, with a "Verify" action.
+
+    Read-only: the tenant id comes from the admin-consent flow and ``write_enabled``
+    from verification. ``consent_state`` is a single-use nonce and is not shown.
+    """
+
+    list_display = (
+        "id",
+        "organization",
+        "tenant_id",
+        "write_enabled",
+        "consented_at",
+        "verified_at",
+    )
+    list_filter = ("write_enabled",)
+    list_select_related = ("organization",)
+    search_fields = ("organization__name", "tenant_id")
+    fields = (
+        "organization",
+        "tenant_id",
+        "consented_at",
+        "write_enabled",
+        "verified_at",
+        "last_verification_error",
+        "created",
+        "modified",
+    )
+    readonly_fields = fields
+    actions = ("verify_connection",)
+
+    def get_queryset(self, request: HttpRequest) -> QuerySet[MicrosoftOrganizationConnection]:
+        """Every connection in every organization; no organization is bound to a staff request."""
+        return MicrosoftOrganizationConnection.original_manager.select_related("organization")
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        """Connections are created by the admin-consent flow."""
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: MicrosoftOrganizationConnection | None = None
+    ) -> bool:
+        return False
+
+    @admin.action(description="Verify", permissions=("change",))
+    @inject
+    def verify_connection(
+        self,
+        request: HttpRequest,
+        queryset: QuerySet[MicrosoftOrganizationConnection],
+        microsoft_connection_service: Annotated[
+            "MicrosoftConnectionService | None", Provide["microsoft_connection_service"]
+        ] = None,
+    ) -> None:
+        """Re-check write access for each selected connection and report the outcome."""
+        # Injected per call, not on __init__ (see retry_sync above).
+        if microsoft_connection_service is None:
+            raise ValueError("MicrosoftConnectionService is not provided")
+
+        for connection in queryset:
+            organization = connection.organization
+            try:
+                with organization_context(organization):
+                    result = microsoft_connection_service.verify(organization)
+            except MicrosoftConnectionNotConfiguredError as exc:
+                self.message_user(request, str(exc), messages.ERROR)
+                return
+            if result.write_enabled:
+                self.message_user(request, f"{organization}: write access verified.")
+            else:
+                self.message_user(
+                    request, f"{organization}: not write-enabled. {result.error}", messages.WARNING
+                )
