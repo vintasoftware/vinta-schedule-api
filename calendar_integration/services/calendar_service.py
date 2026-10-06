@@ -293,6 +293,7 @@ class CalendarService(BaseCalendarService):
         resource_directory_adapter_resolver_factory: Annotated[
             "Callable[[], ResourceDirectoryAdapterResolver] | None",
             Provide["resource_directory_adapter_resolver.provider"],
+        ] = None,
         microsoft_app_only_token_provider: Annotated[
             "MicrosoftAppOnlyTokenProvider | None",
             Provide["microsoft_app_only_token_provider"],
