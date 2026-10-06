@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Any
 
 from django.db.models import Model
 from django.db.models.signals import post_delete, post_save
-from django.dispatch import receiver
+from django.dispatch import Signal, receiver
 
 
 if TYPE_CHECKING:
@@ -166,3 +166,18 @@ def reconcile_pool_on_membership_delete(
     if _suppress_pool_membership_signal.get():
         return
     reconcile_pools({instance.pool_fk_id}, instance.organization_id)
+
+
+# Sent once a provider-backed room's link reaches ``SYNCED`` for a room that is new
+# to Vinta Schedule's sync: by the push engine after a provider create
+# (``created=True``), and by the hourly resync when it links or imports a room the
+# provider already had (``created=False``). Receivers start provider event sync for
+# the room. Keyword arguments: ``calendar_id`` (int), ``provider`` (str), ``created``
+# (bool). Send it from ``transaction.on_commit`` so receivers see committed rows.
+resource_room_synced = Signal()
+
+# Sent once a provider-backed room's link reaches ``ARCHIVED``: by the push engine
+# after a provider delete, and by the hourly resync when the provider deleted the
+# room. Receivers stop provider event sync for the room. Keyword arguments:
+# ``calendar_id`` (int), ``provider`` (str). Send it from ``transaction.on_commit``.
+resource_room_archived = Signal()
