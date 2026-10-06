@@ -9,7 +9,7 @@ from vinta_orgs.querysets import (
     OrganizationMembershipQuerySet as _PackageOrganizationMembershipQuerySet,
 )
 
-from organizations.permission_catalog import MANAGE_BILLING
+from organizations.permission_catalog import MANAGE_BILLING, MANAGE_MEMBERS
 
 
 class OrganizationMembershipQuerySet(_PackageOrganizationMembershipQuerySet):
@@ -77,6 +77,21 @@ class OrganizationMembershipQuerySet(_PackageOrganizationMembershipQuerySet):
         """
         return (
             self.filter(organization_id=organization_id).active().holding_permission(MANAGE_BILLING)
+        )
+
+    def administrators(self, organization_id: int) -> OrganizationMembershipQuerySet:
+        """Active memberships that may administer ``organization_id``: the ones
+        holding ``MANAGE_MEMBERS``.
+
+        The "who is told about the organization" query, asked once. The pending
+        change-request notice (``ExternalEventChangeRequestService``) and the room
+        sync emails (``RoomSyncNotifier``) both address this set, and it is the
+        same capability the last-administrator guards count by, so the people
+        notified are exactly the people admitted. Permission-shaped for the same
+        reason ``billing_recipients`` is: one source for "who may" and "who hears".
+        """
+        return (
+            self.filter(organization_id=organization_id).active().holding_permission(MANAGE_MEMBERS)
         )
 
     def other_members_holding(

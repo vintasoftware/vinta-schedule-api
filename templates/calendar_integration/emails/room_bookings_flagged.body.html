@@ -1,0 +1,20 @@
+{% load i18n %}
+{% block email_header %}
+  <h1>{% trans "A room was deleted and its bookings need attention" %}</h1>
+{% endblock %}
+
+{% block email_content %}
+<p>
+{% blocktrans with room_name=room_name room_id=room_id %}Room "{{ room_name }}" (id {{ room_id }}) was deleted in your calendar provider, so it has been archived in Vinta Schedule.{% endblocktrans %}
+</p>
+<p>
+{% blocktrans count counter=count %}{{ counter }} future booking still references this room and has been flagged.{% plural %}{{ counter }} future bookings still reference this room and have been flagged.{% endblocktrans %}
+</p>
+<p>
+{% blocktrans %}Please review the flagged bookings in Vinta Schedule and move each one to another room, remove the room from it, or cancel it.{% endblocktrans %}
+</p>
+{% endblock %}
+
+{% block email_footer %}
+  <p><small>{% blocktrans %}This is an automated message. Please do not reply to this email.{% endblocktrans %}</small></p>
+{% endblock %}

@@ -1,0 +1,1 @@
+{% load i18n %}{% blocktrans %}The room you booked is no longer available.{% endblocktrans %}
