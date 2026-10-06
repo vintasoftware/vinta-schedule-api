@@ -199,51 +199,53 @@ class TestContainerWiring:
 class TestRoomSyncedReceiver:
     @pytest.fixture
     def room(self, organization) -> Calendar:
-        room = baker.make(
+        return baker.make(
             Calendar,
             organization=organization,
             provider=CalendarProvider.GOOGLE,
             calendar_type=CalendarType.RESOURCE,
         )
-        ResourceCalendarProviderLink.objects.create(
-            organization=organization, calendar=room, provider=CalendarProvider.GOOGLE
-        )
-        return room
 
     @pytest.fixture
     def delay(self):
         with patch(f"{RECEIVER_MODULE}.start_room_event_sync_task.delay") as delay:
             yield delay
 
-    def _send(self, room, provider=CalendarProvider.GOOGLE, created=True):
+    def _send(self, organization, room, provider=CalendarProvider.GOOGLE, created=True):
         # Through the real signal, so the wiring in `apps.py` is covered too.
         resource_room_synced.send(
             sender=ResourceCalendarProviderLink,
             calendar_id=room.id,
+            organization_id=organization.id,
             provider=provider,
             created=created,
         )
 
-    def test_queues_the_task_for_a_created_google_room(
-        self, organization, room, delay, django_capture_on_commit_callbacks
+    @pytest.mark.parametrize(
+        ("provider", "created", "queued"),
+        [
+            (CalendarProvider.GOOGLE, True, True),
+            (CalendarProvider.GOOGLE, False, False),
+            (CalendarProvider.MICROSOFT, True, False),
+        ],
+    )
+    def test_queues_the_task_for_created_google_rooms_only(
+        self,
+        organization,
+        room,
+        delay,
+        django_capture_on_commit_callbacks,
+        provider,
+        created,
+        queued,
     ):
         with django_capture_on_commit_callbacks(execute=True):
-            self._send(room)
+            self._send(organization, room, provider=provider, created=created)
 
-        delay.assert_called_once_with(calendar_id=room.id, organization_id=organization.id)
-
-    def test_skips_rooms_the_resync_linked(self, room, delay):
-        self._send(room, created=False)
-        delay.assert_not_called()
-
-    def test_skips_microsoft_rooms(self, room, delay):
-        self._send(room, provider=CalendarProvider.MICROSOFT)
-        delay.assert_not_called()
-
-    def test_skips_a_room_without_a_link(self, organization, delay):
-        room = baker.make(Calendar, organization=organization, provider=CalendarProvider.GOOGLE)
-        self._send(room)
-        delay.assert_not_called()
+        if queued:
+            delay.assert_called_once_with(calendar_id=room.id, organization_id=organization.id)
+        else:
+            delay.assert_not_called()
 
 
 @pytest.mark.django_db

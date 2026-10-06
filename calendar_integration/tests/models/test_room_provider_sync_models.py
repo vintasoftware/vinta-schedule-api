@@ -738,11 +738,15 @@ class TestRoomSignals:
             resource_room_synced.send(
                 sender=ResourceCalendarProviderLink,
                 calendar_id=1,
+                organization_id=7,
                 provider=CalendarProvider.GOOGLE,
                 created=True,
             )
             resource_room_archived.send(
-                sender=ResourceCalendarProviderLink, calendar_id=2, provider="microsoft"
+                sender=ResourceCalendarProviderLink,
+                calendar_id=2,
+                organization_id=7,
+                provider="microsoft",
             )
         finally:
             resource_room_synced.disconnect(on_synced)
@@ -751,8 +755,16 @@ class TestRoomSignals:
         assert [
             (name, {k: v for k, v in kw.items() if k != "signal"}) for name, kw in received
         ] == [
-            ("synced", {"calendar_id": 1, "provider": CalendarProvider.GOOGLE, "created": True}),
-            ("archived", {"calendar_id": 2, "provider": "microsoft"}),
+            (
+                "synced",
+                {
+                    "calendar_id": 1,
+                    "organization_id": 7,
+                    "provider": CalendarProvider.GOOGLE,
+                    "created": True,
+                },
+            ),
+            ("archived", {"calendar_id": 2, "organization_id": 7, "provider": "microsoft"}),
         ]
 
 

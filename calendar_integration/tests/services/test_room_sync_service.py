@@ -560,7 +560,12 @@ class TestPushSuccess:
         assert signals_received == [
             (
                 "synced",
-                {"calendar_id": room.id, "provider": CalendarProvider.GOOGLE, "created": True},
+                {
+                    "calendar_id": room.id,
+                    "organization_id": room.organization_id,
+                    "provider": CalendarProvider.GOOGLE,
+                    "created": True,
+                },
             )
         ]
         audit_service.record.assert_called_once_with(
@@ -724,7 +729,14 @@ class TestPushSuccess:
         assert link.sync_status == ResourceSyncStatus.ARCHIVED
         assert link.archived_at == NOW
         assert signals_received == [
-            ("archived", {"calendar_id": room.id, "provider": CalendarProvider.GOOGLE})
+            (
+                "archived",
+                {
+                    "calendar_id": room.id,
+                    "organization_id": room.organization_id,
+                    "provider": CalendarProvider.GOOGLE,
+                },
+            )
         ]
         assert audit_service.record.call_args.kwargs["action"] == AuditAction.ROOM_PROVIDER_SYNCED
 

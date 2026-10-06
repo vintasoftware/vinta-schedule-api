@@ -6,7 +6,6 @@ from django.db import transaction
 from django.dispatch import receiver
 
 from calendar_integration.constants import CalendarProvider
-from calendar_integration.models import ResourceCalendarProviderLink
 from calendar_integration.signals import resource_room_synced
 from calendar_integration.tasks import start_room_event_sync_task
 
@@ -16,7 +15,12 @@ from calendar_integration.tasks import start_room_event_sync_task
     dispatch_uid="calendar_integration.receivers.request_event_sync_for_created_google_room",
 )
 def request_event_sync_for_created_google_room(
-    sender: Any, calendar_id: int, provider: str, created: bool, **kwargs: Any
+    sender: Any,
+    calendar_id: int,
+    organization_id: int,
+    provider: str,
+    created: bool,
+    **kwargs: Any,
 ) -> None:
     """Queue event sync for a Google room Vinta Schedule just created.
 
@@ -26,17 +30,6 @@ def request_event_sync_for_created_google_room(
     fail the push that sent this signal.
     """
     if not created or provider != CalendarProvider.GOOGLE:
-        return
-
-    # The signal carries only the calendar id; the link's organization is read from it.
-    # Cross-organization on purpose: no organization is bound while a signal is handled.
-    organization_id = (
-        ResourceCalendarProviderLink.objects.unscoped()
-        .filter(calendar_fk_id=calendar_id)
-        .values_list("organization_id", flat=True)
-        .first()
-    )
-    if organization_id is None:
         return
 
     transaction.on_commit(
