@@ -242,6 +242,17 @@ class RoomDeletionOutcome(TextChoices):
     )
 
 
+class FlaggedBookingsOutcome(TextChoices):
+    """What resolving the bookings of a provider-deleted room did. The label is the message."""
+
+    RESOLVED = "resolved", "Every flagged booking is resolved."
+    REJECTED = "rejected", "Some bookings cannot be resolved as asked."
+    INCOMPLETE = (
+        "incomplete",
+        "Resolving the bookings stopped part way; preview again and retry.",
+    )
+
+
 class BookingRoomChange(TextChoices):
     """What happened to a booking's room when a room was deleted. Sent to the organizer."""
 

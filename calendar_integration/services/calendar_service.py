@@ -53,6 +53,7 @@ from calendar_integration.constants import (
     CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
+    FlaggedBookingsOutcome,
     ResourceSyncOperation,
     ResourceSyncStatus,
     RoomDeletionOutcome,
@@ -148,6 +149,7 @@ from calendar_integration.services.dataclasses import (
     EventExternalAttendeeData,
     EventInternalAttendeeData,
     EventsSyncChanges,
+    FlaggedBookingsResult,
     ResourceAllocationInputData,
     RoomBookingPreview,
     RoomDeletionResult,
@@ -685,8 +687,9 @@ class CalendarService(BaseCalendarService):
         Only ``BookingResolutionService.apply`` calls this. The service acts as the
         system rather than as a user or token: event creates, updates and deletes skip
         the per-event permission checks, because they edit other people's events on
-        behalf of a room deletion the caller was already authorized to make
-        (``IsOrganizationAdmin`` or the ``delete_resource_calendar`` grant). Everything
+        behalf of a room deletion or a flagged-bookings resolution the caller was already
+        authorized to make (``IsOrganizationAdmin``, or the ``delete_resource_calendar``
+        or ``resolve_flagged_resource_bookings`` grant). Everything
         else about those writes is unchanged: provider writes, the room bookability
         guard, billing checks, and the audit trail, which records the system actor.
         """
@@ -1804,6 +1807,69 @@ class CalendarService(BaseCalendarService):
                 diff={"visibility": {"old": old_visibility, "new": calendar.visibility}},
             )
         return RoomDeletionResult(outcome=RoomDeletionOutcome.DELETED, apply_result=apply_result)
+
+    def resolve_flagged_resource_bookings(
+        self,
+        calendar_id: int,
+        fingerprint: str,
+        default_resolution: BookingResolution,
+        overrides: Mapping[int, BookingResolution] | None = None,
+    ) -> FlaggedBookingsResult:
+        """Resolve the future bookings of a room the provider deleted.
+
+        The resync archives such a room and sets ``flagged_bookings_at`` on its link.
+        ``fingerprint`` is the one ``BookingResolutionService.preview`` returned for the
+        room (``preview_synced_resource_calendar_deletion`` works for it). Every booking
+        takes ``default_resolution`` unless ``overrides`` names a resolution for its
+        event id. The resolutions are validated, all or nothing, then applied one
+        booking at a time, as in ``delete_synced_resource_calendar``. Once no future
+        booking is left, ``flagged_bookings_at`` is cleared. If applying stops part way
+        the room stays flagged, and the caller previews again and retries.
+
+        :raises ResourceCalendarProviderSyncNotEnabledError: The feature flag is off.
+        :raises Calendar.DoesNotExist: No calendar with this id in the organization.
+        :raises ValueError: The calendar is not a synced room, or a resolution cancels
+            the deletion: the room is already gone, so there is nothing to abort.
+        :raises RoomSyncStateError: The room is not archived with flagged bookings.
+        :raises StaleBookingPreviewError: The room's bookings changed since the preview.
+        """
+        # Read before the type-guard narrows `self` below.
+        synced_room = self._synced_room_for_deletion
+        get_booking_resolution_service = self._get_booking_resolution_service
+
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+        self._check_not_restricted()
+
+        calendar, link = synced_room(calendar_id)
+        if link.sync_status != ResourceSyncStatus.ARCHIVED or link.flagged_bookings_at is None:
+            raise RoomSyncStateError("This room has no flagged bookings to resolve.")
+        if any(
+            isinstance(resolution, AbortDeletion)
+            for resolution in (default_resolution, *(overrides or {}).values())
+        ):
+            raise ValueError("The room is already deleted, so its deletion cannot be cancelled.")
+
+        resolution_service = get_booking_resolution_service()
+        validated = resolution_service.validate(
+            calendar, fingerprint, default_resolution, overrides or {}
+        )
+        if isinstance(validated, list):
+            return FlaggedBookingsResult(
+                outcome=FlaggedBookingsOutcome.REJECTED, rejected=tuple(validated)
+            )
+
+        apply_result = resolution_service.apply(validated)
+        if apply_result.failed_at is not None or resolution_service.preview(calendar).bookings:
+            return FlaggedBookingsResult(
+                outcome=FlaggedBookingsOutcome.INCOMPLETE, apply_result=apply_result
+            )
+
+        link.flagged_bookings_at = None
+        link.save(update_fields=["flagged_bookings_at", "modified"])
+        return FlaggedBookingsResult(
+            outcome=FlaggedBookingsOutcome.RESOLVED, apply_result=apply_result
+        )
 
     def _get_booking_resolution_service(self) -> "BookingResolutionService":
         """Build the booking resolution service from its DI factory."""
