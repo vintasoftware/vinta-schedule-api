@@ -325,6 +325,10 @@ class AppContainer(containers.DeclarativeContainer):
         booking_policy_service=booking_policy_service,
         entitlement_service=entitlement_service,
         external_client_identifier_service=external_client_identifier_service,
+        # Factories rather than instances: `resource_directory_adapter_resolver` may be
+        # undefined, and only a synced-room create needs either of them.
+        room_sync_service_factory=room_sync_service.provider,
+        resource_directory_adapter_resolver_factory=resource_directory_adapter_resolver.provider,
     )
 
     booking_resolution_service = providers.Factory(

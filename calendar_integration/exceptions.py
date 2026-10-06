@@ -614,3 +614,29 @@ class RoomSyncStateError(CalendarIntegrationError):
     """
 
     default_message = "This room's sync status does not allow that operation."
+
+
+class ResourceCalendarProviderSyncNotEnabledError(CalendarIntegrationError):
+    """The ``resource_calendar_provider_sync`` feature flag is off for the organization."""
+
+    default_message = "Resource calendar provider sync is not enabled for this organization."
+
+
+class InvalidResourceCalendarProviderError(CalendarIntegrationError):
+    """A synced room was asked for on a provider whose rooms Vinta Schedule cannot write."""
+
+    default_message = "Rooms can only be created on Google or Microsoft."
+
+
+class InvalidResourceLocationError(CalendarIntegrationError):
+    """The location for a new synced room is missing, inactive, or from another provider."""
+
+    default_message = (
+        "The location was not found, is no longer active, or belongs to another provider."
+    )
+
+
+class ResourceCalendarIdempotencyKeyReusedError(CalendarIntegrationError):
+    """An idempotency key was sent again with a different room create payload."""
+
+    default_message = "This idempotency key was already used with a different request."

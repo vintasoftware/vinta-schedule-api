@@ -4,6 +4,11 @@ import enum
 import strawberry
 import strawberry_django
 
+from calendar_integration.constants import (
+    CalendarProvider,
+    ResourceSyncOperation,
+    ResourceSyncStatus,
+)
 from calendar_integration.models import (
     AppointmentType,
     AppointmentTypeSlot,
@@ -29,6 +34,8 @@ from calendar_integration.models import (
     ExternalEventChangeRequest,
     RecurrenceRule,
     ResourceAllocation,
+    ResourceCalendarProviderLink,
+    ResourceLocation,
 )
 from public_api.constants import PublicAPIResources
 from public_api.scoping import scoped_calendar_ids
@@ -298,6 +305,58 @@ class CalendarOwnershipGraphQLType:
         )
 
 
+# GraphQL enums built from the Django choices, so the two can never drift apart. The
+# enum value names (``GOOGLE``, ``PENDING_CREATION``, ...) are the GraphQL values.
+strawberry.enum(CalendarProvider, name="CalendarProvider")
+strawberry.enum(ResourceSyncStatus, name="ResourceSyncStatus")
+strawberry.enum(ResourceSyncOperation, name="ResourceSyncOperation")
+
+
+@strawberry_django.type(ResourceLocation)
+class ResourceLocationGraphQLType:
+    """A building and floor in the provider's directory that a new room can be placed in.
+
+    Synced from the provider by the hourly room resync; read-only here.
+    """
+
+    id: strawberry.auto  # noqa: A003
+    building_name: strawberry.auto
+    floor_name: strawberry.auto
+
+    @strawberry_django.field
+    @staticmethod
+    def provider(root: ResourceLocation) -> CalendarProvider:
+        return CalendarProvider(root.provider)
+
+
+@strawberry_django.type(ResourceCalendarProviderLink)
+class ResourceCalendarProviderSyncGraphQLType:
+    """Where a room created in Google Workspace or Microsoft 365 is in its sync lifecycle."""
+
+    last_error: strawberry.auto
+    last_synced_at: strawberry.auto
+    flagged_bookings_at: strawberry.auto
+
+    @strawberry_django.field
+    @staticmethod
+    def status(root: ResourceCalendarProviderLink) -> ResourceSyncStatus:
+        return ResourceSyncStatus(root.sync_status)
+
+    @strawberry_django.field
+    @staticmethod
+    def failed_operation(root: ResourceCalendarProviderLink) -> ResourceSyncOperation | None:
+        """The provider write that failed. Set only while the status is ``SYNC_FAILED``."""
+        if not root.failed_operation:
+            return None
+        return ResourceSyncOperation(root.failed_operation)
+
+    @strawberry_django.field
+    @staticmethod
+    def location(root: ResourceCalendarProviderLink) -> ResourceLocationGraphQLType | None:
+        # The rows are `ResourceLocation` models, mapped onto the GraphQL type.
+        return root.location  # type: ignore[return-value]
+
+
 @strawberry_django.type(Calendar)
 class CalendarGraphQLType:
     id: strawberry.auto  # noqa: A003
@@ -330,6 +389,22 @@ class CalendarGraphQLType:
         # hint is what keeps `owners` constant-query. Measured, the relation form cost
         # 15 -> 36 queries on `TestCalendarOwnersField::test_owners_field_no_n_plus_1`.
         return list(root.ownerships.all())  # type: ignore[arg-type]
+
+    @strawberry_django.field(select_related=["provider_link__location"])
+    @staticmethod
+    def provider_sync(root: Calendar) -> ResourceCalendarProviderSyncGraphQLType | None:
+        """The room's provider sync state, or null for a calendar that is not synced that way.
+
+        Only rooms created or imported through resource calendar provider sync have
+        one; manual rooms and every other calendar return null. Lists that return
+        calendars load ``provider_link__location`` up front (see ``Query.calendars``),
+        for the same reason ``owners`` prefetches its rows.
+        """
+        try:
+            link = root.provider_link
+        except ResourceCalendarProviderLink.DoesNotExist:
+            return None
+        return link  # type: ignore[return-value]
 
 
 @strawberry_django.type(RecurrenceRule)

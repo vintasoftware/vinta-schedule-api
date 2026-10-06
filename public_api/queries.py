@@ -13,10 +13,15 @@ from django_virtual_models import QuerySet
 from graphql import GraphQLError
 
 from calendar_integration.booking_auth import MAX_CODE_GATED_RANGE
-from calendar_integration.constants import CalendarType, ExternalEventChangeRequestStatus
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarType,
+    ExternalEventChangeRequestStatus,
+)
 from calendar_integration.exceptions import (
     AppointmentTypeValidationError,
     InvalidTokenError,
+    ResourceCalendarProviderSyncNotEnabledError,
     TokenAlreadyUsedError,
     TokenExpiredError,
     TokenRevokedError,
@@ -41,6 +46,7 @@ from calendar_integration.graphql import (
     CalendarWebhookEventGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
     ExternalEventChangeRequestGraphQLType,
+    ResourceLocationGraphQLType,
     StaleSelectionGraphQLType,
     UnavailableTimeWindowGraphQLType,
     WebhookSubscriptionStatusGraphQLType,
@@ -59,8 +65,10 @@ from calendar_integration.models import (
     CalendarPool,
     CalendarWebhookEvent,
     ExternalEventChangeRequest,
+    ResourceLocation,
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
+from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC, is_enabled
 from organizations.branding_logo import build_logo_display_url
 from organizations.models import (
     Organization,
@@ -348,8 +356,11 @@ class Query:
             queryset = queryset.filter(calendar_type=calendar_type)
 
         # Prefetch ownership rows + related membership to avoid N+1 when the
-        # caller selects `owners { membership { ... } }`.
-        queryset = queryset.prefetch_related("ownerships__membership")
+        # caller selects `owners { membership { ... } }`, and load the room sync link
+        # with its location for `providerSync { location { ... } }`.
+        queryset = queryset.prefetch_related("ownerships__membership").select_related(
+            "provider_link__location"
+        )
 
         # Apply ordering first, then pagination
         queryset = _slice_qs(queryset.order_by("pk"), offset, limit)
@@ -1364,6 +1375,27 @@ class Query:
             )
             for child in qs
         ]
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def resource_locations(
+        self,
+        info: strawberry.Info,
+        provider: CalendarProvider | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[ResourceLocationGraphQLType]:
+        """List the buildings and floors a new room can be created in.
+
+        Read from the local copy the hourly room resync keeps, so this never calls the
+        provider. Only active locations are listed. Pass ``provider`` to list one
+        provider's locations. Requires the ``resource_calendar_provider_sync`` feature
+        for the organization.
+        """
+        org = _get_org(info)
+        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, org.id):
+            raise GraphQLError(str(ResourceCalendarProviderSyncNotEnabledError()))
+        qs = ResourceLocation.objects.filter_by_organization(org.id).listable(provider)
+        return cast(list[ResourceLocationGraphQLType], list(_slice_qs(qs, offset, limit)))
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def webhook_configurations(
