@@ -22,7 +22,6 @@ from calendar_integration.constants import (
     BookingCancelMode,
     BookingRejectionReason,
     CalendarProvider,
-    CalendarVisibility,
     FlaggedBookingsOutcome,
     RecurrenceFrequency,
     ResourceSyncStatus,
@@ -48,6 +47,7 @@ from calendar_integration.services.dataclasses import (
     CancelBooking,
     MoveBooking,
 )
+from calendar_integration.tests.room_resync_fakes import make_room
 from calendar_integration.tests.room_sync_fakes import FakeRoomDirectory, FakeRoomDirectoryResolver
 from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC
 from common.organization_context import organization_context
@@ -240,19 +240,29 @@ def _future_bookings(di_container: Any, room: Calendar) -> tuple[int, ...]:
     return tuple(booking.event_id for booking in preview.bookings)
 
 
-def _flag(room: Calendar) -> None:
-    """Put ``room`` in the state the resync leaves a provider-deleted room in."""
-    now = timezone.now()
-    Calendar.objects.filter(id=room.id).update(visibility=CalendarVisibility.INACTIVE)
-    ResourceCalendarProviderLink.objects.filter(calendar=room).update(
-        sync_status=ResourceSyncStatus.ARCHIVED, archived_at=now, flagged_bookings_at=now
-    )
+@pytest.fixture
+def flag(
+    di_container: Any, organization: Organization, directory: FakeRoomDirectory
+) -> Callable[[Calendar], None]:
+    """Flag ``room`` the way the provider does: delete it there and run the real resync."""
+
+    def _flag(room: Calendar) -> None:
+        directory.rooms.pop(room.external_id)
+        if not directory.rooms:
+            # A listing with no rooms at all is never trusted to archive anything.
+            other = make_room("other-room", "Other room", building=None)
+            directory.rooms[other.external_id] = other
+        di_container.room_resync_service().resync(organization, CalendarProvider.MICROSOFT)
+        assert _link(room).sync_status == ResourceSyncStatus.ARCHIVED
+
+    return _flag
 
 
 @pytest.mark.usefixtures("bound")
 class TestResolveFlaggedBookings:
     def test_move_resolves_every_booking_and_clears_the_flag(
         self,
+        flag: Callable[[Calendar], None],
         service: CalendarService,
         di_container: Any,
         notifier: MagicMock,
@@ -262,7 +272,7 @@ class TestResolveFlaggedBookings:
     ) -> None:
         m1 = _event(organizer_calendar, _wall_clock(1, 2), room_a, title="M1")
         m2 = _event(organizer_calendar, _wall_clock(2, 4), room_a, title="M2")
-        _flag(room_a)
+        flag(room_a)
         fingerprint = _fingerprint(di_container, room_a)
 
         result = service.resolve_flagged_resource_bookings(
@@ -281,6 +291,7 @@ class TestResolveFlaggedBookings:
 
     def test_mixed_resolutions_with_an_override(
         self,
+        flag: Callable[[Calendar], None],
         service: CalendarService,
         di_container: Any,
         organizer_calendar: Calendar,
@@ -289,7 +300,7 @@ class TestResolveFlaggedBookings:
     ) -> None:
         m1 = _event(organizer_calendar, _wall_clock(1, 2), room_a, title="M1")
         m2 = _event(organizer_calendar, _wall_clock(2, 4), room_a, title="M2")
-        _flag(room_a)
+        flag(room_a)
 
         result = service.resolve_flagged_resource_bookings(
             room_a.id,
@@ -305,13 +316,14 @@ class TestResolveFlaggedBookings:
 
     def test_a_series_is_resolved_from_now_on(
         self,
+        flag: Callable[[Calendar], None],
         service: CalendarService,
         di_container: Any,
         organizer_calendar: Calendar,
         room_a: Calendar,
     ) -> None:
         series = _event(organizer_calendar, _wall_clock(-15, 6), room_a, title="S", weekly=True)
-        _flag(room_a)
+        flag(room_a)
 
         result = service.resolve_flagged_resource_bookings(
             room_a.id,
@@ -327,9 +339,17 @@ class TestResolveFlaggedBookings:
         assert _link(room_a).flagged_bookings_at is None
 
     def test_a_room_with_no_bookings_left_just_clears_the_flag(
-        self, service: CalendarService, di_container: Any, room_a: Calendar
+        self,
+        flag: Callable[[Calendar], None],
+        service: CalendarService,
+        di_container: Any,
+        organizer_calendar: Calendar,
+        room_a: Calendar,
     ) -> None:
-        _flag(room_a)
+        booking = _event(organizer_calendar, _wall_clock(1, 2), room_a, title="Gone")
+        flag(room_a)
+        # The booking went away on its own after the resync flagged the room.
+        booking.delete()
 
         result = service.resolve_flagged_resource_bookings(
             room_a.id,
@@ -343,6 +363,7 @@ class TestResolveFlaggedBookings:
 
     def test_a_partial_apply_keeps_the_flag_and_a_retry_finishes(
         self,
+        flag: Callable[[Calendar], None],
         service: CalendarService,
         di_container: Any,
         organizer_calendar: Calendar,
@@ -351,7 +372,7 @@ class TestResolveFlaggedBookings:
     ) -> None:
         m1 = _event(organizer_calendar, _wall_clock(1, 2), room_a, title="M1")
         m2 = _event(organizer_calendar, _wall_clock(2, 4), room_a, title="M2")
-        _flag(room_a)
+        flag(room_a)
         fingerprint = _fingerprint(di_container, room_a)
         real_update_event = CalendarService.update_event
 
@@ -384,6 +405,7 @@ class TestResolveFlaggedBookings:
 
     def test_an_invalid_resolution_rejects_everything_and_keeps_the_flag(
         self,
+        flag: Callable[[Calendar], None],
         service: CalendarService,
         di_container: Any,
         organizer_calendar: Calendar,
@@ -392,7 +414,7 @@ class TestResolveFlaggedBookings:
     ) -> None:
         m1 = _event(organizer_calendar, _wall_clock(1, 2), room_a, title="M1")
         _event(organizer_calendar, _wall_clock(1, 2), room_b, title="Busy")
-        _flag(room_a)
+        flag(room_a)
 
         result = service.resolve_flagged_resource_bookings(
             room_a.id, _fingerprint(di_container, room_a), MoveBooking(room_b.id)
@@ -407,6 +429,7 @@ class TestResolveFlaggedBookings:
 
     def test_a_stale_fingerprint_is_refused(
         self,
+        flag: Callable[[Calendar], None],
         service: CalendarService,
         di_container: Any,
         organizer_calendar: Calendar,
@@ -414,7 +437,7 @@ class TestResolveFlaggedBookings:
         room_b: Calendar,
     ) -> None:
         _event(organizer_calendar, _wall_clock(1, 2), room_a, title="M1")
-        _flag(room_a)
+        flag(room_a)
         fingerprint = _fingerprint(di_container, room_a)
         _event(organizer_calendar, _wall_clock(3, 2), room_a, title="New")
 
@@ -435,6 +458,7 @@ class TestResolveFlaggedBookings:
     )
     def test_abort_is_not_accepted(
         self,
+        flag: Callable[[Calendar], None],
         service: CalendarService,
         di_container: Any,
         organizer_calendar: Calendar,
@@ -442,7 +466,7 @@ class TestResolveFlaggedBookings:
         resolution_for: Callable[[CalendarEvent], Any],
     ) -> None:
         m1 = _event(organizer_calendar, _wall_clock(1, 2), room_a, title="M1")
-        _flag(room_a)
+        flag(room_a)
         default, overrides = resolution_for(m1)
 
         with pytest.raises(ValueError, match="cannot be cancelled"):
@@ -471,9 +495,14 @@ class TestResolveFlaggedBookings:
         assert _room_ids(m1) == {room_a.id}
 
     def test_an_archived_room_without_the_flag_is_rejected(
-        self, service: CalendarService, di_container: Any, room_a: Calendar, room_b: Calendar
+        self,
+        flag: Callable[[Calendar], None],
+        service: CalendarService,
+        di_container: Any,
+        room_a: Calendar,
+        room_b: Calendar,
     ) -> None:
-        _flag(room_a)
+        flag(room_a)
         ResourceCalendarProviderLink.objects.filter(calendar=room_a).update(
             flagged_bookings_at=None
         )
@@ -493,12 +522,13 @@ class TestResolveFlaggedBookings:
 
     def test_flag_off_is_refused(
         self,
+        flag: Callable[[Calendar], None],
         service: CalendarService,
         organization: Organization,
         room_a: Calendar,
         room_b: Calendar,
     ) -> None:
-        _flag(room_a)
+        flag(room_a)
         OrganizationFeatureFlag.objects.filter(
             organization=organization, key=RESOURCE_CALENDAR_PROVIDER_SYNC
         ).update(enabled=False)
@@ -508,12 +538,13 @@ class TestResolveFlaggedBookings:
 
     def test_the_deletion_preview_lists_a_flagged_rooms_bookings(
         self,
+        flag: Callable[[Calendar], None],
         service: CalendarService,
         organizer_calendar: Calendar,
         room_a: Calendar,
     ) -> None:
         m1 = _event(organizer_calendar, _wall_clock(1, 2), room_a, title="M1")
-        _flag(room_a)
+        flag(room_a)
 
         preview = service.preview_synced_resource_calendar_deletion(room_a.id)
 

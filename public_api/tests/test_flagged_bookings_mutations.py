@@ -31,6 +31,7 @@ from calendar_integration.models import (
     ResourceAllocation,
     ResourceCalendarProviderLink,
 )
+from calendar_integration.tests.room_resync_fakes import make_room
 from calendar_integration.tests.room_sync_fakes import FakeRoomDirectory, FakeRoomDirectoryResolver
 from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC
 from common.organization_context import organization_context
@@ -165,6 +166,11 @@ def _flagged_at(organization: Organization, room: Calendar) -> datetime.datetime
         return ResourceCalendarProviderLink.objects.get(calendar=room).flagged_bookings_at
 
 
+def _link_status(organization: Organization, room: Calendar) -> str:
+    with organization_context(organization):
+        return ResourceCalendarProviderLink.objects.get(calendar=room).sync_status
+
+
 @pytest.fixture
 def organization(db: Any) -> Organization:
     organization = Organization.objects.create(name="Flagged Partner Org")
@@ -232,9 +238,24 @@ def _resolve(
 @pytest.mark.django_db
 class TestResolveFlaggedResourceBookings:
     def test_move_moves_the_booking_and_clears_the_flag(
-        self, api: _Api, organization: Organization, room_a: Calendar, room_b: Calendar
+        self,
+        api: _Api,
+        organization: Organization,
+        directory: FakeRoomDirectory,
+        di_container: Any,
+        room_b: Calendar,
     ) -> None:
+        # The provider deletes the room and the real resync archives and flags it.
+        room_a = _room(organization, "Room A")
         m1 = _booking(organization, room_a)
+        # The provider still lists the target room, which also keeps the listing non-empty.
+        listed_b = make_room(room_b.external_id, room_b.name, capacity=10, building=None)
+        directory.rooms[listed_b.external_id] = listed_b
+        with organization_context(organization):
+            di_container.room_resync_service().resync(organization, CalendarProvider.GOOGLE)
+        assert _flagged_at(organization, room_a) is not None
+        assert _link_status(organization, room_a) == ResourceSyncStatus.ARCHIVED
+
         preview = api.post(PREVIEW_QUERY, {"calendarId": room_a.id})
         assert [
             b["eventId"] for b in preview["data"]["resourceCalendarDeletionPreview"]["bookings"]

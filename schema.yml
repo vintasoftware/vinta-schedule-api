@@ -21352,6 +21352,16 @@ components:
         * `create` - Create
         * `update` - Update
         * `delete` - Delete
+    FlaggedBookingResolutionEnum:
+      enum:
+      - move
+      - remove_room
+      - cancel_event
+      type: string
+      description: |-
+        * `move` - Move to another room
+        * `remove_room` - Remove only the room
+        * `cancel_event` - Cancel the whole event
     FrequencyEnum:
       enum:
       - DAILY
@@ -23966,6 +23976,21 @@ components:
       - last_synced_at
       - location
       - status
+    ResourceFlaggedBookingResolutionOverride:
+      type: object
+      description: 'One booking''s resolution for a room the provider deleted: anything
+        but ``abort``.'
+      properties:
+        event_id:
+          type: integer
+        resolution:
+          $ref: '#/components/schemas/FlaggedBookingResolutionEnum'
+        target_calendar_id:
+          type: integer
+          nullable: true
+      required:
+      - event_id
+      - resolution
     ResourceFlaggedBookingsFailure:
       type: object
       description: |-
@@ -24016,21 +24041,21 @@ components:
       description: |-
         Resolve the future bookings of a room the provider deleted.
 
-        The fields and validation are those of ``ResourceCalendarDeleteSerializer``; the
-        ``abort`` resolution is accepted here and refused by the service, because the room
-        is already gone.
+        The fields and validation are those of ``ResourceCalendarDeleteSerializer``, except
+        that ``abort`` is not a choice: the room is already gone, so there is no deletion
+        to cancel.
       properties:
         fingerprint:
           type: string
         default_resolution:
-          $ref: '#/components/schemas/ResourceBookingResolutionEnum'
+          $ref: '#/components/schemas/FlaggedBookingResolutionEnum'
         target_calendar_id:
           type: integer
           nullable: true
         overrides:
           type: array
           items:
-            $ref: '#/components/schemas/ResourceBookingResolutionOverride'
+            $ref: '#/components/schemas/ResourceFlaggedBookingResolutionOverride'
       required:
       - default_resolution
       - fingerprint

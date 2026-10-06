@@ -734,7 +734,8 @@ class ResolveFlaggedResourceBookingsResult(BookingResolutionReportResult):
 
     - REJECTED: ``rejectedBookings`` lists every booking whose resolution is invalid,
       and nothing changed;
-    - INCOMPLETE: applying stopped at ``failedAtEventId``. The bookings in
+    - INCOMPLETE: applying stopped at ``failedAtEventId``, or bookings were still left
+      once it finished (``failedAtEventId`` is then null). The bookings in
       ``appliedEventIds`` are resolved, those in ``pendingEventIds`` are not, and the
       room stays flagged. Preview again and retry.
     """
@@ -2577,7 +2578,9 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         ``resource_calendar_provider_sync`` feature.
 
         The token's OrganizationResourceAccess must include the
-        RESOLVE_FLAGGED_RESOURCE_BOOKINGS resource.
+        RESOLVE_FLAGGED_RESOURCE_BOOKINGS resource, and also
+        PREVIEW_RESOURCE_CALENDAR_DELETION, which ``resourceCalendarDeletionPreview``
+        needs to give the fingerprint this mutation takes.
         """
         try:
             default, overrides = booking_resolutions_from(

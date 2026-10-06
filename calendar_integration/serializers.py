@@ -628,13 +628,29 @@ class ResourceCalendarDeleteSerializer(serializers.Serializer):
         return {"fingerprint": attrs["fingerprint"], "default": default, "overrides": overrides}
 
 
+FLAGGED_BOOKING_RESOLUTION_CHOICES = [
+    choice for choice in BookingResolutionKind.choices if choice[0] != BookingResolutionKind.ABORT
+]
+
+
+class ResourceFlaggedBookingResolutionOverrideSerializer(
+    ResourceBookingResolutionOverrideSerializer
+):
+    """One booking's resolution for a room the provider deleted: anything but ``abort``."""
+
+    resolution = serializers.ChoiceField(choices=FLAGGED_BOOKING_RESOLUTION_CHOICES)
+
+
 class ResourceFlaggedBookingsResolveSerializer(ResourceCalendarDeleteSerializer):
     """Resolve the future bookings of a room the provider deleted.
 
-    The fields and validation are those of ``ResourceCalendarDeleteSerializer``; the
-    ``abort`` resolution is accepted here and refused by the service, because the room
-    is already gone.
+    The fields and validation are those of ``ResourceCalendarDeleteSerializer``, except
+    that ``abort`` is not a choice: the room is already gone, so there is no deletion
+    to cancel.
     """
+
+    default_resolution = serializers.ChoiceField(choices=FLAGGED_BOOKING_RESOLUTION_CHOICES)
+    overrides = ResourceFlaggedBookingResolutionOverrideSerializer(many=True, required=False)
 
 
 class ResourceBookingResolutionFailureSerializer(serializers.Serializer):

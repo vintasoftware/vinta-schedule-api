@@ -190,7 +190,7 @@ class TestResolveFlaggedBookingsEndpoint:
                 ResourceAllocation.objects.filter(event=m1).values_list("calendar_fk_id", flat=True)
             ) == [room_b.id]
 
-    def test_abort_is_400(
+    def test_abort_is_not_a_choice(
         self, admin_client: APIClient, organization: Organization, room_a: Calendar
     ) -> None:
         _booking(organization, room_a)
@@ -203,6 +203,7 @@ class TestResolveFlaggedBookingsEndpoint:
         )
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert set(response.data) == {"default_resolution"}
         assert _link(organization, room_a).flagged_bookings_at is not None
 
     def test_rejected_move_is_400_with_the_bookings(
