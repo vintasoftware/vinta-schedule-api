@@ -53,14 +53,21 @@ def organization() -> Organization:
 def send_synced(calendar, captured, *, provider=CalendarProvider.MICROSOFT, created=True):
     with captured(execute=True):
         resource_room_synced.send(
-            sender=None, calendar_id=calendar.id, provider=provider, created=created
+            sender=None,
+            calendar_id=calendar.id,
+            organization_id=calendar.organization_id,
+            provider=provider,
+            created=created,
         )
 
 
 def send_archived(calendar, captured):
     with captured(execute=True):
         resource_room_archived.send(
-            sender=None, calendar_id=calendar.id, provider=CalendarProvider.MICROSOFT
+            sender=None,
+            calendar_id=calendar.id,
+            organization_id=calendar.organization_id,
+            provider=CalendarProvider.MICROSOFT,
         )
 
 
