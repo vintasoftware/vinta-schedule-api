@@ -18,13 +18,18 @@
         "server_url": "postgres://db:5432",
         "connection_url_var": "DATABASE_URL"
       }
-    }
+    },
+    "env_files": [
+      ".env",
+      ".env.docker",
+      "vinta_schedule_api/settings/local.py"
+    ]
   },
   "crew": {
     "tier4": {
       "role": "implementer",
       "tier": 4,
-      "model": "claude-fable-5-1",
+      "model": "claude-opus-5-5",
       "description": "Push retry protocol, provider-wins resync, booking-resolution apply engine."
     },
     "tier3-1": {
@@ -54,7 +59,7 @@
     "reviewer-2": {
       "role": "reviewer",
       "tier": 4,
-      "model": "claude-fable-5-1",
+      "model": "claude-opus-5-5",
       "description": "Reviews the Tier 4 phases and the Tier 4 review overrides (Phases 2, 5, 9)."
     }
   },
@@ -76,13 +81,25 @@
     }
   },
   "gates": {
+    "lint": {
+      "cmd": "docker compose run --rm -T api sh -c 'uv run ruff check ./ && uv run ruff format --check ./'",
+      "requires": [],
+      "timeout_s": 900,
+      "description": "ruff lint and format check, inside the lane's Compose stack."
+    },
+    "typecheck": {
+      "cmd": "docker compose run --rm -T api sh -c 'uv run mypy . && uv run python manage.py check --deploy && uv run python manage.py makemigrations --check --dry-run'",
+      "requires": [],
+      "timeout_s": 1800,
+      "description": "mypy, Django deploy checks and missing-migration check, inside the lane's Compose stack."
+    },
     "test": {
-      "cmd": "docker compose run --rm api uv run pytest -n auto",
+      "cmd": "docker compose run --rm -T api uv run pytest --reuse-db -n auto --no-cov",
       "requires": [
         "test-suite"
       ],
-      "timeout_s": 1800,
-      "description": "The full suite, one at a time across lanes."
+      "timeout_s": 3600,
+      "description": "The full suite against the lane's own database, one lane at a time."
     }
   },
   "nodes": [
@@ -372,7 +389,12 @@
         "public_api/tests/test_synced_room_edit_mutations.py",
         "calendar_integration/tests/test_synced_room_edit_rest.py"
       ],
-      "crew": "tier3-1"
+      "crew": "tier3-1",
+      "gates": [
+        "lint",
+        "typecheck",
+        "test"
+      ]
     },
     {
       "id": "p12a",
@@ -441,7 +463,12 @@
         "public_api/tests/test_synced_room_delete_mutations.py",
         "calendar_integration/tests/test_synced_room_delete_rest.py"
       ],
-      "crew": "tier3-1"
+      "crew": "tier3-1",
+      "gates": [
+        "lint",
+        "typecheck",
+        "test"
+      ]
     },
     {
       "id": "p13",
@@ -471,7 +498,12 @@
         "calendar_integration/tests/services/test_resolve_flagged_bookings.py",
         "public_api/tests/test_flagged_bookings_mutations.py"
       ],
-      "crew": "tier2"
+      "crew": "tier2",
+      "gates": [
+        "lint",
+        "typecheck",
+        "test"
+      ]
     },
     {
       "id": "p14a",
@@ -621,7 +653,12 @@
         "calendar_integration/services/calendar_webhook_service.py",
         "calendar_integration/receivers/ms_room_subscription_receivers.py"
       ],
-      "crew": "tier2"
+      "crew": "tier2",
+      "gates": [
+        "lint",
+        "typecheck",
+        "test"
+      ]
     }
   ]
 }

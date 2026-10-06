@@ -37,6 +37,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Annotated
 
+from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
@@ -173,6 +174,9 @@ if TYPE_CHECKING:
     from vinta_billing.services.entitlement_service import EntitlementService
 
     from audit_integration.services import OrganizationAuditService
+    from calendar_integration.services.calendar_clients.ms_app_only_token import (
+        MicrosoftAppOnlyTokenProvider,
+    )
     from calendar_integration.services.external_event_change_request_service import (
         ExternalEventChangeRequestService,
     )
@@ -289,6 +293,9 @@ class CalendarService(BaseCalendarService):
         resource_directory_adapter_resolver_factory: Annotated[
             "Callable[[], ResourceDirectoryAdapterResolver] | None",
             Provide["resource_directory_adapter_resolver.provider"],
+        microsoft_app_only_token_provider: Annotated[
+            "MicrosoftAppOnlyTokenProvider | None",
+            Provide["microsoft_app_only_token_provider"],
         ] = None,
     ) -> None:
         """Initialize a CalendarService instance. Call authenticate() before using calendar operations.
@@ -312,6 +319,7 @@ class CalendarService(BaseCalendarService):
         self.resource_directory_adapter_resolver_factory = (
             resource_directory_adapter_resolver_factory
         )
+        self.microsoft_app_only_token_provider = microsoft_app_only_token_provider
         # Set by authenticate(bypass_limits=True); disables every provider entitlement
         # guard on this instance, not just the authenticate-time one.
         self._bypass_entitlement_limits = False
@@ -2122,6 +2130,22 @@ class CalendarService(BaseCalendarService):
         :param sync_token: Token for incremental sync, if available.
         """
         return self._get_sync_service().sync_events(calendar_sync)
+
+    def sync_microsoft_room_events(self, calendar: Calendar) -> CalendarSync | None:
+        """Delegation: sync a Microsoft room's events with app-only credentials.
+
+        Call ``initialize_without_provider(organization=...)`` first; the room sync
+        builds its own app-only adapter. See
+        ``CalendarSyncService.sync_microsoft_room_events``.
+        """
+        if self.microsoft_app_only_token_provider is None:
+            raise ImproperlyConfigured(
+                "MicrosoftAppOnlyTokenProvider must be injected to sync Microsoft rooms "
+                "(check di_core/containers.py wiring)."
+            )
+        return self._get_sync_service().sync_microsoft_room_events(
+            calendar, self.microsoft_app_only_token_provider
+        )
 
     def _execute_calendar_sync(
         self,

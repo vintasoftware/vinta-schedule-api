@@ -46,6 +46,7 @@ from organizations.permission_catalog import MANAGE_MEMBERS
 
 
 if TYPE_CHECKING:
+    from calendar_integration.models import Calendar as CalendarModelType
     from calendar_integration.models import CalendarEvent as CalendarEventType
     from calendar_integration.models import CalendarSync as CalendarSyncType
     from organizations.models import OrganizationMembership as OrganizationMembershipType
@@ -813,6 +814,30 @@ class CalendarSyncQuerySet(OrganizationScopedQuerySet):
         :return: CalendarSync instance if found, otherwise None.
         """
         return self.filter(id=calendar_sync_id, status=CalendarSyncStatus.NOT_STARTED).first()
+
+    def latest_delta_token(
+        self,
+        calendar: "CalendarModelType",
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> str | None:
+        """The newest token a successful sync of ``calendar`` stored for exactly this window.
+
+        A delta token is tied to the window of the round that first issued it, so a
+        token from any other window must not be reused.
+        """
+        return (
+            self.filter(
+                calendar=calendar,
+                status=CalendarSyncStatus.SUCCESS,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+            )
+            .exclude(next_sync_token="")
+            .order_by("-created")
+            .values_list("next_sync_token", flat=True)
+            .first()
+        )
 
 
 class BlockedTimeQuerySet(

@@ -28,6 +28,7 @@ from calendar_integration.constants import CalendarProvider, CalendarSyncStatus,
 from calendar_integration.models import (
     BlockedTime,
     Calendar,
+    CalendarEvent,
     CalendarSync,
 )
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
@@ -36,7 +37,7 @@ from calendar_integration.services.dataclasses import (
     CalendarEventAdapterOutputData,
     CalendarResourceData,
 )
-from organizations.models import Organization
+from organizations.models import ExternalEventUpdatePolicy, Organization
 from users.models import Profile, User
 
 
@@ -398,3 +399,89 @@ def test_execute_organization_calendar_resources_import_syncs_each_resource(
     assert call["start_datetime"] == start
     assert call["end_datetime"] == end
     assert call["should_update_events"] is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: a provider-side time change is stored
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("sync_token", [None, "tok-1"], ids=["full", "incremental"])
+def test_moved_blocked_time_and_event_keep_the_providers_new_time(
+    context: CalendarServiceContext,
+    calendar: Calendar,
+    organization: Organization,
+    fake_adapter: MagicMock,
+    sync_token: str | None,
+) -> None:
+    """The new times are written to the stored ``*_tz_unaware`` columns, not only to the
+    generated ``start_time`` / ``end_time`` in memory."""
+    # ALLOW is the policy under which a provider edit is applied to a stored event.
+    organization.external_event_update_policy = ExternalEventUpdatePolicy.ALLOW
+    organization.save(update_fields=["external_event_update_policy"])
+    block = BlockedTime.objects.create(
+        calendar=calendar,
+        start_time_tz_unaware=datetime.datetime(2025, 8, 1, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 8, 1, 10, 0),
+        timezone="UTC",
+        reason="Standup",
+        external_id="ext_block",
+        organization_id=organization.id,
+    )
+    event = CalendarEvent.objects.create(
+        calendar=calendar,
+        start_time_tz_unaware=datetime.datetime(2025, 8, 1, 13, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 8, 1, 14, 0),
+        timezone="UTC",
+        title="Planning",
+        description="desc",
+        external_id="ext_event",
+        organization_id=organization.id,
+    )
+    recife_noon = datetime.datetime(2025, 8, 1, 15, 0, tzinfo=datetime.UTC)
+    fake_adapter.get_events.return_value = {
+        "events": [
+            _adapter_event(
+                "ext_block",
+                "Standup",
+                datetime.datetime(2025, 8, 1, 11, 0, tzinfo=datetime.UTC),
+                datetime.datetime(2025, 8, 1, 12, 0, tzinfo=datetime.UTC),
+            ),
+            CalendarEventAdapterOutputData(
+                calendar_external_id="sync_cal_001",
+                title="Planning",
+                description="desc",
+                start_time=recife_noon,
+                end_time=recife_noon + datetime.timedelta(hours=1),
+                timezone="America/Recife",
+                attendees=[],
+                external_id="ext_event",
+                original_payload={"id": "ext_event"},
+            ),
+        ],
+        "next_sync_token": "tok-2",
+    }
+    calendar_sync = CalendarSync.objects.create(
+        calendar=calendar,
+        organization=organization,
+        start_datetime=datetime.datetime(2025, 8, 1, 0, 0, tzinfo=datetime.UTC),
+        end_datetime=datetime.datetime(2025, 8, 1, 23, 59, tzinfo=datetime.UTC),
+        should_update_events=True,
+        status=CalendarSyncStatus.IN_PROGRESS,
+    )
+
+    make_service(context, FakeHost())._execute_calendar_sync(calendar_sync, sync_token=sync_token)
+
+    block.refresh_from_db()
+    event.refresh_from_db()
+    assert (block.start_time, block.end_time) == (
+        datetime.datetime(2025, 8, 1, 11, 0, tzinfo=datetime.UTC),
+        datetime.datetime(2025, 8, 1, 12, 0, tzinfo=datetime.UTC),
+    )
+    assert (event.start_time, event.end_time, event.timezone, event.start_time_tz_unaware) == (
+        recife_noon,
+        recife_noon + datetime.timedelta(hours=1),
+        "America/Recife",
+        datetime.datetime(2025, 8, 1, 12, 0, tzinfo=datetime.UTC),
+    )

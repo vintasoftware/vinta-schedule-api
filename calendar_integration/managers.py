@@ -37,7 +37,7 @@ from common.managers import OrganizationScopedManager
 
 
 if TYPE_CHECKING:
-    from calendar_integration.models import BookingPolicy, CalendarManagementToken
+    from calendar_integration.models import BookingPolicy, Calendar, CalendarManagementToken
     from organizations.models import Organization
     from organizations.models import OrganizationMembership as OrganizationMembershipType
 
@@ -242,6 +242,15 @@ class CalendarSyncManager(_CalendarSyncManagerBase):  # type: ignore[misc,valid-
         :return: CalendarSync instance if found, otherwise None.
         """
         return self.get_queryset().get_not_started_calendar_sync(calendar_sync_id=calendar_sync_id)
+
+    def latest_delta_token(
+        self,
+        calendar: "Calendar",
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> str | None:
+        """Wraps :meth:`CalendarSyncQuerySet.latest_delta_token`."""
+        return self.get_queryset().latest_delta_token(calendar, start_datetime, end_datetime)
 
 
 class BlockedTimeManager(_BlockedTimeManagerBase, RecurringManagerMixin):  # type: ignore[misc,valid-type]
