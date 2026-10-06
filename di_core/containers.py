@@ -56,6 +56,7 @@ from calendar_integration.services.microsoft_connection_service import (
 from calendar_integration.services.protocols.resource_directory_adapter import (
     ResourceDirectoryAdapterResolver,
 )
+from calendar_integration.services.room_resync_service import RoomResyncService
 from calendar_integration.services.room_sync_adapter_resolver import RoomSyncAdapterResolver
 from calendar_integration.services.room_sync_notifier import RoomSyncNotifier
 from calendar_integration.services.room_sync_service import RoomSyncService
@@ -310,6 +311,14 @@ class AppContainer(containers.DeclarativeContainer):
         resource_directory_adapter_resolver=resource_directory_adapter_resolver,
         room_sync_notifier=room_sync_notifier,
         audit_service=audit_service,
+    )
+
+    room_resync_service = providers.Factory(
+        RoomResyncService,
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
+        room_sync_notifier=room_sync_notifier,
+        audit_service=audit_service,
+        entitlement_service=entitlement_service,
     )
 
     booking_policy_service = providers.Factory(

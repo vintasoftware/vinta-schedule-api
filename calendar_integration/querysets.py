@@ -30,6 +30,7 @@ from calendar_integration.constants import (
     CalendarVisibility,
     ExternalEventChangeRequestStatus,
     ResourceSyncStatus,
+    RSVPStatus,
 )
 from calendar_integration.database_functions import (
     GetAvailableTimeOccurrencesJSON,
@@ -46,6 +47,7 @@ from organizations.permission_catalog import MANAGE_MEMBERS
 
 
 if TYPE_CHECKING:
+    from calendar_integration.models import Calendar
     from calendar_integration.models import CalendarEvent as CalendarEventType
     from calendar_integration.models import CalendarSync as CalendarSyncType
     from organizations.models import OrganizationMembership as OrganizationMembershipType
@@ -799,6 +801,30 @@ class CalendarEventQuerySet(OrganizationScopedQuerySet, RecurringQuerySetMixin):
             .annotate_recurring_occurrences_on_date_range(start, end)
             .select_related("recurrence_rule")
         )
+
+    def future_bookings_of_room(
+        self, room: "Calendar", now: datetime.datetime
+    ) -> "CalendarEventQuerySet":
+        """Bookings of the room ``room`` that can still take place after ``now``.
+
+        A booking is a master or one-off event that is on the room's calendar, or
+        that allocates the room through a ``ResourceAllocation`` the room did not
+        decline. Recurrence instances and exceptions are left out, so a series
+        counts once. A one-off counts while it has not ended. A series counts while
+        its rule has no ``until`` or ``until`` is not past. A ``COUNT``-bounded
+        series that already ended still counts, because telling would need the
+        occurrence arithmetic in Postgres. Over-counting is the safe side here: a
+        flagged booking is only something for an admin to look at.
+        """
+        uses_room = Q(calendar=room) | (
+            Q(resource_allocations__calendar=room)
+            & ~Q(resource_allocations__status=RSVPStatus.DECLINED)
+        )
+        still_ahead = Q(recurrence_rule__isnull=True, end_time__gt=now) | Q(
+            Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=now),
+            recurrence_rule__isnull=False,
+        )
+        return self.filter(uses_room, still_ahead, parent_recurring_object__isnull=True).distinct()
 
 
 class CalendarSyncQuerySet(OrganizationScopedQuerySet):
