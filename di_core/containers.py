@@ -46,6 +46,10 @@ from calendar_integration.services.external_client_identifier_service import (
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
+from calendar_integration.services.protocols.resource_directory_adapter import (
+    ResourceDirectoryAdapterResolver,
+)
+from calendar_integration.services.room_resync_service import RoomResyncService
 from calendar_integration.services.room_sync_notifier import RoomSyncNotifier
 from legal.services import ConsentService
 from notifications.notification_adapters.django_email import (
@@ -281,6 +285,23 @@ class AppContainer(containers.DeclarativeContainer):
     room_sync_notifier = providers.Factory(
         RoomSyncNotifier,
         notification_service=notification_service,
+    )
+
+    #: The `ResourceDirectoryAdapterResolver` the room sync engines reach provider
+    #: room directories through. Declared here, unset: Phase 8 of the resource
+    #: calendar provider sync plan binds it to the real Google / Microsoft
+    #: resolver. Until then resolving a service that needs it raises, and tests
+    #: override it with a fake.
+    resource_directory_adapter_resolver: providers.Dependency[ResourceDirectoryAdapterResolver] = (
+        providers.Dependency()
+    )
+
+    room_resync_service = providers.Factory(
+        RoomResyncService,
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
+        room_sync_notifier=room_sync_notifier,
+        audit_service=audit_service,
+        entitlement_service=entitlement_service,
     )
 
     booking_policy_service = providers.Factory(
