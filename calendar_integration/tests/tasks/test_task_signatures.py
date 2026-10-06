@@ -18,6 +18,8 @@ from celery import Task
 from calendar_integration.tasks import (
     import_account_calendars_task,
     import_organization_calendar_resources_task,
+    push_room_to_provider_task,
+    start_room_event_sync_task,
     sync_calendar_task,
 )
 from calendar_integration.tasks.calendar_sync_tasks import resync_organization_calendars_task
@@ -59,6 +61,19 @@ from calendar_integration.tasks.calendar_sync_tasks import resync_organization_c
                 "import_workflow_state_id": 1,
             },
             id="import_organization_calendar_resources-CalendarSyncService",
+        ),
+        pytest.param(
+            push_room_to_provider_task,
+            (),
+            {"link_id": 1, "organization_id": 1, "attempt_count": 0},
+            # Also the kwargs the task's own retry passes to `apply_async`.
+            id="push_room_to_provider-RoomSyncService._enqueue",
+        ),
+        pytest.param(
+            start_room_event_sync_task,
+            (),
+            {"calendar_id": 1, "organization_id": 1},
+            id="start_room_event_sync-room_sync_receivers",
         ),
         pytest.param(
             resync_organization_calendars_task,

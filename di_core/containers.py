@@ -53,6 +53,12 @@ from calendar_integration.services.google_write_access_service import GoogleWrit
 from calendar_integration.services.microsoft_connection_service import (
     MicrosoftConnectionService,
 )
+from calendar_integration.services.protocols.resource_directory_adapter import (
+    ResourceDirectoryAdapterResolver,
+)
+from calendar_integration.services.room_sync_adapter_resolver import RoomSyncAdapterResolver
+from calendar_integration.services.room_sync_notifier import RoomSyncNotifier
+from calendar_integration.services.room_sync_service import RoomSyncService
 from legal.services import ConsentService
 from notifications.notification_adapters.django_email import (
     ReplyToDjangoEmailNotificationAdapter,
@@ -284,6 +290,28 @@ class AppContainer(containers.DeclarativeContainer):
         notification_service=notification_service,
     )
 
+    microsoft_app_only_token_provider = providers.Factory(MicrosoftAppOnlyTokenProvider)
+
+    room_sync_notifier = providers.Factory(
+        RoomSyncNotifier,
+        notification_service=notification_service,
+    )
+
+    #: The `ResourceDirectoryAdapterResolver` the room sync engines write through.
+    resource_directory_adapter_resolver: providers.Provider[ResourceDirectoryAdapterResolver] = (
+        providers.Factory(
+            RoomSyncAdapterResolver,
+            microsoft_token_provider=microsoft_app_only_token_provider,
+        )
+    )
+
+    room_sync_service = providers.Factory(
+        RoomSyncService,
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
+        room_sync_notifier=room_sync_notifier,
+        audit_service=audit_service,
+    )
+
     booking_policy_service = providers.Factory(
         BookingPolicyService,
         audit_service=audit_service,
@@ -345,8 +373,6 @@ class AppContainer(containers.DeclarativeContainer):
         ConsentService,
         audit_service=audit_service,
     )
-
-    microsoft_app_only_token_provider = providers.Factory(MicrosoftAppOnlyTokenProvider)
 
     microsoft_connection_service = providers.Factory(
         MicrosoftConnectionService,

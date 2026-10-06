@@ -21,6 +21,7 @@ from calendar_integration.models import (
     GoogleCalendarServiceAccount,
 )
 from calendar_integration.services.calendar_service import CalendarService
+from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC, is_enabled
 from common.organization_context import organization_context
 from organizations.models import Organization
 from payments.seams.scopes import scope_for
@@ -327,3 +328,60 @@ def resync_organization_calendars_task(
                 should_update_events=True,
                 trigger_source=CalendarSyncTriggerSource.ADMIN,
             )
+
+
+ROOM_EVENT_SYNC_WINDOW = datetime.timedelta(days=365)
+
+
+@app.task
+@inject
+def start_room_event_sync_task(
+    calendar_id: int,
+    organization_id: int,
+    calendar_service: CalendarService = Provide["calendar_service"],
+    entitlement_service: EntitlementService = Provide["entitlement_service"],
+):
+    """Start event sync for a Google room Vinta Schedule just created.
+
+    Syncs through the organization's service account, as the resource import does.
+    A flag-off organization, a missing room or service account, a restricted billing
+    root or a plan without Google calendars is a logged skip, not a failure: the room
+    is already ``SYNCED`` and none of these is the task's to retry.
+    """
+    organization = Organization.objects.filter(id=organization_id).first()
+    if not organization:
+        return
+
+    with organization_context(organization):
+        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, organization_id):
+            return
+        if _restricted_or_skip(entitlement_service, organization):
+            return
+
+        calendar = (
+            Calendar.objects.filter_by_organization(organization_id).filter(id=calendar_id).first()
+        )
+        service_account = (
+            GoogleCalendarServiceAccount.objects.filter_by_organization(organization_id)
+            .filter(calendar_fk__isnull=True)
+            .first()
+        )
+        if calendar is None or service_account is None:
+            logger.warning(
+                "No room or Google service account to sync events for room %s (organization %s).",
+                calendar_id,
+                organization_id,
+            )
+            return
+
+        if not _authenticate_or_skip(calendar_service, service_account, organization):
+            return
+
+        now = timezone.now()
+        calendar_service.request_calendar_sync(
+            calendar=calendar,
+            start_datetime=now,
+            end_datetime=now + ROOM_EVENT_SYNC_WINDOW,
+            should_update_events=True,
+            trigger_source=CalendarSyncTriggerSource.IMPORT,
+        )
