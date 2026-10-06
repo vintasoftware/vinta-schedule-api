@@ -927,6 +927,7 @@ class RoomDeletionResult:
         return self.apply_result.failed_at if self.apply_result else None
 
 
+@dataclass(frozen=True)
 class GoogleWriteAccessResult:
     """The outcome of verifying room write access for an organization's Google service account.
 
