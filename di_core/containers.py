@@ -57,6 +57,7 @@ from calendar_integration.services.microsoft_connection_service import (
 from calendar_integration.services.protocols.resource_directory_adapter import (
     ResourceDirectoryAdapterResolver,
 )
+from calendar_integration.services.room_resync_service import RoomResyncService
 from calendar_integration.services.room_sync_notifier import RoomSyncNotifier
 from calendar_integration.services.room_sync_service import RoomSyncService
 from legal.services import ConsentService
@@ -295,12 +296,21 @@ class AppContainer(containers.DeclarativeContainer):
         notification_service=notification_service,
     )
 
-    #: The `ResourceDirectoryAdapterResolver` the room sync engines write through.
-    #: Left undefined until the Google and Microsoft room adapters are wired in;
-    #: until then resolving `room_sync_service` raises, and tests override this
-    #: provider with a fake resolver.
+    #: The `ResourceDirectoryAdapterResolver` the room sync engines reach provider
+    #: room directories through. Declared here, unset: Phase 8 of the resource
+    #: calendar provider sync plan binds it to the real Google / Microsoft
+    #: resolver. Until then resolving a service that needs it (`room_sync_service`,
+    #: `room_resync_service`) raises, and tests override it with a fake.
     resource_directory_adapter_resolver: providers.Dependency[ResourceDirectoryAdapterResolver] = (
         providers.Dependency()
+    )
+
+    room_resync_service = providers.Factory(
+        RoomResyncService,
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
+        room_sync_notifier=room_sync_notifier,
+        audit_service=audit_service,
+        entitlement_service=entitlement_service,
     )
 
     room_sync_service = providers.Factory(
@@ -347,17 +357,15 @@ class AppContainer(containers.DeclarativeContainer):
 
     booking_resolution_service = providers.Factory(
         BookingResolutionService,
-        # Left undefined, so building the service raises until the room directory
-        # adapter resolver exists: Phase 7 of the resource calendar provider sync plan
-        # declares the ``resource_directory_adapter_resolver`` provider and Phase 8
-        # binds it. Point this argument at that provider then.
-        resource_directory_adapter_resolver=providers.Dependency(),
-        # Left undefined too: the organizer emails go through
-        # ``RoomSyncNotifier.notify_booking_room_changed`` (Phase 3 of the same plan),
-        # which is not on this branch. Point this argument at its provider when the
-        # two meet.
-        booking_room_change_notifier=providers.Dependency(),
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
+        booking_room_change_notifier=room_sync_notifier,
         calendar_service=calendar_service,
+    )
+    # Added here rather than in the `calendar_service` definition above, because the
+    # booking resolution service is itself built with a `CalendarService`. A factory, so
+    # neither is built until a synced room is deleted.
+    calendar_service.add_kwargs(
+        booking_resolution_service_factory=booking_resolution_service.provider
     )
 
     bookable_slots_service = providers.Factory(

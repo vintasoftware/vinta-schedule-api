@@ -48,6 +48,10 @@ class AuditAction(models.TextChoices):
         "calendar.event.external_change_auto_undone",
         "External change auto-undone",
     )
+    EXTERNAL_CHANGE_ROOM_EDIT_DISCARDED = (
+        "calendar.resource.external_change_edit_discarded",
+        "Room edit discarded for a provider change",
+    )
     ROOM_PROVIDER_SYNCED = (
         "calendar.resource.provider_synced",
         "Room pushed to provider",
