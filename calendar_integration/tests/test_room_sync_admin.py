@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.test import Client
 from django.urls import reverse
 
@@ -320,3 +321,87 @@ class TestVerifyAction:
         assert (
             MicrosoftOrganizationConnection.original_manager.filter(write_enabled=True).count() == 0
         )
+
+
+@pytest.mark.django_db
+class TestChangeFormsCannotSave:
+    def test_link_change_form_has_no_save_and_a_post_writes_nothing(
+        self, admin_client: Client, organization: Organization
+    ) -> None:
+        link = make_link(
+            organization,
+            "Boardroom",
+            sync_status=ResourceSyncStatus.PENDING_UPDATE,
+            pending_fields={"name": "Boardroom"},
+        )
+        before = reload(link)
+        url = reverse(
+            "admin:calendar_integration_resourcecalendarproviderlink_change", args=[link.pk]
+        )
+
+        page = admin_client.get(url)
+        response = admin_client.post(url, data={"_save": "Save"})
+
+        assert page.status_code == 200
+        assert 'name="_save"' not in page.content.decode()
+        assert response.status_code == 403
+        after = reload(link)
+        assert after.modified == before.modified
+        assert after.sync_status == ResourceSyncStatus.PENDING_UPDATE
+
+    def test_connection_change_form_has_no_save_and_a_post_writes_nothing(
+        self, admin_client: Client, organization: Organization
+    ) -> None:
+        with organization_context(organization):
+            connection = create_microsoft_organization_connection(organization=organization)
+        before = MicrosoftOrganizationConnection.original_manager.get(pk=connection.pk)
+        url = reverse(
+            "admin:calendar_integration_microsoftorganizationconnection_change",
+            args=[connection.pk],
+        )
+
+        page = admin_client.get(url)
+        response = admin_client.post(url, data={"_save": "Save"})
+
+        assert page.status_code == 200
+        assert 'name="_save"' not in page.content.decode()
+        assert response.status_code == 403
+        after = MicrosoftOrganizationConnection.original_manager.get(pk=connection.pk)
+        assert after.modified == before.modified
+
+    def test_actions_need_the_change_permission(self, organization: Organization) -> None:
+        make_link(
+            organization,
+            "Boardroom",
+            sync_status=ResourceSyncStatus.SYNC_FAILED,
+            failed_operation=ResourceSyncOperation.UPDATE,
+        )
+        with organization_context(organization):
+            create_microsoft_organization_connection(organization=organization)
+        viewer = User.objects.create_user(
+            email="room-sync-viewer@example.com",
+            password="viewerpassword",  # noqa: S106
+            is_staff=True,
+        )
+        viewer.user_permissions.set(
+            Permission.objects.filter(
+                content_type__app_label="calendar_integration",
+                codename__in=[
+                    "view_resourcecalendarproviderlink",
+                    "view_microsoftorganizationconnection",
+                ],
+            )
+        )
+        client = Client()
+        client.force_login(viewer)
+
+        links = client.get(reverse(LINK_CHANGELIST))
+        connections = client.get(
+            reverse("admin:calendar_integration_microsoftorganizationconnection_changelist")
+        )
+
+        assert links.status_code == 200
+        assert "Boardroom" in links.content.decode()
+        assert "Retry sync" not in links.content.decode()
+        assert connections.status_code == 200
+        assert 'value="verify_connection"' not in connections.content.decode()

@@ -1,10 +1,11 @@
 """Django admin interface for calendar integration webhook management."""
 
 import datetime
-from typing import TYPE_CHECKING, Annotated, ClassVar
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from django import forms
 from django.contrib import admin, messages
+from django.contrib.auth import get_permission_codename
 from django.db.models import Count, QuerySet
 from django.http import HttpRequest
 from django.utils.html import format_html
@@ -40,6 +41,8 @@ from common.organization_context import organization_context
 
 
 if TYPE_CHECKING:
+    from django.db.models.options import Options
+
     from calendar_integration.services.microsoft_connection_service import (
         MicrosoftConnectionService,
     )
@@ -805,6 +808,16 @@ class ExternalClientIdentifierAdmin(admin.ModelAdmin):
 # convention ``organizations/admin.py`` records), and each action binds the row's
 # own organization before it calls a service. Every field is read-only, so no form
 # builds a foreign-key field and ``unscoped_default_manager()`` is not needed.
+#
+# They also deny the change permission outright, so the change form renders
+# view-only. Each action declares its own permission instead, checked against the
+# model's change permission by ``has_model_change_permission``.
+
+
+def has_model_change_permission(request: HttpRequest, opts: "Options[Any]") -> bool:
+    """Whether the user holds the change permission of the model ``opts`` describes."""
+    codename = get_permission_codename("change", opts)
+    return request.user.has_perm(f"{opts.app_label}.{codename}")
 
 
 @admin.register(ResourceCalendarProviderLink)
@@ -812,7 +825,9 @@ class ResourceCalendarProviderLinkAdmin(admin.ModelAdmin):
     """Sync status, last error and flagged bookings of every provider-backed room.
 
     Read-only: links change only through ``RoomSyncService``. The "Retry sync"
-    action is the one write, and it goes through ``RoomSyncService.retry``.
+    action is the one write, and it goes through ``RoomSyncService.retry``. The
+    change form has no Save: a full-row save would overwrite whatever a concurrent
+    push committed under its row lock.
     """
 
     list_display = (
@@ -873,7 +888,17 @@ class ResourceCalendarProviderLinkAdmin(admin.ModelAdmin):
         """Deleting a link would orphan the provider room; rooms are deleted through the API."""
         return False
 
-    @admin.action(description="Retry sync", permissions=("change",))
+    def has_change_permission(
+        self, request: HttpRequest, obj: ResourceCalendarProviderLink | None = None
+    ) -> bool:
+        """The change form is view-only; the retry action has its own permission."""
+        return False
+
+    def has_retry_permission(self, request: HttpRequest) -> bool:
+        """Retrying changes the link, so it takes the model's change permission."""
+        return has_model_change_permission(request, self.opts)
+
+    @admin.action(description="Retry sync", permissions=("retry",))
     @inject
     def retry_sync(
         self,
@@ -962,7 +987,8 @@ class MicrosoftOrganizationConnectionAdmin(admin.ModelAdmin):
     """Each organization's Microsoft 365 tenant connection, with a "Verify" action.
 
     Read-only: the tenant id comes from the admin-consent flow and ``write_enabled``
-    from verification. ``consent_state`` is a single-use nonce and is not shown.
+    from verification, and the change form has no Save that could write either back
+    stale. ``consent_state`` is a single-use nonce and is not shown.
     """
 
     list_display = (
@@ -1002,7 +1028,17 @@ class MicrosoftOrganizationConnectionAdmin(admin.ModelAdmin):
     ) -> bool:
         return False
 
-    @admin.action(description="Verify", permissions=("change",))
+    def has_change_permission(
+        self, request: HttpRequest, obj: MicrosoftOrganizationConnection | None = None
+    ) -> bool:
+        """The change form is view-only; the verify action has its own permission."""
+        return False
+
+    def has_verify_permission(self, request: HttpRequest) -> bool:
+        """Verifying updates the connection, so it takes the model's change permission."""
+        return has_model_change_permission(request, self.opts)
+
+    @admin.action(description="Verify", permissions=("verify",))
     @inject
     def verify_connection(
         self,
