@@ -17,6 +17,10 @@ class CalendarIntegrationConfig(AppConfig):
         # see `users/apps.py`, whose contexts module does.
         import calendar_integration.notification_contexts  # noqa: F401
 
+        # Connects the receiver that starts Google event sync for rooms the push
+        # engine creates; late for the same reason as the imports above.
+        import calendar_integration.receivers.room_sync_receivers  # noqa: F401
+
         # Same reasoning: importing this is what connects the CalendarPoolMembership
         # post_save/post_delete receivers (see calendar_integration/signals.py) --
         # importing at module scope would run while the app registry is still

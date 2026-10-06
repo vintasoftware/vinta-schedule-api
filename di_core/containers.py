@@ -56,6 +56,7 @@ from calendar_integration.services.microsoft_connection_service import (
 from calendar_integration.services.protocols.resource_directory_adapter import (
     ResourceDirectoryAdapterResolver,
 )
+from calendar_integration.services.room_sync_adapter_resolver import RoomSyncAdapterResolver
 from calendar_integration.services.room_sync_notifier import RoomSyncNotifier
 from calendar_integration.services.room_sync_service import RoomSyncService
 from legal.services import ConsentService
@@ -289,17 +290,19 @@ class AppContainer(containers.DeclarativeContainer):
         notification_service=notification_service,
     )
 
+    microsoft_app_only_token_provider = providers.Factory(MicrosoftAppOnlyTokenProvider)
+
     room_sync_notifier = providers.Factory(
         RoomSyncNotifier,
         notification_service=notification_service,
     )
 
     #: The `ResourceDirectoryAdapterResolver` the room sync engines write through.
-    #: Left undefined until the Google and Microsoft room adapters are wired in;
-    #: until then resolving `room_sync_service` raises, and tests override this
-    #: provider with a fake resolver.
-    resource_directory_adapter_resolver: providers.Dependency[ResourceDirectoryAdapterResolver] = (
-        providers.Dependency()
+    resource_directory_adapter_resolver: providers.Provider[ResourceDirectoryAdapterResolver] = (
+        providers.Factory(
+            RoomSyncAdapterResolver,
+            microsoft_token_provider=microsoft_app_only_token_provider,
+        )
     )
 
     room_sync_service = providers.Factory(
@@ -370,8 +373,6 @@ class AppContainer(containers.DeclarativeContainer):
         ConsentService,
         audit_service=audit_service,
     )
-
-    microsoft_app_only_token_provider = providers.Factory(MicrosoftAppOnlyTokenProvider)
 
     microsoft_connection_service = providers.Factory(
         MicrosoftConnectionService,

@@ -720,7 +720,9 @@ class TestResourceDirectoryErrors:
         assert str(error) == "quota exceeded for the day"
 
 
+@pytest.mark.django_db
 class TestRoomSignals:
+    # Needs the database: the real Google event-sync receiver also hears the send.
     def test_signals_deliver_their_keyword_arguments(self) -> None:
         received: list[tuple[str, dict[str, Any]]] = []
 
