@@ -1030,6 +1030,17 @@ class AppointmentTypeGraphQLType:
     def is_private(root: AppointmentType) -> bool:
         return not root.accepts_public_scheduling
 
+    @strawberry_django.field
+    @staticmethod
+    def duration_seconds(root: AppointmentType) -> int | None:
+        """Exact length, in seconds, every booking through this appointment type must span.
+
+        ``None`` when the appointment type pins no duration.
+        """
+        if root.duration is None:
+            return None
+        return int(root.duration.total_seconds())
+
 
 # ---------------------------------------------------------------------------
 # CalendarBundle types
