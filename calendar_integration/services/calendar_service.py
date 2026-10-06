@@ -55,6 +55,7 @@ from calendar_integration.constants import (
     CalendarVisibility,
     ResourceSyncOperation,
     ResourceSyncStatus,
+    RoomDeletionOutcome,
 )
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
@@ -1778,24 +1779,27 @@ class CalendarService(BaseCalendarService):
         calendar, link = synced_room(calendar_id)
         if not link.is_editable:
             # Already archived, or its deletion is under way.
-            return RoomDeletionResult(deleted=True)
+            return RoomDeletionResult(outcome=RoomDeletionOutcome.DELETED)
 
         resolution_service = get_booking_resolution_service()
         validated = resolution_service.validate(
             calendar, fingerprint, default_resolution, overrides or {}
         )
         if isinstance(validated, list):
-            return RoomDeletionResult(deleted=False, rejected=tuple(validated))
+            return RoomDeletionResult(
+                outcome=RoomDeletionOutcome.REJECTED, rejected=tuple(validated)
+            )
         if any(isinstance(entry.resolution, AbortDeletion) for entry in validated.bookings):
             return RoomDeletionResult(
-                deleted=False,
-                aborted=True,
+                outcome=RoomDeletionOutcome.ABORTED,
                 bookings=tuple(entry.booking for entry in validated.bookings),
             )
 
         apply_result = resolution_service.apply(validated)
         if apply_result.failed_at is not None:
-            return RoomDeletionResult(deleted=False, apply_result=apply_result)
+            return RoomDeletionResult(
+                outcome=RoomDeletionOutcome.INCOMPLETE, apply_result=apply_result
+            )
 
         with transaction.atomic():
             old_visibility = calendar.visibility
@@ -1807,7 +1811,7 @@ class CalendarService(BaseCalendarService):
                 calendar,
                 diff={"visibility": {"old": old_visibility, "new": calendar.visibility}},
             )
-        return RoomDeletionResult(deleted=True, apply_result=apply_result)
+        return RoomDeletionResult(outcome=RoomDeletionOutcome.DELETED, apply_result=apply_result)
 
     def _get_booking_resolution_service(self) -> "BookingResolutionService":
         """Build the booking resolution service from its DI factory."""

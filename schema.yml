@@ -21758,6 +21758,18 @@ components:
       description: |-
         * `monday` - Monday
         * `sunday` - Sunday
+    OutcomeEnum:
+      enum:
+      - deleted
+      - aborted
+      - rejected
+      - incomplete
+      type: string
+      description: |-
+        * `deleted` - The room was deleted.
+        * `aborted` - The room has bookings and the resolution cancelled the deletion.
+        * `rejected` - Some bookings cannot be resolved as asked.
+        * `incomplete` - Resolving the bookings stopped part way; preview again and retry.
     OwnershipMembership:
       type: object
       description: |-
@@ -23713,11 +23725,15 @@ components:
       description: |-
         Why ``POST /calendar/{id}/resource/delete/`` did not delete the room.
 
-        Nothing about the room changed. ``aborted_bookings`` is set when the resolution
-        cancelled the deletion, ``rejected_bookings`` when some resolutions are invalid.
-        ``failed_at_event_id`` is set when applying stopped part way: ``applied_event_ids``
-        are resolved, ``pending_event_ids`` are not; preview again and retry.
+        Renders a ``RoomDeletionResult``; ``detail`` is its outcome's message. Nothing
+        about the room changed. ``outcome`` is ``aborted`` when the resolution cancelled
+        the deletion (``aborted_bookings``), ``rejected`` when some resolutions are
+        invalid (``rejected_bookings``), and ``incomplete`` when applying stopped part
+        way: ``applied_event_ids`` are resolved, ``pending_event_ids`` are not; preview
+        again and retry.
       properties:
+        outcome:
+          $ref: '#/components/schemas/OutcomeEnum'
         detail:
           type: string
         aborted_bookings:
@@ -23744,6 +23760,7 @@ components:
       - applied_event_ids
       - detail
       - failed_at_event_id
+      - outcome
       - pending_event_ids
       - rejected_bookings
     ResourceCalendarDeletionPreview:

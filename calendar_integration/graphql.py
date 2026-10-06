@@ -10,6 +10,7 @@ from calendar_integration.constants import (
     CalendarProvider,
     ResourceSyncOperation,
     ResourceSyncStatus,
+    RoomDeletionOutcome,
 )
 from calendar_integration.models import (
     AppointmentType,
@@ -366,6 +367,7 @@ class ResourceCalendarProviderSyncGraphQLType:
 
 strawberry.enum(BookingResolutionKind, name="ResourceBookingResolution")
 strawberry.enum(BookingRejectionReason, name="ResourceBookingRejectionReason")
+strawberry.enum(RoomDeletionOutcome, name="ResourceCalendarDeletionOutcome")
 
 
 @strawberry.type

@@ -30,6 +30,7 @@ from calendar_integration.constants import (
     CalendarVisibility,
     RecurrenceFrequency,
     ResourceSyncStatus,
+    RoomDeletionOutcome,
 )
 from calendar_integration.exceptions import (
     ResourceCalendarProviderSyncNotEnabledError,
@@ -284,7 +285,7 @@ class TestSpecScenarios:
                 {m2.id: CancelBooking(BookingCancelMode.CANCEL_EVENT)},
             )
 
-            assert result.deleted is True
+            assert result.outcome == RoomDeletionOutcome.DELETED
             assert result.apply_result is not None
             assert result.apply_result.failed_at is None
             # Accepted: archived in Vinta Schedule, provider delete still queued.
@@ -341,7 +342,7 @@ class TestSpecScenarios:
             room_a.id, fingerprint, MoveBooking(room_b.id)
         )
 
-        assert result.deleted is False
+        assert result.outcome == RoomDeletionOutcome.REJECTED
         assert result.rejected == (
             RejectedBooking(event_id=m1.id, reason=BookingRejectionReason.TARGET_BUSY),
         )
@@ -383,8 +384,7 @@ class TestDeleteSyncedRoom:
 
         result = service.delete_synced_resource_calendar(room_a.id, fingerprint, AbortDeletion())
 
-        assert result.deleted is False
-        assert result.aborted is True
+        assert result.outcome == RoomDeletionOutcome.ABORTED
         assert [booking.event_id for booking in result.bookings] == [m1.id]
         assert _link(room_a).sync_status == ResourceSyncStatus.SYNCED
         assert _room_ids(m1) == {room_a.id}
@@ -396,7 +396,7 @@ class TestDeleteSyncedRoom:
 
         result = service.delete_synced_resource_calendar(room_a.id, fingerprint, AbortDeletion())
 
-        assert result.deleted is True
+        assert result.outcome == RoomDeletionOutcome.DELETED
         assert _link(room_a).sync_status == ResourceSyncStatus.PENDING_DELETION
 
     def test_pending_creation_room_is_archived_without_a_provider_call(
@@ -417,7 +417,7 @@ class TestDeleteSyncedRoom:
                 room.id, _fingerprint(di_container, room), AbortDeletion()
             )
 
-        assert result.deleted is True
+        assert result.outcome == RoomDeletionOutcome.DELETED
         assert _link(room).sync_status == ResourceSyncStatus.ARCHIVED
         assert directory.calls == []
         assert _usage(organization) == usage_before - 1
@@ -473,7 +473,7 @@ class TestDeleteSyncedRoom:
                 room_a.id, fingerprint, MoveBooking(room_b.id)
             )
 
-        assert result.deleted is False
+        assert result.outcome == RoomDeletionOutcome.INCOMPLETE
         assert result.apply_result == ApplyResult(
             applied=(m1.id,), pending=(m2.id,), failed_at=m2.id
         )

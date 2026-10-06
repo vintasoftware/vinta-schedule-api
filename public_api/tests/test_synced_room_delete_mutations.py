@@ -51,6 +51,7 @@ DELETE_MUTATION = """
 mutation DeleteResourceCalendar($input: DeleteResourceCalendarInput!) {
     deleteResourceCalendar(input: $input) {
         success
+        outcome
         errorMessage
         calendar { id providerSync { status } }
         abortedBookings { eventId }
@@ -273,6 +274,7 @@ class TestDeleteResourceCalendar:
 
         assert data["data"]["deleteResourceCalendar"] == {
             "success": True,
+            "outcome": "DELETED",
             "errorMessage": None,
             "calendar": {
                 "id": str(room_a.id),
@@ -329,7 +331,11 @@ class TestDeleteResourceCalendar:
         )
 
         result = data["data"]["deleteResourceCalendar"]
-        assert result["success"] is False
+        assert (result["success"], result["outcome"], result["errorMessage"]) == (
+            False,
+            "ABORTED",
+            "The room has bookings and the resolution cancelled the deletion.",
+        )
         assert result["abortedBookings"] == [{"eventId": m1.id}]
         assert _status(organization, room_a) == ResourceSyncStatus.SYNCED
 

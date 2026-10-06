@@ -18,7 +18,12 @@ from vinta_billing.services.subscription_service import SubscriptionService
 
 from audit_integration.constants import AuditAction
 from audit_integration.services import OrganizationAuditService
-from calendar_integration.constants import BookingResolutionKind, CalendarProvider, CalendarType
+from calendar_integration.constants import (
+    BookingResolutionKind,
+    CalendarProvider,
+    CalendarType,
+    RoomDeletionOutcome,
+)
 from calendar_integration.exceptions import (
     AppointmentTypeSlotConfigNotFoundError,
     AppointmentTypeValidationError,
@@ -68,7 +73,6 @@ from calendar_integration.mutations import (
 )
 from calendar_integration.services.calendar_service import _UNCHANGED
 from calendar_integration.services.dataclasses import (
-    BookingResolution,
     CalendarEventInputData,
     CalendarPoolInputData,
     EventAttendanceInputData,
@@ -76,7 +80,7 @@ from calendar_integration.services.dataclasses import (
     ExternalAttendeeInputData,
     ExternalClientIdentifierData,
     ResourceAllocationInputData,
-    booking_resolution_from,
+    booking_resolutions_from,
 )
 from organizations.branding_logo import (
     branding_diff_state,
@@ -669,17 +673,21 @@ class DeleteResourceCalendarResult:
 
     ``success`` is true when every booking is resolved and the room is archived, or
     will be once the provider delete runs (``calendar.providerSync.status`` is then
-    PENDING_DELETION or ARCHIVED). Otherwise nothing about the room changed, and:
+    PENDING_DELETION or ARCHIVED). ``outcome`` is null only when the request failed
+    before the delete ran (invalid input, the feature off, a stale fingerprint).
+    Otherwise nothing about the room changed, ``errorMessage`` explains the outcome,
+    and:
 
-    - ``abortedBookings`` lists the bookings when the resolution cancelled the
-      deletion;
-    - ``rejectedBookings`` lists every booking whose resolution is invalid;
-    - ``failedAtEventId`` is set when applying stopped part way: the bookings in
+    - ABORTED: ``abortedBookings`` lists the bookings, since the resolution
+      cancelled the deletion;
+    - REJECTED: ``rejectedBookings`` lists every booking whose resolution is invalid;
+    - INCOMPLETE: applying stopped at ``failedAtEventId``. The bookings in
       ``appliedEventIds`` are resolved, those in ``pendingEventIds`` are not. Preview
       again and retry.
     """
 
     success: bool
+    outcome: RoomDeletionOutcome | None = None
     error_message: str | None = None
     calendar: CalendarGraphQLType | None = None
     aborted_bookings: list[ResourceBookingGraphQLType] = strawberry.field(default_factory=list)
@@ -689,27 +697,6 @@ class DeleteResourceCalendarResult:
     applied_event_ids: list[int] = strawberry.field(default_factory=list)
     pending_event_ids: list[int] = strawberry.field(default_factory=list)
     failed_at_event_id: int | None = None
-
-
-def booking_resolutions_from_input(
-    default_resolution: BookingResolutionKind,
-    target_calendar_id: int | None,
-    overrides: list[ResourceBookingResolutionOverrideInput] | None,
-) -> tuple[BookingResolution, dict[int, BookingResolution]]:
-    """The default resolution and the per-booking overrides a resolution input names.
-
-    Raises ``ValueError`` for a MOVE with no target, a target on another resolution,
-    or two overrides for the same booking.
-    """
-    default = booking_resolution_from(default_resolution, target_calendar_id)
-    by_event: dict[int, BookingResolution] = {}
-    for override in overrides or []:
-        if override.event_id in by_event:
-            raise ValueError(f"Booking {override.event_id} has more than one override.")
-        by_event[override.event_id] = booking_resolution_from(
-            override.resolution, override.target_calendar_id
-        )
-    return default, by_event
 
 
 @strawberry.input
@@ -2470,8 +2457,10 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         resource.
         """
         try:
-            default, overrides = booking_resolutions_from_input(
-                input.default_resolution, input.target_calendar_id, input.overrides
+            default, overrides = booking_resolutions_from(
+                input.default_resolution,
+                input.target_calendar_id,
+                ((o.event_id, o.resolution, o.target_calendar_id) for o in input.overrides or []),
             )
         except ValueError as e:
             return DeleteResourceCalendarResult(success=False, error_message=str(e))
@@ -2486,32 +2475,23 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         except (ValueError, CalendarIntegrationError) as e:
             return DeleteResourceCalendarResult(success=False, error_message=str(e))
 
-        apply_result = result.apply_result
-        payload = DeleteResourceCalendarResult(
+        return DeleteResourceCalendarResult(
             success=result.deleted,
+            outcome=result.outcome,
+            error_message=None if result.deleted else str(result.outcome.label),
+            calendar=(
+                Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)  # type: ignore[arg-type]
+                if result.deleted
+                else None
+            ),
             aborted_bookings=[ResourceBookingGraphQLType.from_booking(b) for b in result.bookings],
             rejected_bookings=[
                 RejectedResourceBookingGraphQLType.from_rejected(r) for r in result.rejected
             ],
-            applied_event_ids=list(apply_result.applied) if apply_result else [],
-            pending_event_ids=list(apply_result.pending) if apply_result else [],
-            failed_at_event_id=apply_result.failed_at if apply_result else None,
+            applied_event_ids=list(result.applied_event_ids),
+            pending_event_ids=list(result.pending_event_ids),
+            failed_at_event_id=result.failed_at_event_id,
         )
-        if result.deleted:
-            payload.calendar = Calendar.objects.filter_by_organization(org.id).get(  # type: ignore[assignment]
-                id=input.calendar_id
-            )
-        elif result.aborted:
-            payload.error_message = (
-                "The room has bookings and the resolution cancelled the deletion."
-            )
-        elif result.rejected:
-            payload.error_message = "Some bookings cannot be resolved as asked."
-        else:
-            payload.error_message = (
-                "Resolving the bookings stopped part way; preview again and retry."
-            )
-        return payload
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def retry_resource_calendar_sync(

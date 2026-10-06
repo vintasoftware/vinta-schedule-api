@@ -26,6 +26,7 @@ from calendar_integration.constants import (
     CalendarType,
     CalendarVisibility,
     ExternalEventChangeRequestStatus,
+    RoomDeletionOutcome,
 )
 from calendar_integration.exceptions import (
     AppointmentTypeError,
@@ -786,27 +787,12 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
         if result.deleted:
             return self._resource_calendar_response(calendar, status_code=status.HTTP_200_OK)
-        apply_result = result.apply_result
-        if result.aborted:
-            detail = "The room has bookings and the resolution cancelled the deletion."
-        elif result.rejected:
-            detail = "Some bookings cannot be resolved as asked."
-        else:
-            detail = "Resolving the bookings stopped part way; preview again and retry."
-        failure = ResourceCalendarDeleteFailureSerializer(
-            {
-                "detail": detail,
-                "aborted_bookings": result.bookings,
-                "rejected_bookings": result.rejected,
-                "applied_event_ids": list(apply_result.applied) if apply_result else [],
-                "pending_event_ids": list(apply_result.pending) if apply_result else [],
-                "failed_at_event_id": apply_result.failed_at if apply_result else None,
-            }
-        ).data
         failure_status = (
-            status.HTTP_409_CONFLICT if apply_result is not None else status.HTTP_400_BAD_REQUEST
+            status.HTTP_409_CONFLICT
+            if result.outcome == RoomDeletionOutcome.INCOMPLETE
+            else status.HTTP_400_BAD_REQUEST
         )
-        return Response(failure, status=failure_status)
+        return Response(ResourceCalendarDeleteFailureSerializer(result).data, status=failure_status)
 
     @extend_schema(
         summary="Update a bundle calendar's children and primary",
