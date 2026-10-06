@@ -1,69 +1,46 @@
 """Starts provider event sync for rooms the push engine just created."""
 
-import datetime
-import logging
 from typing import Any
 
+from django.db import transaction
 from django.dispatch import receiver
 
 from calendar_integration.constants import CalendarProvider
-from calendar_integration.models import Calendar, GoogleCalendarServiceAccount
+from calendar_integration.models import ResourceCalendarProviderLink
 from calendar_integration.signals import resource_room_synced
-from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC, is_enabled
-from common.organization_context import organization_context
-from di_core.containers import get_container
+from calendar_integration.tasks import start_room_event_sync_task
 
 
-logger = logging.getLogger(__name__)
-
-EVENT_SYNC_WINDOW = datetime.timedelta(days=365)
-
-
-@receiver(resource_room_synced)
+@receiver(
+    resource_room_synced,
+    dispatch_uid="calendar_integration.receivers.request_event_sync_for_created_google_room",
+)
 def request_event_sync_for_created_google_room(
     sender: Any, calendar_id: int, provider: str, created: bool, **kwargs: Any
 ) -> None:
-    """Request event sync for a Google room Vinta Schedule just created.
+    """Queue event sync for a Google room Vinta Schedule just created.
 
-    Syncs through the organization's service account, as the resource import does.
-    Rooms the resync linked (``created=False``), other providers and flag-off
-    organizations are skipped. Microsoft room events sync through their own
-    subscriptions.
+    Rooms the resync linked (``created=False``) and other providers are skipped;
+    Microsoft room events sync through their own subscriptions. The task checks the
+    feature flag and does the provider work, so a billing refusal there cannot
+    fail the push that sent this signal.
     """
     if not created or provider != CalendarProvider.GOOGLE:
         return
 
-    # Cross-organization on purpose: the signal carries only the calendar id, and the
-    # organization to bind comes from the row itself.
-    calendar = (
-        Calendar.objects.unscoped().select_related("organization").filter(id=calendar_id).first()
+    # The signal carries only the calendar id; the link's organization is read from it.
+    # Cross-organization on purpose: no organization is bound while a signal is handled.
+    organization_id = (
+        ResourceCalendarProviderLink.objects.unscoped()
+        .filter(calendar_fk_id=calendar_id)
+        .values_list("organization_id", flat=True)
+        .first()
     )
-    if calendar is None:
-        return
-    organization = calendar.organization
-    if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, organization.id):
+    if organization_id is None:
         return
 
-    with organization_context(organization):
-        service_account = (
-            GoogleCalendarServiceAccount.objects.filter_by_organization(organization.id)
-            .filter(calendar_fk__isnull=True)
-            .first()
+    transaction.on_commit(
+        lambda: start_room_event_sync_task.delay(
+            calendar_id=calendar_id, organization_id=organization_id
         )
-        if service_account is None:
-            logger.warning(
-                "No Google service account to sync events for room %s (organization %s)",
-                calendar_id,
-                organization.id,
-            )
-            return
-
-        calendar_service = get_container().calendar_service()
-        calendar_service.authenticate(account=service_account, organization=organization)
-        now = datetime.datetime.now(datetime.UTC)
-        calendar_service.request_calendar_sync(
-            calendar=calendar,
-            start_datetime=now,
-            end_datetime=now + EVENT_SYNC_WINDOW,
-            should_update_events=True,
-        )
+    )

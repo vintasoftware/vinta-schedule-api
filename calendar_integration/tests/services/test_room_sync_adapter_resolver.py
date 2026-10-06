@@ -1,19 +1,25 @@
 """Tests for ``RoomSyncAdapterResolver`` and the receiver that starts Google event sync."""
 
+import datetime
 from unittest.mock import MagicMock, patch
+
+from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.exceptions import OverLimitError
 
-from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarSyncTriggerSource,
+    CalendarType,
+)
 from calendar_integration.exceptions import ResourceDirectoryNotWriteEnabledError
 from calendar_integration.models import (
     Calendar,
     GoogleCalendarServiceAccount,
     MicrosoftOrganizationConnection,
-)
-from calendar_integration.receivers.room_sync_receivers import (
-    request_event_sync_for_created_google_room,
+    ResourceCalendarProviderLink,
 )
 from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
     GoogleCalendarAdapter,
@@ -22,6 +28,8 @@ from calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter
     MSOutlookCalendarAdapter,
 )
 from calendar_integration.services.room_sync_adapter_resolver import RoomSyncAdapterResolver
+from calendar_integration.signals import resource_room_synced
+from calendar_integration.tasks.calendar_sync_tasks import start_room_event_sync_task
 from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC
 from organizations.models import Organization, OrganizationFeatureFlag
 
@@ -191,6 +199,57 @@ class TestContainerWiring:
 class TestRoomSyncedReceiver:
     @pytest.fixture
     def room(self, organization) -> Calendar:
+        room = baker.make(
+            Calendar,
+            organization=organization,
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.RESOURCE,
+        )
+        ResourceCalendarProviderLink.objects.create(
+            organization=organization, calendar=room, provider=CalendarProvider.GOOGLE
+        )
+        return room
+
+    @pytest.fixture
+    def delay(self):
+        with patch(f"{RECEIVER_MODULE}.start_room_event_sync_task.delay") as delay:
+            yield delay
+
+    def _send(self, room, provider=CalendarProvider.GOOGLE, created=True):
+        # Through the real signal, so the wiring in `apps.py` is covered too.
+        resource_room_synced.send(
+            sender=ResourceCalendarProviderLink,
+            calendar_id=room.id,
+            provider=provider,
+            created=created,
+        )
+
+    def test_queues_the_task_for_a_created_google_room(
+        self, organization, room, delay, django_capture_on_commit_callbacks
+    ):
+        with django_capture_on_commit_callbacks(execute=True):
+            self._send(room)
+
+        delay.assert_called_once_with(calendar_id=room.id, organization_id=organization.id)
+
+    def test_skips_rooms_the_resync_linked(self, room, delay):
+        self._send(room, created=False)
+        delay.assert_not_called()
+
+    def test_skips_microsoft_rooms(self, room, delay):
+        self._send(room, provider=CalendarProvider.MICROSOFT)
+        delay.assert_not_called()
+
+    def test_skips_a_room_without_a_link(self, organization, delay):
+        room = baker.make(Calendar, organization=organization, provider=CalendarProvider.GOOGLE)
+        self._send(room)
+        delay.assert_not_called()
+
+
+@pytest.mark.django_db
+class TestStartRoomEventSyncTask:
+    @pytest.fixture
+    def room(self, organization) -> Calendar:
         return baker.make(
             Calendar,
             organization=organization,
@@ -199,60 +258,69 @@ class TestRoomSyncedReceiver:
         )
 
     @pytest.fixture
-    def calendar_service(self):
-        service = MagicMock()
-        container = MagicMock()
-        container.calendar_service.return_value = service
-        with patch(f"{RECEIVER_MODULE}.get_container", return_value=container):
-            yield service
+    def services(self):
+        calendar_service = MagicMock()
+        entitlement_service = MagicMock()
+        entitlement_service.is_billing_root_restricted.return_value = False
+        return calendar_service, entitlement_service
 
-    def _send(self, room, provider=CalendarProvider.GOOGLE, created=True):
-        request_event_sync_for_created_google_room(
-            sender=None, calendar_id=room.id, provider=provider, created=created
+    def _run(self, room, organization, services):
+        calendar_service, entitlement_service = services
+        start_room_event_sync_task(
+            calendar_id=room.id,
+            organization_id=organization.id,
+            calendar_service=calendar_service,
+            entitlement_service=entitlement_service,
         )
 
-    def test_requests_sync_through_the_org_service_account(
-        self, organization, room, calendar_service
+    def test_requests_a_year_of_sync_through_the_org_service_account(
+        self, organization, room, services
     ):
         _flag(organization)
         account = _google_account(organization, write_enabled=True)
+        before = timezone.now()
 
-        self._send(room)
+        self._run(room, organization, services)
 
+        calendar_service = services[0]
         calendar_service.authenticate.assert_called_once_with(
             account=account, organization=organization
         )
         kwargs = calendar_service.request_calendar_sync.call_args.kwargs
         assert kwargs["calendar"] == room
         assert kwargs["should_update_events"] is True
-        assert kwargs["end_datetime"] > kwargs["start_datetime"]
+        assert kwargs["trigger_source"] == CalendarSyncTriggerSource.IMPORT
+        assert kwargs["start_datetime"] >= before
+        assert kwargs["end_datetime"] - kwargs["start_datetime"] == datetime.timedelta(days=365)
 
-    def test_skips_rooms_the_resync_linked(self, organization, room, calendar_service):
+    def test_skips_flag_off_organizations(self, organization, room, services):
+        _google_account(organization, write_enabled=True)
+        self._run(room, organization, services)
+        services[0].request_calendar_sync.assert_not_called()
+
+    def test_skips_without_a_service_account(self, organization, room, services):
+        _flag(organization)
+        self._run(room, organization, services)
+        services[0].request_calendar_sync.assert_not_called()
+
+    def test_skips_a_restricted_billing_root(self, organization, room, services):
         _flag(organization)
         _google_account(organization, write_enabled=True)
+        services[1].is_billing_root_restricted.return_value = True
 
-        self._send(room, created=False)
+        self._run(room, organization, services)
 
-        calendar_service.request_calendar_sync.assert_not_called()
+        services[0].request_calendar_sync.assert_not_called()
 
-    def test_skips_microsoft_rooms(self, organization, room, calendar_service):
+    def test_a_plan_without_google_calendars_is_a_skip_not_a_failure(
+        self, organization, room, services
+    ):
         _flag(organization)
         _google_account(organization, write_enabled=True)
+        services[0].authenticate.side_effect = OverLimitError(
+            "external_calendar_google", 0, 0, "upgrade_plan"
+        )
 
-        self._send(room, provider=CalendarProvider.MICROSOFT)
+        self._run(room, organization, services)
 
-        calendar_service.request_calendar_sync.assert_not_called()
-
-    def test_skips_flag_off_organizations(self, organization, room, calendar_service):
-        _google_account(organization, write_enabled=True)
-
-        self._send(room)
-
-        calendar_service.request_calendar_sync.assert_not_called()
-
-    def test_skips_when_the_org_has_no_service_account(self, organization, room, calendar_service):
-        _flag(organization)
-
-        self._send(room)
-
-        calendar_service.request_calendar_sync.assert_not_called()
+        services[0].request_calendar_sync.assert_not_called()

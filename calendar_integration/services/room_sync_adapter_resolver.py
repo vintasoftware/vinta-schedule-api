@@ -46,46 +46,35 @@ class RoomSyncAdapterResolver:
             ResourceDirectoryNotWriteEnabledError: the flag is off, or the provider's
                 connection is missing or not write-enabled.
         """
-        if not self.is_write_enabled(organization, provider):
-            raise ResourceDirectoryNotWriteEnabledError()
-
-        if provider == CalendarProvider.GOOGLE:
-            service_account = self._google_service_account(organization)
-            if service_account is None:
-                raise ResourceDirectoryNotWriteEnabledError()
-            return GoogleCalendarAdapter.from_service_account_model(service_account, write=True)
-
-        connection = self._microsoft_connection(organization)
-        if connection is None:
-            raise ResourceDirectoryNotWriteEnabledError()
-        return MSOutlookCalendarAdapter.from_app_only(connection, self.microsoft_token_provider)
+        connection = self._write_enabled_connection(organization, provider)
+        if isinstance(connection, GoogleCalendarServiceAccount):
+            return GoogleCalendarAdapter.from_service_account_model(connection, write=True)
+        if isinstance(connection, MicrosoftOrganizationConnection):
+            return MSOutlookCalendarAdapter.from_app_only(connection, self.microsoft_token_provider)
+        raise ResourceDirectoryNotWriteEnabledError()
 
     def is_write_enabled(self, organization: "Organization", provider: str) -> bool:
         """True when the flag is on and the provider's connection is write-enabled."""
+        return self._write_enabled_connection(organization, provider) is not None
+
+    @staticmethod
+    def _write_enabled_connection(
+        organization: "Organization", provider: str
+    ) -> GoogleCalendarServiceAccount | MicrosoftOrganizationConnection | None:
+        """The provider's connection row, only when the flag is on and writes are verified."""
         if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, organization.id):
-            return False
+            return None
+        connection: GoogleCalendarServiceAccount | MicrosoftOrganizationConnection | None
         if provider == CalendarProvider.GOOGLE:
-            account = self._google_service_account(organization)
-            return account is not None and account.write_enabled
-        if provider == CalendarProvider.MICROSOFT:
-            connection = self._microsoft_connection(organization)
-            return connection is not None and connection.write_enabled
-        return False
-
-    @staticmethod
-    def _google_service_account(
-        organization: "Organization",
-    ) -> GoogleCalendarServiceAccount | None:
-        return (
-            GoogleCalendarServiceAccount.objects.filter_by_organization(organization.id)
-            .filter(calendar_fk__isnull=True)
-            .first()
-        )
-
-    @staticmethod
-    def _microsoft_connection(
-        organization: "Organization",
-    ) -> MicrosoftOrganizationConnection | None:
-        return MicrosoftOrganizationConnection.objects.filter_by_organization(
-            organization.id
-        ).first()
+            connection = (
+                GoogleCalendarServiceAccount.objects.filter_by_organization(organization.id)
+                .filter(calendar_fk__isnull=True)
+                .first()
+            )
+        elif provider == CalendarProvider.MICROSOFT:
+            connection = MicrosoftOrganizationConnection.objects.filter_by_organization(
+                organization.id
+            ).first()
+        else:
+            return None
+        return connection if connection is not None and connection.write_enabled else None
