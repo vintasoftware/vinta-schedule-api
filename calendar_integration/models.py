@@ -3042,6 +3042,19 @@ class ResourceCalendarProviderLink(
         )
         return (self.sync_status, failed_operation) in ROOM_ON_PROVIDER_STATES
 
+    @property
+    def is_editable(self) -> bool:
+        """Whether the room may still be edited: it is not archived or being deleted.
+
+        Being deleted means pending deletion, or sync failed on the delete.
+        """
+        if self.sync_status in (ResourceSyncStatus.ARCHIVED, ResourceSyncStatus.PENDING_DELETION):
+            return False
+        return not (
+            self.sync_status == ResourceSyncStatus.SYNC_FAILED
+            and self.failed_operation == ResourceSyncOperation.DELETE
+        )
+
     def fields_changed_by_provider(self, provider_values: Mapping[str, Any]) -> set[str]:
         """The synced fields whose provider value differs from the last-sync snapshot.
 

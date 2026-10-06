@@ -10667,6 +10667,194 @@ paths:
           description: ''
         '409':
           description: Sync is disabled for this calendar.
+  /calendar/{id}/resource/:
+    patch:
+      operationId: calendar_resource_partial_update
+      description: 'Org admins edit a resource calendar. Only the fields sent change;
+        capacity sent as null clears it. For a room synced with Google or Microsoft
+        the edit applies right away and the name, description, capacity and location
+        are pushed to the provider in the background: provider_sync.status is pending_update
+        until the provider confirms them. A synced room cannot be set inactive here,
+        and one that is archived or being deleted cannot be edited. Admin only. Returns
+        404 when the resource calendar provider sync feature is off for the organization.'
+      summary: Update a resource calendar
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedResourceCalendarUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedResourceCalendarUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedResourceCalendarUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarCreateResponse'
+          description: ''
+  /calendar/{id}/resource{format}:
+    patch:
+      operationId: calendar_resource_formatted_partial_update
+      description: 'Org admins edit a resource calendar. Only the fields sent change;
+        capacity sent as null clears it. For a room synced with Google or Microsoft
+        the edit applies right away and the name, description, capacity and location
+        are pushed to the provider in the background: provider_sync.status is pending_update
+        until the provider confirms them. A synced room cannot be set inactive here,
+        and one that is archived or being deleted cannot be edited. Admin only. Returns
+        404 when the resource calendar provider sync feature is off for the organization.'
+      summary: Update a resource calendar
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedResourceCalendarUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedResourceCalendarUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedResourceCalendarUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarCreateResponse'
+          description: ''
+  /calendar/{id}/resource/retry-sync/:
+    post:
+      operationId: calendar_resource_retry_sync_create
+      description: Org admins retry the provider sync of a room whose sync failed.
+        provider_sync.status goes back to the pending status of the operation that
+        failed and the push runs again in the background. 400 when the room is not
+        synced with a provider or its sync has not failed. Admin only. Returns 404
+        when the resource calendar provider sync feature is off for the organization.
+      summary: Retry a resource calendar's provider sync
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarCreateResponse'
+          description: ''
+  /calendar/{id}/resource/retry-sync{format}:
+    post:
+      operationId: calendar_resource_retry_sync_formatted_create
+      description: Org admins retry the provider sync of a room whose sync failed.
+        provider_sync.status goes back to the pending status of the operation that
+        failed and the push runs again in the background. 400 when the room is not
+        synced with a provider or its sync has not failed. Admin only. Returns 404
+        when the resource calendar provider sync feature is off for the organization.
+      summary: Retry a resource calendar's provider sync
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarCreateResponse'
+          description: ''
   /calendar/{id}/unavailable-windows/:
     get:
       operationId: calendar_unavailable_windows_list
@@ -18639,6 +18827,7 @@ components:
       - update_resource_calendar
       - import_resource_calendars
       - list_resource_locations
+      - retry_resource_calendar_sync
       - create_availability_window
       - update_availability_window
       - delete_availability_window
@@ -18693,6 +18882,7 @@ components:
         * `update_resource_calendar` - Update Resource Calendar
         * `import_resource_calendars` - Import Resource Calendars
         * `list_resource_locations` - List Resource Locations
+        * `retry_resource_calendar_sync` - Retry Resource Calendar Sync
         * `create_availability_window` - Create Availability Window
         * `update_availability_window` - Update Availability Window
         * `delete_availability_window` - Delete Availability Window
@@ -22612,6 +22802,34 @@ components:
           type: string
           nullable: true
           maxLength: 255
+    PatchedResourceCalendarUpdate:
+      type: object
+      description: |-
+        Partially update a resource calendar. Admin-gated at the view layer.
+
+        Only the fields sent are changed. ``capacity`` sent as ``null`` clears it to
+        unlimited. For a room synced with Google or Microsoft, the name, description,
+        capacity and ``location_id`` are pushed to the provider in the background
+        (``provider_sync.status`` pending_update until it confirms them), and
+        ``visibility`` cannot be set to inactive: the room is deleted instead.
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        capacity:
+          type: integer
+          minimum: 0
+          nullable: true
+        manage_available_windows:
+          type: boolean
+        accepts_public_scheduling:
+          type: boolean
+        visibility:
+          $ref: '#/components/schemas/VisibilityEnum'
+        location_id:
+          type: integer
     PatchedServiceAccountWrite:
       type: object
       description: |-
@@ -23070,7 +23288,8 @@ components:
     ResourceCalendarCreateResponse:
       type: object
       description: |-
-        The calendar returned by ``POST /calendar/resource/``.
+        The calendar returned by ``POST /calendar/resource/``, and by the
+        ``/calendar/{id}/resource/`` edit and retry-sync actions.
 
         A room created on Google or Microsoft also carries ``provider_sync``. A manual
         room has no sync link, and its response leaves the key out, so it stays exactly

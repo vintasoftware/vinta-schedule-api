@@ -58,6 +58,7 @@ from calendar_integration.models import (
     CalendarOwnership,
     CalendarPool,
     ExternalEventChangeRequest,
+    ResourceCalendarProviderLink,
     ResourceLocation,
 )
 from calendar_integration.permissions import (
@@ -114,6 +115,7 @@ from calendar_integration.serializers import (
     ExternalEventChangeRequestSerializer,
     ResourceCalendarCreateResponseSerializer,
     ResourceCalendarCreateSerializer,
+    ResourceCalendarUpdateSerializer,
     ResourceLocationSerializer,
     StaleSelectionSerializer,
     UnavailableTimeWindowSerializer,
@@ -400,8 +402,30 @@ class CalendarViewSet(VintaScheduleModelViewSet):
     )
     def update(self, request, *args, **kwargs):
         """Update a calendar. Owner-or-admin gated; admin-only for bundles."""
-        self._assert_can_manage_calendar(self.get_object(), request.user, "update")
+        calendar = self.get_object()
+        self._reject_synced_room(
+            calendar,
+            "This room is synced with a provider. Edit it with PATCH /calendar/{id}/resource/.",
+        )
+        self._assert_can_manage_calendar(calendar, request.user, "update")
         return super().update(request, *args, **kwargs)
+
+    def _reject_synced_room(self, calendar: Calendar, message: str) -> None:
+        """400 for a room synced with a provider, which the generic actions would
+        change without telling the provider.
+
+        Only while the ``resource_calendar_provider_sync`` flag is on; with it off the
+        generic actions keep their behavior for every calendar.
+        """
+        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, calendar.organization_id):
+            return
+        is_synced_room = (
+            ResourceCalendarProviderLink.objects.filter_by_organization(calendar.organization_id)
+            .filter(calendar=calendar)
+            .exists()
+        )
+        if is_synced_room:
+            raise ValidationError({"non_field_errors": [message]})
 
     @extend_schema(
         summary="Partially update a calendar",
@@ -436,6 +460,11 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         - Non-bundle: owner or admin.
         """
         calendar = self.get_object()
+        self._reject_synced_room(
+            calendar,
+            "This room is synced with a provider and is removed through the room "
+            "deletion flow, not by disabling it.",
+        )
 
         # Disabling a bundle hides only the bundle wrapper; child calendars, bundle
         # events, and their representation BlockedTimes/events are left intact.
@@ -501,18 +530,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         )
         serializer.is_valid(raise_exception=True)
         calendar = serializer.save()
-
-        # Re-read by id, not through `get_queryset()`: an idempotent replay returns
-        # the original room even if it was disabled since, and `get_queryset()`
-        # leaves inactive calendars out of this action.
-        response_serializer = ResourceCalendarCreateResponseSerializer()
-        optimized_calendar = response_serializer.get_optimized_queryset(
-            Calendar.objects.filter_by_organization(calendar.organization_id)
-        ).get(id=calendar.id)
-        return Response(
-            ResourceCalendarCreateResponseSerializer(instance=optimized_calendar).data,
-            status=status.HTTP_201_CREATED,
-        )
+        return self._resource_calendar_response(calendar, status_code=status.HTTP_201_CREATED)
 
     @extend_schema(
         summary="List resource locations",
@@ -557,6 +575,100 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         )
         page = self.paginate_queryset(queryset)
         return self.get_paginated_response(ResourceLocationSerializer(page, many=True).data)
+
+    def _resource_calendar_response(self, calendar: Calendar, *, status_code: int) -> Response:
+        # Re-read by id, not through `get_queryset()`: an idempotent create replay
+        # returns the original room even if it was disabled since, and `get_queryset()`
+        # leaves inactive calendars out of the detail actions.
+        response_serializer = ResourceCalendarCreateResponseSerializer()
+        optimized_calendar = response_serializer.get_optimized_queryset(
+            Calendar.objects.filter_by_organization(calendar.organization_id)
+        ).get(id=calendar.id)
+        return Response(
+            ResourceCalendarCreateResponseSerializer(instance=optimized_calendar).data,
+            status=status_code,
+        )
+
+    def _require_provider_sync(self, request) -> None:
+        # 404 rather than 403, so the endpoint is not advertised while the flag is off.
+        if not is_enabled(
+            RESOURCE_CALENDAR_PROVIDER_SYNC, request.organization_membership.organization_id
+        ):
+            raise Http404
+
+    @extend_schema(
+        summary="Update a resource calendar",
+        description=(
+            "Org admins edit a resource calendar. Only the fields sent change; capacity "
+            "sent as null clears it. For a room synced with Google or Microsoft the edit "
+            "applies right away and the name, description, capacity and location are "
+            "pushed to the provider in the background: provider_sync.status is "
+            "pending_update until the provider confirms them. A synced room cannot be set "
+            "inactive here, and one that is archived or being deleted cannot be edited. "
+            "Admin only. Returns 404 when the resource calendar provider sync feature is "
+            "off for the organization."
+        ),
+        request=ResourceCalendarUpdateSerializer,
+        responses={200: ResourceCalendarCreateResponseSerializer},
+    )
+    @action(
+        methods=["patch"],
+        detail=True,
+        url_path="resource",
+        url_name="resource-update",
+        permission_classes=[IsOrganizationAdmin],
+    )
+    def update_resource(self, request, pk: str | None = None) -> Response:
+        """PATCH /calendar/{id}/resource/ — admins edit a resource calendar."""
+        self._require_provider_sync(request)
+        calendar = self.get_object()
+        serializer = ResourceCalendarUpdateSerializer(
+            instance=calendar,
+            data=request.data,
+            partial=True,
+            context=self.get_serializer_context(),
+        )
+        serializer.is_valid(raise_exception=True)
+        calendar = serializer.save()
+        return self._resource_calendar_response(calendar, status_code=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Retry a resource calendar's provider sync",
+        description=(
+            "Org admins retry the provider sync of a room whose sync failed. "
+            "provider_sync.status goes back to the pending status of the operation that "
+            "failed and the push runs again in the background. 400 when the room is not "
+            "synced with a provider or its sync has not failed. Admin only. Returns 404 "
+            "when the resource calendar provider sync feature is off for the organization."
+        ),
+        request=None,
+        responses={200: ResourceCalendarCreateResponseSerializer},
+    )
+    @action(
+        methods=["post"],
+        detail=True,
+        url_path="resource/retry-sync",
+        url_name="resource-retry-sync",
+        permission_classes=[IsOrganizationAdmin],
+    )
+    @inject
+    def retry_resource_sync(
+        self,
+        request,
+        pk: str | None = None,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]] = None,  # type: ignore[assignment]
+    ) -> Response:
+        """POST /calendar/{id}/resource/retry-sync/ — admins retry a failed room sync."""
+        self._require_provider_sync(request)
+        calendar = self.get_object()
+        calendar_service.initialize_without_provider(
+            user_or_token=request.user, organization=calendar.organization
+        )
+        try:
+            calendar = calendar_service.retry_resource_calendar_sync(calendar.id)
+        except CalendarIntegrationError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+        return self._resource_calendar_response(calendar, status_code=status.HTTP_200_OK)
 
     @extend_schema(
         summary="Update a bundle calendar's children and primary",
