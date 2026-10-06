@@ -47,6 +47,7 @@ from calendar_integration.services.external_event_change_request_service import 
     ExternalEventChangeRequestService,
 )
 from calendar_integration.services.google_write_access_service import GoogleWriteAccessService
+from calendar_integration.services.room_sync_notifier import RoomSyncNotifier
 from legal.services import ConsentService
 from notifications.notification_adapters.django_email import (
     ReplyToDjangoEmailNotificationAdapter,
@@ -275,6 +276,11 @@ class AppContainer(containers.DeclarativeContainer):
     external_event_change_request_service = providers.Factory(
         ExternalEventChangeRequestService,
         audit_service=audit_service,
+        notification_service=notification_service,
+    )
+
+    room_sync_notifier = providers.Factory(
+        RoomSyncNotifier,
         notification_service=notification_service,
     )
 

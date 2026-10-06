@@ -1,0 +1,1 @@
+{% load i18n %}{% blocktrans %}Your calendar provider changed the same fields first, so its values were kept.{% endblocktrans %}

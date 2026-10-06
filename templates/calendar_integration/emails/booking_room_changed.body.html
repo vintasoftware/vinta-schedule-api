@@ -1,0 +1,33 @@
+{% load i18n %}
+{% block email_header %}
+{% if change == "event_cancelled" %}
+  <h1>{% trans "Your booking was cancelled" %}</h1>
+{% elif change == "room_removed" %}
+  <h1>{% trans "Your booking no longer has a room" %}</h1>
+{% else %}
+  <h1>{% trans "Your booking was moved to another room" %}</h1>
+{% endif %}
+{% endblock %}
+
+{% block email_content %}
+<p>
+{% blocktrans with event_title=event_title event_start=event_start %}The room you booked for "{{ event_title }}" on {{ event_start }} is no longer available.{% endblocktrans %}
+</p>
+{% if change == "event_cancelled" %}
+<p>
+{% blocktrans %}The booking has been cancelled. If you still need it, please book again with another room.{% endblocktrans %}
+</p>
+{% elif change == "room_removed" %}
+<p>
+{% blocktrans %}The booking has been kept, but the room has been removed from it. Please pick another room in Vinta Schedule if you need one.{% endblocktrans %}
+</p>
+{% else %}
+<p>
+{% blocktrans %}The booking has been moved to another room. Please check the booking in Vinta Schedule for the new room.{% endblocktrans %}
+</p>
+{% endif %}
+{% endblock %}
+
+{% block email_footer %}
+  <p><small>{% blocktrans %}This is an automated message. Please do not reply to this email.{% endblocktrans %}</small></p>
+{% endblock %}
