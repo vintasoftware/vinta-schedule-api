@@ -21,6 +21,7 @@ from calendar_integration.constants import (
     CalendarType,
     CalendarVisibility,
     EventManagementPermissions,
+    FlaggedBookingsOutcome,
     QuotaPeriod,
     RoomDeletionOutcome,
 )
@@ -627,24 +628,69 @@ class ResourceCalendarDeleteSerializer(serializers.Serializer):
         return {"fingerprint": attrs["fingerprint"], "default": default, "overrides": overrides}
 
 
-class ResourceCalendarDeleteFailureSerializer(serializers.Serializer):
-    """Why ``POST /calendar/{id}/resource/delete/`` did not delete the room.
+FLAGGED_BOOKING_RESOLUTION_CHOICES = [
+    choice for choice in BookingResolutionKind.choices if choice[0] != BookingResolutionKind.ABORT
+]
 
-    Renders a ``RoomDeletionResult``; ``detail`` is its outcome's message. Nothing
-    about the room changed. ``outcome`` is ``aborted`` when the resolution cancelled
-    the deletion (``aborted_bookings``), ``rejected`` when some resolutions are
-    invalid (``rejected_bookings``), and ``incomplete`` when applying stopped part
-    way: ``applied_event_ids`` are resolved, ``pending_event_ids`` are not; preview
-    again and retry.
+
+class ResourceFlaggedBookingResolutionOverrideSerializer(
+    ResourceBookingResolutionOverrideSerializer
+):
+    """One booking's resolution for a room the provider deleted: anything but ``abort``."""
+
+    resolution = serializers.ChoiceField(choices=FLAGGED_BOOKING_RESOLUTION_CHOICES)
+
+
+class ResourceFlaggedBookingsResolveSerializer(ResourceCalendarDeleteSerializer):
+    """Resolve the future bookings of a room the provider deleted.
+
+    The fields and validation are those of ``ResourceCalendarDeleteSerializer``, except
+    that ``abort`` is not a choice: the room is already gone, so there is no deletion
+    to cancel.
     """
 
-    outcome = serializers.ChoiceField(choices=RoomDeletionOutcome.choices)
+    default_resolution = serializers.ChoiceField(choices=FLAGGED_BOOKING_RESOLUTION_CHOICES)
+    overrides = ResourceFlaggedBookingResolutionOverrideSerializer(many=True, required=False)
+
+
+class ResourceBookingResolutionFailureSerializer(serializers.Serializer):
+    """The part of a failed resolution response that ``BookingResolutionService`` fills.
+
+    Renders a ``BookingResolutionReport``; ``detail`` is its outcome's message.
+    ``rejected_bookings`` lists the invalid resolutions. When applying stopped part
+    way, ``applied_event_ids`` are resolved, ``pending_event_ids`` are not, and
+    ``failed_at_event_id`` is the booking that failed: preview again and retry.
+    """
+
     detail = serializers.CharField(source="outcome.label")
-    aborted_bookings = ResourceBookingSerializer(source="bookings", many=True)
     rejected_bookings = RejectedResourceBookingSerializer(source="rejected", many=True)
     applied_event_ids = serializers.ListField(child=serializers.IntegerField())
     pending_event_ids = serializers.ListField(child=serializers.IntegerField())
     failed_at_event_id = serializers.IntegerField(allow_null=True)
+
+
+class ResourceFlaggedBookingsFailureSerializer(ResourceBookingResolutionFailureSerializer):
+    """Why ``POST /calendar/{id}/resource/resolve-flagged-bookings/`` did not finish.
+
+    Renders a ``FlaggedBookingsResult``. Nothing is cleared. ``outcome`` is
+    ``rejected`` when some resolutions are invalid (nothing changed), and
+    ``incomplete`` when applying stopped part way; the room stays flagged.
+    """
+
+    outcome = serializers.ChoiceField(choices=FlaggedBookingsOutcome.choices)
+
+
+class ResourceCalendarDeleteFailureSerializer(ResourceBookingResolutionFailureSerializer):
+    """Why ``POST /calendar/{id}/resource/delete/`` did not delete the room.
+
+    Renders a ``RoomDeletionResult``. Nothing about the room changed. ``outcome`` is
+    ``aborted`` when the resolution cancelled the deletion (``aborted_bookings``),
+    ``rejected`` when some resolutions are invalid, and ``incomplete`` when applying
+    stopped part way.
+    """
+
+    outcome = serializers.ChoiceField(choices=RoomDeletionOutcome.choices)
+    aborted_bookings = ResourceBookingSerializer(source="bookings", many=True)
 
 
 class CalendarBundleCreateSerializer(VirtualModelSerializer):

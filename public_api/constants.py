@@ -50,6 +50,10 @@ class PublicAPIResources(TextChoices):
         "Preview Resource Calendar Deletion",
     )
     DELETE_RESOURCE_CALENDAR = "delete_resource_calendar", "Delete Resource Calendar"
+    RESOLVE_FLAGGED_RESOURCE_BOOKINGS = (
+        "resolve_flagged_resource_bookings",
+        "Resolve Flagged Resource Bookings",
+    )
     CREATE_AVAILABILITY_WINDOW = "create_availability_window", "Create Availability Window"
     UPDATE_AVAILABILITY_WINDOW = "update_availability_window", "Update Availability Window"
     DELETE_AVAILABILITY_WINDOW = "delete_availability_window", "Delete Availability Window"
