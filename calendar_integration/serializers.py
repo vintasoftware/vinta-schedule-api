@@ -386,6 +386,32 @@ class ResourceCalendarProviderSyncSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ResourceCalendarCreateResponseSerializer(CalendarSerializer):
+    """The calendar returned by ``POST /calendar/resource/``.
+
+    A room created on Google or Microsoft also carries ``provider_sync``. A manual
+    room has no sync link, and its response leaves the key out, so it stays exactly
+    the ``CalendarSerializer`` shape it was before provider sync existed.
+    """
+
+    # Not `read_only`: this serializer only ever renders a response, and drf-spectacular
+    # lists every read-only field as required, which would contradict the manual-room
+    # response that leaves the key out. `required=False` documents it as optional.
+    provider_sync = ResourceCalendarProviderSyncSerializer(source="provider_link", required=False)
+
+    class Meta:
+        model = Calendar
+        virtual_model = CalendarVirtualModel
+        fields = (*CalendarSerializer.Meta.fields, "provider_sync")
+        read_only_fields = CalendarSerializer.Meta.read_only_fields
+
+    def to_representation(self, instance: Calendar) -> dict:
+        data = super().to_representation(instance)
+        if data.get("provider_sync") is None:
+            data.pop("provider_sync", None)
+        return data
+
+
 class ResourceCalendarCreateSerializer(VirtualModelSerializer):
     """Create a resource calendar. Admin-gated at the view layer.
 

@@ -58,7 +58,6 @@ from calendar_integration.models import (
     CalendarOwnership,
     CalendarPool,
     ExternalEventChangeRequest,
-    ResourceCalendarProviderLink,
     ResourceLocation,
 )
 from calendar_integration.permissions import (
@@ -113,8 +112,8 @@ from calendar_integration.serializers import (
     EventBulkModificationSerializer,
     EventRecurringExceptionSerializer,
     ExternalEventChangeRequestSerializer,
+    ResourceCalendarCreateResponseSerializer,
     ResourceCalendarCreateSerializer,
-    ResourceCalendarProviderSyncSerializer,
     ResourceLocationSerializer,
     StaleSelectionSerializer,
     UnavailableTimeWindowSerializer,
@@ -485,7 +484,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
             "calendar_type=resource. Admin only. Returns the created calendar."
         ),
         request=ResourceCalendarCreateSerializer,
-        responses={201: CalendarSerializer},
+        responses={201: ResourceCalendarCreateResponseSerializer},
     )
     @action(
         methods=["post"],
@@ -503,14 +502,13 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         serializer.is_valid(raise_exception=True)
         calendar = serializer.save()
 
-        optimized_calendar = self.get_queryset().get(id=calendar.id)
-        data = self.get_serializer_class()(instance=optimized_calendar).data
-        if optimized_calendar.provider != CalendarProvider.INTERNAL:
-            link = ResourceCalendarProviderLink.objects.filter_by_organization(
-                optimized_calendar.organization_id
-            ).get(calendar=optimized_calendar)
-            data["provider_sync"] = ResourceCalendarProviderSyncSerializer(instance=link).data
-        return Response(data, status=status.HTTP_201_CREATED)
+        optimized_calendar = (
+            self.get_queryset().select_related("provider_link__location").get(id=calendar.id)
+        )
+        return Response(
+            ResourceCalendarCreateResponseSerializer(instance=optimized_calendar).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     @extend_schema(
         summary="List resource locations",

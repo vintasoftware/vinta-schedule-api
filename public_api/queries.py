@@ -356,8 +356,11 @@ class Query:
             queryset = queryset.filter(calendar_type=calendar_type)
 
         # Prefetch ownership rows + related membership to avoid N+1 when the
-        # caller selects `owners { membership { ... } }`.
-        queryset = queryset.prefetch_related("ownerships__membership")
+        # caller selects `owners { membership { ... } }`, and load the room sync link
+        # with its location for `providerSync { location { ... } }`.
+        queryset = queryset.prefetch_related("ownerships__membership").select_related(
+            "provider_link__location"
+        )
 
         # Apply ordering first, then pagination
         queryset = _slice_qs(queryset.order_by("pk"), offset, limit)

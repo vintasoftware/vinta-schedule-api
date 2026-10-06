@@ -11,12 +11,15 @@ happens inside a test transaction, so created rooms stay pending creation.
 from collections.abc import Iterator
 from typing import Any
 
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
+
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider
-from calendar_integration.factories import create_resource_location
+from calendar_integration.factories import create_resource_location, create_resource_provider_link
 from calendar_integration.models import Calendar, ResourceCalendarProviderLink, ResourceLocation
 from calendar_integration.tests.room_sync_fakes import FakeRoomDirectory, FakeRoomDirectoryResolver
 from common.feature_flags import RESOURCE_CALENDAR_PROVIDER_SYNC
@@ -295,6 +298,44 @@ def test_provider_sync_is_null_for_a_calendar_without_a_link(
     data = api.post(CALENDARS_QUERY, {"calendarId": room.id})
 
     assert data["data"]["calendars"] == [{"id": str(room.id), "providerSync": None}]
+
+
+@pytest.mark.django_db
+def test_provider_sync_on_calendars_does_not_query_per_calendar(
+    api: _Api, organization: Organization
+) -> None:
+    """Listing N synced rooms with ``providerSync { location }`` costs the same as one."""
+    location = _location(organization)
+
+    def _make_room(index: int) -> None:
+        with organization_context(organization):
+            room = baker.make(
+                Calendar,
+                organization=organization,
+                provider=CalendarProvider.GOOGLE,
+                external_id=f"room-{index}",
+            )
+            create_resource_provider_link(calendar=room, location=location)
+
+    query = """
+    query { calendars { id providerSync { status location { id buildingName } } } }
+    """
+
+    _make_room(0)
+    with CaptureQueriesContext(connection) as one_room:
+        data = api.post(query, {})
+    assert data["data"]["calendars"][0]["providerSync"] == {
+        "status": "SYNCED",
+        "location": {"id": str(location.id), "buildingName": "Main Building"},
+    }
+
+    for index in range(1, 4):
+        _make_room(index)
+    with CaptureQueriesContext(connection) as four_rooms:
+        data = api.post(query, {})
+    assert len(data["data"]["calendars"]) == 4
+
+    assert len(four_rooms.captured_queries) == len(one_room.captured_queries)
 
 
 # ---------------------------------------------------------------------------

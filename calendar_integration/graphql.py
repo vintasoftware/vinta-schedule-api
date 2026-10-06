@@ -390,13 +390,15 @@ class CalendarGraphQLType:
         # 15 -> 36 queries on `TestCalendarOwnersField::test_owners_field_no_n_plus_1`.
         return list(root.ownerships.all())  # type: ignore[arg-type]
 
-    @strawberry_django.field
+    @strawberry_django.field(select_related=["provider_link__location"])
     @staticmethod
     def provider_sync(root: Calendar) -> ResourceCalendarProviderSyncGraphQLType | None:
         """The room's provider sync state, or null for a calendar that is not synced that way.
 
         Only rooms created or imported through resource calendar provider sync have
-        one; manual rooms and every other calendar return null.
+        one; manual rooms and every other calendar return null. Lists that return
+        calendars load ``provider_link__location`` up front (see ``Query.calendars``),
+        for the same reason ``owners`` prefetches its rows.
         """
         try:
             link = root.provider_link
