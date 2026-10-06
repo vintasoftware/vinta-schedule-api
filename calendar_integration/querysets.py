@@ -1464,6 +1464,16 @@ class ResourceLocationQuerySet(OrganizationScopedQuerySet):
         """Locations synced from ``provider``."""
         return self.filter(provider=provider)
 
+    def listable(self, provider: str | None = None) -> "ResourceLocationQuerySet":
+        """Active locations, optionally of one ``provider``, in a stable display order.
+
+        What callers pick from when they create a room on the provider.
+        """
+        queryset = self.active()
+        if provider is not None:
+            queryset = queryset.for_provider(provider)
+        return queryset.order_by("provider", "building_name", "floor_name", "pk")
+
 
 class ResourceCalendarProviderLinkQuerySet(OrganizationScopedQuerySet):
     """QuerySet for :class:`~calendar_integration.models.ResourceCalendarProviderLink`."""
