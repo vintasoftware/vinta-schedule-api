@@ -14,6 +14,7 @@ from strawberry.django.views import GraphQLView
 from vinta_billing.routing import get_extra_patterns as get_payments_extra_patterns
 from vinta_billing.routing import get_routes as get_payments_routes
 
+from calendar_integration.routes import extra_patterns as calendar_integration_extra_patterns
 from calendar_integration.routes import routes as calendar_integration_routes
 from common.health_views import healthz
 from legal.routes import routes as legal_routes
@@ -72,6 +73,8 @@ urlpatterns = [
     path("auth/", include("allauth.socialaccount.urls")),
     path("auth/", include("allauth.socialaccount.providers.google.urls")),
     path("auth/", include("allauth.headless.urls")),
+    # Ahead of the router: its `calendar/<path:pk>/` route would match these paths.
+    path("", include(calendar_integration_extra_patterns)),
     path("", include((router.urls, "api")), name="api"),
     path("", include(organizations_extra_patterns)),
     path("", include(payments_extra_patterns)),
