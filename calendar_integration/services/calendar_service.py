@@ -31,7 +31,7 @@ services such as ``AppointmentTypeService``.
 
 import datetime
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from typing import TYPE_CHECKING, Annotated
 
 from django.db import transaction
@@ -267,6 +267,8 @@ class CalendarService(BaseCalendarService):
         self._calendar_cache: dict[tuple[int, str | int], Calendar] = {}
         # Shared auth-context snapshot; set by authenticate() / initialize_without_provider().
         self._context: CalendarServiceContext | None = None
+        # Set by initialize_for_room_resolution(); see that method.
+        self._is_room_resolution = False
         # Stateless recurrence engine shared by event/blocked-time/available-time methods.
         # Constructed once; it holds no auth state (everything arrives as method params).
         self._recurrence_manager = RecurrenceManager()
@@ -541,6 +543,7 @@ class CalendarService(BaseCalendarService):
             self._assert_provider_entitlement(early_provider)
 
         self.calendar_adapter, self.account = self.get_calendar_adapter_for_account(account)
+        self._is_room_resolution = False
 
         if early_provider is None:
             self._assert_provider_entitlement(_provider_for_account(self.account))
@@ -576,6 +579,7 @@ class CalendarService(BaseCalendarService):
         self.user_or_token = user_or_token
         self.account = None
         self.calendar_adapter = None
+        self._is_room_resolution = False
 
         if (
             self.calendar_permission_service
@@ -606,6 +610,20 @@ class CalendarService(BaseCalendarService):
             external_client_identifier_service=self.external_client_identifier_service,
         )
 
+    def initialize_for_room_resolution(self, organization: Organization) -> None:
+        """Initialize the service to resolve the bookings of a room that is being deleted.
+
+        Only ``BookingResolutionService.apply`` calls this. The service acts as the
+        system rather than as a user or token: event creates, updates and deletes skip
+        the per-event permission checks, because they edit other people's events on
+        behalf of a room deletion the caller was already authorized to make
+        (``IsOrganizationAdmin`` or the ``delete_resource_calendar`` grant). Everything
+        else about those writes is unchanged: provider writes, the room bookability
+        guard, billing checks, and the audit trail, which records the system actor.
+        """
+        self.initialize_without_provider(user_or_token=None, organization=organization)
+        self._is_room_resolution = True
+
     def _build_context_snapshot(self) -> CalendarServiceContext:
         """Build a context snapshot from the current auth-state instance attributes.
 
@@ -626,6 +644,7 @@ class CalendarService(BaseCalendarService):
             entitlement_service=self.entitlement_service,
             bypass_entitlement_limits=self._bypass_entitlement_limits,
             external_client_identifier_service=self.external_client_identifier_service,
+            is_room_resolution=self._is_room_resolution,
         )
 
     def _get_event_service(self) -> CalendarEventService:
@@ -1552,6 +1571,7 @@ class CalendarService(BaseCalendarService):
         bypass_limits: bool = False,
         _enforce_policy: bool = True,
         _check_postpaid_allowance: bool = True,
+        _carried_over_room_ids: Collection[int] = (),
     ) -> CalendarEvent:
         """
         Create a new event in the calendar.
@@ -1572,6 +1592,9 @@ class CalendarService(BaseCalendarService):
             docstring. Set to ``False`` by the bundle fan-out for the same reason as
             ``_enforce_policy``: it already checked headroom once for the whole
             fan-out count.
+        :param _carried_over_room_ids: Internal flag; callers must NOT pass this.
+            Forwarded verbatim to ``CalendarEventService.create_event`` -- see its
+            docstring. Set by ``transfer_event`` to the moved event's rooms.
         :return: Response from the calendar client.
         """
         if _enforce_policy and self.organization is not None:
@@ -1588,6 +1611,7 @@ class CalendarService(BaseCalendarService):
                     event_data,
                     bypass_limits=bypass_limits,
                     _check_postpaid_allowance=_check_postpaid_allowance,
+                    _carried_over_room_ids=_carried_over_room_ids,
                 )
             self._check_booking_policy(
                 calendar,
@@ -1604,6 +1628,7 @@ class CalendarService(BaseCalendarService):
             event_data,
             bypass_limits=bypass_limits,
             _check_postpaid_allowance=_check_postpaid_allowance,
+            _carried_over_room_ids=_carried_over_room_ids,
         )
 
     def _update_bundle_event(
@@ -2340,8 +2365,13 @@ class CalendarService(BaseCalendarService):
         modified_end_time_offset: datetime.timedelta | None = None,
         is_bulk_cancelled: bool = False,
         modification_rrule_string: str | None = None,
+        resource_allocations_override: list[ResourceAllocationInputData] | None = None,
     ) -> CalendarEvent | None:
-        """Create a bulk modification for a recurring event from the specified date onwards."""
+        """Create a bulk modification for a recurring event from the specified date onwards.
+
+        See ``CalendarEventService.create_recurring_event_bulk_modification``, including
+        ``resource_allocations_override``.
+        """
         return self._get_event_service().create_recurring_event_bulk_modification(
             parent_event=parent_event,
             modification_start_date=modification_start_date,
@@ -2351,6 +2381,7 @@ class CalendarService(BaseCalendarService):
             modified_end_time_offset=modified_end_time_offset,
             is_bulk_cancelled=is_bulk_cancelled,
             modification_rrule_string=modification_rrule_string,
+            resource_allocations_override=resource_allocations_override,
         )
 
     def create_recurring_blocked_time_bulk_modification(
@@ -2402,8 +2433,13 @@ class CalendarService(BaseCalendarService):
         modified_start_time_offset: datetime.timedelta | None = None,
         modified_end_time_offset: datetime.timedelta | None = None,
         modification_rrule_string: str | None = None,
+        resource_allocations_override: list[ResourceAllocationInputData] | None = None,
     ) -> CalendarEvent | None:
-        """Modify recurring event series from the given date onwards."""
+        """Modify recurring event series from the given date onwards.
+
+        See ``CalendarEventService.create_recurring_event_bulk_modification`` for
+        ``resource_allocations_override``.
+        """
         return self._get_event_service().modify_recurring_event_from_date(
             parent_event=parent_event,
             modification_start_date=modification_start_date,
@@ -2412,6 +2448,7 @@ class CalendarService(BaseCalendarService):
             modified_start_time_offset=modified_start_time_offset,
             modified_end_time_offset=modified_end_time_offset,
             modification_rrule_string=modification_rrule_string,
+            resource_allocations_override=resource_allocations_override,
         )
 
     def cancel_recurring_event_from_date(

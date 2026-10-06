@@ -30,6 +30,7 @@ from calendar_integration.constants import (
     CalendarVisibility,
     ExternalEventChangeRequestStatus,
     ResourceSyncStatus,
+    RSVPStatus,
 )
 from calendar_integration.database_functions import (
     GetAvailableTimeOccurrencesJSON,
@@ -798,6 +799,77 @@ class CalendarEventQuerySet(OrganizationScopedQuerySet, RecurringQuerySetMixin):
             )
             .annotate_recurring_occurrences_on_date_range(start, end)
             .select_related("recurrence_rule")
+        )
+
+    def booking_room(self, room_id: int) -> "CalendarEventQuerySet":
+        """Events that book the room ``room_id``.
+
+        An event books a room when it sits on the room's own calendar, or when it
+        allocates the room and the allocation was not declined. Every kind of row is
+        returned: one-off events, recurring masters, bulk-modification continuations,
+        and exception rows. An exception row is returned only when it books the room
+        itself (it sits on the room's calendar); editing an occurrence gives its row
+        no allocations, so a series that allocates the room books it through the
+        master, whose expansion includes the modified occurrence.
+        """
+        from calendar_integration.models import ResourceAllocation
+
+        # ``unscoped()``: the subquery is correlated on the outer row's own
+        # ``organization_id``, so it cannot reach another organization, and it needs
+        # no bound organization.
+        active_allocation = (
+            ResourceAllocation.objects.unscoped()
+            .filter(
+                event_fk_id=OuterRef("pk"),
+                organization_id=OuterRef("organization_id"),
+                calendar_fk_id=room_id,
+            )
+            .exclude(status=RSVPStatus.DECLINED)
+        )
+        return self.filter(Q(calendar_fk_id=room_id) | Exists(active_allocation))
+
+    def with_occurrences_overlapping(
+        self, start: datetime.datetime, end: datetime.datetime, max_occurrences: int = 10000
+    ) -> "CalendarEventQuerySet":
+        """Rows that can have an occurrence overlapping ``[start, end)``.
+
+        - A row with no recurrence rule (a one-off event, or an exception row of a
+          series) qualifies by its own times.
+        - A recurring master qualifies when it starts before ``end``. Its
+          ``recurring_occurrences`` annotation holds the occurrences that overlap the
+          range (``overlap=True``), at most ``max_occurrences`` of them, so
+          ``get_occurrences_in_range`` on it costs no further expansion query. The
+          expansion returns a modified occurrence as its exception row, which also
+          qualifies here on its own when it overlaps.
+        """
+        return (
+            self.filter(
+                Q(recurrence_rule__isnull=True, start_time__lt=end, end_time__gt=start)
+                | Q(
+                    recurrence_rule__isnull=False,
+                    parent_recurring_object__isnull=True,
+                    start_time__lt=end,
+                )
+            )
+            .annotate_recurring_occurrences_on_date_range(
+                start, end, max_occurrences=max_occurrences, overlap=True
+            )
+            .select_related("recurrence_rule")
+        )
+
+    def annotate_attendee_count(self) -> "CalendarEventQuerySet":
+        """Annotate ``attendee_count``: members plus external attendees who did not decline."""
+        return self.annotate(
+            attendee_count=Count(
+                "attendances",
+                filter=~Q(attendances__status=RSVPStatus.DECLINED),
+                distinct=True,
+            )
+            + Count(
+                "external_attendances",
+                filter=~Q(external_attendances__status=RSVPStatus.DECLINED),
+                distinct=True,
+            )
         )
 
 

@@ -46,7 +46,7 @@ import zoneinfo
 import icalendar
 
 from calendar_integration.constants import RSVPStatus
-from calendar_integration.models import CalendarEvent, EventAttendance
+from calendar_integration.models import CalendarEvent, CalendarOwnership, EventAttendance
 
 
 # Map the project's RSVPStatus to RFC 5545 PARTSTAT values.
@@ -216,14 +216,7 @@ class CalendarEventICSService:
             # the prefetched cache (use .all() so the documented
             # `calendar__ownerships__membership__user` prefetch is reused — never
             # .filter()/.first(), which would issue a fresh query and bypass it).
-            ownership = next((o for o in calendar.ownerships.all() if o.is_default), None)
-            if ownership is None:
-                # Deterministic fallback when no default is flagged.
-                ownership = min(
-                    calendar.ownerships.all(),
-                    key=lambda o: o.membership_user_id,
-                    default=None,
-                )
+            ownership = CalendarOwnership.default_of(calendar.ownerships.all())
             if ownership is None:
                 return None
             membership = ownership.membership
