@@ -746,3 +746,15 @@ class BusyWindow:
 
     start: datetime.datetime
     end: datetime.datetime
+
+
+@dataclass(frozen=True)
+class GoogleWriteAccessResult:
+    """The outcome of verifying room write access for an organization's Google service account.
+
+    ``error`` is ``""`` on success, otherwise a message an org admin can act on.
+    """
+
+    write_enabled: bool
+    write_verified_at: datetime.datetime | None
+    error: str

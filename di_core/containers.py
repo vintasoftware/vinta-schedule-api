@@ -49,6 +49,7 @@ from calendar_integration.services.external_client_identifier_service import (
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
+from calendar_integration.services.google_write_access_service import GoogleWriteAccessService
 from calendar_integration.services.microsoft_connection_service import (
     MicrosoftConnectionService,
 )
@@ -333,6 +334,10 @@ class AppContainer(containers.DeclarativeContainer):
         entitlement_service=entitlement_service,
         external_client_identifier_service=external_client_identifier_service,
         microsoft_app_only_token_provider=microsoft_app_only_token_provider,
+    )
+
+    google_write_access_service = providers.Factory(
+        GoogleWriteAccessService,
     )
 
     bookable_slots_service = providers.Factory(

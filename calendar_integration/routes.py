@@ -2,6 +2,7 @@ from django.urls import path
 
 from common.types import RouteDict
 
+from .google_write_access_views import GoogleServiceAccountWriteAccessViewSet
 from .microsoft_connection_views import (
     MicrosoftConnectionVerifyView,
     MicrosoftConsentCallbackView,
@@ -53,6 +54,12 @@ routes: list[RouteDict] = [
         "regex": r"calendar-pools",
         "viewset": CalendarPoolViewSet,
         "basename": "CalendarPools",
+    },
+    # Before ``calendar`` so no ``CalendarViewSet`` route can shadow it.
+    {
+        "regex": r"calendar/google-service-account",
+        "viewset": GoogleServiceAccountWriteAccessViewSet,
+        "basename": "GoogleServiceAccountWriteAccess",
     },
     {
         "regex": r"calendar",

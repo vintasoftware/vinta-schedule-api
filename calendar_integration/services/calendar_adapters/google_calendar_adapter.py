@@ -2,7 +2,7 @@ import datetime
 import logging
 import re
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Collection, Iterable
 from typing import Any, Literal, NotRequired, TypedDict
 
 from django.conf import settings
@@ -10,21 +10,36 @@ from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpHeaders, HttpRequest
 
 from allauth.socialaccount.models import SocialToken
+from google.auth.exceptions import RefreshError, TransportError
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account as google_service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from pyrate_limiter import Duration, Rate
 
 from calendar_integration.constants import CalendarProvider
-from calendar_integration.exceptions import WebhookIgnoredError, WebhookProcessingFailedError
+from calendar_integration.exceptions import (
+    ResourceDirectoryError,
+    ResourceDirectoryInvalidInputError,
+    ResourceDirectoryNotFoundError,
+    ResourceDirectoryPermissionError,
+    WebhookIgnoredError,
+    WebhookProcessingFailedError,
+)
+from calendar_integration.models import GoogleCalendarServiceAccount
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
+    BusyWindow,
     CalendarEventAdapterInputData,
     CalendarEventAdapterOutputData,
     CalendarEventsSyncTypedDict,
     CalendarResourceData,
     EventAttendeeData,
+    ResourceLocationData,
+    ResourceLocationRef,
+    RoomDirectoryData,
+    RoomWriteData,
 )
 from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
 from common.redis import build_resilient_limiter
@@ -55,6 +70,63 @@ _SA_SCOPES = [
     "https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
 ]
+# Room writes. Requested only by ``from_service_account(..., write=True)``: with
+# domain-wide delegation, asking for a scope the Admin Console never granted makes
+# every call fail, so customers who granted only the read-only scope must never get
+# a client built with this list.
+_SA_WRITE_SCOPES = [
+    "https://www.googleapis.com/auth/admin.directory.resource.calendar",
+    "https://www.googleapis.com/auth/calendar.readonly",
+]
+
+# Rooms Vinta Schedule creates get ``resourceId = vinta-<provisional_key>``, so a
+# replayed insert collides with the room the first attempt made (HTTP 409).
+_VINTA_RESOURCE_ID_PREFIX = "vinta-"
+_CONFERENCE_ROOM_CATEGORY = "CONFERENCE_ROOM"
+_DIRECTORY_PAGE_SIZE = 500
+# Synced field -> Directory API body keys, for ``update_room``'s partial patch.
+_ROOM_FIELD_TO_DIRECTORY_KEYS: dict[str, tuple[str, ...]] = {
+    "name": ("resourceName",),
+    "description": ("resourceDescription",),
+    "capacity": ("capacity",),
+    "location_ref": ("buildingId", "floorName"),
+}
+
+
+def _directory_error_from_http_error(error: HttpError) -> ResourceDirectoryError:
+    """Map a Google API ``HttpError`` to the ``ResourceDirectoryError`` family.
+
+    400 / 409 / 412 / 422 (and any other 4xx not listed below) are invalid input;
+    401 / 403 are permission errors; 404 is not found; 429 and 5xx are transient.
+    """
+    status = error.resp.status
+    message = f"Google Directory API returned HTTP {status}: {error.reason}"
+    if status in (401, 403):
+        return ResourceDirectoryPermissionError(message)
+    if status == 404:
+        return ResourceDirectoryNotFoundError(message)
+    if status == 429 or status >= 500:
+        return ResourceDirectoryError(message)
+    return ResourceDirectoryInvalidInputError(message)
+
+
+def _call_directory[T](call: Callable[[], T]) -> T:
+    """Run one Google API call, raising the ``ResourceDirectoryError`` family on failure.
+
+    A ``RefreshError`` means Google refused to mint a token, which with domain-wide
+    delegation is what a scope missing from the Admin Console grant looks like, so
+    it is a permission error. Network failures are transient.
+    """
+    try:
+        return call()
+    except HttpError as error:
+        raise _directory_error_from_http_error(error) from error
+    except RefreshError as error:
+        raise ResourceDirectoryPermissionError(
+            f"Google refused to issue a token for the service account: {error}"
+        ) from error
+    except (TransportError, ConnectionError, TimeoutError) as error:
+        raise ResourceDirectoryError(f"Could not reach Google: {error}") from error
 
 
 class GoogleCredentialTypedDict(TypedDict):
@@ -181,13 +253,16 @@ class GoogleCalendarAdapter(CalendarAdapter):
 
     @classmethod
     def from_service_account(
-        cls, credentials: GoogleServiceAccountCredentialsTypedDict
+        cls, credentials: GoogleServiceAccountCredentialsTypedDict, write: bool = False
     ) -> "GoogleCalendarAdapter":
         """Create an adapter authenticated via domain-wide delegation (DWD).
 
         Uses ``google.oauth2.service_account.Credentials`` so the Google client
         library handles token minting and refresh automatically. The SA must have
-        DWD granted in the Google Admin Console for both scopes in ``_SA_SCOPES``.
+        DWD granted in the Google Admin Console for both scopes in ``_SA_SCOPES``,
+        or, with ``write=True``, for both scopes in ``_SA_WRITE_SCOPES``. Only
+        room writes pass ``write=True``; every other caller keeps the read-only
+        scopes.
         """
         sa_creds = google_service_account.Credentials.from_service_account_info(
             {
@@ -197,13 +272,29 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 "client_email": credentials["email"],
                 "token_uri": "https://oauth2.googleapis.com/token",
             },
-            scopes=_SA_SCOPES,
+            scopes=_SA_WRITE_SCOPES if write else _SA_SCOPES,
         ).with_subject(credentials["admin_email"])
         adapter = cls.__new__(cls)
         adapter.account_id = f"service-{credentials['account_id']}"
         adapter.client = build("calendar", "v3", credentials=sa_creds)
         adapter.admin_client = build("admin", "directory_v1", credentials=sa_creds)
         return adapter
+
+    @classmethod
+    def from_service_account_model(
+        cls, account: GoogleCalendarServiceAccount, write: bool = False
+    ) -> "GoogleCalendarAdapter":
+        """``from_service_account`` for a stored ``GoogleCalendarServiceAccount`` row."""
+        return cls.from_service_account(
+            {
+                "account_id": str(account.id),
+                "email": account.email,
+                "private_key_id": account.private_key_id,
+                "private_key": account.private_key,
+                "admin_email": account.admin_email,
+            },
+            write=write,
+        )
 
     @staticmethod
     def parse_webhook_headers(headers: HttpHeaders) -> dict[str, str]:
@@ -558,33 +649,20 @@ class GoogleCalendarAdapter(CalendarAdapter):
 
         Pages through all results using ``nextPageToken`` (up to 500 resources per page).
         """
-        if not hasattr(self, "admin_client"):
-            raise NotImplementedError(
-                "get_calendar_resources requires a service-account adapter with admin_client."
-            )
+        self._require_admin_client("get_calendar_resources")
         return self._iter_calendar_resources()
 
     def _iter_calendar_resources(self) -> Iterable[CalendarResourceData]:
-        page_token: str | None = None
-        while True:
-            read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
-            kwargs: dict[str, Any] = {"customer": "my_customer", "maxResults": 500}
-            if page_token:
-                kwargs["pageToken"] = page_token
-            result = self.admin_client.resources().calendars().list(**kwargs).execute()
-            for resource in result.get("items", []):
-                yield CalendarResourceData(
-                    external_id=resource["resourceId"],
-                    name=resource["resourceName"],
-                    description=resource.get("resourceDescription", ""),
-                    email=resource.get("resourceEmail", ""),
-                    capacity=resource.get("capacity", 0),
-                    original_payload=resource,
-                    provider=self.provider,
-                )
-            page_token = result.get("nextPageToken")
-            if not page_token:
-                break
+        for resource in self._directory_pages(self.admin_client.resources().calendars().list):
+            yield CalendarResourceData(
+                external_id=resource["resourceId"],
+                name=resource["resourceName"],
+                description=resource.get("resourceDescription", ""),
+                email=resource.get("resourceEmail", ""),
+                capacity=resource.get("capacity", 0),
+                original_payload=resource,
+                provider=self.provider,
+            )
 
     def get_calendar_resource(self, resource_id: str) -> CalendarResourceData:
         """Fetch a single Google Workspace resource calendar via the Admin SDK Directory API.
@@ -593,10 +671,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
         ``self.admin_client`` is available. OAuth-user adapters do not have ``admin_client``
         and will raise ``NotImplementedError``.
         """
-        if not hasattr(self, "admin_client"):
-            raise NotImplementedError(
-                "get_calendar_resource requires a service-account adapter with admin_client."
-            )
+        self._require_admin_client("get_calendar_resource")
         read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
         resource = (
             self.admin_client.resources()
@@ -706,6 +781,222 @@ class GoogleCalendarAdapter(CalendarAdapter):
             current_end = min(current_start + datetime.timedelta(days=max_days), end_time)
             yield current_start, current_end
             current_start = current_end
+
+    def _require_admin_client(self, method_name: str) -> None:
+        if not hasattr(self, "admin_client"):
+            raise NotImplementedError(
+                f"{method_name} requires a service-account adapter with admin_client."
+            )
+
+    def _room_from_directory_resource(self, resource: dict[str, Any]) -> RoomDirectoryData:
+        building_id = resource.get("buildingId")
+        return RoomDirectoryData(
+            external_id=resource["resourceId"],
+            email=resource.get("resourceEmail", ""),
+            name=resource["resourceName"],
+            description=resource.get("resourceDescription", ""),
+            capacity=resource.get("capacity"),
+            location_ref=(
+                ResourceLocationRef(
+                    external_building_id=building_id,
+                    external_floor_id=resource.get("floorName", ""),
+                )
+                if building_id
+                else None
+            ),
+            provider_payload=resource,
+        )
+
+    def _directory_pages(self, list_method: Any) -> Iterable[dict[str, Any]]:
+        """Every item from a paginated Directory ``list`` call, one page per request.
+
+        Google errors propagate unchanged, which is what ``get_calendar_resources``
+        callers have always seen. The room directory methods wrap the whole
+        iteration in ``_call_directory`` to get the ``ResourceDirectoryError`` family.
+        """
+        page_token: str | None = None
+        while True:
+            read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
+            kwargs: dict[str, Any] = {
+                "customer": "my_customer",
+                "maxResults": _DIRECTORY_PAGE_SIZE,
+            }
+            if page_token:
+                kwargs["pageToken"] = page_token
+            result = list_method(**kwargs).execute()
+            yield from result.get("items", [])
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+
+    def verify_room_write_access(self) -> None:
+        """Make one cheap Directory read with this adapter's credentials.
+
+        On an adapter built with ``write=True`` the token request carries the write
+        scope, so this fails with ``ResourceDirectoryPermissionError`` when the
+        Admin Console grant is missing it. Raises the ``ResourceDirectoryError``
+        family on any failure.
+        """
+        self._require_admin_client("verify_room_write_access")
+        read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
+        _call_directory(
+            self.admin_client.resources()
+            .buildings()
+            .list(customer="my_customer", maxResults=1)
+            .execute
+        )
+
+    def list_locations(self) -> list[ResourceLocationData]:
+        """Every building, once per floor in its ``floorNames``.
+
+        Google has no floor ids, so the floor name is the floor's external id. A
+        building with no floors is listed once with an empty floor.
+        """
+        self._require_admin_client("list_locations")
+        buildings = _call_directory(
+            lambda: list(self._directory_pages(self.admin_client.resources().buildings().list))
+        )
+        return [
+            ResourceLocationData(
+                external_building_id=building["buildingId"],
+                building_name=building.get("buildingName", ""),
+                external_floor_id=floor_name,
+                floor_name=floor_name,
+            )
+            for building in buildings
+            for floor_name in building.get("floorNames") or [""]
+        ]
+
+    def list_rooms(self) -> list[RoomDirectoryData]:
+        """Every ``CONFERENCE_ROOM`` resource, with no free/busy filter."""
+        self._require_admin_client("list_rooms")
+        resources = _call_directory(
+            lambda: list(self._directory_pages(self.admin_client.resources().calendars().list))
+        )
+        return [
+            self._room_from_directory_resource(resource)
+            for resource in resources
+            if resource.get("resourceCategory") == _CONFERENCE_ROOM_CATEGORY
+        ]
+
+    def create_room(self, data: RoomWriteData) -> RoomDirectoryData:
+        """Insert a room with ``resourceId = vinta-<provisional_key>``.
+
+        A 409 means an earlier attempt with the same key already created the room,
+        so the existing room is fetched and returned instead.
+        """
+        self._require_admin_client("create_room")
+        resource_id = f"{_VINTA_RESOURCE_ID_PREFIX}{data.provisional_key}"
+        body: dict[str, Any] = {
+            "resourceId": resource_id,
+            "resourceName": data.name,
+            "resourceDescription": data.description,
+            "resourceCategory": _CONFERENCE_ROOM_CATEGORY,
+        }
+        if data.capacity is not None:
+            body["capacity"] = data.capacity
+        if data.location_ref is not None:
+            body["buildingId"] = data.location_ref.external_building_id
+            body["floorName"] = data.location_ref.external_floor_id
+
+        calendars = self.admin_client.resources().calendars()
+
+        def insert_or_fetch_replayed() -> dict[str, Any]:
+            try:
+                return calendars.insert(customer="my_customer", body=body).execute()
+            except HttpError as error:
+                if error.resp.status != 409:
+                    raise
+            read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
+            return calendars.get(customer="my_customer", calendarResourceId=resource_id).execute()
+
+        write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
+        created = _call_directory(insert_or_fetch_replayed)
+        return self._room_from_directory_resource(created)
+
+    def update_room(
+        self, external_id: str, data: RoomWriteData, fields: Collection[str]
+    ) -> RoomDirectoryData:
+        """Patch only the Directory keys behind ``fields``.
+
+        ``None`` is sent as JSON ``null``, which clears the field on Google's side
+        (a room with no capacity, or no building and floor).
+        """
+        self._require_admin_client("update_room")
+        values: dict[str, Any] = {
+            "resourceName": data.name,
+            "resourceDescription": data.description,
+            "capacity": data.capacity,
+            "buildingId": (data.location_ref.external_building_id if data.location_ref else None),
+            "floorName": data.location_ref.external_floor_id if data.location_ref else None,
+        }
+        body = {
+            key: values[key]
+            for field in fields
+            for key in _ROOM_FIELD_TO_DIRECTORY_KEYS.get(field, ())
+        }
+        write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
+        updated = _call_directory(
+            self.admin_client.resources()
+            .calendars()
+            .patch(customer="my_customer", calendarResourceId=external_id, body=body)
+            .execute
+        )
+        return self._room_from_directory_resource(updated)
+
+    def delete_room(self, external_id: str) -> None:
+        """Delete the room. Raises ``ResourceDirectoryNotFoundError`` when it is already gone."""
+        self._require_admin_client("delete_room")
+        write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
+        _call_directory(
+            self.admin_client.resources()
+            .calendars()
+            .delete(customer="my_customer", calendarResourceId=external_id)
+            .execute
+        )
+
+    def get_free_busy(
+        self, room_email: str, start: datetime.datetime, end: datetime.datetime
+    ) -> list[BusyWindow]:
+        """Busy windows for ``room_email`` from Calendar ``freebusy.query``.
+
+        Long ranges are queried in 90-day chunks, as ``get_available_calendar_resources``
+        does. A per-calendar ``notFound`` error from Google raises
+        ``ResourceDirectoryNotFoundError``; any other per-calendar error raises a
+        transient ``ResourceDirectoryError``.
+        """
+        windows: list[BusyWindow] = []
+        for chunk_start, chunk_end in self._split_date_range(start, end, 90):
+            read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
+            result = _call_directory(
+                self.client.freebusy()
+                .query(
+                    body={
+                        "timeMin": chunk_start.isoformat(),
+                        "timeMax": chunk_end.isoformat(),
+                        "items": [{"id": room_email}],
+                    }
+                )
+                .execute
+            )
+            calendar = result.get("calendars", {}).get(room_email, {})
+            if calendar.get("errors"):
+                reasons = [error.get("reason", "unknown") for error in calendar["errors"]]
+                message = f"Google free/busy returned an error for the room: {', '.join(reasons)}"
+                # Google reports per-calendar failures inside a 200. Only ``notFound``
+                # means the room is gone; ``internalError``, ``backendError`` and the
+                # rest are Google-side hiccups, so they stay transient.
+                if reasons == ["notFound"]:
+                    raise ResourceDirectoryNotFoundError(message)
+                raise ResourceDirectoryError(message)
+            windows.extend(
+                BusyWindow(
+                    start=datetime.datetime.fromisoformat(busy["start"]),
+                    end=datetime.datetime.fromisoformat(busy["end"]),
+                )
+                for busy in calendar.get("busy", [])
+            )
+        return windows
 
     def subscribe_to_calendar_events(self, resource_id: str, callback_url: str) -> None:
         """
