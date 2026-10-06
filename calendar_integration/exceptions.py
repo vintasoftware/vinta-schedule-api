@@ -676,6 +676,66 @@ class RoomSyncStateError(CalendarIntegrationError):
     default_message = "This room's sync status does not allow that operation."
 
 
+class MicrosoftConnectionNotConfiguredError(CalendarIntegrationError):
+    """``MS_CLIENT_ID`` or ``MS_CLIENT_SECRET`` is empty, so no Microsoft call can be made."""
+
+    default_message = "Microsoft room sync is not configured on this environment."
+
+
+class MicrosoftAppOnlyTokenError(CalendarIntegrationError):
+    """The Microsoft identity platform refused, or never answered, an app-only token request.
+
+    ``status_code`` and ``error_code`` (the OAuth ``error`` field, such as
+    ``invalid_client`` or ``unauthorized_client``) are kept for callers. The
+    provider's ``error_description`` is not, because it is free text.
+    """
+
+    default_message = "Could not get an app-only token from Microsoft."
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        status_code: int | None = None,
+        error_code: str | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+
+
+class MicrosoftConsentStateError(CalendarIntegrationError):
+    """The admin-consent ``state`` is tampered, expired, already used or not this org's."""
+
+    default_message = "The Microsoft admin-consent link is invalid or was already used."
+
+
+class MicrosoftConsentDeniedError(CalendarIntegrationError):
+    """The tenant admin did not grant admin consent: Microsoft sent no authorization code."""
+
+    default_message = "Microsoft admin consent was not granted."
+
+
+class MicrosoftSignInError(CalendarIntegrationError):
+    """The admin's sign-in could not be confirmed with Microsoft.
+
+    The authorization code was refused, or the returned ``id_token`` was not issued to
+    Vinta's app for this consent attempt, or it named no tenant.
+    """
+
+    default_message = "Could not confirm the Microsoft sign-in."
+
+
+class MicrosoftSignInNotAdminError(MicrosoftSignInError):
+    """The user who signed in is not an administrator who can grant admin consent.
+
+    Their ``id_token`` carries neither the Global Administrator nor the Privileged Role
+    Administrator role, so the sign-in does not prove control of the tenant.
+    """
+
+    default_message = "The Microsoft sign-in was not made by a tenant administrator."
+
+
 class ResourceCalendarProviderSyncNotEnabledError(CalendarIntegrationError):
     """The ``resource_calendar_provider_sync`` feature flag is off for the organization."""
 

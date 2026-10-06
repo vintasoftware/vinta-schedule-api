@@ -48,7 +48,6 @@ from organizations.permission_catalog import MANAGE_MEMBERS
 
 
 if TYPE_CHECKING:
-    from calendar_integration.models import Calendar
     from calendar_integration.models import Calendar as CalendarModelType
     from calendar_integration.models import CalendarEvent as CalendarEventType
     from calendar_integration.models import CalendarSync as CalendarSyncType
@@ -805,7 +804,7 @@ class CalendarEventQuerySet(OrganizationScopedQuerySet, RecurringQuerySetMixin):
         )
 
     def future_bookings_of_room(
-        self, room: "Calendar", now: datetime.datetime
+        self, room: "CalendarModelType", now: datetime.datetime
     ) -> "CalendarEventQuerySet":
         """Bookings of the room ``room`` that can still take place after ``now``.
 
