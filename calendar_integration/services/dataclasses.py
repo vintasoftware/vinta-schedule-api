@@ -10,6 +10,7 @@ from calendar_integration.constants import (
     BookingRejectionReason,
     BookingResolutionKind,
     CalendarProvider,
+    FlaggedBookingsOutcome,
     RoomDeletionOutcome,
 )
 from calendar_integration.models import (
@@ -913,6 +914,40 @@ class RoomDeletionResult:
     @property
     def deleted(self) -> bool:
         return self.outcome == RoomDeletionOutcome.DELETED
+
+    @property
+    def applied_event_ids(self) -> tuple[int, ...]:
+        return self.apply_result.applied if self.apply_result else ()
+
+    @property
+    def pending_event_ids(self) -> tuple[int, ...]:
+        return self.apply_result.pending if self.apply_result else ()
+
+    @property
+    def failed_at_event_id(self) -> int | None:
+        return self.apply_result.failed_at if self.apply_result else None
+
+
+@dataclass(frozen=True)
+class FlaggedBookingsResult:
+    """What ``CalendarService.resolve_flagged_resource_bookings`` did with a room.
+
+    ``outcome`` says which one happened, and its label is the message to show:
+
+    - ``RESOLVED``: every booking is resolved, and the room's flag is cleared.
+    - ``REJECTED``: some resolutions are invalid, all listed in ``rejected``; nothing
+      changed.
+    - ``INCOMPLETE``: the apply stopped part way, or bookings were still left once it
+      finished. The room stays flagged; preview again and retry.
+    """
+
+    outcome: FlaggedBookingsOutcome
+    rejected: tuple[RejectedBooking, ...] = ()
+    apply_result: ApplyResult | None = None
+
+    @property
+    def resolved(self) -> bool:
+        return self.outcome == FlaggedBookingsOutcome.RESOLVED
 
     @property
     def applied_event_ids(self) -> tuple[int, ...]:

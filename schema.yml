@@ -10996,6 +10996,147 @@ paths:
               schema:
                 $ref: '#/components/schemas/ResourceCalendarDeletionPreview'
           description: ''
+  /calendar/{id}/resource/resolve-flagged-bookings/:
+    post:
+      operationId: calendar_resource_resolve_flagged_bookings_create
+      description: 'Org admins resolve the future bookings of a room that was deleted
+        on the provider side: the hourly resync archived it and flagged its bookings
+        (provider_sync.flagged_bookings_at). Preview them with resource/deletion-preview,
+        then send the fingerprint with a resolution per booking: move, remove the
+        room, or cancel the event. Every resolution is checked first, all or nothing;
+        then the bookings are resolved one at a time and, when none is left, the flag
+        is cleared. 400 for the abort resolution (the room is already gone), invalid
+        resolutions, a room that is not flagged, and a manual room. 409 when the bookings
+        changed since the preview, or when applying stopped part way: preview again
+        and retry. Admin only. Returns 404 when the resource calendar provider sync
+        feature is off for the organization.'
+      summary: Resolve the flagged bookings of a room the provider deleted
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResourceFlaggedBookingsResolve'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ResourceFlaggedBookingsResolve'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ResourceFlaggedBookingsResolve'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarCreateResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceFlaggedBookingsFailure'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceFlaggedBookingsFailure'
+          description: ''
+  /calendar/{id}/resource/resolve-flagged-bookings{format}:
+    post:
+      operationId: calendar_resource_resolve_flagged_bookings_formatted_create
+      description: 'Org admins resolve the future bookings of a room that was deleted
+        on the provider side: the hourly resync archived it and flagged its bookings
+        (provider_sync.flagged_bookings_at). Preview them with resource/deletion-preview,
+        then send the fingerprint with a resolution per booking: move, remove the
+        room, or cancel the event. Every resolution is checked first, all or nothing;
+        then the bookings are resolved one at a time and, when none is left, the flag
+        is cleared. 400 for the abort resolution (the room is already gone), invalid
+        resolutions, a room that is not flagged, and a manual room. 409 when the bookings
+        changed since the preview, or when applying stopped part way: preview again
+        and retry. Admin only. Returns 404 when the resource calendar provider sync
+        feature is off for the organization.'
+      summary: Resolve the flagged bookings of a room the provider deleted
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResourceFlaggedBookingsResolve'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ResourceFlaggedBookingsResolve'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ResourceFlaggedBookingsResolve'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarCreateResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceFlaggedBookingsFailure'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceFlaggedBookingsFailure'
+          description: ''
   /calendar/{id}/resource/retry-sync/:
     post:
       operationId: calendar_resource_retry_sync_create
@@ -19052,6 +19193,7 @@ components:
       - retry_resource_calendar_sync
       - preview_resource_calendar_deletion
       - delete_resource_calendar
+      - resolve_flagged_resource_bookings
       - create_availability_window
       - update_availability_window
       - delete_availability_window
@@ -19109,6 +19251,7 @@ components:
         * `retry_resource_calendar_sync` - Retry Resource Calendar Sync
         * `preview_resource_calendar_deletion` - Preview Resource Calendar Deletion
         * `delete_resource_calendar` - Delete Resource Calendar
+        * `resolve_flagged_resource_bookings` - Resolve Flagged Resource Bookings
         * `create_availability_window` - Create Availability Window
         * `update_availability_window` - Update Availability Window
         * `delete_availability_window` - Delete Availability Window
@@ -21758,18 +21901,6 @@ components:
       description: |-
         * `monday` - Monday
         * `sunday` - Sunday
-    OutcomeEnum:
-      enum:
-      - deleted
-      - aborted
-      - rejected
-      - incomplete
-      type: string
-      description: |-
-        * `deleted` - The room was deleted.
-        * `aborted` - The room has bookings and the resolution cancelled the deletion.
-        * `rejected` - Some bookings cannot be resolved as asked.
-        * `incomplete` - Resolving the bookings stopped part way; preview again and retry.
     OwnershipMembership:
       type: object
       description: |-
@@ -23733,7 +23864,7 @@ components:
         again and retry.
       properties:
         outcome:
-          $ref: '#/components/schemas/OutcomeEnum'
+          $ref: '#/components/schemas/ResourceCalendarDeleteFailureOutcomeEnum'
         detail:
           type: string
         aborted_bookings:
@@ -23763,6 +23894,18 @@ components:
       - outcome
       - pending_event_ids
       - rejected_bookings
+    ResourceCalendarDeleteFailureOutcomeEnum:
+      enum:
+      - deleted
+      - aborted
+      - rejected
+      - incomplete
+      type: string
+      description: |-
+        * `deleted` - The room was deleted.
+        * `aborted` - The room has bookings and the resolution cancelled the deletion.
+        * `rejected` - Some bookings cannot be resolved as asked.
+        * `incomplete` - Resolving the bookings stopped part way; preview again and retry.
     ResourceCalendarDeletionPreview:
       type: object
       description: A synced room's future bookings, plus the fingerprint its delete
@@ -23823,6 +23966,76 @@ components:
       - last_synced_at
       - location
       - status
+    ResourceFlaggedBookingsFailure:
+      type: object
+      description: |-
+        Why ``POST /calendar/{id}/resource/resolve-flagged-bookings/`` did not finish.
+
+        Renders a ``FlaggedBookingsResult``; ``detail`` is its outcome's message.
+        ``outcome`` is ``rejected`` when some resolutions are invalid
+        (``rejected_bookings``, nothing changed), and ``incomplete`` when applying stopped
+        part way: ``applied_event_ids`` are resolved, ``pending_event_ids`` are not, and
+        the room stays flagged. Preview again and retry.
+      properties:
+        outcome:
+          $ref: '#/components/schemas/ResourceFlaggedBookingsFailureOutcomeEnum'
+        detail:
+          type: string
+        rejected_bookings:
+          type: array
+          items:
+            $ref: '#/components/schemas/RejectedResourceBooking'
+        applied_event_ids:
+          type: array
+          items:
+            type: integer
+        pending_event_ids:
+          type: array
+          items:
+            type: integer
+        failed_at_event_id:
+          type: integer
+          nullable: true
+      required:
+      - applied_event_ids
+      - detail
+      - failed_at_event_id
+      - outcome
+      - pending_event_ids
+      - rejected_bookings
+    ResourceFlaggedBookingsFailureOutcomeEnum:
+      enum:
+      - resolved
+      - rejected
+      - incomplete
+      type: string
+      description: |-
+        * `resolved` - Every flagged booking is resolved.
+        * `rejected` - Some bookings cannot be resolved as asked.
+        * `incomplete` - Resolving the bookings stopped part way; preview again and retry.
+    ResourceFlaggedBookingsResolve:
+      type: object
+      description: |-
+        Resolve the future bookings of a room the provider deleted.
+
+        The fields and validation are those of ``ResourceCalendarDeleteSerializer``; the
+        ``abort`` resolution is accepted here and refused by the service, because the room
+        is already gone.
+      properties:
+        fingerprint:
+          type: string
+        default_resolution:
+          $ref: '#/components/schemas/ResourceBookingResolutionEnum'
+        target_calendar_id:
+          type: integer
+          nullable: true
+        overrides:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceBookingResolutionOverride'
+      required:
+      - default_resolution
+      - fingerprint
     ResourceKeyEnum:
       enum:
       - organization_members

@@ -22,6 +22,7 @@ from calendar_integration.constants import (
     BookingResolutionKind,
     CalendarProvider,
     CalendarType,
+    FlaggedBookingsOutcome,
     RoomDeletionOutcome,
 )
 from calendar_integration.exceptions import (
@@ -665,6 +666,59 @@ class DeleteResourceCalendarInput:
     default_resolution: BookingResolutionKind
     target_calendar_id: int | None = None
     overrides: list[ResourceBookingResolutionOverrideInput] | None = None
+
+
+@strawberry.input
+class ResolveFlaggedResourceBookingsInput:
+    """Input for resolving the future bookings of a room the provider deleted.
+
+    The room is archived and its ``providerSync.flaggedBookingsAt`` is set. The
+    fields are those of ``DeleteResourceCalendarInput``, except that ABORT is not
+    accepted: the room is already gone.
+
+    fingerprint: The ``fingerprint`` from ``resourceCalendarDeletionPreview``. The
+        call is rejected if the room's bookings changed since.
+    default_resolution: How every booking without an override is resolved.
+    target_calendar_id: The room to move bookings to when ``default_resolution`` is
+        MOVE. Required for MOVE, and only allowed for MOVE.
+    overrides: A different resolution for some bookings, at most one per booking.
+    """
+
+    organization_id: int
+    calendar_id: int
+    fingerprint: str
+    default_resolution: BookingResolutionKind
+    target_calendar_id: int | None = None
+    overrides: list[ResourceBookingResolutionOverrideInput] | None = None
+
+
+@strawberry.type
+class ResolveFlaggedResourceBookingsResult:
+    """Result of the resolveFlaggedResourceBookings mutation.
+
+    ``success`` is true when every booking is resolved and the room's
+    ``providerSync.flaggedBookingsAt`` is cleared. ``outcome`` is null only when the
+    request failed before any booking was resolved (invalid input, a room that is not
+    flagged, the feature off, a stale fingerprint). Otherwise ``errorMessage``
+    explains the outcome, and:
+
+    - REJECTED: ``rejectedBookings`` lists every booking whose resolution is invalid,
+      and nothing changed;
+    - INCOMPLETE: applying stopped at ``failedAtEventId``. The bookings in
+      ``appliedEventIds`` are resolved, those in ``pendingEventIds`` are not, and the
+      room stays flagged. Preview again and retry.
+    """
+
+    success: bool
+    outcome: FlaggedBookingsOutcome | None = None
+    error_message: str | None = None
+    calendar: CalendarGraphQLType | None = None
+    rejected_bookings: list[RejectedResourceBookingGraphQLType] = strawberry.field(
+        default_factory=list
+    )
+    applied_event_ids: list[int] = strawberry.field(default_factory=list)
+    pending_event_ids: list[int] = strawberry.field(default_factory=list)
+    failed_at_event_id: int | None = None
 
 
 @strawberry.type
@@ -2485,6 +2539,63 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                 else None
             ),
             aborted_bookings=[ResourceBookingGraphQLType.from_booking(b) for b in result.bookings],
+            rejected_bookings=[
+                RejectedResourceBookingGraphQLType.from_rejected(r) for r in result.rejected
+            ],
+            applied_event_ids=list(result.applied_event_ids),
+            pending_event_ids=list(result.pending_event_ids),
+            failed_at_event_id=result.failed_at_event_id,
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def resolve_flagged_resource_bookings(
+        self,
+        info: strawberry.Info,
+        input: ResolveFlaggedResourceBookingsInput,  # noqa: A002
+    ) -> ResolveFlaggedResourceBookingsResult:
+        """Resolve the future bookings of a room the provider deleted.
+
+        The hourly resync archives a room deleted on the provider side and flags its
+        future bookings. ``resourceCalendarDeletionPreview`` lists them; this mutation
+        moves, shortens or cancels them with the same options as
+        ``deleteResourceCalendar``, except ABORT. Every resolution is checked first, all
+        or nothing, then applied one booking at a time. When none is left,
+        ``providerSync.flaggedBookingsAt`` is cleared. Requires the
+        ``resource_calendar_provider_sync`` feature.
+
+        The token's OrganizationResourceAccess must include the
+        RESOLVE_FLAGGED_RESOURCE_BOOKINGS resource.
+        """
+        try:
+            default, overrides = booking_resolutions_from(
+                input.default_resolution,
+                input.target_calendar_id,
+                ((o.event_id, o.resolution, o.target_calendar_id) for o in input.overrides or []),
+            )
+        except ValueError as e:
+            return ResolveFlaggedResourceBookingsResult(success=False, error_message=str(e))
+
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+        try:
+            result = calendar_service.resolve_flagged_resource_bookings(
+                input.calendar_id, input.fingerprint, default, overrides
+            )
+        except Calendar.DoesNotExist:
+            return ResolveFlaggedResourceBookingsResult(
+                success=False, error_message="Calendar not found."
+            )
+        except (ValueError, CalendarIntegrationError) as e:
+            return ResolveFlaggedResourceBookingsResult(success=False, error_message=str(e))
+
+        return ResolveFlaggedResourceBookingsResult(
+            success=result.resolved,
+            outcome=result.outcome,
+            error_message=None if result.resolved else str(result.outcome.label),
+            calendar=(
+                Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)  # type: ignore[arg-type]
+                if result.resolved
+                else None
+            ),
             rejected_bookings=[
                 RejectedResourceBookingGraphQLType.from_rejected(r) for r in result.rejected
             ],

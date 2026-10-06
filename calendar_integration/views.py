@@ -26,6 +26,7 @@ from calendar_integration.constants import (
     CalendarType,
     CalendarVisibility,
     ExternalEventChangeRequestStatus,
+    FlaggedBookingsOutcome,
     RoomDeletionOutcome,
 )
 from calendar_integration.exceptions import (
@@ -120,6 +121,8 @@ from calendar_integration.serializers import (
     ResourceCalendarDeleteSerializer,
     ResourceCalendarDeletionPreviewSerializer,
     ResourceCalendarUpdateSerializer,
+    ResourceFlaggedBookingsFailureSerializer,
+    ResourceFlaggedBookingsResolveSerializer,
     ResourceLocationSerializer,
     StaleSelectionSerializer,
     UnavailableTimeWindowSerializer,
@@ -793,6 +796,75 @@ class CalendarViewSet(VintaScheduleModelViewSet):
             else status.HTTP_400_BAD_REQUEST
         )
         return Response(ResourceCalendarDeleteFailureSerializer(result).data, status=failure_status)
+
+    @extend_schema(
+        summary="Resolve the flagged bookings of a room the provider deleted",
+        description=(
+            "Org admins resolve the future bookings of a room that was deleted on the "
+            "provider side: the hourly resync archived it and flagged its bookings "
+            "(provider_sync.flagged_bookings_at). Preview them with "
+            "resource/deletion-preview, then send the fingerprint with a resolution per "
+            "booking: move, remove the room, or cancel the event. Every resolution is "
+            "checked first, all or nothing; then the bookings are resolved one at a "
+            "time and, when none is left, the flag is cleared. 400 for the abort "
+            "resolution (the room is already gone), invalid resolutions, a room that is "
+            "not flagged, and a manual room. 409 when the bookings changed since the "
+            "preview, or when applying stopped part way: preview again and retry. Admin "
+            "only. Returns 404 when the resource calendar provider sync feature is off "
+            "for the organization."
+        ),
+        request=ResourceFlaggedBookingsResolveSerializer,
+        responses={
+            200: ResourceCalendarCreateResponseSerializer,
+            400: ResourceFlaggedBookingsFailureSerializer,
+            409: ResourceFlaggedBookingsFailureSerializer,
+        },
+    )
+    @action(
+        methods=["post"],
+        detail=True,
+        url_path="resource/resolve-flagged-bookings",
+        url_name="resource-resolve-flagged-bookings",
+        permission_classes=[IsOrganizationAdmin],
+        filter_backends=[],
+    )
+    @inject
+    def resolve_flagged_resource_bookings(
+        self,
+        request,
+        pk: str | None = None,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]] = None,  # type: ignore[assignment]
+    ) -> Response:
+        """POST /calendar/{id}/resource/resolve-flagged-bookings/ — admins resolve them."""
+        self._require_provider_sync(request)
+        calendar = self._organization_calendar(request, pk)
+        serializer = ResourceFlaggedBookingsResolveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        calendar_service.initialize_without_provider(
+            user_or_token=request.user, organization=calendar.organization
+        )
+        try:
+            result = calendar_service.resolve_flagged_resource_bookings(
+                calendar.id,
+                serializer.validated_data["fingerprint"],
+                serializer.validated_data["default"],
+                serializer.validated_data["overrides"],
+            )
+        except StaleBookingPreviewError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
+        except (ValueError, CalendarIntegrationError) as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+        if result.resolved:
+            return self._resource_calendar_response(calendar, status_code=status.HTTP_200_OK)
+        failure_status = (
+            status.HTTP_409_CONFLICT
+            if result.outcome == FlaggedBookingsOutcome.INCOMPLETE
+            else status.HTTP_400_BAD_REQUEST
+        )
+        return Response(
+            ResourceFlaggedBookingsFailureSerializer(result).data, status=failure_status
+        )
 
     @extend_schema(
         summary="Update a bundle calendar's children and primary",

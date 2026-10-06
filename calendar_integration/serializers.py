@@ -21,6 +21,7 @@ from calendar_integration.constants import (
     CalendarType,
     CalendarVisibility,
     EventManagementPermissions,
+    FlaggedBookingsOutcome,
     QuotaPeriod,
     RoomDeletionOutcome,
 )
@@ -625,6 +626,33 @@ class ResourceCalendarDeleteSerializer(serializers.Serializer):
         except ValueError as e:
             raise serializers.ValidationError(str(e)) from e
         return {"fingerprint": attrs["fingerprint"], "default": default, "overrides": overrides}
+
+
+class ResourceFlaggedBookingsResolveSerializer(ResourceCalendarDeleteSerializer):
+    """Resolve the future bookings of a room the provider deleted.
+
+    The fields and validation are those of ``ResourceCalendarDeleteSerializer``; the
+    ``abort`` resolution is accepted here and refused by the service, because the room
+    is already gone.
+    """
+
+
+class ResourceFlaggedBookingsFailureSerializer(serializers.Serializer):
+    """Why ``POST /calendar/{id}/resource/resolve-flagged-bookings/`` did not finish.
+
+    Renders a ``FlaggedBookingsResult``; ``detail`` is its outcome's message.
+    ``outcome`` is ``rejected`` when some resolutions are invalid
+    (``rejected_bookings``, nothing changed), and ``incomplete`` when applying stopped
+    part way: ``applied_event_ids`` are resolved, ``pending_event_ids`` are not, and
+    the room stays flagged. Preview again and retry.
+    """
+
+    outcome = serializers.ChoiceField(choices=FlaggedBookingsOutcome.choices)
+    detail = serializers.CharField(source="outcome.label")
+    rejected_bookings = RejectedResourceBookingSerializer(source="rejected", many=True)
+    applied_event_ids = serializers.ListField(child=serializers.IntegerField())
+    pending_event_ids = serializers.ListField(child=serializers.IntegerField())
+    failed_at_event_id = serializers.IntegerField(allow_null=True)
 
 
 class ResourceCalendarDeleteFailureSerializer(serializers.Serializer):
