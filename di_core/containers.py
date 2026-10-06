@@ -333,17 +333,15 @@ class AppContainer(containers.DeclarativeContainer):
 
     booking_resolution_service = providers.Factory(
         BookingResolutionService,
-        # Left undefined, so building the service raises until the room directory
-        # adapter resolver exists: Phase 7 of the resource calendar provider sync plan
-        # declares the ``resource_directory_adapter_resolver`` provider and Phase 8
-        # binds it. Point this argument at that provider then.
-        resource_directory_adapter_resolver=providers.Dependency(),
-        # Left undefined too: the organizer emails go through
-        # ``RoomSyncNotifier.notify_booking_room_changed`` (Phase 3 of the same plan),
-        # which is not on this branch. Point this argument at its provider when the
-        # two meet.
-        booking_room_change_notifier=providers.Dependency(),
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
+        booking_room_change_notifier=room_sync_notifier,
         calendar_service=calendar_service,
+    )
+    # Added here rather than in the `calendar_service` definition above, because the
+    # booking resolution service is itself built with a `CalendarService`. A factory, so
+    # neither is built until a synced room is deleted.
+    calendar_service.add_kwargs(
+        booking_resolution_service_factory=booking_resolution_service.provider
     )
 
     bookable_slots_service = providers.Factory(

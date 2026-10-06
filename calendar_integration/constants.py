@@ -218,6 +218,18 @@ class BookingCancelMode(TextChoices):
     CANCEL_EVENT = "cancel_event", "Cancel the whole event"
 
 
+class BookingResolutionKind(TextChoices):
+    """How a booking of a room that is being deleted is resolved, as callers name it.
+
+    ``MOVE`` needs a target room. See ``booking_resolution_from``.
+    """
+
+    ABORT = "abort", "Cancel the room deletion"
+    MOVE = "move", "Move to another room"
+    REMOVE_ROOM = "remove_room", "Remove only the room"
+    CANCEL_EVENT = "cancel_event", "Cancel the whole event"
+
+
 class BookingRoomChange(TextChoices):
     """What happened to a booking's room when a room was deleted. Sent to the organizer."""
 

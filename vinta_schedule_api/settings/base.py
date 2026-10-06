@@ -724,6 +724,11 @@ SPECTACULAR_SETTINGS = {
         # for -- pin it explicitly so neither side falls back to an unstable
         # hash-suffixed name (e.g. "Provider331Enum").
         "ProviderEnum": "calendar_integration.constants.CalendarProvider.choices",
+        # `ResourceCalendarDeleteSerializer.default_resolution` and each override's
+        # `resolution` share `BookingResolutionKind`'s choices; one name for both.
+        "ResourceBookingResolutionEnum": (
+            "calendar_integration.constants.BookingResolutionKind.choices"
+        ),
         # `legal.models.PolicyDocumentType` owns the published schema component
         # `DocumentTypeEnum`. The new `BillingProfile.document_type` enum
         # would otherwise contest this name on a hash basis, risking a renamed

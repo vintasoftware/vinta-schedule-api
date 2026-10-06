@@ -14,6 +14,8 @@ from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
 from calendar_integration.constants import (
+    BookingRejectionReason,
+    BookingResolutionKind,
     CalendarProvider,
     CalendarSyncTriggerSource,
     CalendarType,
@@ -61,6 +63,7 @@ from calendar_integration.services.dataclasses import (
     AppointmentTypeSlotInputData,
     AppointmentTypeSlotSelectionInputData,
     BlockedTimeData,
+    BookingResolution,
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
     CalendarPoolInputData,
@@ -70,6 +73,7 @@ from calendar_integration.services.dataclasses import (
     ExternalClientIdentifierData,
     ResourceAllocationInputData,
     UnavailableTimeWindow,
+    booking_resolution_from,
 )
 from calendar_integration.virtual_models import (
     AppointmentTypeScopedAvailabilityWindowVirtualModel,
@@ -550,6 +554,96 @@ class ResourceCalendarUpdateSerializer(serializers.Serializer):
             )
         except (ValueError, CalendarIntegrationError) as e:
             raise serializers.ValidationError({"non_field_errors": [str(e)]}) from e
+
+
+class ResourceBookingSerializer(serializers.Serializer):
+    """A future booking of a room, as a deletion preview lists it (``RoomBooking``)."""
+
+    event_id = serializers.IntegerField()
+    calendar_id = serializers.IntegerField(allow_null=True)
+    title = serializers.CharField()
+    start = serializers.DateTimeField()
+    end = serializers.DateTimeField()
+    is_series = serializers.BooleanField()
+    series_from = serializers.DateTimeField(allow_null=True)
+
+
+class ResourceCalendarDeletionPreviewSerializer(serializers.Serializer):
+    """A synced room's future bookings, plus the fingerprint its delete must send back."""
+
+    fingerprint = serializers.CharField()
+    bookings = ResourceBookingSerializer(many=True)
+
+
+class RejectedResourceBookingSerializer(serializers.Serializer):
+    """A booking whose resolution was rejected. ``message`` is human readable."""
+
+    event_id = serializers.IntegerField()
+    reason = serializers.ChoiceField(choices=BookingRejectionReason.choices)
+    message = serializers.SerializerMethodField()
+
+    def get_message(self, obj) -> str:
+        return str(BookingRejectionReason(obj.reason).label)
+
+
+class ResourceBookingResolutionOverrideSerializer(serializers.Serializer):
+    """The resolution for one booking of a room that is being deleted.
+
+    ``target_calendar_id`` is required for ``move``, and only allowed for ``move``.
+    """
+
+    event_id = serializers.IntegerField()
+    resolution = serializers.ChoiceField(choices=BookingResolutionKind.choices)
+    target_calendar_id = serializers.IntegerField(required=False, allow_null=True)
+
+
+class ResourceCalendarDeleteSerializer(serializers.Serializer):
+    """Delete a room synced with Google or Microsoft, resolving its future bookings.
+
+    ``fingerprint`` comes from the deletion preview. ``default_resolution`` applies to
+    every booking without an override; ``target_calendar_id`` is its target room for
+    ``move``. ``overrides`` names at most one resolution per booking. The validated
+    data carries ``default`` and ``overrides`` as ``BookingResolution`` values.
+    """
+
+    fingerprint = serializers.CharField()
+    default_resolution = serializers.ChoiceField(choices=BookingResolutionKind.choices)
+    target_calendar_id = serializers.IntegerField(required=False, allow_null=True)
+    overrides = ResourceBookingResolutionOverrideSerializer(many=True, required=False)
+
+    def validate(self, attrs: dict) -> dict:
+        attrs = super().validate(attrs)
+        try:
+            default = booking_resolution_from(
+                attrs["default_resolution"], attrs.get("target_calendar_id")
+            )
+            overrides: dict[int, BookingResolution] = {}
+            for override in attrs.get("overrides", []):
+                if override["event_id"] in overrides:
+                    raise ValueError(f"Booking {override['event_id']} has more than one override.")
+                overrides[override["event_id"]] = booking_resolution_from(
+                    override["resolution"], override.get("target_calendar_id")
+                )
+        except ValueError as e:
+            raise serializers.ValidationError(str(e)) from e
+        return {"fingerprint": attrs["fingerprint"], "default": default, "overrides": overrides}
+
+
+class ResourceCalendarDeleteFailureSerializer(serializers.Serializer):
+    """Why ``POST /calendar/{id}/resource/delete/`` did not delete the room.
+
+    Nothing about the room changed. ``aborted_bookings`` is set when the resolution
+    cancelled the deletion, ``rejected_bookings`` when some resolutions are invalid.
+    ``failed_at_event_id`` is set when applying stopped part way: ``applied_event_ids``
+    are resolved, ``pending_event_ids`` are not; preview again and retry.
+    """
+
+    detail = serializers.CharField()
+    aborted_bookings = ResourceBookingSerializer(many=True)
+    rejected_bookings = RejectedResourceBookingSerializer(many=True)
+    applied_event_ids = serializers.ListField(child=serializers.IntegerField())
+    pending_event_ids = serializers.ListField(child=serializers.IntegerField())
+    failed_at_event_id = serializers.IntegerField(allow_null=True)
 
 
 class CalendarBundleCreateSerializer(VirtualModelSerializer):

@@ -36,6 +36,7 @@ from calendar_integration.exceptions import (
     ChangeRequestIneligibleError,
     ChangeRequestNotPendingError,
     InvalidTokenError,
+    StaleBookingPreviewError,
 )
 from calendar_integration.filtersets import (
     AppointmentTypeFilterSet,
@@ -114,6 +115,9 @@ from calendar_integration.serializers import (
     ExternalEventChangeRequestSerializer,
     ResourceCalendarCreateResponseSerializer,
     ResourceCalendarCreateSerializer,
+    ResourceCalendarDeleteFailureSerializer,
+    ResourceCalendarDeleteSerializer,
+    ResourceCalendarDeletionPreviewSerializer,
     ResourceCalendarUpdateSerializer,
     ResourceLocationSerializer,
     StaleSelectionSerializer,
@@ -671,6 +675,138 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         except CalendarIntegrationError as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
         return self._resource_calendar_response(calendar, status_code=status.HTTP_200_OK)
+
+    def _organization_calendar(self, request, pk: str | None) -> Calendar:
+        """The organization's calendar ``pk``, inactive ones included.
+
+        Not ``get_object()``: that leaves inactive calendars out, and a room that is
+        already archived must still answer a repeated delete.
+        """
+        try:
+            return Calendar.objects.filter_by_organization(
+                request.organization_membership.organization_id
+            ).get(id=int(pk or ""))
+        except (Calendar.DoesNotExist, ValueError) as e:
+            raise Http404 from e
+
+    @extend_schema(
+        summary="Preview a resource calendar's deletion",
+        description=(
+            "Org admins list the future bookings of a room synced with Google or Microsoft "
+            "before deleting it. A recurring series is one entry, resolved from now on "
+            "when it started before now. Send fingerprint back to the delete: it is "
+            "rejected if the bookings changed since. 400 for a manual room. Admin only. "
+            "Returns 404 when the resource calendar provider sync feature is off for the "
+            "organization."
+        ),
+        responses={200: ResourceCalendarDeletionPreviewSerializer},
+    )
+    @action(
+        methods=["get"],
+        detail=True,
+        url_path="resource/deletion-preview",
+        url_name="resource-deletion-preview",
+        permission_classes=[IsOrganizationAdmin],
+        filter_backends=[],
+    )
+    @inject
+    def resource_deletion_preview(
+        self,
+        request,
+        pk: str | None = None,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]] = None,  # type: ignore[assignment]
+    ) -> Response:
+        """GET /calendar/{id}/resource/deletion-preview/ — admins preview a room deletion."""
+        self._require_provider_sync(request)
+        calendar = self._organization_calendar(request, pk)
+        calendar_service.initialize_without_provider(
+            user_or_token=request.user, organization=calendar.organization
+        )
+        try:
+            preview = calendar_service.preview_synced_resource_calendar_deletion(calendar.id)
+        except (ValueError, CalendarIntegrationError) as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+        return Response(ResourceCalendarDeletionPreviewSerializer(preview).data)
+
+    @extend_schema(
+        summary="Delete a resource calendar",
+        description=(
+            "Org admins delete a room synced with Google or Microsoft. Every booking "
+            "resolution is checked first, all or nothing; then the bookings are moved, "
+            "lose the room, or are cancelled, their organizers are notified, and the room "
+            "is archived: it is no longer bookable, no longer counts against the plan "
+            "limit, and is deleted from the provider in the background. Deleting an "
+            "archived room returns 200 and changes nothing. 400 when the resolution "
+            "cancelled the deletion or some resolutions are invalid, and for a manual "
+            "room. 409 when the bookings changed since the preview, or when applying "
+            "stopped part way: preview again and retry. Admin only. Returns 404 when the "
+            "resource calendar provider sync feature is off for the organization."
+        ),
+        request=ResourceCalendarDeleteSerializer,
+        responses={
+            200: ResourceCalendarCreateResponseSerializer,
+            400: ResourceCalendarDeleteFailureSerializer,
+            409: ResourceCalendarDeleteFailureSerializer,
+        },
+    )
+    @action(
+        methods=["post"],
+        detail=True,
+        url_path="resource/delete",
+        url_name="resource-delete",
+        permission_classes=[IsOrganizationAdmin],
+        filter_backends=[],
+    )
+    @inject
+    def delete_resource(
+        self,
+        request,
+        pk: str | None = None,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]] = None,  # type: ignore[assignment]
+    ) -> Response:
+        """POST /calendar/{id}/resource/delete/ — admins delete a synced room."""
+        self._require_provider_sync(request)
+        calendar = self._organization_calendar(request, pk)
+        serializer = ResourceCalendarDeleteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        calendar_service.initialize_without_provider(
+            user_or_token=request.user, organization=calendar.organization
+        )
+        try:
+            result = calendar_service.delete_synced_resource_calendar(
+                calendar.id,
+                serializer.validated_data["fingerprint"],
+                serializer.validated_data["default"],
+                serializer.validated_data["overrides"],
+            )
+        except StaleBookingPreviewError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
+        except (ValueError, CalendarIntegrationError) as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+        if result.deleted:
+            return self._resource_calendar_response(calendar, status_code=status.HTTP_200_OK)
+        apply_result = result.apply_result
+        if result.aborted:
+            detail = "The room has bookings and the resolution cancelled the deletion."
+        elif result.rejected:
+            detail = "Some bookings cannot be resolved as asked."
+        else:
+            detail = "Resolving the bookings stopped part way; preview again and retry."
+        failure = ResourceCalendarDeleteFailureSerializer(
+            {
+                "detail": detail,
+                "aborted_bookings": result.bookings,
+                "rejected_bookings": result.rejected,
+                "applied_event_ids": list(apply_result.applied) if apply_result else [],
+                "pending_event_ids": list(apply_result.pending) if apply_result else [],
+                "failed_at_event_id": apply_result.failed_at if apply_result else None,
+            }
+        ).data
+        failure_status = (
+            status.HTTP_409_CONFLICT if apply_result is not None else status.HTTP_400_BAD_REQUEST
+        )
+        return Response(failure, status=failure_status)
 
     @extend_schema(
         summary="Update a bundle calendar's children and primary",

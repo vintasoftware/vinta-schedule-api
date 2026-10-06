@@ -10774,6 +10774,228 @@ paths:
               schema:
                 $ref: '#/components/schemas/ResourceCalendarCreateResponse'
           description: ''
+  /calendar/{id}/resource/delete/:
+    post:
+      operationId: calendar_resource_delete_create
+      description: 'Org admins delete a room synced with Google or Microsoft. Every
+        booking resolution is checked first, all or nothing; then the bookings are
+        moved, lose the room, or are cancelled, their organizers are notified, and
+        the room is archived: it is no longer bookable, no longer counts against the
+        plan limit, and is deleted from the provider in the background. Deleting an
+        archived room returns 200 and changes nothing. 400 when the resolution cancelled
+        the deletion or some resolutions are invalid, and for a manual room. 409 when
+        the bookings changed since the preview, or when applying stopped part way:
+        preview again and retry. Admin only. Returns 404 when the resource calendar
+        provider sync feature is off for the organization.'
+      summary: Delete a resource calendar
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResourceCalendarDelete'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ResourceCalendarDelete'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ResourceCalendarDelete'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarCreateResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarDeleteFailure'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarDeleteFailure'
+          description: ''
+  /calendar/{id}/resource/delete{format}:
+    post:
+      operationId: calendar_resource_delete_formatted_create
+      description: 'Org admins delete a room synced with Google or Microsoft. Every
+        booking resolution is checked first, all or nothing; then the bookings are
+        moved, lose the room, or are cancelled, their organizers are notified, and
+        the room is archived: it is no longer bookable, no longer counts against the
+        plan limit, and is deleted from the provider in the background. Deleting an
+        archived room returns 200 and changes nothing. 400 when the resolution cancelled
+        the deletion or some resolutions are invalid, and for a manual room. 409 when
+        the bookings changed since the preview, or when applying stopped part way:
+        preview again and retry. Admin only. Returns 404 when the resource calendar
+        provider sync feature is off for the organization.'
+      summary: Delete a resource calendar
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResourceCalendarDelete'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ResourceCalendarDelete'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ResourceCalendarDelete'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarCreateResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarDeleteFailure'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarDeleteFailure'
+          description: ''
+  /calendar/{id}/resource/deletion-preview/:
+    get:
+      operationId: calendar_resource_deletion_preview_retrieve
+      description: 'Org admins list the future bookings of a room synced with Google
+        or Microsoft before deleting it. A recurring series is one entry, resolved
+        from now on when it started before now. Send fingerprint back to the delete:
+        it is rejected if the bookings changed since. 400 for a manual room. Admin
+        only. Returns 404 when the resource calendar provider sync feature is off
+        for the organization.'
+      summary: Preview a resource calendar's deletion
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarDeletionPreview'
+          description: ''
+  /calendar/{id}/resource/deletion-preview{format}:
+    get:
+      operationId: calendar_resource_deletion_preview_formatted_retrieve
+      description: 'Org admins list the future bookings of a room synced with Google
+        or Microsoft before deleting it. A recurring series is one entry, resolved
+        from now on when it started before now. Send fingerprint back to the delete:
+        it is rejected if the bookings changed since. 400 for a manual room. Admin
+        only. Returns 404 when the resource calendar provider sync feature is off
+        for the organization.'
+      summary: Preview a resource calendar's deletion
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - calendar
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCalendarDeletionPreview'
+          description: ''
   /calendar/{id}/resource/retry-sync/:
     post:
       operationId: calendar_resource_retry_sync_create
@@ -18828,6 +19050,8 @@ components:
       - import_resource_calendars
       - list_resource_locations
       - retry_resource_calendar_sync
+      - preview_resource_calendar_deletion
+      - delete_resource_calendar
       - create_availability_window
       - update_availability_window
       - delete_availability_window
@@ -18883,6 +19107,8 @@ components:
         * `import_resource_calendars` - Import Resource Calendars
         * `list_resource_locations` - List Resource Locations
         * `retry_resource_calendar_sync` - Retry Resource Calendar Sync
+        * `preview_resource_calendar_deletion` - Preview Resource Calendar Deletion
+        * `delete_resource_calendar` - Delete Resource Calendar
         * `create_availability_window` - Create Availability Window
         * `update_availability_window` - Update Availability Window
         * `delete_availability_window` - Delete Availability Window
@@ -23102,6 +23328,26 @@ components:
         * `accepted` - Accepted
         * `declined` - Declined
         * `pending` - Pending
+    ReasonEnum:
+      enum:
+      - not_in_preview
+      - target_not_found
+      - target_is_same_room
+      - target_not_bookable
+      - target_on_different_provider
+      - target_too_small
+      - target_busy
+      - on_room_calendar
+      type: string
+      description: |-
+        * `not_in_preview` - booking is not in the deletion preview
+        * `target_not_found` - target room not found
+        * `target_is_same_room` - target room is the room being deleted
+        * `target_not_bookable` - target room is not bookable
+        * `target_on_different_provider` - target room is on a different provider
+        * `target_too_small` - target room is too small
+        * `target_busy` - target room is busy
+        * `on_room_calendar` - booking is on the room's own calendar and can only be cancelled
     RecurrenceRule:
       type: object
       properties:
@@ -23216,6 +23462,21 @@ components:
         * `FR` - Friday
         * `SA` - Saturday
         * `SU` - Sunday
+    RejectedResourceBooking:
+      type: object
+      description: A booking whose resolution was rejected. ``message`` is human readable.
+      properties:
+        event_id:
+          type: integer
+        reason:
+          $ref: '#/components/schemas/ReasonEnum'
+        message:
+          type: string
+          readOnly: true
+      required:
+      - event_id
+      - message
+      - reason
     ResourceAllocation:
       type: object
       properties:
@@ -23242,6 +23503,66 @@ components:
       - created
       - modified
       - status
+    ResourceBooking:
+      type: object
+      description: A future booking of a room, as a deletion preview lists it (``RoomBooking``).
+      properties:
+        event_id:
+          type: integer
+        calendar_id:
+          type: integer
+          nullable: true
+        title:
+          type: string
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        is_series:
+          type: boolean
+        series_from:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+      - calendar_id
+      - end
+      - event_id
+      - is_series
+      - series_from
+      - start
+      - title
+    ResourceBookingResolutionEnum:
+      enum:
+      - abort
+      - move
+      - remove_room
+      - cancel_event
+      type: string
+      description: |-
+        * `abort` - Cancel the room deletion
+        * `move` - Move to another room
+        * `remove_room` - Remove only the room
+        * `cancel_event` - Cancel the whole event
+    ResourceBookingResolutionOverride:
+      type: object
+      description: |-
+        The resolution for one booking of a room that is being deleted.
+
+        ``target_calendar_id`` is required for ``move``, and only allowed for ``move``.
+      properties:
+        event_id:
+          type: integer
+        resolution:
+          $ref: '#/components/schemas/ResourceBookingResolutionEnum'
+        target_calendar_id:
+          type: integer
+          nullable: true
+      required:
+      - event_id
+      - resolution
     ResourceCalendarCreate:
       type: object
       description: |-
@@ -23363,6 +23684,82 @@ components:
       - id
       - name
       - provider
+    ResourceCalendarDelete:
+      type: object
+      description: |-
+        Delete a room synced with Google or Microsoft, resolving its future bookings.
+
+        ``fingerprint`` comes from the deletion preview. ``default_resolution`` applies to
+        every booking without an override; ``target_calendar_id`` is its target room for
+        ``move``. ``overrides`` names at most one resolution per booking. The validated
+        data carries ``default`` and ``overrides`` as ``BookingResolution`` values.
+      properties:
+        fingerprint:
+          type: string
+        default_resolution:
+          $ref: '#/components/schemas/ResourceBookingResolutionEnum'
+        target_calendar_id:
+          type: integer
+          nullable: true
+        overrides:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceBookingResolutionOverride'
+      required:
+      - default_resolution
+      - fingerprint
+    ResourceCalendarDeleteFailure:
+      type: object
+      description: |-
+        Why ``POST /calendar/{id}/resource/delete/`` did not delete the room.
+
+        Nothing about the room changed. ``aborted_bookings`` is set when the resolution
+        cancelled the deletion, ``rejected_bookings`` when some resolutions are invalid.
+        ``failed_at_event_id`` is set when applying stopped part way: ``applied_event_ids``
+        are resolved, ``pending_event_ids`` are not; preview again and retry.
+      properties:
+        detail:
+          type: string
+        aborted_bookings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceBooking'
+        rejected_bookings:
+          type: array
+          items:
+            $ref: '#/components/schemas/RejectedResourceBooking'
+        applied_event_ids:
+          type: array
+          items:
+            type: integer
+        pending_event_ids:
+          type: array
+          items:
+            type: integer
+        failed_at_event_id:
+          type: integer
+          nullable: true
+      required:
+      - aborted_bookings
+      - applied_event_ids
+      - detail
+      - failed_at_event_id
+      - pending_event_ids
+      - rejected_bookings
+    ResourceCalendarDeletionPreview:
+      type: object
+      description: A synced room's future bookings, plus the fingerprint its delete
+        must send back.
+      properties:
+        fingerprint:
+          type: string
+        bookings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceBooking'
+      required:
+      - bookings
+      - fingerprint
     ResourceCalendarProviderSync:
       type: object
       description: Where a room created in Google Workspace or Microsoft 365 is in

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
 from calendar_integration.constants import (
     BookingCancelMode,
     BookingRejectionReason,
+    BookingResolutionKind,
     CalendarProvider,
 )
 from calendar_integration.models import (
@@ -801,6 +802,27 @@ class CancelBooking:
 BookingResolution = AbortDeletion | MoveBooking | CancelBooking
 
 
+def booking_resolution_from(kind: str, target_calendar_id: int | None = None) -> BookingResolution:
+    """The ``BookingResolution`` a caller names with a ``BookingResolutionKind``.
+
+    Raises ``ValueError`` when ``MOVE`` has no ``target_calendar_id``, or another kind
+    has one.
+    """
+    if kind == BookingResolutionKind.MOVE:
+        if target_calendar_id is None:
+            raise ValueError("A move needs a target room.")
+        return MoveBooking(target_calendar_id)
+    if target_calendar_id is not None:
+        raise ValueError("A target room only applies to a move.")
+    if kind == BookingResolutionKind.ABORT:
+        return AbortDeletion()
+    if kind == BookingResolutionKind.REMOVE_ROOM:
+        return CancelBooking(BookingCancelMode.REMOVE_ROOM)
+    if kind == BookingResolutionKind.CANCEL_EVENT:
+        return CancelBooking(BookingCancelMode.CANCEL_EVENT)
+    raise ValueError(f"Unknown booking resolution {kind!r}.")
+
+
 @dataclass(frozen=True)
 class ResolvedBooking:
     """A booking together with the resolution chosen for it."""
@@ -841,3 +863,27 @@ class RejectedBooking:
 
     event_id: int
     reason: BookingRejectionReason
+
+
+@dataclass(frozen=True)
+class RoomDeletionResult:
+    """What ``CalendarService.delete_synced_resource_calendar`` did with a room.
+
+    Exactly one outcome applies:
+
+    - ``deleted``: every booking is resolved and the room is archived, or on its
+      way to being archived once the provider delete runs. Also true when the room
+      was already archived or being deleted, so a repeated delete succeeds.
+    - ``aborted``: a booking's resolution cancelled the deletion. ``bookings`` lists
+      the room's future bookings, and nothing changed.
+    - ``rejected``: some resolutions are invalid, all listed; nothing changed.
+    - ``apply_result`` with ``failed_at`` set: the apply stopped part way. The
+      bookings in ``applied`` are resolved, the rest are not, and the room is not
+      deleted. Preview again and retry.
+    """
+
+    deleted: bool
+    aborted: bool = False
+    bookings: tuple[RoomBooking, ...] = ()
+    rejected: tuple[RejectedBooking, ...] = ()
+    apply_result: ApplyResult | None = None
