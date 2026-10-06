@@ -75,6 +75,7 @@ class OrganizationResourceAccess(BasePermission):
         "disableResourceCalendar": PublicAPIResources.DISABLE_RESOURCE_CALENDAR,
         "updateResourceCalendar": PublicAPIResources.UPDATE_RESOURCE_CALENDAR,
         "importResourceCalendars": PublicAPIResources.IMPORT_RESOURCE_CALENDARS,
+        "resourceLocations": PublicAPIResources.LIST_RESOURCE_LOCATIONS,
         "createAvailabilityWindow": PublicAPIResources.CREATE_AVAILABILITY_WINDOW,
         "updateAvailabilityWindow": PublicAPIResources.UPDATE_AVAILABILITY_WINDOW,
         "deleteAvailabilityWindow": PublicAPIResources.DELETE_AVAILABILITY_WINDOW,

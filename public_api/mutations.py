@@ -18,7 +18,7 @@ from vinta_billing.services.subscription_service import SubscriptionService
 
 from audit_integration.constants import AuditAction
 from audit_integration.services import OrganizationAuditService
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.exceptions import (
     AppointmentTypeSlotConfigNotFoundError,
     AppointmentTypeValidationError,
@@ -486,7 +486,20 @@ class DeleteSystemUserResult:
 
 @strawberry.input
 class CreateResourceCalendarInput:
-    """Input for creating a manual resource (room/equipment) calendar."""
+    """Input for creating a resource (room/equipment) calendar.
+
+    provider: INTERNAL (the default) creates a manual room that exists only in Vinta
+        Schedule. GOOGLE or MICROSOFT creates the room in the organization's Google
+        Workspace or Microsoft 365. That needs the resource calendar provider sync
+        feature, a write-enabled connection for the provider, and ``location_id``.
+        The room is returned right away with ``providerSync.status`` PENDING_CREATION
+        and is created on the provider in the background.
+    location_id: An active location of the same provider, from ``resourceLocations``.
+        Provider rooms only.
+    idempotency_key: Makes a retried provider room create safe. Sending the same key
+        and payload again within 24 hours returns the same room; the same key with a
+        different payload is rejected. Provider rooms only.
+    """
 
     organization_id: int
     name: str
@@ -494,6 +507,9 @@ class CreateResourceCalendarInput:
     capacity: int | None = None
     manage_available_windows: bool = False
     is_private: bool = True
+    provider: CalendarProvider = CalendarProvider.INTERNAL
+    location_id: int | None = None
+    idempotency_key: str | None = None
 
 
 @strawberry.type
@@ -503,6 +519,31 @@ class CreateResourceCalendarResult:
     success: bool
     error_message: str | None = None
     calendar: CalendarGraphQLType | None = None
+
+
+def _create_synced_resource_calendar(
+    info: strawberry.Info,
+    input: CreateResourceCalendarInput,  # noqa: A002
+) -> CreateResourceCalendarResult:
+    """The ``createResourceCalendar`` path for a Google or Microsoft room."""
+    calendar_service, _org = _get_org_and_init_calendar_service(info)
+    try:
+        calendar = calendar_service.create_synced_resource_calendar(
+            provider=input.provider,
+            location_id=input.location_id,
+            name=input.name,
+            description=input.description,
+            capacity=input.capacity,
+            idempotency_key=input.idempotency_key,
+            manage_available_windows=input.manage_available_windows,
+            accepts_public_scheduling=not input.is_private,
+        )
+    except OverLimitError as exc:
+        raise_over_limit_graphql_error(exc)
+    except (CalendarIntegrationError, DjangoValidationError, IntegrityError) as e:
+        return CreateResourceCalendarResult(success=False, error_message=str(e))
+
+    return CreateResourceCalendarResult(success=True, calendar=calendar)  # type: ignore[arg-type]
 
 
 @strawberry.input
@@ -2086,15 +2127,28 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         info: strawberry.Info,
         input: CreateResourceCalendarInput,  # noqa: A002
     ) -> CreateResourceCalendarResult:
-        """Create a manual resource (room/equipment) calendar for the acting organization.
+        """Create a resource (room/equipment) calendar for the acting organization.
 
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
-        2. Delegates to CalendarService.create_resource_calendar with the supplied parameters.
+        2. Delegates to CalendarService.create_resource_calendar for a manual (INTERNAL)
+           room, or to CalendarService.create_synced_resource_calendar for a Google or
+           Microsoft room.
         3. Returns the created Calendar on success, or success=False + errorMessage on failure.
 
         The token's OrganizationResourceAccess must include the CREATE_RESOURCE_CALENDAR resource.
         """
+        if input.provider != CalendarProvider.INTERNAL:
+            return _create_synced_resource_calendar(info, input)
+        if input.location_id is not None or input.idempotency_key is not None:
+            return CreateResourceCalendarResult(
+                success=False,
+                error_message=(
+                    "locationId and idempotencyKey only apply to rooms created on "
+                    "Google or Microsoft."
+                ),
+            )
+
         calendar_service, _org = _get_org_and_init_calendar_service(info)
 
         # create_resource_calendar raises OverLimitError at the organization's
