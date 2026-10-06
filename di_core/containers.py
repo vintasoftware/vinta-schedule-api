@@ -37,6 +37,9 @@ from calendar_integration.services.booking_policy_permission_service import (
     BookingPolicyPermissionService,
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
+from calendar_integration.services.calendar_clients.ms_app_only_token import (
+    MicrosoftAppOnlyTokenProvider,
+)
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
@@ -45,6 +48,9 @@ from calendar_integration.services.external_client_identifier_service import (
 )
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
+)
+from calendar_integration.services.microsoft_connection_service import (
+    MicrosoftConnectionService,
 )
 from calendar_integration.services.room_sync_notifier import RoomSyncNotifier
 from legal.services import ConsentService
@@ -296,6 +302,8 @@ class AppContainer(containers.DeclarativeContainer):
         ExternalClientIdentifierService,
     )
 
+    microsoft_app_only_token_provider = providers.Factory(MicrosoftAppOnlyTokenProvider)
+
     calendar_service = providers.Factory(
         CalendarService,
         calendar_side_effects_service=calendar_side_effects_service,
@@ -305,6 +313,7 @@ class AppContainer(containers.DeclarativeContainer):
         booking_policy_service=booking_policy_service,
         entitlement_service=entitlement_service,
         external_client_identifier_service=external_client_identifier_service,
+        microsoft_app_only_token_provider=microsoft_app_only_token_provider,
     )
 
     bookable_slots_service = providers.Factory(
@@ -339,6 +348,11 @@ class AppContainer(containers.DeclarativeContainer):
     consent_service = providers.Factory(
         ConsentService,
         audit_service=audit_service,
+    )
+
+    microsoft_connection_service = providers.Factory(
+        MicrosoftConnectionService,
+        token_provider=microsoft_app_only_token_provider,
     )
 
 
