@@ -195,6 +195,12 @@ _ROOM_WRITE_PROVIDER_NAMES: dict[str, str] = {
     CalendarProvider.MICROSOFT: "Microsoft 365",
 }
 
+# Why a room synced with a provider cannot be set INACTIVE like a manual room: that
+# would free its plan slot while the provider room and its link stay live.
+SYNCED_ROOM_DISABLE_ERROR = (
+    "A room synced with a provider cannot be disabled: use deleteResourceCalendar."
+)
+
 # How long a synced-room create idempotency key can be replayed.
 RESOURCE_CALENDAR_CREATE_REQUEST_TTL = datetime.timedelta(hours=24)
 
@@ -1389,8 +1395,12 @@ class CalendarService(BaseCalendarService):
         :param calendar_id: Primary key of the Calendar to disable.
         :return: The updated Calendar instance.
         :raises Calendar.DoesNotExist: If no calendar with this id exists within the org.
-        :raises ValueError: If the calendar is not of type RESOURCE.
+        :raises ValueError: If the calendar is not of type RESOURCE, or is a room synced
+            with a provider (those are deleted through the room deletion flow).
         """
+        # Read before the type-guard narrows `self` below.
+        synced_room_link = self.synced_room_link
+
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
         self._check_not_restricted()
@@ -1402,6 +1412,8 @@ class CalendarService(BaseCalendarService):
                 f"Calendar {calendar_id} is not a resource calendar "
                 f"(type={calendar.calendar_type})."
             )
+        if synced_room_link(calendar) is not None:
+            raise ValueError(SYNCED_ROOM_DISABLE_ERROR)
 
         old_visibility = calendar.visibility
         calendar.visibility = CalendarVisibility.INACTIVE
@@ -1471,7 +1483,7 @@ class CalendarService(BaseCalendarService):
         """
         # Read before the type-guard narrows `self` below: the narrowed Protocol type
         # declares neither (see `create_resource_calendar`).
-        synced_room_link = self._synced_room_link
+        synced_room_link = self.synced_room_link
         get_room_sync_service = self._get_room_sync_service
 
         if not is_initialized_or_authenticated_calendar_service(self):
@@ -1503,9 +1515,7 @@ class CalendarService(BaseCalendarService):
                 )
         else:
             if visibility == CalendarVisibility.INACTIVE:
-                raise ValueError(
-                    "A room synced with a provider cannot be disabled: use deleteResourceCalendar."
-                )
+                raise ValueError(SYNCED_ROOM_DISABLE_ERROR)
             # `request_push` decides this again under the link's row lock. Checked here
             # too so an edit of only Vinta Schedule fields, which pushes nothing, is
             # rejected the same way.
@@ -1594,18 +1604,20 @@ class CalendarService(BaseCalendarService):
 
         return calendar
 
-    def _synced_room_link(self, calendar: Calendar) -> ResourceCalendarProviderLink | None:
+    def synced_room_link(self, calendar: Calendar) -> ResourceCalendarProviderLink | None:
         """The provider link of a room Vinta Schedule syncs, or ``None``.
 
         ``None`` too when the ``resource_calendar_provider_sync`` flag is off, so with
-        the flag off a synced room is treated like any other provider calendar.
+        the flag off a synced room is treated like any other provider calendar. A
+        synced room is edited through ``update_resource_calendar`` and deleted through
+        the room deletion flow; every path that would change it without telling the
+        provider asks this first. Reads the organization off ``calendar``, so it needs
+        no initialized service.
         """
-        if self.organization is None:
-            raise CalendarServiceOrganizationNotSetError()
-        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, self.organization.id):
+        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, calendar.organization_id):
             return None
         return (
-            ResourceCalendarProviderLink.objects.filter_by_organization(self.organization.id)
+            ResourceCalendarProviderLink.objects.filter_by_organization(calendar.organization_id)
             .filter(calendar=calendar)
             .first()
         )
@@ -1626,7 +1638,7 @@ class CalendarService(BaseCalendarService):
             not failed.
         """
         # Read before the type-guard narrows `self` below.
-        synced_room_link = self._synced_room_link
+        synced_room_link = self.synced_room_link
         get_room_sync_service = self._get_room_sync_service
 
         if not is_initialized_or_authenticated_calendar_service(self):

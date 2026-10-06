@@ -305,6 +305,21 @@ class TestEditSyncedRoom:
         room.refresh_from_db()
         assert room.visibility == CalendarVisibility.ACTIVE
 
+    def test_disabling_is_rejected(
+        self,
+        service: CalendarService,
+        location: ResourceLocation,
+        django_capture_on_commit_callbacks: Callable[..., Any],
+    ) -> None:
+        room = _create_room(service, location, django_capture_on_commit_callbacks)
+
+        with pytest.raises(ValueError, match="use deleteResourceCalendar"):
+            service.disable_resource_calendar(room.id)
+
+        room.refresh_from_db()
+        assert room.visibility == CalendarVisibility.ACTIVE
+        assert _link(room).sync_status == ResourceSyncStatus.SYNCED
+
     def test_manual_room_rejects_location_id(
         self, service: CalendarService, location: ResourceLocation
     ) -> None:
@@ -398,6 +413,22 @@ class TestFlagOff:
         room.refresh_from_db()
         assert room.capacity == 8
         assert _link(room).sync_status == ResourceSyncStatus.SYNCED
+
+    def test_disabling_a_google_room_is_unchanged(
+        self,
+        service: CalendarService,
+        location: ResourceLocation,
+        organization: Organization,
+        django_capture_on_commit_callbacks: Callable[..., Any],
+    ) -> None:
+        room = _create_room(service, location, django_capture_on_commit_callbacks)
+        OrganizationFeatureFlag.objects.filter_by_organization(organization.id).update(
+            enabled=False
+        )
+
+        disabled = service.disable_resource_calendar(room.id)
+
+        assert disabled.visibility == CalendarVisibility.INACTIVE
 
     def test_retry_is_not_enabled(
         self,

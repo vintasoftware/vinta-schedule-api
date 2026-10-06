@@ -2277,6 +2277,10 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
     ) -> DisableResourceCalendarResult:
         """Disable a resource calendar by setting its visibility to INACTIVE.
 
+        A room synced with Google or Microsoft cannot be disabled while the resource
+        calendar provider sync feature is on: it returns success=False, and the room is
+        deleted through ``deleteResourceCalendar`` instead.
+
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
         2. Delegates to CalendarService.disable_resource_calendar with the supplied calendar_id.

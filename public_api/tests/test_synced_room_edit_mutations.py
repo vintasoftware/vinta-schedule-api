@@ -17,6 +17,7 @@ from rest_framework.test import APIClient
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarType,
+    CalendarVisibility,
     ResourceSyncOperation,
     ResourceSyncStatus,
 )
@@ -46,6 +47,15 @@ mutation UpdateResourceCalendar($input: UpdateResourceCalendarInput!) {
                 location { id }
             }
         }
+    }
+}
+"""
+
+DISABLE_MUTATION = """
+mutation DisableResourceCalendar($input: DisableResourceCalendarInput!) {
+    disableResourceCalendar(input: $input) {
+        success
+        errorMessage
     }
 }
 """
@@ -239,6 +249,24 @@ class TestUpdateSyncedRoom:
             "errorMessage": "An archived room, or one being deleted, cannot be edited.",
             "calendar": None,
         }
+
+    def test_disable_is_rejected(
+        self, organization: Organization, location: ResourceLocation
+    ) -> None:
+        room = _google_room(organization, location)
+        api = _Api(organization, [PublicAPIResources.DISABLE_RESOURCE_CALENDAR])
+
+        data = api.post(DISABLE_MUTATION, _input(organization, room))
+
+        assert data["data"]["disableResourceCalendar"] == {
+            "success": False,
+            "errorMessage": (
+                "A room synced with a provider cannot be disabled: use deleteResourceCalendar."
+            ),
+        }
+        with organization_context(organization):
+            room.refresh_from_db()
+        assert room.visibility == CalendarVisibility.ACTIVE
 
     def test_flag_off_keeps_todays_message(
         self, api: _Api, organization: Organization, location: ResourceLocation

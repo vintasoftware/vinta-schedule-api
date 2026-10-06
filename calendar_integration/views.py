@@ -58,7 +58,6 @@ from calendar_integration.models import (
     CalendarOwnership,
     CalendarPool,
     ExternalEventChangeRequest,
-    ResourceCalendarProviderLink,
     ResourceLocation,
 )
 from calendar_integration.permissions import (
@@ -410,21 +409,24 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         self._assert_can_manage_calendar(calendar, request.user, "update")
         return super().update(request, *args, **kwargs)
 
-    def _reject_synced_room(self, calendar: Calendar, message: str) -> None:
+    @inject
+    def _reject_synced_room(
+        self,
+        calendar: Calendar,
+        message: str,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]] = None,  # type: ignore[assignment]
+    ) -> None:
         """400 for a room synced with a provider, which the generic actions would
         change without telling the provider.
 
-        Only while the ``resource_calendar_provider_sync`` flag is on; with it off the
-        generic actions keep their behavior for every calendar.
+        Only while the ``resource_calendar_provider_sync`` flag is on
+        (``CalendarService.synced_room_link``); with it off the generic actions keep
+        their behavior for every calendar.
         """
-        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, calendar.organization_id):
+        # Only rooms can be synced with a provider; other calendars skip the lookup.
+        if calendar.calendar_type != CalendarType.RESOURCE:
             return
-        is_synced_room = (
-            ResourceCalendarProviderLink.objects.filter_by_organization(calendar.organization_id)
-            .filter(calendar=calendar)
-            .exists()
-        )
-        if is_synced_room:
+        if calendar_service.synced_room_link(calendar) is not None:
             raise ValidationError({"non_field_errors": [message]})
 
     @extend_schema(
