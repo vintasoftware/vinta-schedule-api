@@ -44,10 +44,11 @@ from vinta_billing.exceptions import OverLimitError
 from vinta_billing.services.subscription_service import resolve_billing_period
 
 from audit_integration.constants import AuditAction, AuditActorType
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import CalendarType, ResourceSyncStatus
 from calendar_integration.exceptions import (
     EventManagementError,
     NoAvailableTimeWindowsError,
+    RoomNotBookableError,
 )
 from calendar_integration.models import (
     Calendar,
@@ -62,6 +63,7 @@ from calendar_integration.models import (
     RecurrenceRule,
     RecurringMixin,
     ResourceAllocation,
+    ResourceCalendarProviderLink,
 )
 from calendar_integration.services.calendar_service_utils import (
     convert_naive_utc_datetime_to_timezone as _convert_naive_utc_datetime_to_timezone,
@@ -137,7 +139,7 @@ def _resolve_token_audit_actor(
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Collection, Iterable
 
     from vinta_billing.models import Subscription
     from vinta_billing.services.entitlement_service import EntitlementService
@@ -214,6 +216,7 @@ class EventServiceHost(Protocol):
         bypass_limits: bool = False,
         _enforce_policy: bool = True,
         _check_postpaid_allowance: bool = True,
+        _carried_over_room_ids: Collection[int] = (),
     ) -> CalendarEvent: ...
 
     def delete_event(
@@ -474,6 +477,46 @@ class CalendarEventService:
             return None
         return self._context.entitlement_service
 
+    @staticmethod
+    def _check_added_rooms_bookable(
+        organization_id: int,
+        room_ids: Collection[int],
+        held_room_ids: Callable[[], Iterable[int]],
+    ) -> None:
+        """Raise ``RoomNotBookableError`` if the write adds a room that cannot be booked.
+
+        A room is checked only when it has a provider link: pending creation, failed
+        on create, pending deletion, failed on delete and archived rooms are
+        rejected (``ResourceCalendarProviderLink.is_bookable``). A room with no link,
+        a manual room or any room in an organization with the
+        ``resource_calendar_provider_sync`` flag off, books exactly as before.
+
+        Only rooms the write newly adds are checked. ``held_room_ids`` returns the
+        rooms the write carries over from an existing booking: the event's own on an
+        update, its series' for an occurrence exception, and the copied event's for a
+        transfer or a series split. So editing, splitting or moving a booking that
+        holds an archived room is not blocked by that room. It is called only when
+        ``room_ids`` is not empty, so a write without rooms costs no query.
+        """
+        if not room_ids:
+            return
+        added = set(room_ids) - set(held_room_ids())
+        if not added:
+            return
+        for link in (
+            ResourceCalendarProviderLink.objects.filter_by_organization(organization_id)
+            .filter(calendar__id__in=added)
+            .select_related("calendar")
+        ):
+            if link.is_bookable:
+                continue
+            state = (
+                f"sync failed on {link.failed_operation}"
+                if link.sync_status == ResourceSyncStatus.SYNC_FAILED
+                else link.get_sync_status_display().lower()
+            )
+            raise RoomNotBookableError(f"Room {link.calendar.name} is not bookable: {state}.")
+
     def _check_not_restricted(self) -> None:
         """Raise ``OverLimitError`` if the context's organization's billing root is
         ``RESTRICTED``.
@@ -570,6 +613,7 @@ class CalendarEventService:
         *,
         bypass_limits: bool = False,
         _check_postpaid_allowance: bool = True,
+        _carried_over_room_ids: Collection[int] = (),
     ) -> CalendarEvent:
         """
         Create a new event in the calendar.
@@ -593,6 +637,11 @@ class CalendarEventService:
             and add nothing but redundant row locks -- and by
             ``transfer_event``, where the create is paired with a delete of
             the same event and is therefore net-zero on billable units.
+        :param _carried_over_room_ids: Internal flag; callers must NOT pass this. The
+            rooms this create copies from an existing booking rather than adds:
+            ``transfer_event`` passes the moved event's rooms, and a series split
+            passes the original series' rooms. The room bookability guard skips them,
+            like the rooms an event already holds on ``update_event``.
         :return: Response from the calendar client.
         """
         context = cast("BaseCalendarService", self._context)
@@ -650,6 +699,23 @@ class CalendarEventService:
             )
         ):
             raise PermissionDenied("You do not have permission to update this event.")
+
+        def held_room_ids() -> list[int]:
+            # An occurrence exception also holds the rooms its series books.
+            series_room_ids = (
+                ResourceAllocation.objects.filter_by_organization(context.organization.id)
+                .filter(event__id=event_data.parent_event_id)
+                .values_list("calendar_fk_id", flat=True)
+                if event_data.parent_event_id
+                else []
+            )
+            return [*_carried_over_room_ids, *series_room_ids]
+
+        self._check_added_rooms_bookable(
+            context.organization.id,
+            [r.resource_id for r in event_data.resource_allocations],
+            held_room_ids,
+        )
 
         if calendar.calendar_type == CalendarType.BUNDLE:
             return self._host._create_bundle_event(
@@ -954,6 +1020,12 @@ class CalendarEventService:
             appointment_type_id=event.appointment_type_fk_id,
         ):
             raise PermissionDenied("You do not have permission to update this event.")
+
+        self._check_added_rooms_bookable(
+            context.organization.id,
+            [r.resource_id for r in event_data.resource_allocations],
+            lambda: [r.calendar_fk_id for r in event.resource_allocations.all()],
+        )
 
         if event.is_bundle_primary:
             return self._host._update_bundle_event(event, event_data)
@@ -1521,6 +1593,8 @@ class CalendarEventService:
         attendances: list[EventAttendanceInputData] | None = None,
         external_attendances: list[EventExternalAttendanceInputData] | None = None,
         resource_allocations: list[ResourceAllocationInputData] | None = None,
+        *,
+        _carried_over_room_ids: Collection[int] = (),
     ) -> CalendarEvent:
         """
         Create a recurring event with the specified recurrence rule.
@@ -1537,6 +1611,8 @@ class CalendarEventService:
         :param attendances: List of internal attendees
         :param external_attendances: List of external attendees
         :param resource_allocations: List of resource allocations
+        :param _carried_over_room_ids: Internal flag; callers must NOT pass this.
+            Forwarded to ``create_event`` -- see its docstring.
         :return: Created CalendarEvent with recurrence rule
         """
         if not is_initialized_or_authenticated_calendar_service(
@@ -1555,7 +1631,9 @@ class CalendarEventService:
             external_attendances=external_attendances or [],
             resource_allocations=resource_allocations or [],
         )
-        return self.create_event(calendar_id, event_data)
+        return self.create_event(
+            calendar_id, event_data, _carried_over_room_ids=_carried_over_room_ids
+        )
 
     def _adapter_people_for_event(
         self, event: CalendarEvent
@@ -1690,6 +1768,7 @@ class CalendarEventService:
         ) -> RecurringMixin:
             parent_event = cast(CalendarEvent, parent_obj)
             second_event = cast(CalendarEvent, second_occurrence)
+            room_ids = [r.calendar_fk_id for r in parent_event.resource_allocations.all()]
             new_recurring_event = self.create_recurring_event(
                 calendar_id=parent_event.calendar.id,
                 title=parent_event.title,
@@ -1714,9 +1793,11 @@ class CalendarEventService:
                     for ea in parent_event.external_attendances.all()
                 ],
                 resource_allocations=[
-                    ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
-                    for r in parent_event.resource_allocations.all()
+                    ResourceAllocationInputData(resource_id=room_id)  # type: ignore[arg-type]
+                    for room_id in room_ids
                 ],
+                # The rest of the series keeps its rooms; it does not book them anew.
+                _carried_over_room_ids=room_ids,  # type: ignore[arg-type]
             )
             return new_recurring_event
 
@@ -2525,8 +2606,14 @@ class CalendarEventService:
         # the old one are re-billed under the new identity. That is the known
         # identity-churn defect recorded as a known precondition, not something
         # this check could fix by charging a unit.)
+        #
+        # ``_carried_over_room_ids``: the moved event keeps the rooms it already
+        # booked, so the room bookability guard does not treat them as new bookings.
         new_event = self._host.create_event(
-            new_calendar.id, new_event_data, _check_postpaid_allowance=False
+            new_calendar.id,
+            new_event_data,
+            _check_postpaid_allowance=False,
+            _carried_over_room_ids=[r.resource_id for r in new_event_data.resource_allocations],
         )
 
         # Delete the old event
@@ -2612,6 +2699,7 @@ class CalendarEventService:
                 if modification_data.get("end_time_offset")
                 else new_start + duration
             )
+            room_ids = [r.calendar_fk_id for r in parent.resource_allocations.all()]
 
             return self.create_event(
                 calendar_id=parent.calendar.id,
@@ -2638,10 +2726,12 @@ class CalendarEventService:
                         for ea in parent.external_attendances.all()
                     ],
                     resource_allocations=[
-                        ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
-                        for r in parent.resource_allocations.all()
+                        ResourceAllocationInputData(resource_id=room_id)  # type: ignore[arg-type]
+                        for room_id in room_ids
                     ],
                 ),
+                # The continuation keeps the series' rooms; it does not book them anew.
+                _carried_over_room_ids=room_ids,  # type: ignore[arg-type]
             )
 
         def record_bulk(

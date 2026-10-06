@@ -37,6 +37,7 @@ from calendar_integration.services.booking_policy_permission_service import (
     BookingPolicyPermissionService,
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
+from calendar_integration.services.booking_resolution_service import BookingResolutionService
 from calendar_integration.services.calendar_clients.ms_app_only_token import (
     MicrosoftAppOnlyTokenProvider,
 )
@@ -351,6 +352,11 @@ class AppContainer(containers.DeclarativeContainer):
 
     google_write_access_service = providers.Factory(
         GoogleWriteAccessService,
+    )
+
+    booking_resolution_service = providers.Factory(
+        BookingResolutionService,
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
     )
 
     bookable_slots_service = providers.Factory(
