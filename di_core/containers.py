@@ -348,6 +348,7 @@ class AppContainer(containers.DeclarativeContainer):
         # undefined, and only a synced-room create needs either of them.
         room_sync_service_factory=room_sync_service.provider,
         resource_directory_adapter_resolver_factory=resource_directory_adapter_resolver.provider,
+        microsoft_app_only_token_provider=microsoft_app_only_token_provider,
     )
 
     google_write_access_service = providers.Factory(
