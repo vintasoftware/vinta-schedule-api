@@ -4,9 +4,9 @@
 room directory on one provider and makes Vinta Schedule match it, in four steps:
 
 1. **Locations.** Every building and floor the provider lists is upserted into
-   ``ResourceLocation``. Locations it no longer lists are removed at the end of
-   the run: deleted when no room points at them, kept and marked inactive when
-   one still does.
+   ``ResourceLocation``. Locations it no longer lists are marked inactive at the
+   end of the run, never deleted, so their ids stay stable and a location that
+   comes back is reactivated in place.
 2. **Linked rooms** (links in ``for_resync``), one transaction per link, each
    holding the link's row lock taken with ``skip_locked``. A link the push
    engine is working on is skipped and picked up next hour.
@@ -32,7 +32,7 @@ room directory on one provider and makes Vinta Schedule match it, in four steps:
 
    Both send ``resource_room_synced(created=False)`` on commit.
 
-4. Locations not seen in step 1 are removed, as described there.
+4. Locations not seen in step 1 are marked inactive, as described there.
 
 Provider calls (``list_locations``, ``list_rooms``) happen before any
 transaction opens, so no lock is held across the network.
@@ -50,7 +50,7 @@ import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from django.db import transaction
 from django.utils import timezone
@@ -68,13 +68,8 @@ from calendar_integration.models import (
     ResourceCalendarProviderLink,
     ResourceLocation,
 )
-from calendar_integration.services.calendar_service_context import CalendarServiceContext
-from calendar_integration.services.calendar_sync_service import CalendarSyncService
-from calendar_integration.services.dataclasses import (
-    CalendarResourceData,
-    ResourceLocationData,
-    RoomDirectoryData,
-)
+from calendar_integration.services.calendar_sync_service import cap_to_resource_calendar_headroom
+from calendar_integration.services.dataclasses import ResourceLocationData, RoomDirectoryData
 from calendar_integration.signals import resource_room_archived, resource_room_synced
 
 
@@ -84,7 +79,6 @@ if TYPE_CHECKING:
     from vinta_billing.services.entitlement_service import EntitlementService
 
     from audit_integration.services import OrganizationAuditService
-    from calendar_integration.services.calendar_sync_service import SyncServiceHost
     from calendar_integration.services.protocols.resource_directory_adapter import (
         ResourceDirectoryAdapterResolver,
     )
@@ -121,7 +115,6 @@ class RoomResyncResult:
     locations_created: int = 0
     locations_updated: int = 0
     locations_deactivated: int = 0
-    locations_deleted: int = 0
     linked_calendar_ids: list[int] = dataclass_field(default_factory=list)
     imported_calendar_ids: list[int] = dataclass_field(default_factory=list)
     updated_calendar_ids: list[int] = dataclass_field(default_factory=list)
@@ -169,7 +162,9 @@ class RoomResyncService:
 
         now = timezone.now()
         result = RoomResyncResult()
-        locations = self._upsert_locations(organization, provider, provider_locations, now, result)
+        locations, unseen_location_ids = self._upsert_locations(
+            organization, provider, provider_locations, now, result
+        )
         rooms_by_external_id = _index_rooms(provider_rooms)
 
         self._resync_linked_rooms(
@@ -178,7 +173,7 @@ class RoomResyncService:
         self._link_and_import_new_rooms(
             organization, provider, rooms_by_external_id, locations, now, result
         )
-        self._retire_unseen_locations(organization, provider, now, result)
+        self._deactivate_locations(organization, unseen_location_ids, result)
 
         logger.info(
             "Room resync for organization %s on %s: linked=%s imported=%s updated=%s "
@@ -204,10 +199,12 @@ class RoomResyncService:
         provider_locations: Iterable[ResourceLocationData],
         now: datetime.datetime,
         result: RoomResyncResult,
-    ) -> dict[_LocationKey, ResourceLocation]:
-        """Create or refresh every location the provider lists. Returns them by provider ref.
+    ) -> tuple[dict[_LocationKey, ResourceLocation], list[int]]:
+        """Create or refresh every location the provider lists.
 
-        A location whose names and active flag already match is only stamped with
+        Returns every location of ``provider`` by provider ref, and the ids of the
+        active ones this run read but the provider no longer lists. A location
+        whose names and active flag already match is only stamped with
         ``last_seen_at``, in one bulk update, so an unchanged run saves no row.
         """
         with transaction.atomic():
@@ -256,43 +253,30 @@ class RoomResyncService:
                 ResourceLocation.objects.filter_by_organization(organization.id).filter(
                     id__in=unchanged_ids
                 ).update(last_seen_at=now)
-        return {**existing, **seen}
+        unseen_ids = [
+            location.id
+            for key, location in existing.items()
+            if key not in seen and location.is_active
+        ]
+        return {**existing, **seen}, unseen_ids
 
-    def _retire_unseen_locations(
-        self,
-        organization: Organization,
-        provider: str,
-        now: datetime.datetime,
-        result: RoomResyncResult,
+    def _deactivate_locations(
+        self, organization: Organization, location_ids: list[int], result: RoomResyncResult
     ) -> None:
-        """Remove locations this run did not see.
+        """Mark inactive the locations this run read but the provider no longer lists.
 
-        Runs after the rooms, so a room the provider moved away from a location no
-        longer holds it. Unreferenced rows are deleted; a row a room still points at
-        is kept and marked inactive, because the link's foreign key protects it.
+        Runs after the rooms, so a room the provider moved away from a location
+        already points at its new one. Chosen by id from this run's own reads,
+        not by ``last_seen_at``, so an overlapping run's stamps cannot make this
+        one retire a location it saw.
         """
-        with transaction.atomic():
-            unseen = (
-                ResourceLocation.objects.filter_by_organization(organization.id)
-                .for_provider(provider)
-                .filter(last_seen_at__lt=now)
-            )
-            deletable_ids = list(unseen.unreferenced().values_list("id", flat=True))
-            if deletable_ids:
-                _total, per_model = (
-                    ResourceLocation.objects.filter_by_organization(organization.id)
-                    .filter(id__in=deletable_ids)
-                    .delete()
-                )
-                result.locations_deleted = per_model.get(ResourceLocation._meta.label, 0)
-            # Read first, so a run with nothing to retire sends no UPDATE at all.
-            deactivate_ids = list(unseen.filter(is_active=True).values_list("id", flat=True))
-            if deactivate_ids:
-                result.locations_deactivated = (
-                    ResourceLocation.objects.filter_by_organization(organization.id)
-                    .filter(id__in=deactivate_ids)
-                    .update(is_active=False)
-                )
+        if not location_ids:
+            return
+        result.locations_deactivated = (
+            ResourceLocation.objects.filter_by_organization(organization.id)
+            .filter(id__in=location_ids, is_active=True)
+            .update(is_active=False)
+        )
 
     # ------------------------------------------------------------------
     # Linked rooms: (c) provider changes and (d) provider deletions
@@ -524,7 +508,7 @@ class RoomResyncService:
                 if self._create_synced_link(organization, provider, calendar, room, locations, now):
                     result.linked_calendar_ids.append(calendar.id)
 
-            importable, warning = self._cap_to_headroom(organization, provider, rooms_to_import)
+            importable, warning = self._cap_to_headroom(organization, rooms_to_import)
             result.import_warning = warning
             for room in importable:
                 calendar = self._upsert_room_calendar(organization, provider, room)
@@ -532,46 +516,17 @@ class RoomResyncService:
                     result.imported_calendar_ids.append(calendar.id)
 
     def _cap_to_headroom(
-        self, organization: Organization, provider: str, rooms: list[RoomDirectoryData]
+        self, organization: Organization, rooms: list[RoomDirectoryData]
     ) -> tuple[list[RoomDirectoryData], str | None]:
         """Keep only the rooms the ``resource_calendars`` headroom allows.
 
-        Reuses the on-demand import's own cap, unchanged, so both import paths
-        charge the plan limit by one rule. Must run inside the transaction that
-        writes the rooms: the cap locks the billing root until it commits.
+        Charged by the same cap as the on-demand room import, so both import
+        paths spend the plan limit by one rule. Must run inside the transaction
+        that writes the rooms: the cap locks the billing root until it commits.
         """
-        if not rooms:
-            return [], None
-        sync_service = CalendarSyncService(
-            context=CalendarServiceContext(
-                organization=organization,
-                user_or_token=None,
-                account=None,
-                calendar_adapter=None,
-                calendar_permission_service=None,
-                calendar_side_effects_service=None,
-                entitlement_service=self.entitlement_service,
-            ),
-            calendar_cache={},
-            # The cap reads only the context's entitlement service; it never
-            # reaches the host.
-            host=cast("SyncServiceHost", None),
+        kept_ids, warning = cap_to_resource_calendar_headroom(
+            self.entitlement_service, organization, [room.external_id for room in rooms]
         )
-        resources = [
-            CalendarResourceData(
-                name=room.name,
-                description=room.description or "",
-                provider=provider,
-                external_id=room.external_id,
-                email=room.email,
-                capacity=room.capacity,
-            )
-            for room in rooms
-        ]
-        kept, warning = sync_service._cap_resources_to_resource_calendar_headroom(
-            organization, resources, bypass_limits=False
-        )
-        kept_ids = {resource.external_id for resource in kept}
         return [room for room in rooms if room.external_id in kept_ids], warning
 
     def _upsert_room_calendar(

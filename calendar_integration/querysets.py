@@ -1464,10 +1464,6 @@ class ResourceLocationQuerySet(OrganizationScopedQuerySet):
         """Locations synced from ``provider``."""
         return self.filter(provider=provider)
 
-    def unreferenced(self) -> "ResourceLocationQuerySet":
-        """Locations no room link points at, so deleting them breaks nothing."""
-        return self.filter(provider_links__isnull=True)
-
 
 class ResourceCalendarProviderLinkQuerySet(OrganizationScopedQuerySet):
     """QuerySet for :class:`~calendar_integration.models.ResourceCalendarProviderLink`."""

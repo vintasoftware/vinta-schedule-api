@@ -294,7 +294,7 @@ class TestLocations:
         location.refresh_from_db()
         assert location.building_name == "New name"
 
-    def test_unseen_locations_are_deleted_unless_a_room_points_at_them(
+    def test_unseen_locations_are_deactivated_and_kept(
         self,
         resync: Callable[[], RoomResyncResult | None],
         directory: FakeRoomDirectory,
@@ -317,11 +317,40 @@ class TestLocations:
         result = resync()
 
         assert result is not None
-        assert (result.locations_deleted, result.locations_deactivated) == (1, 1)
+        assert result.locations_deactivated == 2
         assert sorted(
             ResourceLocation.objects.values_list("external_building_id", "is_active")
-        ) == [("building-1", True), ("gone-referenced", False)]
+        ) == [("building-1", True), ("gone-free", False), ("gone-referenced", False)]
         assert _reload(link).location == referenced
+
+    def test_a_location_seen_by_this_run_stays_active_whatever_its_stamp_says(
+        self,
+        service: RoomResyncService,
+        resync: Callable[[], RoomResyncResult | None],
+        directory: FakeRoomDirectory,
+        organization: Organization,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        location = create_resource_location(organization=organization)
+        directory.locations = [make_location()]
+        resync_linked_rooms = service._resync_linked_rooms
+
+        def overlapping_run_stamps_late(*args: Any, **kwargs: Any) -> None:
+            # An earlier, overlapping run commits its older ``last_seen_at`` stamp
+            # after this run stamped the location.
+            ResourceLocation.objects.filter(id=location.id).update(
+                last_seen_at=timezone.now() - datetime.timedelta(hours=1)
+            )
+            resync_linked_rooms(*args, **kwargs)
+
+        monkeypatch.setattr(service, "_resync_linked_rooms", overlapping_run_stamps_late)
+
+        result = resync()
+
+        assert result is not None
+        assert result.locations_deactivated == 0
+        location.refresh_from_db()
+        assert location.is_active is True
 
     def test_location_seen_again_is_reactivated(
         self,
