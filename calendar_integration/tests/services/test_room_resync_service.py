@@ -38,6 +38,7 @@ from calendar_integration.models import (
     ResourceCalendarProviderLink,
     ResourceLocation,
 )
+from calendar_integration.services.dataclasses import RoomDirectoryData
 from calendar_integration.services.room_resync_service import RoomResyncResult, RoomResyncService
 from calendar_integration.services.room_sync_notifier import RoomSyncNotifier
 from calendar_integration.signals import resource_room_archived, resource_room_synced
@@ -854,6 +855,102 @@ class TestProviderDeletions:
         assert result is not None
         assert result.archived_calendar_ids == []
         assert _reload(link).sync_status == ResourceSyncStatus.SYNCED
+
+
+# ---------------------------------------------------------------------------
+# A push that commits while the provider is being read
+# ---------------------------------------------------------------------------
+
+
+def _push_lands_during_listing(
+    directory: FakeRoomDirectory,
+    monkeypatch: pytest.MonkeyPatch,
+    push: Callable[[], None],
+) -> None:
+    """Make ``push`` commit after the resync took its timestamp, while it lists rooms."""
+    list_rooms = directory.list_rooms
+
+    def listing_with_a_push_in_between() -> list[RoomDirectoryData]:
+        rooms = list_rooms()
+        push()
+        return rooms
+
+    monkeypatch.setattr(directory, "list_rooms", listing_with_a_push_in_between)
+
+
+class TestListingOlderThanTheLink:
+    def test_an_edit_pushed_after_the_listing_is_not_reverted(
+        self,
+        resync: Callable[[], RoomResyncResult | None],
+        directory: FakeRoomDirectory,
+        organization: Organization,
+        notifier: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        link = _synced_room(
+            organization,
+            "room-1",
+            "Old",
+            sync_status=ResourceSyncStatus.PENDING_UPDATE,
+            pending_fields={"name": "Pushed"},
+        )
+        Calendar.objects.filter(id=link.calendar.id).update(name="Pushed")
+        # The provider is read before the push reaches it.
+        directory.rooms = [make_room("room-1", "Old")]
+
+        def push() -> None:
+            pushed = _reload(link)
+            pushed.mark_pushed({"name": "Pushed"}, {"name": "Pushed"})
+            pushed.sync_status = ResourceSyncStatus.SYNCED
+            pushed.save()
+
+        _push_lands_during_listing(directory, monkeypatch, push)
+
+        result = resync()
+
+        assert result is not None
+        assert result.skipped_link_ids == [link.id]
+        assert result.updated_calendar_ids == []
+        link = _reload(link)
+        assert (link.calendar.name, link.provider_snapshot["name"], link.sync_status) == (
+            "Pushed",
+            "Pushed",
+            ResourceSyncStatus.SYNCED,
+        )
+        assert notifier.mock_calls == []
+
+    def test_a_room_created_after_the_listing_is_not_archived(
+        self,
+        resync: Callable[[], RoomResyncResult | None],
+        directory: FakeRoomDirectory,
+        organization: Organization,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calendar = _room_calendar(organization, "", "Huddle 1")
+        link = create_resource_provider_link(
+            calendar=calendar, sync_status=ResourceSyncStatus.PENDING_CREATION
+        )
+        directory.rooms = [make_room("room-other", "Other")]
+
+        def push() -> None:
+            Calendar.objects.filter(id=calendar.id).update(external_id="room-new")
+            created = _reload(link)
+            created.mark_pushed(make_room("room-new", "Huddle 1").synced_values())
+            created.sync_status = ResourceSyncStatus.SYNCED
+            created.save()
+
+        _push_lands_during_listing(directory, monkeypatch, push)
+
+        result = resync()
+
+        assert result is not None
+        assert result.archived_calendar_ids == []
+        link = _reload(link)
+        assert (link.sync_status, link.archived_at, link.calendar.visibility) == (
+            ResourceSyncStatus.SYNCED,
+            None,
+            CalendarVisibility.ACTIVE,
+        )
 
 
 # ---------------------------------------------------------------------------

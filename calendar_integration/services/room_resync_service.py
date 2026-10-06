@@ -9,7 +9,9 @@ room directory on one provider and makes Vinta Schedule match it, in four steps:
    comes back is reactivated in place.
 2. **Linked rooms** (links in ``for_resync``), one transaction per link, each
    holding the link's row lock taken with ``skip_locked``. A link the push
-   engine is working on is skipped and picked up next hour.
+   engine is working on is skipped and picked up next hour, and so is a link
+   whose ``last_synced_at`` is not older than the listing: a push committed
+   after the provider was read, so the listing cannot speak for that link.
 
    - **(c) Changed on the provider.** For each field the provider changed since
      the last successful sync (``fields_changed_by_provider``), the provider's
@@ -35,7 +37,9 @@ room directory on one provider and makes Vinta Schedule match it, in four steps:
 4. Locations not seen in step 1 are marked inactive, as described there.
 
 Provider calls (``list_locations``, ``list_rooms``) happen before any
-transaction opens, so no lock is held across the network.
+transaction opens, so no lock is held across the network. The run's one
+timestamp is taken before them, so every stamp it writes (``last_synced_at``,
+``archived_at``, ``last_seen_at``) means "as of the listing".
 
 The caller must bind the organization with ``organization_context``; the
 ``resync_organization_rooms_task`` Celery task does. Running twice with no
@@ -119,7 +123,7 @@ class RoomResyncResult:
     imported_calendar_ids: list[int] = dataclass_field(default_factory=list)
     updated_calendar_ids: list[int] = dataclass_field(default_factory=list)
     archived_calendar_ids: list[int] = dataclass_field(default_factory=list)
-    skipped_locked_link_ids: list[int] = dataclass_field(default_factory=list)
+    skipped_link_ids: list[int] = dataclass_field(default_factory=list)
     import_warning: str | None = None
 
 
@@ -157,10 +161,12 @@ class RoomResyncService:
         if not resolver.is_write_enabled(organization, provider):
             return None
         adapter = resolver.adapter_for(organization, provider)
+        # Taken before the provider is read. A link synced at or after it was
+        # pushed after the listing, which is then too old to apply to it.
+        now = timezone.now()
         provider_locations = adapter.list_locations()
         provider_rooms = adapter.list_rooms()
 
-        now = timezone.now()
         result = RoomResyncResult()
         locations, unseen_location_ids = self._upsert_locations(
             organization, provider, provider_locations, now, result
@@ -177,14 +183,14 @@ class RoomResyncService:
 
         logger.info(
             "Room resync for organization %s on %s: linked=%s imported=%s updated=%s "
-            "archived=%s skipped_locked=%s",
+            "archived=%s skipped=%s",
             organization.id,
             provider,
             result.linked_calendar_ids,
             result.imported_calendar_ids,
             result.updated_calendar_ids,
             result.archived_calendar_ids,
-            result.skipped_locked_link_ids,
+            result.skipped_link_ids,
         )
         return result
 
@@ -332,7 +338,13 @@ class RoomResyncService:
             if link is None:
                 # The push engine holds the row. Its push will settle the link;
                 # the next hourly run reads whatever it left.
-                result.skipped_locked_link_ids.append(link_id)
+                result.skipped_link_ids.append(link_id)
+                return
+            if link.last_synced_at is not None and link.last_synced_at >= now:
+                # A push committed after the provider was read. Applying the older
+                # listing would revert what it pushed, or archive a room it just
+                # created. The next hourly run reads a fresh listing.
+                result.skipped_link_ids.append(link_id)
                 return
             # The status may have moved between the listing and the lock.
             if not link.is_bookable or not link.calendar.external_id:
