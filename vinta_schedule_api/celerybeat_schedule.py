@@ -52,4 +52,23 @@ CELERYBEAT_SCHEDULE = {
         "schedule": crontab(minute=30),
         "task": "payments.tasks.close_billing_periods",
     },
+    # Room and location resync for organizations with the
+    # `resource_calendar_provider_sync` flag on: imports provider-side room
+    # changes, provider-created rooms and provider deletions. Off the hour so it
+    # does not stack on `process_dunning`. A missed tick is made up by the next:
+    # each run compares the provider with the last-sync snapshot, not with the
+    # previous run.
+    "resync_provider_rooms": {
+        "schedule": crontab(minute=45),
+        "task": "calendar_integration.tasks.room_resync_tasks.resync_rooms_for_flagged_organizations_task",
+    },
+    # Synced-room create idempotency keys live 24 hours. Daily is enough: an expired
+    # key that is still in the table is already ignored (and replaced) by the create.
+    "purge_expired_resource_calendar_create_requests": {
+        "schedule": crontab(hour=4, minute=15),
+        "task": (
+            "calendar_integration.tasks.room_create_request_tasks."
+            "purge_expired_resource_calendar_create_requests_task"
+        ),
+    },
 }

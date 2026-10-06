@@ -18,7 +18,12 @@ from vinta_billing.services.subscription_service import SubscriptionService
 
 from audit_integration.constants import AuditAction
 from audit_integration.services import OrganizationAuditService
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import (
+    BookingResolutionKind,
+    CalendarProvider,
+    CalendarType,
+    RoomDeletionOutcome,
+)
 from calendar_integration.exceptions import (
     AppointmentTypeSlotConfigNotFoundError,
     AppointmentTypeValidationError,
@@ -46,6 +51,8 @@ from calendar_integration.graphql import (
     DeleteBookingPolicyResult,
     DeleteCalendarPoolInput,
     DeleteCalendarPoolResult,
+    RejectedResourceBookingGraphQLType,
+    ResourceBookingGraphQLType,
     UpdateBookingPolicyInput,
     UpdateCalendarPoolInput,
     appointment_type_scoped_availability_window_from_model,
@@ -73,6 +80,7 @@ from calendar_integration.services.dataclasses import (
     ExternalAttendeeInputData,
     ExternalClientIdentifierData,
     ResourceAllocationInputData,
+    booking_resolutions_from,
 )
 from organizations.branding_logo import (
     branding_diff_state,
@@ -486,7 +494,20 @@ class DeleteSystemUserResult:
 
 @strawberry.input
 class CreateResourceCalendarInput:
-    """Input for creating a manual resource (room/equipment) calendar."""
+    """Input for creating a resource (room/equipment) calendar.
+
+    provider: INTERNAL (the default) creates a manual room that exists only in Vinta
+        Schedule. GOOGLE or MICROSOFT creates the room in the organization's Google
+        Workspace or Microsoft 365. That needs the resource calendar provider sync
+        feature, a write-enabled connection for the provider, and ``location_id``.
+        The room is returned right away with ``providerSync.status`` PENDING_CREATION
+        and is created on the provider in the background.
+    location_id: An active location of the same provider, from ``resourceLocations``.
+        Provider rooms only.
+    idempotency_key: Makes a retried provider room create safe. Sending the same key
+        and payload again within 24 hours returns the same room; the same key with a
+        different payload is rejected. Provider rooms only.
+    """
 
     organization_id: int
     name: str
@@ -494,6 +515,9 @@ class CreateResourceCalendarInput:
     capacity: int | None = None
     manage_available_windows: bool = False
     is_private: bool = True
+    provider: CalendarProvider = CalendarProvider.INTERNAL
+    location_id: int | None = None
+    idempotency_key: str | None = None
 
 
 @strawberry.type
@@ -503,6 +527,31 @@ class CreateResourceCalendarResult:
     success: bool
     error_message: str | None = None
     calendar: CalendarGraphQLType | None = None
+
+
+def _create_synced_resource_calendar(
+    info: strawberry.Info,
+    input: CreateResourceCalendarInput,  # noqa: A002
+) -> CreateResourceCalendarResult:
+    """The ``createResourceCalendar`` path for a Google or Microsoft room."""
+    calendar_service, _org = _get_org_and_init_calendar_service(info)
+    try:
+        calendar = calendar_service.create_synced_resource_calendar(
+            provider=input.provider,
+            location_id=input.location_id,
+            name=input.name,
+            description=input.description,
+            capacity=input.capacity,
+            idempotency_key=input.idempotency_key,
+            manage_available_windows=input.manage_available_windows,
+            accepts_public_scheduling=not input.is_private,
+        )
+    except OverLimitError as exc:
+        raise_over_limit_graphql_error(exc)
+    except (CalendarIntegrationError, DjangoValidationError, IntegrityError) as e:
+        return CreateResourceCalendarResult(success=False, error_message=str(e))
+
+    return CreateResourceCalendarResult(success=True, calendar=calendar)  # type: ignore[arg-type]
 
 
 @strawberry.input
@@ -526,8 +575,15 @@ class UpdateResourceCalendarInput:
     """Input for partially updating a resource calendar.
 
     Only provided (non-None) fields are updated; omitted fields leave the calendar unchanged.
-    The target calendar must be of type RESOURCE and must have provider INTERNAL (not synced
-    from an external provider).
+    The target calendar must be of type RESOURCE. It must have provider INTERNAL, unless it is
+    a room created or imported through the resource calendar provider sync feature (it has a
+    ``providerSync``) and that feature is on. A synced room's name, description, capacity and
+    location are pushed to the provider in the background, with ``providerSync.status``
+    PENDING_UPDATE until the provider confirms them. A synced room cannot be set INACTIVE
+    here: delete it with ``deleteResourceCalendar``.
+
+    location_id: An active location of the room's provider, from ``resourceLocations``, to
+        move a synced room to. Synced rooms only.
 
     is_private: If provided (non-None), updates the calendar's privacy.
         True  -> accepts_public_scheduling=False (private, codeless booking disallowed).
@@ -547,6 +603,7 @@ class UpdateResourceCalendarInput:
     manage_available_windows: bool | None = None
     is_private: bool | None = None
     visibility: str | None = None
+    location_id: int | None = None
 
 
 @strawberry.type
@@ -556,6 +613,90 @@ class UpdateResourceCalendarResult:
     success: bool
     error_message: str | None = None
     calendar: CalendarGraphQLType | None = None
+
+
+@strawberry.input
+class RetryResourceCalendarSyncInput:
+    """Input for retrying a synced room's failed provider sync."""
+
+    organization_id: int
+    calendar_id: int
+
+
+@strawberry.type
+class RetryResourceCalendarSyncResult:
+    """Result of the retryResourceCalendarSync mutation."""
+
+    success: bool
+    error_message: str | None = None
+    calendar: CalendarGraphQLType | None = None
+
+
+@strawberry.input
+class ResourceBookingResolutionOverrideInput:
+    """The resolution for one booking of a room that is being deleted.
+
+    event_id: A booking's ``eventId`` from ``resourceCalendarDeletionPreview``.
+    target_calendar_id: The room to move the booking to. Required for MOVE, and only
+        allowed for MOVE.
+    """
+
+    event_id: int
+    resolution: BookingResolutionKind
+    target_calendar_id: int | None = None
+
+
+@strawberry.input
+class DeleteResourceCalendarInput:
+    """Input for deleting a room synced with Google or Microsoft.
+
+    fingerprint: The ``fingerprint`` from ``resourceCalendarDeletionPreview``. The
+        delete is rejected if the room's bookings changed since.
+    default_resolution: How every booking without an override is resolved. ABORT
+        cancels the deletion if the room has any booking.
+    target_calendar_id: The room to move bookings to when ``default_resolution`` is
+        MOVE. Required for MOVE, and only allowed for MOVE.
+    overrides: A different resolution for some bookings, at most one per booking.
+    """
+
+    organization_id: int
+    calendar_id: int
+    fingerprint: str
+    default_resolution: BookingResolutionKind
+    target_calendar_id: int | None = None
+    overrides: list[ResourceBookingResolutionOverrideInput] | None = None
+
+
+@strawberry.type
+class DeleteResourceCalendarResult:
+    """Result of the deleteResourceCalendar mutation.
+
+    ``success`` is true when every booking is resolved and the room is archived, or
+    will be once the provider delete runs (``calendar.providerSync.status`` is then
+    PENDING_DELETION or ARCHIVED). ``outcome`` is null only when the request failed
+    before the delete ran (invalid input, the feature off, a stale fingerprint).
+    Otherwise nothing about the room changed, ``errorMessage`` explains the outcome,
+    and:
+
+    - ABORTED: ``abortedBookings`` lists the bookings, since the resolution
+      cancelled the deletion;
+    - REJECTED: ``rejectedBookings`` lists every booking whose resolution is invalid;
+    - INCOMPLETE: applying stopped at ``failedAtEventId``. The bookings in
+      ``appliedEventIds`` are resolved, those in ``pendingEventIds`` are not. Preview
+      again and retry.
+    """
+
+    success: bool
+    outcome: RoomDeletionOutcome | None = None
+    error_message: str | None = None
+    calendar: CalendarGraphQLType | None = None
+    aborted_bookings: list[ResourceBookingGraphQLType] = strawberry.field(default_factory=list)
+    rejected_bookings: list[RejectedResourceBookingGraphQLType] = strawberry.field(
+        default_factory=list
+    )
+    applied_event_ids: list[int] = strawberry.field(default_factory=list)
+    pending_event_ids: list[int] = strawberry.field(default_factory=list)
+    failed_at_event_id: int | None = None
 
 
 @strawberry.input
@@ -2086,15 +2227,28 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         info: strawberry.Info,
         input: CreateResourceCalendarInput,  # noqa: A002
     ) -> CreateResourceCalendarResult:
-        """Create a manual resource (room/equipment) calendar for the acting organization.
+        """Create a resource (room/equipment) calendar for the acting organization.
 
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
-        2. Delegates to CalendarService.create_resource_calendar with the supplied parameters.
+        2. Delegates to CalendarService.create_resource_calendar for a manual (INTERNAL)
+           room, or to CalendarService.create_synced_resource_calendar for a Google or
+           Microsoft room.
         3. Returns the created Calendar on success, or success=False + errorMessage on failure.
 
         The token's OrganizationResourceAccess must include the CREATE_RESOURCE_CALENDAR resource.
         """
+        if input.provider != CalendarProvider.INTERNAL:
+            return _create_synced_resource_calendar(info, input)
+        if input.location_id is not None or input.idempotency_key is not None:
+            return CreateResourceCalendarResult(
+                success=False,
+                error_message=(
+                    "locationId and idempotencyKey only apply to rooms created on "
+                    "Google or Microsoft."
+                ),
+            )
+
         calendar_service, _org = _get_org_and_init_calendar_service(info)
 
         # create_resource_calendar raises OverLimitError at the organization's
@@ -2198,6 +2352,10 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
     ) -> DisableResourceCalendarResult:
         """Disable a resource calendar by setting its visibility to INACTIVE.
 
+        A room synced with Google or Microsoft cannot be disabled while the resource
+        calendar provider sync feature is on: it returns success=False, and the room is
+        deleted through ``deleteResourceCalendar`` instead.
+
         The mutation:
         1. Resolves the organization and initializes the calendar service via the system-user token.
         2. Delegates to CalendarService.disable_resource_calendar with the supplied calendar_id.
@@ -2235,9 +2393,10 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         3. Returns the updated CalendarGraphQLType on success, or success=False + errorMessage
            on failure.
 
-        The target calendar must be of type RESOURCE and have provider INTERNAL; synced
-        calendars and non-RESOURCE types raise ValueError → success=False with the reason.
-        Cross-org / missing calendar surfaces as "Calendar not found." (no existence leak).
+        The target calendar must be of type RESOURCE and have provider INTERNAL, or be a
+        synced room while the resource calendar provider sync feature is on; anything else
+        returns success=False with the reason. Cross-org / missing calendar surfaces as
+        "Calendar not found." (no existence leak).
 
         The token's OrganizationResourceAccess must include the UPDATE_RESOURCE_CALENDAR resource.
         """
@@ -2264,13 +2423,103 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                 manage_available_windows=input.manage_available_windows,
                 accepts_public_scheduling=accepts_public_scheduling,
                 visibility=input.visibility,
+                location_id=input.location_id,
             )
         except Calendar.DoesNotExist:
             return UpdateResourceCalendarResult(success=False, error_message="Calendar not found.")
-        except (ValueError, DjangoValidationError, IntegrityError) as e:
+        except (
+            ValueError,
+            CalendarIntegrationError,
+            DjangoValidationError,
+            IntegrityError,
+        ) as e:
             return UpdateResourceCalendarResult(success=False, error_message=str(e))
 
         return UpdateResourceCalendarResult(success=True, calendar=calendar)  # type: ignore[arg-type]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def delete_resource_calendar(
+        self,
+        info: strawberry.Info,
+        input: DeleteResourceCalendarInput,  # noqa: A002
+    ) -> DeleteResourceCalendarResult:
+        """Delete a room synced with Google or Microsoft, resolving its future bookings.
+
+        Every resolution is checked first, all or nothing. Then the bookings are moved,
+        lose the room, or are cancelled one at a time, their organizers are notified,
+        and the room is archived: it is no longer bookable, no longer counts against
+        the plan limit, and is deleted from the provider in the background. Deleting a
+        room that is already archived succeeds and changes nothing. Manual rooms are
+        disabled with ``disableResourceCalendar`` instead. Requires the
+        ``resource_calendar_provider_sync`` feature.
+
+        The token's OrganizationResourceAccess must include the DELETE_RESOURCE_CALENDAR
+        resource.
+        """
+        try:
+            default, overrides = booking_resolutions_from(
+                input.default_resolution,
+                input.target_calendar_id,
+                ((o.event_id, o.resolution, o.target_calendar_id) for o in input.overrides or []),
+            )
+        except ValueError as e:
+            return DeleteResourceCalendarResult(success=False, error_message=str(e))
+
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+        try:
+            result = calendar_service.delete_synced_resource_calendar(
+                input.calendar_id, input.fingerprint, default, overrides
+            )
+        except Calendar.DoesNotExist:
+            return DeleteResourceCalendarResult(success=False, error_message="Calendar not found.")
+        except (ValueError, CalendarIntegrationError) as e:
+            return DeleteResourceCalendarResult(success=False, error_message=str(e))
+
+        return DeleteResourceCalendarResult(
+            success=result.deleted,
+            outcome=result.outcome,
+            error_message=None if result.deleted else str(result.outcome.label),
+            calendar=(
+                Calendar.objects.filter_by_organization(org.id).get(id=input.calendar_id)  # type: ignore[arg-type]
+                if result.deleted
+                else None
+            ),
+            aborted_bookings=[ResourceBookingGraphQLType.from_booking(b) for b in result.bookings],
+            rejected_bookings=[
+                RejectedResourceBookingGraphQLType.from_rejected(r) for r in result.rejected
+            ],
+            applied_event_ids=list(result.applied_event_ids),
+            pending_event_ids=list(result.pending_event_ids),
+            failed_at_event_id=result.failed_at_event_id,
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def retry_resource_calendar_sync(
+        self,
+        info: strawberry.Info,
+        input: RetryResourceCalendarSyncInput,  # noqa: A002
+    ) -> RetryResourceCalendarSyncResult:
+        """Retry a synced room's failed provider sync (org-scoped).
+
+        The room's ``providerSync.status`` goes from SYNC_FAILED back to the pending
+        status of the operation that failed, and the push runs again in the background.
+        Needs the resource calendar provider sync feature.
+
+        The token's OrganizationResourceAccess must include the RETRY_RESOURCE_CALENDAR_SYNC
+        resource.
+        """
+        calendar_service, _org = _get_org_and_init_calendar_service(info)
+
+        try:
+            calendar = calendar_service.retry_resource_calendar_sync(calendar_id=input.calendar_id)
+        except Calendar.DoesNotExist:
+            return RetryResourceCalendarSyncResult(
+                success=False, error_message="Calendar not found."
+            )
+        except CalendarIntegrationError as e:
+            return RetryResourceCalendarSyncResult(success=False, error_message=str(e))
+
+        return RetryResourceCalendarSyncResult(success=True, calendar=calendar)  # type: ignore[arg-type]
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def import_resource_calendars(

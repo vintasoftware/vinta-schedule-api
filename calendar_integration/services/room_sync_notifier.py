@@ -38,6 +38,7 @@ from django.db.models import TextChoices
 from vintasend.constants import NotificationTypes
 from vintasend.services.notification_service import NotificationContextDict
 
+from calendar_integration.constants import BookingRoomChange
 from calendar_integration.models import Calendar, CalendarEvent
 from organizations.models import OrganizationMembership
 
@@ -52,14 +53,6 @@ class RoomSyncOperation(TextChoices):
     CREATE = "create", "Create"
     UPDATE = "update", "Update"
     DELETE = "delete", "Delete"
-
-
-class BookingRoomChange(TextChoices):
-    """What happened to a booking's room when a room was deleted."""
-
-    MOVED = "moved", "Moved to another room"
-    ROOM_REMOVED = "room_removed", "Room removed from the booking"
-    EVENT_CANCELLED = "event_cancelled", "Booking cancelled"
 
 
 _EMAIL_DIR = "calendar_integration/emails"

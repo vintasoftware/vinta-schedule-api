@@ -98,6 +98,26 @@ class ExceptionToNonRecurringEventError(EventManagementError):
         super().__init__(f"Cannot create exception for non-recurring {object_type_name}")
 
 
+class RoomNotBookableError(EventManagementError):
+    """An event write allocates a room whose provider link is not bookable.
+
+    Raised for a room that is pending creation, failed on create, pending deletion,
+    failed on delete, or archived. Rooms with no provider link are never rejected.
+    """
+
+    default_message = "Room is not bookable."
+
+
+class StaleBookingPreviewError(CalendarIntegrationError):
+    """The room's bookings changed since the deletion preview the caller sent.
+
+    Raised by ``BookingResolutionService.validate`` when the fingerprint does not
+    match. The caller must request a new preview.
+    """
+
+    default_message = "The room's bookings changed since the preview. Request a new preview."
+
+
 class InvalidCalendarOperationError(EventManagementError):
     default_message = "This calendar does not manage available windows."
 
@@ -584,3 +604,39 @@ class ResourceDirectoryNotWriteEnabledError(ResourceDirectoryPermissionError):
     """
 
     default_message = "Room writes are not enabled for this organization and provider."
+
+
+class RoomSyncStateError(CalendarIntegrationError):
+    """A room sync operation was asked for from a link status that does not allow it.
+
+    For example an edit of a room that is pending deletion or archived, or a manual
+    retry of a link that is not in sync failed.
+    """
+
+    default_message = "This room's sync status does not allow that operation."
+
+
+class ResourceCalendarProviderSyncNotEnabledError(CalendarIntegrationError):
+    """The ``resource_calendar_provider_sync`` feature flag is off for the organization."""
+
+    default_message = "Resource calendar provider sync is not enabled for this organization."
+
+
+class InvalidResourceCalendarProviderError(CalendarIntegrationError):
+    """A synced room was asked for on a provider whose rooms Vinta Schedule cannot write."""
+
+    default_message = "Rooms can only be created on Google or Microsoft."
+
+
+class InvalidResourceLocationError(CalendarIntegrationError):
+    """The location for a new synced room is missing, inactive, or from another provider."""
+
+    default_message = (
+        "The location was not found, is no longer active, or belongs to another provider."
+    )
+
+
+class ResourceCalendarIdempotencyKeyReusedError(CalendarIntegrationError):
+    """An idempotency key was sent again with a different room create payload."""
+
+    default_message = "This idempotency key was already used with a different request."

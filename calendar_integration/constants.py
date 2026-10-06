@@ -209,3 +209,61 @@ ROOM_ON_PROVIDER_STATES: frozenset[tuple[str, str]] = frozenset(
         (ResourceSyncStatus.SYNC_FAILED, ResourceSyncOperation.UPDATE),
     }
 )
+
+
+class BookingCancelMode(TextChoices):
+    """How a booking of a room that is being deleted is cancelled."""
+
+    REMOVE_ROOM = "remove_room", "Remove only the room"
+    CANCEL_EVENT = "cancel_event", "Cancel the whole event"
+
+
+class BookingResolutionKind(TextChoices):
+    """How a booking of a room that is being deleted is resolved, as callers name it.
+
+    ``MOVE`` needs a target room. See ``booking_resolution_from``.
+    """
+
+    ABORT = "abort", "Cancel the room deletion"
+    MOVE = "move", "Move to another room"
+    REMOVE_ROOM = "remove_room", "Remove only the room"
+    CANCEL_EVENT = "cancel_event", "Cancel the whole event"
+
+
+class RoomDeletionOutcome(TextChoices):
+    """What a synced-room delete did. The label is the message to show the caller."""
+
+    DELETED = "deleted", "The room was deleted."
+    ABORTED = "aborted", "The room has bookings and the resolution cancelled the deletion."
+    REJECTED = "rejected", "Some bookings cannot be resolved as asked."
+    INCOMPLETE = (
+        "incomplete",
+        "Resolving the bookings stopped part way; preview again and retry.",
+    )
+
+
+class BookingRoomChange(TextChoices):
+    """What happened to a booking's room when a room was deleted. Sent to the organizer."""
+
+    MOVED = "moved", "Moved to another room"
+    ROOM_REMOVED = "room_removed", "Room removed from the booking"
+    EVENT_CANCELLED = "event_cancelled", "Booking cancelled"
+
+
+class BookingRejectionReason(TextChoices):
+    """Why a booking's resolution was rejected. The label is the message shown to callers."""
+
+    NOT_IN_PREVIEW = "not_in_preview", "booking is not in the deletion preview"
+    TARGET_NOT_FOUND = "target_not_found", "target room not found"
+    TARGET_IS_SAME_ROOM = "target_is_same_room", "target room is the room being deleted"
+    TARGET_NOT_BOOKABLE = "target_not_bookable", "target room is not bookable"
+    TARGET_ON_DIFFERENT_PROVIDER = (
+        "target_on_different_provider",
+        "target room is on a different provider",
+    )
+    TARGET_TOO_SMALL = "target_too_small", "target room is too small"
+    TARGET_BUSY = "target_busy", "target room is busy"
+    ON_ROOM_CALENDAR = (
+        "on_room_calendar",
+        "booking is on the room's own calendar and can only be cancelled",
+    )

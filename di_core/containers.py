@@ -37,6 +37,7 @@ from calendar_integration.services.booking_policy_permission_service import (
     BookingPolicyPermissionService,
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
+from calendar_integration.services.booking_resolution_service import BookingResolutionService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
@@ -46,7 +47,12 @@ from calendar_integration.services.external_client_identifier_service import (
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
+from calendar_integration.services.protocols.resource_directory_adapter import (
+    ResourceDirectoryAdapterResolver,
+)
+from calendar_integration.services.room_resync_service import RoomResyncService
 from calendar_integration.services.room_sync_notifier import RoomSyncNotifier
+from calendar_integration.services.room_sync_service import RoomSyncService
 from legal.services import ConsentService
 from notifications.notification_adapters.django_email import (
     ReplyToDjangoEmailNotificationAdapter,
@@ -283,6 +289,30 @@ class AppContainer(containers.DeclarativeContainer):
         notification_service=notification_service,
     )
 
+    #: The `ResourceDirectoryAdapterResolver` the room sync engines reach provider
+    #: room directories through. Declared here, unset: Phase 8 of the resource
+    #: calendar provider sync plan binds it to the real Google / Microsoft
+    #: resolver. Until then resolving a service that needs it (`room_sync_service`,
+    #: `room_resync_service`) raises, and tests override it with a fake.
+    resource_directory_adapter_resolver: providers.Dependency[ResourceDirectoryAdapterResolver] = (
+        providers.Dependency()
+    )
+
+    room_resync_service = providers.Factory(
+        RoomResyncService,
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
+        room_sync_notifier=room_sync_notifier,
+        audit_service=audit_service,
+        entitlement_service=entitlement_service,
+    )
+
+    room_sync_service = providers.Factory(
+        RoomSyncService,
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
+        room_sync_notifier=room_sync_notifier,
+        audit_service=audit_service,
+    )
+
     booking_policy_service = providers.Factory(
         BookingPolicyService,
         audit_service=audit_service,
@@ -305,6 +335,23 @@ class AppContainer(containers.DeclarativeContainer):
         booking_policy_service=booking_policy_service,
         entitlement_service=entitlement_service,
         external_client_identifier_service=external_client_identifier_service,
+        # Factories rather than instances: `resource_directory_adapter_resolver` may be
+        # undefined, and only a synced-room create needs either of them.
+        room_sync_service_factory=room_sync_service.provider,
+        resource_directory_adapter_resolver_factory=resource_directory_adapter_resolver.provider,
+    )
+
+    booking_resolution_service = providers.Factory(
+        BookingResolutionService,
+        resource_directory_adapter_resolver=resource_directory_adapter_resolver,
+        booking_room_change_notifier=room_sync_notifier,
+        calendar_service=calendar_service,
+    )
+    # Added here rather than in the `calendar_service` definition above, because the
+    # booking resolution service is itself built with a `CalendarService`. A factory, so
+    # neither is built until a synced room is deleted.
+    calendar_service.add_kwargs(
+        booking_resolution_service_factory=booking_resolution_service.provider
     )
 
     bookable_slots_service = providers.Factory(

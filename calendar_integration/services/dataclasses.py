@@ -6,7 +6,11 @@ from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
 
 from calendar_integration.constants import (
+    BookingCancelMode,
+    BookingRejectionReason,
+    BookingResolutionKind,
     CalendarProvider,
+    RoomDeletionOutcome,
 )
 from calendar_integration.models import (
     AvailableTime,
@@ -746,3 +750,178 @@ class BusyWindow:
 
     start: datetime.datetime
     end: datetime.datetime
+
+
+@dataclass(frozen=True)
+class RoomBooking:
+    """One future booking of a room, as a deletion preview lists it.
+
+    ``start`` / ``end`` are the first occurrence that has not ended yet. A one-off
+    event is that occurrence. A series (``is_series``) is resolved as one unit:
+    ``series_from`` is set when the series started before now, and is the start of
+    that first occurrence, so the series is resolved "from now on". A series that
+    has not started yet has ``series_from=None`` and is resolved as a whole.
+    ``calendar_id`` is the calendar that holds the event.
+    """
+
+    event_id: int
+    calendar_id: int | None
+    title: str
+    start: datetime.datetime
+    end: datetime.datetime
+    is_series: bool
+    series_from: datetime.datetime | None
+
+
+@dataclass(frozen=True)
+class RoomBookingPreview:
+    """A room's future bookings, plus the fingerprint a delete must send back."""
+
+    fingerprint: str
+    bookings: tuple[RoomBooking, ...]
+
+
+@dataclass(frozen=True)
+class AbortDeletion:
+    """Resolution: cancel the room deletion; the booking and the room stay as they are."""
+
+
+@dataclass(frozen=True)
+class MoveBooking:
+    """Resolution: move the booking to the room ``target_calendar_id``."""
+
+    target_calendar_id: int
+
+
+@dataclass(frozen=True)
+class CancelBooking:
+    """Resolution: drop the room from the booking, or cancel the whole event."""
+
+    mode: BookingCancelMode
+
+
+BookingResolution = AbortDeletion | MoveBooking | CancelBooking
+
+
+def booking_resolution_from(kind: str, target_calendar_id: int | None = None) -> BookingResolution:
+    """The ``BookingResolution`` a caller names with a ``BookingResolutionKind``.
+
+    Raises ``ValueError`` when ``MOVE`` has no ``target_calendar_id``, or another kind
+    has one.
+    """
+    if kind == BookingResolutionKind.MOVE:
+        if target_calendar_id is None:
+            raise ValueError("A move needs a target room.")
+        return MoveBooking(target_calendar_id)
+    if target_calendar_id is not None:
+        raise ValueError("A target room only applies to a move.")
+    if kind == BookingResolutionKind.ABORT:
+        return AbortDeletion()
+    if kind == BookingResolutionKind.REMOVE_ROOM:
+        return CancelBooking(BookingCancelMode.REMOVE_ROOM)
+    if kind == BookingResolutionKind.CANCEL_EVENT:
+        return CancelBooking(BookingCancelMode.CANCEL_EVENT)
+    raise ValueError(f"Unknown booking resolution {kind!r}.")
+
+
+def booking_resolutions_from(
+    default_kind: str,
+    target_calendar_id: int | None,
+    overrides: Iterable[tuple[int, str, int | None]] = (),
+) -> tuple[BookingResolution, dict[int, BookingResolution]]:
+    """The default resolution and the per-booking ones a caller names.
+
+    ``overrides`` holds ``(event_id, kind, target_calendar_id)`` per booking. Returns
+    the default and the overrides keyed by event id. Raises ``ValueError`` when a
+    resolution is invalid (see ``booking_resolution_from``) or a booking is overridden
+    more than once.
+    """
+    default = booking_resolution_from(default_kind, target_calendar_id)
+    by_event: dict[int, BookingResolution] = {}
+    for event_id, kind, target in overrides:
+        if event_id in by_event:
+            raise ValueError(f"Booking {event_id} has more than one override.")
+        by_event[event_id] = booking_resolution_from(kind, target)
+    return default, by_event
+
+
+@dataclass(frozen=True)
+class ResolvedBooking:
+    """A booking together with the resolution chosen for it."""
+
+    booking: RoomBooking
+    resolution: BookingResolution
+
+
+@dataclass(frozen=True)
+class BookingResolutionPlan:
+    """A validated resolution for every future booking of ``room_id``, in preview order."""
+
+    room_id: int
+    organization_id: int
+    fingerprint: str
+    bookings: tuple[ResolvedBooking, ...]
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    """What ``BookingResolutionService.apply`` did with a plan, by event id, in plan order.
+
+    ``applied`` holds the bookings that are resolved: changed by this run, or already
+    no longer referencing the room (a re-run). ``pending`` holds the bookings left
+    untouched because the apply stopped, starting with ``failed_at``, the booking
+    whose step failed. ``failed_at`` is ``None`` and ``pending`` is empty when every
+    booking was applied.
+    """
+
+    applied: tuple[int, ...]
+    pending: tuple[int, ...]
+    failed_at: int | None
+
+
+@dataclass(frozen=True)
+class RejectedBooking:
+    """A booking whose resolution is invalid. ``reason.label`` is the message to show."""
+
+    event_id: int
+    reason: BookingRejectionReason
+
+
+@dataclass(frozen=True)
+class RoomDeletionResult:
+    """What ``CalendarService.delete_synced_resource_calendar`` did with a room.
+
+    ``outcome`` says which one happened, and its label is the message to show:
+
+    - ``DELETED``: every booking is resolved and the room is archived, or on its
+      way to being archived once the provider delete runs. Also when the room was
+      already archived or being deleted, so a repeated delete succeeds.
+    - ``ABORTED``: a booking's resolution cancelled the deletion. ``bookings`` lists
+      the room's future bookings, and nothing changed.
+    - ``REJECTED``: some resolutions are invalid, all listed in ``rejected``;
+      nothing changed.
+    - ``INCOMPLETE``: the apply stopped part way. The bookings in
+      ``applied_event_ids`` are resolved, those in ``pending_event_ids`` are not, and
+      the room is not deleted. Preview again and retry.
+    """
+
+    outcome: RoomDeletionOutcome
+    bookings: tuple[RoomBooking, ...] = ()
+    rejected: tuple[RejectedBooking, ...] = ()
+    apply_result: ApplyResult | None = None
+
+    @property
+    def deleted(self) -> bool:
+        return self.outcome == RoomDeletionOutcome.DELETED
+
+    @property
+    def applied_event_ids(self) -> tuple[int, ...]:
+        return self.apply_result.applied if self.apply_result else ()
+
+    @property
+    def pending_event_ids(self) -> tuple[int, ...]:
+        return self.apply_result.pending if self.apply_result else ()
+
+    @property
+    def failed_at_event_id(self) -> int | None:
+        return self.apply_result.failed_at if self.apply_result else None

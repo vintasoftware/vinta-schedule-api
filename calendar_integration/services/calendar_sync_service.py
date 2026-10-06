@@ -84,6 +84,8 @@ from users.models import User
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from vinta_billing.services.entitlement_service import EntitlementService
+
     from calendar_integration.services.calendar_service_context import CalendarServiceContext
     from calendar_integration.services.dataclasses import (
         CalendarEventAdapterOutputData,
@@ -104,13 +106,110 @@ logger = logging.getLogger(__name__)
 MAX_SKIPPED_EXTERNAL_IDS_IN_WARNING = 20
 
 
-def _summarize_external_ids(resources: list[CalendarResourceData]) -> str:
+def _summarize_external_ids(external_ids: list[str]) -> str:
     """Render at most ``MAX_SKIPPED_EXTERNAL_IDS_IN_WARNING`` ids, eliding the rest."""
-    shown = [r.external_id for r in resources[:MAX_SKIPPED_EXTERNAL_IDS_IN_WARNING]]
-    remaining = len(resources) - len(shown)
+    shown = external_ids[:MAX_SKIPPED_EXTERNAL_IDS_IN_WARNING]
+    remaining = len(external_ids) - len(shown)
     if remaining > 0:
         return f"{shown} ... and {remaining} more"
     return f"{shown}"
+
+
+def cap_to_resource_calendar_headroom(
+    entitlement_service: EntitlementService,
+    organization: Organization,
+    external_ids: list[str],
+) -> tuple[set[str], str | None]:
+    """Cap ``external_ids`` to ``organization``'s remaining ``resource_calendars`` headroom.
+
+    ``external_ids`` are the rooms a bulk upsert keyed on ``(organization, external_id)``
+    is about to write, each listed once. The caller must hold a transaction that also
+    writes them: the cap locks the billing root until that transaction commits. The
+    on-demand room import and the hourly room resync both charge through here.
+
+    The bulk room-import writer is a request-scoped check's blind spot --
+    it loops ``Calendar.objects.update_or_create`` with no per-row check, so it is
+    the single most likely place for an unmetered path to survive. This is checked
+    and capped *before* the bulk write, not per-row after it.
+
+    The rule is **"will this write increase**
+    ``vinta_billing.services.entitlement_service._count_resource_calendars``**?"** -- not
+    "does a ``Calendar`` row already exist for this org + external_id?". Those two
+    differ, and in the permissive direction: the write loop below puts
+    ``calendar_type=RESOURCE`` in ``update_or_create``'s ``defaults``, so matching a
+    *non*-RESOURCE row (a PERSONAL calendar imported by ``import_account_calendars``,
+    which keys on the very same ``(organization, external_id)``) **promotes** that row
+    into the counted set. Treating it as "already imported" therefore consumed no
+    headroom while raising usage by one -- unbounded unmetered RESOURCE calendars, and
+    for Microsoft a total bypass rather than an edge case, since
+    ``get_account_calendars`` and ``get_calendar_resources`` both list the same
+    calendars with the same ``external_id`` space.
+
+    The split helper consequently lives on ``CalendarQuerySet`` as
+    ``external_ids_not_newly_counted_as_type`` / ``not_newly_counted_as_type``, defined
+    immediately next to the ``live_of_type`` the usage counter counts with, as the
+    complement of *newly entering* it (not of ``live_of_type`` itself -- a row already
+    live as some other type is in neither set), so the two cannot drift apart again.
+
+    A resource that does not increase the count -- an already-RESOURCE row, or a
+    soft-deleted row the upsert leaves soft-deleted -- is free; every other one
+    (no row at all, or a live row of another type) consumes headroom. When the
+    chargeable resources do not all fit, as many as fit are imported (not zero, not
+    all-or-nothing) and a human-readable warning is returned for the caller to
+    record -- a partial import is preferred over an unmetered one, never the
+    reverse.
+
+    Checked and locked (``SELECT ... FOR UPDATE`` on the billing root's
+    subscription) inside the caller's own transaction, so two concurrent imports for
+    the same organization's last unit of capacity serialize on that row exactly like
+    every other checked creation path. The lock is taken *before* the
+    split query, not by ``check_limit`` after it: the delta itself is derived from
+    that read, so reading it outside the lock lets the loser of a race compute its
+    headroom from a snapshot the winner has already invalidated.
+
+    :return: ``(kept_ids, warning)`` -- ``kept_ids`` is the subset of ``external_ids``
+        (the free ones plus as many chargeable ones as fit) that should actually be
+        written; ``warning`` is ``None`` unless the import had to be capped.
+    """
+    if not external_ids:
+        return set(), None
+
+    # Take the guard lock before the split read below -- see the docstring.
+    entitlement_service.lock_billing_root(scope_for(organization))
+
+    free_ids = Calendar.objects.filter_by_organization(
+        organization.id
+    ).external_ids_not_newly_counted_as_type(external_ids, CalendarType.RESOURCE)
+    chargeable_ids = [external_id for external_id in external_ids if external_id not in free_ids]
+    if not chargeable_ids:
+        # Nothing this run writes can raise the counted total (every discovered
+        # resource is either already a live RESOURCE calendar or a soft-deleted row
+        # that stays soft-deleted), so it consumes no headroom.
+        return set(external_ids), None
+
+    result = entitlement_service.check_limit(
+        scope_for(organization),
+        RESOURCE_CALENDARS,
+        delta=len(chargeable_ids),
+        lock=True,
+    )
+    if result.allowed:
+        return set(external_ids), None
+
+    # Blocked -> current_usage/ceiling are guaranteed non-None (see
+    # LimitCheckResult's docstring).
+    headroom = max((result.ceiling or 0) - (result.current_usage or 0), 0)
+    importable_ids = set(chargeable_ids[:headroom])
+    skipped = [external_id for external_id in chargeable_ids if external_id not in importable_ids]
+    warning = (
+        f"Partial resource-calendar import for organization {organization.id}: at its "
+        f"resource_calendars ceiling ({result.ceiling}, currently using "
+        f"{result.current_usage}). Imported {len(importable_ids)} of "
+        f"{len(chargeable_ids)} new resource calendars; skipped {len(skipped)} "
+        f"({_summarize_external_ids(skipped)})."
+    )
+    logger.warning(warning)
+    return free_ids | importable_ids, warning
 
 
 class SyncServiceHost(Protocol):
@@ -319,45 +418,8 @@ class CalendarSyncService:
     ) -> tuple[list[CalendarResourceData], str | None]:
         """Cap ``resources`` to the organization's remaining ``resource_calendars`` headroom.
 
-        The bulk room-import writer is a request-scoped check's blind spot --
-        it loops ``Calendar.objects.update_or_create`` with no per-row check, so it is
-        the single most likely place for an unmetered path to survive. This is checked
-        and capped *before* the bulk write, not per-row after it.
-
-        The rule is **"will this write increase**
-        ``vinta_billing.services.entitlement_service._count_resource_calendars``**?"** -- not
-        "does a ``Calendar`` row already exist for this org + external_id?". Those two
-        differ, and in the permissive direction: the write loop below puts
-        ``calendar_type=RESOURCE`` in ``update_or_create``'s ``defaults``, so matching a
-        *non*-RESOURCE row (a PERSONAL calendar imported by ``import_account_calendars``,
-        which keys on the very same ``(organization, external_id)``) **promotes** that row
-        into the counted set. Treating it as "already imported" therefore consumed no
-        headroom while raising usage by one -- unbounded unmetered RESOURCE calendars, and
-        for Microsoft a total bypass rather than an edge case, since
-        ``get_account_calendars`` and ``get_calendar_resources`` both list the same
-        calendars with the same ``external_id`` space.
-
-        The split helper consequently lives on ``CalendarQuerySet`` as
-        ``external_ids_not_newly_counted_as_type`` / ``not_newly_counted_as_type``, defined
-        immediately next to the ``live_of_type`` the usage counter counts with, as the
-        complement of *newly entering* it (not of ``live_of_type`` itself -- a row already
-        live as some other type is in neither set), so the two cannot drift apart again.
-
-        A resource that does not increase the count -- an already-RESOURCE row, or a
-        soft-deleted row the upsert leaves soft-deleted -- is free; every other one
-        (no row at all, or a live row of another type) consumes headroom. When the
-        chargeable resources do not all fit, as many as fit are imported (not zero, not
-        all-or-nothing) and a human-readable warning is returned for the caller to
-        record -- a partial import is preferred over an unmetered one, never the
-        reverse.
-
-        Checked and locked (``SELECT ... FOR UPDATE`` on the billing root's
-        subscription) inside the caller's own transaction, so two concurrent imports for
-        the same organization's last unit of capacity serialize on that row exactly like
-        every other checked creation path. The lock is taken *before* the
-        split query, not by ``check_limit`` after it: the delta itself is derived from
-        that read, so reading it outside the lock lets the loser of a race compute its
-        headroom from a snapshot the winner has already invalidated.
+        The rule and its locking live in :func:`cap_to_resource_calendar_headroom`,
+        which the hourly room resync calls as well.
 
         :return: ``(resources_to_import, warning)`` -- ``resources_to_import`` is the
             subset of ``resources`` (the free ones plus as many chargeable ones as fit)
@@ -369,54 +431,15 @@ class CalendarSyncService:
             return resources, None
 
         # A provider that returns the same external_id twice in one discovery must not
-        # be charged twice for it: ``chargeable_resources`` below is built by membership
-        # in ``resources``, so an undeduplicated list inflates ``delta`` and can produce
-        # a false partial cap. First occurrence wins, matching the write loop's
-        # ``update_or_create`` semantics (later duplicates would just re-write the same
-        # row anyway).
+        # be charged twice for it: the cap counts chargeable ids by membership, so an
+        # undeduplicated list inflates its delta and can produce a false partial cap.
+        # First occurrence wins, matching the write loop's ``update_or_create``
+        # semantics (later duplicates would just re-write the same row anyway).
         resources = list({resource.external_id: resource for resource in resources}.values())
-
-        # Take the guard lock before the split read below -- see the docstring.
-        entitlement_service.lock_billing_root(scope_for(organization))
-
-        free_ids = Calendar.objects.filter_by_organization(
-            organization.id
-        ).external_ids_not_newly_counted_as_type(
-            (resource.external_id for resource in resources), CalendarType.RESOURCE
+        kept_ids, warning = cap_to_resource_calendar_headroom(
+            entitlement_service, organization, [r.external_id for r in resources]
         )
-        chargeable_resources = [r for r in resources if r.external_id not in free_ids]
-        if not chargeable_resources:
-            # Nothing this run writes can raise the counted total (every discovered
-            # resource is either already a live RESOURCE calendar or a soft-deleted row
-            # that stays soft-deleted), so it consumes no headroom.
-            return resources, None
-
-        result = entitlement_service.check_limit(
-            scope_for(organization),
-            RESOURCE_CALENDARS,
-            delta=len(chargeable_resources),
-            lock=True,
-        )
-        if result.allowed:
-            return resources, None
-
-        # Blocked -> current_usage/ceiling are guaranteed non-None (see
-        # LimitCheckResult's docstring).
-        headroom = max((result.ceiling or 0) - (result.current_usage or 0), 0)
-        importable_ids = {r.external_id for r in chargeable_resources[:headroom]}
-        skipped = [r for r in chargeable_resources if r.external_id not in importable_ids]
-        resources_to_import = [
-            r for r in resources if r.external_id in free_ids or r.external_id in importable_ids
-        ]
-        warning = (
-            f"Partial resource-calendar import for organization {organization.id}: at its "
-            f"resource_calendars ceiling ({result.ceiling}, currently using "
-            f"{result.current_usage}). Imported {len(importable_ids)} of "
-            f"{len(chargeable_resources)} new resource calendars; skipped {len(skipped)} "
-            f"({_summarize_external_ids(skipped)})."
-        )
-        logger.warning(warning)
-        return resources_to_import, warning
+        return [r for r in resources if r.external_id in kept_ids], warning
 
     @transaction.atomic()
     def _execute_organization_calendar_resources_import(

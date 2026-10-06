@@ -30,6 +30,7 @@ from calendar_integration.constants import (
     CalendarVisibility,
     ExternalEventChangeRequestStatus,
     ResourceSyncStatus,
+    RSVPStatus,
 )
 from calendar_integration.database_functions import (
     GetAvailableTimeOccurrencesJSON,
@@ -46,6 +47,7 @@ from organizations.permission_catalog import MANAGE_MEMBERS
 
 
 if TYPE_CHECKING:
+    from calendar_integration.models import Calendar
     from calendar_integration.models import CalendarEvent as CalendarEventType
     from calendar_integration.models import CalendarSync as CalendarSyncType
     from organizations.models import OrganizationMembership as OrganizationMembershipType
@@ -800,6 +802,101 @@ class CalendarEventQuerySet(OrganizationScopedQuerySet, RecurringQuerySetMixin):
             .select_related("recurrence_rule")
         )
 
+    def future_bookings_of_room(
+        self, room: "Calendar", now: datetime.datetime
+    ) -> "CalendarEventQuerySet":
+        """Bookings of the room ``room`` that can still take place after ``now``.
+
+        A booking is a master or one-off event that is on the room's calendar, or
+        that allocates the room through a ``ResourceAllocation`` the room did not
+        decline. Recurrence instances and exceptions are left out, so a series
+        counts once. A one-off counts while it has not ended. A series counts while
+        its rule has no ``until`` or ``until`` is not past. A ``COUNT``-bounded
+        series that already ended still counts, because telling would need the
+        occurrence arithmetic in Postgres. Over-counting is the safe side here: a
+        flagged booking is only something for an admin to look at.
+        """
+        uses_room = Q(calendar=room) | (
+            Q(resource_allocations__calendar=room)
+            & ~Q(resource_allocations__status=RSVPStatus.DECLINED)
+        )
+        still_ahead = Q(recurrence_rule__isnull=True, end_time__gt=now) | Q(
+            Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=now),
+            recurrence_rule__isnull=False,
+        )
+        return self.filter(uses_room, still_ahead, parent_recurring_object__isnull=True).distinct()
+
+    def booking_room(self, room_id: int) -> "CalendarEventQuerySet":
+        """Events that book the room ``room_id``.
+
+        An event books a room when it sits on the room's own calendar, or when it
+        allocates the room and the allocation was not declined. Every kind of row is
+        returned: one-off events, recurring masters, bulk-modification continuations,
+        and exception rows. An exception row is returned only when it books the room
+        itself (it sits on the room's calendar); editing an occurrence gives its row
+        no allocations, so a series that allocates the room books it through the
+        master, whose expansion includes the modified occurrence.
+        """
+        from calendar_integration.models import ResourceAllocation
+
+        # ``unscoped()``: the subquery is correlated on the outer row's own
+        # ``organization_id``, so it cannot reach another organization, and it needs
+        # no bound organization.
+        active_allocation = (
+            ResourceAllocation.objects.unscoped()
+            .filter(
+                event_fk_id=OuterRef("pk"),
+                organization_id=OuterRef("organization_id"),
+                calendar_fk_id=room_id,
+            )
+            .exclude(status=RSVPStatus.DECLINED)
+        )
+        return self.filter(Q(calendar_fk_id=room_id) | Exists(active_allocation))
+
+    def with_occurrences_overlapping(
+        self, start: datetime.datetime, end: datetime.datetime, max_occurrences: int = 10000
+    ) -> "CalendarEventQuerySet":
+        """Rows that can have an occurrence overlapping ``[start, end)``.
+
+        - A row with no recurrence rule (a one-off event, or an exception row of a
+          series) qualifies by its own times.
+        - A recurring master qualifies when it starts before ``end``. Its
+          ``recurring_occurrences`` annotation holds the occurrences that overlap the
+          range (``overlap=True``), at most ``max_occurrences`` of them, so
+          ``get_occurrences_in_range`` on it costs no further expansion query. The
+          expansion returns a modified occurrence as its exception row, which also
+          qualifies here on its own when it overlaps.
+        """
+        return (
+            self.filter(
+                Q(recurrence_rule__isnull=True, start_time__lt=end, end_time__gt=start)
+                | Q(
+                    recurrence_rule__isnull=False,
+                    parent_recurring_object__isnull=True,
+                    start_time__lt=end,
+                )
+            )
+            .annotate_recurring_occurrences_on_date_range(
+                start, end, max_occurrences=max_occurrences, overlap=True
+            )
+            .select_related("recurrence_rule")
+        )
+
+    def annotate_attendee_count(self) -> "CalendarEventQuerySet":
+        """Annotate ``attendee_count``: members plus external attendees who did not decline."""
+        return self.annotate(
+            attendee_count=Count(
+                "attendances",
+                filter=~Q(attendances__status=RSVPStatus.DECLINED),
+                distinct=True,
+            )
+            + Count(
+                "external_attendances",
+                filter=~Q(external_attendances__status=RSVPStatus.DECLINED),
+                distinct=True,
+            )
+        )
+
 
 class CalendarSyncQuerySet(OrganizationScopedQuerySet):
     """
@@ -1437,6 +1534,16 @@ class ResourceLocationQuerySet(OrganizationScopedQuerySet):
     def for_provider(self, provider: str) -> "ResourceLocationQuerySet":
         """Locations synced from ``provider``."""
         return self.filter(provider=provider)
+
+    def listable(self, provider: str | None = None) -> "ResourceLocationQuerySet":
+        """Active locations, optionally of one ``provider``, in a stable display order.
+
+        What callers pick from when they create a room on the provider.
+        """
+        queryset = self.active()
+        if provider is not None:
+            queryset = queryset.for_provider(provider)
+        return queryset.order_by("provider", "building_name", "floor_name", "pk")
 
 
 class ResourceCalendarProviderLinkQuerySet(OrganizationScopedQuerySet):
