@@ -1,0 +1,1 @@
+{% load i18n %}{% blocktrans %}We stopped retrying. Please check the room and try again.{% endblocktrans %}
