@@ -1405,6 +1405,9 @@ class Query:
     ) -> ResourceCalendarDeletionPreviewGraphQLType:
         """The future bookings of a room synced with Google or Microsoft, before deleting it.
 
+        Also for an archived room with flagged bookings (``providerSync.flaggedBookingsAt``),
+        before ``resolveFlaggedResourceBookings``.
+
         A recurring series is one entry, resolved from now on when it started before
         now. Send ``fingerprint`` back to ``deleteResourceCalendar``: the delete is
         rejected if the bookings changed since. Not paginated, because the fingerprint

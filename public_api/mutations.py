@@ -1,7 +1,7 @@
 import datetime
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
@@ -74,6 +74,7 @@ from calendar_integration.mutations import (
 )
 from calendar_integration.services.calendar_service import _UNCHANGED
 from calendar_integration.services.dataclasses import (
+    BookingResolutionReport,
     CalendarEventInputData,
     CalendarPoolInputData,
     EventAttendanceInputData,
@@ -693,7 +694,36 @@ class ResolveFlaggedResourceBookingsInput:
 
 
 @strawberry.type
-class ResolveFlaggedResourceBookingsResult:
+class BookingResolutionReportResult:
+    """The fields a room-booking resolution mutation reports, as ``BookingResolutionReport``.
+
+    ``rejectedBookings`` lists every booking whose resolution is invalid. When
+    applying stopped, ``failedAtEventId`` is the booking that failed, the bookings in
+    ``appliedEventIds`` are resolved, and those in ``pendingEventIds`` are not.
+    """
+
+    rejected_bookings: list[RejectedResourceBookingGraphQLType] = strawberry.field(
+        default_factory=list
+    )
+    applied_event_ids: list[int] = strawberry.field(default_factory=list)
+    pending_event_ids: list[int] = strawberry.field(default_factory=list)
+    failed_at_event_id: int | None = None
+
+    @staticmethod
+    def fields_of(report: BookingResolutionReport) -> dict[str, Any]:
+        """The shared fields of ``report``, to pass to a subclass's constructor."""
+        return {
+            "rejected_bookings": [
+                RejectedResourceBookingGraphQLType.from_rejected(r) for r in report.rejected
+            ],
+            "applied_event_ids": list(report.applied_event_ids),
+            "pending_event_ids": list(report.pending_event_ids),
+            "failed_at_event_id": report.failed_at_event_id,
+        }
+
+
+@strawberry.type
+class ResolveFlaggedResourceBookingsResult(BookingResolutionReportResult):
     """Result of the resolveFlaggedResourceBookings mutation.
 
     ``success`` is true when every booking is resolved and the room's
@@ -713,16 +743,10 @@ class ResolveFlaggedResourceBookingsResult:
     outcome: FlaggedBookingsOutcome | None = None
     error_message: str | None = None
     calendar: CalendarGraphQLType | None = None
-    rejected_bookings: list[RejectedResourceBookingGraphQLType] = strawberry.field(
-        default_factory=list
-    )
-    applied_event_ids: list[int] = strawberry.field(default_factory=list)
-    pending_event_ids: list[int] = strawberry.field(default_factory=list)
-    failed_at_event_id: int | None = None
 
 
 @strawberry.type
-class DeleteResourceCalendarResult:
+class DeleteResourceCalendarResult(BookingResolutionReportResult):
     """Result of the deleteResourceCalendar mutation.
 
     ``success`` is true when every booking is resolved and the room is archived, or
@@ -745,12 +769,6 @@ class DeleteResourceCalendarResult:
     error_message: str | None = None
     calendar: CalendarGraphQLType | None = None
     aborted_bookings: list[ResourceBookingGraphQLType] = strawberry.field(default_factory=list)
-    rejected_bookings: list[RejectedResourceBookingGraphQLType] = strawberry.field(
-        default_factory=list
-    )
-    applied_event_ids: list[int] = strawberry.field(default_factory=list)
-    pending_event_ids: list[int] = strawberry.field(default_factory=list)
-    failed_at_event_id: int | None = None
 
 
 @strawberry.input
@@ -2539,12 +2557,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                 else None
             ),
             aborted_bookings=[ResourceBookingGraphQLType.from_booking(b) for b in result.bookings],
-            rejected_bookings=[
-                RejectedResourceBookingGraphQLType.from_rejected(r) for r in result.rejected
-            ],
-            applied_event_ids=list(result.applied_event_ids),
-            pending_event_ids=list(result.pending_event_ids),
-            failed_at_event_id=result.failed_at_event_id,
+            **BookingResolutionReportResult.fields_of(result),
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
@@ -2596,12 +2609,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                 if result.resolved
                 else None
             ),
-            rejected_bookings=[
-                RejectedResourceBookingGraphQLType.from_rejected(r) for r in result.rejected
-            ],
-            applied_event_ids=list(result.applied_event_ids),
-            pending_event_ids=list(result.pending_event_ids),
-            failed_at_event_id=result.failed_at_event_id,
+            **BookingResolutionReportResult.fields_of(result),
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])

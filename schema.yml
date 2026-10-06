@@ -10917,7 +10917,8 @@ paths:
     get:
       operationId: calendar_resource_deletion_preview_retrieve
       description: 'Org admins list the future bookings of a room synced with Google
-        or Microsoft before deleting it. A recurring series is one entry, resolved
+        or Microsoft before deleting it, or, for a room the provider deleted, before
+        resolving its flagged bookings. A recurring series is one entry, resolved
         from now on when it started before now. Send fingerprint back to the delete:
         it is rejected if the bookings changed since. 400 for a manual room. Admin
         only. Returns 404 when the resource calendar provider sync feature is off
@@ -10955,7 +10956,8 @@ paths:
     get:
       operationId: calendar_resource_deletion_preview_formatted_retrieve
       description: 'Org admins list the future bookings of a room synced with Google
-        or Microsoft before deleting it. A recurring series is one entry, resolved
+        or Microsoft before deleting it, or, for a room the provider deleted, before
+        resolving its flagged bookings. A recurring series is one entry, resolved
         from now on when it started before now. Send fingerprint back to the delete:
         it is rejected if the bookings changed since. 400 for a manual room. Admin
         only. Returns 404 when the resource calendar provider sync feature is off
@@ -23856,21 +23858,13 @@ components:
       description: |-
         Why ``POST /calendar/{id}/resource/delete/`` did not delete the room.
 
-        Renders a ``RoomDeletionResult``; ``detail`` is its outcome's message. Nothing
-        about the room changed. ``outcome`` is ``aborted`` when the resolution cancelled
-        the deletion (``aborted_bookings``), ``rejected`` when some resolutions are
-        invalid (``rejected_bookings``), and ``incomplete`` when applying stopped part
-        way: ``applied_event_ids`` are resolved, ``pending_event_ids`` are not; preview
-        again and retry.
+        Renders a ``RoomDeletionResult``. Nothing about the room changed. ``outcome`` is
+        ``aborted`` when the resolution cancelled the deletion (``aborted_bookings``),
+        ``rejected`` when some resolutions are invalid, and ``incomplete`` when applying
+        stopped part way.
       properties:
-        outcome:
-          $ref: '#/components/schemas/ResourceCalendarDeleteFailureOutcomeEnum'
         detail:
           type: string
-        aborted_bookings:
-          type: array
-          items:
-            $ref: '#/components/schemas/ResourceBooking'
         rejected_bookings:
           type: array
           items:
@@ -23886,6 +23880,12 @@ components:
         failed_at_event_id:
           type: integer
           nullable: true
+        outcome:
+          $ref: '#/components/schemas/ResourceCalendarDeleteFailureOutcomeEnum'
+        aborted_bookings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceBooking'
       required:
       - aborted_bookings
       - applied_event_ids
@@ -23971,14 +23971,10 @@ components:
       description: |-
         Why ``POST /calendar/{id}/resource/resolve-flagged-bookings/`` did not finish.
 
-        Renders a ``FlaggedBookingsResult``; ``detail`` is its outcome's message.
-        ``outcome`` is ``rejected`` when some resolutions are invalid
-        (``rejected_bookings``, nothing changed), and ``incomplete`` when applying stopped
-        part way: ``applied_event_ids`` are resolved, ``pending_event_ids`` are not, and
-        the room stays flagged. Preview again and retry.
+        Renders a ``FlaggedBookingsResult``. Nothing is cleared. ``outcome`` is
+        ``rejected`` when some resolutions are invalid (nothing changed), and
+        ``incomplete`` when applying stopped part way; the room stays flagged.
       properties:
-        outcome:
-          $ref: '#/components/schemas/ResourceFlaggedBookingsFailureOutcomeEnum'
         detail:
           type: string
         rejected_bookings:
@@ -23996,6 +23992,8 @@ components:
         failed_at_event_id:
           type: integer
           nullable: true
+        outcome:
+          $ref: '#/components/schemas/ResourceFlaggedBookingsFailureOutcomeEnum'
       required:
       - applied_event_ids
       - detail

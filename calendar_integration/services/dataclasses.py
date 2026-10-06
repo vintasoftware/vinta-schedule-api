@@ -888,8 +888,33 @@ class RejectedBooking:
     reason: BookingRejectionReason
 
 
-@dataclass(frozen=True)
-class RoomDeletionResult:
+@dataclass(frozen=True, kw_only=True)
+class BookingResolutionReport:
+    """What validating and applying a room's booking resolutions reported.
+
+    The part of a room deletion's and a flagged-bookings resolution's result that
+    comes from ``BookingResolutionService``: ``rejected`` lists the invalid
+    resolutions, and ``apply_result`` is set once the plan was applied.
+    """
+
+    rejected: tuple[RejectedBooking, ...] = ()
+    apply_result: ApplyResult | None = None
+
+    @property
+    def applied_event_ids(self) -> tuple[int, ...]:
+        return self.apply_result.applied if self.apply_result else ()
+
+    @property
+    def pending_event_ids(self) -> tuple[int, ...]:
+        return self.apply_result.pending if self.apply_result else ()
+
+    @property
+    def failed_at_event_id(self) -> int | None:
+        return self.apply_result.failed_at if self.apply_result else None
+
+
+@dataclass(frozen=True, kw_only=True)
+class RoomDeletionResult(BookingResolutionReport):
     """What ``CalendarService.delete_synced_resource_calendar`` did with a room.
 
     ``outcome`` says which one happened, and its label is the message to show:
@@ -908,28 +933,14 @@ class RoomDeletionResult:
 
     outcome: RoomDeletionOutcome
     bookings: tuple[RoomBooking, ...] = ()
-    rejected: tuple[RejectedBooking, ...] = ()
-    apply_result: ApplyResult | None = None
 
     @property
     def deleted(self) -> bool:
         return self.outcome == RoomDeletionOutcome.DELETED
 
-    @property
-    def applied_event_ids(self) -> tuple[int, ...]:
-        return self.apply_result.applied if self.apply_result else ()
 
-    @property
-    def pending_event_ids(self) -> tuple[int, ...]:
-        return self.apply_result.pending if self.apply_result else ()
-
-    @property
-    def failed_at_event_id(self) -> int | None:
-        return self.apply_result.failed_at if self.apply_result else None
-
-
-@dataclass(frozen=True)
-class FlaggedBookingsResult:
+@dataclass(frozen=True, kw_only=True)
+class FlaggedBookingsResult(BookingResolutionReport):
     """What ``CalendarService.resolve_flagged_resource_bookings`` did with a room.
 
     ``outcome`` says which one happened, and its label is the message to show:
@@ -942,21 +953,7 @@ class FlaggedBookingsResult:
     """
 
     outcome: FlaggedBookingsOutcome
-    rejected: tuple[RejectedBooking, ...] = ()
-    apply_result: ApplyResult | None = None
 
     @property
     def resolved(self) -> bool:
         return self.outcome == FlaggedBookingsOutcome.RESOLVED
-
-    @property
-    def applied_event_ids(self) -> tuple[int, ...]:
-        return self.apply_result.applied if self.apply_result else ()
-
-    @property
-    def pending_event_ids(self) -> tuple[int, ...]:
-        return self.apply_result.pending if self.apply_result else ()
-
-    @property
-    def failed_at_event_id(self) -> int | None:
-        return self.apply_result.failed_at if self.apply_result else None

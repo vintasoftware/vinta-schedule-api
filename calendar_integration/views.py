@@ -151,6 +151,12 @@ if TYPE_CHECKING:
     from users.models import User
 
 
+def _resolution_failure_status(outcome: RoomDeletionOutcome | FlaggedBookingsOutcome) -> int:
+    """409 when applying the booking resolutions stopped part way, else 400."""
+    incomplete = outcome in (RoomDeletionOutcome.INCOMPLETE, FlaggedBookingsOutcome.INCOMPLETE)
+    return status.HTTP_409_CONFLICT if incomplete else status.HTTP_400_BAD_REQUEST
+
+
 def _parse_bool(value, *, default: bool = True) -> bool:
     """Coerce a JSON/query value to bool, tolerating string forms ("true"/"false")."""
     if isinstance(value, bool):
@@ -697,7 +703,8 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         summary="Preview a resource calendar's deletion",
         description=(
             "Org admins list the future bookings of a room synced with Google or Microsoft "
-            "before deleting it. A recurring series is one entry, resolved from now on "
+            "before deleting it, or, for a room the provider deleted, before resolving its "
+            "flagged bookings. A recurring series is one entry, resolved from now on "
             "when it started before now. Send fingerprint back to the delete: it is "
             "rejected if the bookings changed since. 400 for a manual room. Admin only. "
             "Returns 404 when the resource calendar provider sync feature is off for the "
@@ -790,12 +797,10 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
         if result.deleted:
             return self._resource_calendar_response(calendar, status_code=status.HTTP_200_OK)
-        failure_status = (
-            status.HTTP_409_CONFLICT
-            if result.outcome == RoomDeletionOutcome.INCOMPLETE
-            else status.HTTP_400_BAD_REQUEST
+        return Response(
+            ResourceCalendarDeleteFailureSerializer(result).data,
+            status=_resolution_failure_status(result.outcome),
         )
-        return Response(ResourceCalendarDeleteFailureSerializer(result).data, status=failure_status)
 
     @extend_schema(
         summary="Resolve the flagged bookings of a room the provider deleted",
@@ -857,13 +862,9 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
         if result.resolved:
             return self._resource_calendar_response(calendar, status_code=status.HTTP_200_OK)
-        failure_status = (
-            status.HTTP_409_CONFLICT
-            if result.outcome == FlaggedBookingsOutcome.INCOMPLETE
-            else status.HTTP_400_BAD_REQUEST
-        )
         return Response(
-            ResourceFlaggedBookingsFailureSerializer(result).data, status=failure_status
+            ResourceFlaggedBookingsFailureSerializer(result).data,
+            status=_resolution_failure_status(result.outcome),
         )
 
     @extend_schema(

@@ -695,8 +695,9 @@ class CalendarService(BaseCalendarService):
         Only ``BookingResolutionService.apply`` calls this. The service acts as the
         system rather than as a user or token: event creates, updates and deletes skip
         the per-event permission checks, because they edit other people's events on
-        behalf of a room deletion the caller was already authorized to make
-        (``IsOrganizationAdmin`` or the ``delete_resource_calendar`` grant). Everything
+        behalf of a room deletion or a flagged-bookings resolution the caller was already
+        authorized to make (``IsOrganizationAdmin``, or the ``delete_resource_calendar``
+        or ``resolve_flagged_resource_bookings`` grant). Everything
         else about those writes is unchanged: provider writes, the room bookability
         guard, billing checks, and the audit trail, which records the system actor.
         """
