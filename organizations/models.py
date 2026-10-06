@@ -6,10 +6,12 @@ from django.conf import settings
 from django.db import models
 
 from vinta_billing.entitlement_cache import has_entitlement_cached
+from vinta_orgs.mixins import SingleOrganizationModelMixin
 from vinta_orgs.models import AbstractOrganization, AbstractOrganizationMembership
 
 from common.fields import OrganizationMembershipForeignKey
-from common.models import BaseModel
+from common.managers import OrganizationScopedManager
+from common.models import BaseModel, SafeRelationNullInitMixin
 from organizations.managers import (
     OrganizationInvitationManager,
     OrganizationMembershipManager,
@@ -584,3 +586,28 @@ def resolve_branding_for_display(org: Organization | None) -> OrganizationBrandi
     ):
         return None
     return getattr(branding_root, "branding", None)
+
+
+class OrganizationFeatureFlag(
+    SingleOrganizationModelMixin,
+    SafeRelationNullInitMixin,
+    BaseModel,
+):
+    """A named feature switched on (or off) for one organization.
+
+    A missing row means the feature is off. Ops toggle rows in Django admin; code
+    reads them through ``common.feature_flags.is_enabled``.
+    """
+
+    key = models.CharField(max_length=100)
+    enabled = models.BooleanField(default=False)
+
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
+
+    class Meta:
+        constraints: ClassVar = [
+            models.UniqueConstraint(fields=["organization", "key"], name="uniq_org_feature_flag")
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.key}={'on' if self.enabled else 'off'} (organization {self.organization_id})"
