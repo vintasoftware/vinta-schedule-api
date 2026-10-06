@@ -22,6 +22,7 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from calendar_integration.constants import (
+    MICROSOFT_ROOM_SUBSCRIPTION_RESOURCE_PREFIX,
     ROOM_ON_PROVIDER_STATES,
     CalendarManagementTokenKind,
     CalendarProvider,
@@ -48,6 +49,7 @@ from organizations.permission_catalog import MANAGE_MEMBERS
 
 if TYPE_CHECKING:
     from calendar_integration.models import Calendar
+    from calendar_integration.models import Calendar as CalendarModelType
     from calendar_integration.models import CalendarEvent as CalendarEventType
     from calendar_integration.models import CalendarSync as CalendarSyncType
     from organizations.models import OrganizationMembership as OrganizationMembershipType
@@ -911,6 +913,30 @@ class CalendarSyncQuerySet(OrganizationScopedQuerySet):
         """
         return self.filter(id=calendar_sync_id, status=CalendarSyncStatus.NOT_STARTED).first()
 
+    def latest_delta_token(
+        self,
+        calendar: "CalendarModelType",
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> str | None:
+        """The newest token a successful sync of ``calendar`` stored for exactly this window.
+
+        A delta token is tied to the window of the round that first issued it, so a
+        token from any other window must not be reused.
+        """
+        return (
+            self.filter(
+                calendar=calendar,
+                status=CalendarSyncStatus.SUCCESS,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+            )
+            .exclude(next_sync_token="")
+            .order_by("-created")
+            .values_list("next_sync_token", flat=True)
+            .first()
+        )
+
 
 class BlockedTimeQuerySet(
     OrganizationScopedQuerySet, RecurringQuerySetMixin, AppointmentTypeSlotScopedQuerySetMixin
@@ -1621,3 +1647,28 @@ class ResourceCalendarCreateRequestQuerySet(OrganizationScopedQuerySet):
     def live(self, now: datetime.datetime | None = None) -> "ResourceCalendarCreateRequestQuerySet":
         """Requests whose idempotency key can still be replayed."""
         return self.filter(expires_at__gt=now or timezone.now())
+
+
+class CalendarWebhookSubscriptionQuerySet(OrganizationScopedQuerySet):
+    """QuerySet for :class:`~calendar_integration.models.CalendarWebhookSubscription`."""
+
+    def microsoft_rooms(self) -> "CalendarWebhookSubscriptionQuerySet":
+        """Subscriptions the app-only Microsoft room sync made (not delegated ones)."""
+        return self.filter(
+            provider=CalendarProvider.MICROSOFT,
+            resource_uri__startswith=MICROSOFT_ROOM_SUBSCRIPTION_RESOURCE_PREFIX,
+        )
+
+    def active_microsoft_rooms(
+        self, external_subscription_ids: Iterable[str]
+    ) -> "CalendarWebhookSubscriptionQuerySet":
+        """Active Microsoft room subscriptions with one of these Graph subscription ids."""
+        return self.microsoft_rooms().filter(
+            is_active=True, external_subscription_id__in=list(external_subscription_ids)
+        )
+
+    def microsoft_rooms_expiring_before(
+        self, cutoff: datetime.datetime
+    ) -> "CalendarWebhookSubscriptionQuerySet":
+        """Active Microsoft room subscriptions that expire before ``cutoff``."""
+        return self.microsoft_rooms().filter(is_active=True, expires_at__lt=cutoff)

@@ -46,14 +46,20 @@ see it via ``_build_context_snapshot`` called at that point.
 from __future__ import annotations
 
 import datetime
+import enum
+import functools
+import hmac
 import json
 import logging
+import secrets
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 from django.conf import settings
+from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.urls import reverse
+from django.utils import timezone
 
 from vinta_billing.exceptions import OverLimitError
 
@@ -62,8 +68,11 @@ from calendar_integration.constants import (
     CalendarSyncStatus,
     CalendarSyncTriggerSource,
     IncomingWebhookProcessingStatus,
+    microsoft_room_subscription_resource,
 )
 from calendar_integration.exceptions import (
+    MicrosoftAppOnlyTokenError,
+    MicrosoftConnectionNotConfiguredError,
     ServiceNotAuthenticatedError,
     WebhookIgnoredError,
 )
@@ -72,6 +81,11 @@ from calendar_integration.models import (
     CalendarSync,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
+    MicrosoftOrganizationConnection,
+)
+from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_client import (
+    MSGraphAPIError,
+    MSOutlookCalendarAPIClient,
 )
 from calendar_integration.services.protocols.authenticated_calendar_service import (
     AuthenticatedCalendarService,
@@ -84,10 +98,18 @@ from calendar_integration.services.type_guards import (
     is_authenticated_calendar_service,
     is_initialized_or_authenticated_calendar_service,
 )
+from common.feature_flags import (
+    RESOURCE_CALENDAR_PROVIDER_SYNC,
+    is_enabled,
+    organization_ids_with_flag,
+)
 from payments.seams.scopes import scope_for
 
 
 if TYPE_CHECKING:
+    from calendar_integration.services.calendar_clients.ms_app_only_token import (
+        MicrosoftAppOnlyTokenProvider,
+    )
     from calendar_integration.services.calendar_service_context import CalendarServiceContext
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
 
@@ -728,3 +750,311 @@ class CalendarWebhookService:
                 "success_rate": success_rate,
             }
         )
+
+
+# ----------------------------------------------------------------------
+# Microsoft room event subscriptions (app-only)
+# ----------------------------------------------------------------------
+
+#: How long a new or renewed room subscription lasts. Graph keeps an Outlook event
+#: subscription for at most 4230 minutes (just under 3 days).
+ROOM_SUBSCRIPTION_LIFETIME = datetime.timedelta(minutes=4200)
+#: The renewal beat runs every 12 hours and renews what expires within this window,
+#: so every subscription is renewed at least once before it lapses.
+ROOM_SUBSCRIPTION_RENEW_WITHIN = datetime.timedelta(hours=24)
+
+
+class RoomNotificationOutcome(enum.StrEnum):
+    """What ``MicrosoftRoomWebhookService.handle_room_notifications`` did with a POST."""
+
+    ACCEPTED = "accepted"
+    FORBIDDEN = "forbidden"
+    INVALID = "invalid"
+
+
+class MicrosoftRoomWebhookService:
+    """Graph change-notification subscriptions for Microsoft rooms, app-only.
+
+    A room in a flag-on organization with a write-enabled Microsoft connection is
+    subscribed to its mailbox's event changes. Each notification enqueues
+    ``sync_microsoft_room_events_task``, which runs the delta sync. Subscriptions are
+    kept in ``CalendarWebhookSubscription`` with ``resource_uri`` set to the watched
+    Graph resource and ``verification_token`` set to the random ``clientState``.
+    """
+
+    def __init__(self, token_provider: MicrosoftAppOnlyTokenProvider):
+        self.token_provider = token_provider
+
+    def subscribe_microsoft_room(self, calendar: Calendar) -> CalendarWebhookSubscription | None:
+        """Subscribe to the room's event changes, or return its current subscription.
+
+        Returns ``None`` without calling Microsoft when the calendar is not a Microsoft
+        room with a mailbox, or its organization is flag-off or has no write-enabled
+        Microsoft connection. Running it again keeps a subscription that still has
+        more than ``ROOM_SUBSCRIPTION_RENEW_WITHIN`` to live.
+        """
+        organization_id = calendar.organization_id
+        if (
+            calendar.provider != CalendarProvider.MICROSOFT
+            or not calendar.is_resource
+            or not calendar.email
+            or not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, organization_id)
+        ):
+            return None
+        connection = self._write_enabled_connection(organization_id)
+        if connection is None:
+            return None
+
+        now = timezone.now()
+        existing = (
+            CalendarWebhookSubscription.objects.filter_by_organization(organization_id)
+            .filter(calendar=calendar, provider=CalendarProvider.MICROSOFT)
+            .first()
+        )
+        resource = microsoft_room_subscription_resource(calendar.email)
+        if (
+            existing is not None
+            and existing.is_active
+            and existing.resource_uri == resource
+            and existing.expires_at is not None
+            and existing.expires_at > now + ROOM_SUBSCRIPTION_RENEW_WITHIN
+        ):
+            return existing
+
+        client = self._client(connection)
+        if existing is not None and existing.is_active and existing.resource_uri:
+            # Replacing an active room subscription: stop Graph from posting to it.
+            try:
+                client.delete_subscription(existing.external_subscription_id)
+            except MSGraphAPIError:
+                logger.info("Old Microsoft room subscription %s was already gone", existing.pk)
+        client_state = secrets.token_urlsafe(32)
+        notification_url = _room_notification_url(organization_id)
+        subscription_data = client.create_room_events_subscription(
+            calendar.email,
+            notification_url=notification_url,
+            client_state=client_state,
+            expiration_datetime=now + ROOM_SUBSCRIPTION_LIFETIME,
+        )
+        fields = {
+            "external_subscription_id": subscription_data["id"],
+            "external_resource_id": calendar.email,
+            "callback_url": notification_url,
+            "resource_uri": resource,
+            "verification_token": client_state,
+            "expires_at": _graph_expiration(subscription_data, now),
+            "is_active": True,
+        }
+        if existing is None:
+            subscription = CalendarWebhookSubscription.objects.create(
+                calendar=calendar,
+                organization_id=organization_id,
+                provider=CalendarProvider.MICROSOFT,
+                **fields,
+            )
+        else:
+            # One subscription row per calendar and provider: a lapsed or delegated
+            # one is taken over by the room subscription. In a flag-on organization the
+            # app-only sync replaces delegated sync for rooms; a delegated Graph
+            # subscription cannot be deleted without its user's token, so it posts
+            # notifications nothing matches until it expires.
+            for name, value in fields.items():
+                setattr(existing, name, value)
+            existing.save(update_fields=[*fields, "modified"])
+            subscription = existing
+        logger.info(
+            "Subscribed to Microsoft room events for calendar %s (subscription %s)",
+            calendar.pk,
+            subscription.pk,
+        )
+        return subscription
+
+    def unsubscribe_microsoft_room(self, calendar: Calendar) -> None:
+        """Delete the room's Graph subscription and mark its row inactive.
+
+        A subscription Graph already dropped (404), or one Vinta can no longer reach
+        because the organization lost its connection, is still marked inactive.
+        """
+        organization_id = calendar.organization_id
+        subscription = (
+            CalendarWebhookSubscription.objects.filter_by_organization(organization_id)
+            .microsoft_rooms()
+            .filter(calendar=calendar, is_active=True)
+            .first()
+        )
+        if subscription is None:
+            return
+        connection = self._write_enabled_connection(organization_id)
+        if connection is not None:
+            try:
+                self._client(connection).delete_subscription(subscription.external_subscription_id)
+            except MSGraphAPIError as exc:
+                if exc.status_code != 404:  # noqa: PLR2004
+                    raise
+        subscription.is_active = False
+        subscription.save(update_fields=["is_active", "modified"])
+
+    def renew_expiring_microsoft_room_subscriptions(self) -> int:
+        """Renew every room subscription that expires within ``ROOM_SUBSCRIPTION_RENEW_WITHIN``.
+
+        Only flag-on organizations with a write-enabled connection are renewed. A
+        subscription Graph no longer has (404) is created again. Returns how many
+        subscriptions were renewed or recreated.
+        """
+        now = timezone.now()
+        renewed = 0
+        for organization_id in organization_ids_with_flag(RESOURCE_CALENDAR_PROVIDER_SYNC):
+            connection = self._write_enabled_connection(organization_id)
+            if connection is None:
+                continue
+            client = self._client(connection)
+            expiring = (
+                CalendarWebhookSubscription.objects.filter_by_organization(organization_id)
+                .microsoft_rooms_expiring_before(now + ROOM_SUBSCRIPTION_RENEW_WITHIN)
+                .select_related("calendar")
+            )
+            for subscription in expiring:
+                # One subscription's failure, or an organization whose consent was
+                # revoked, must not stop the renewal of everyone else's.
+                try:
+                    if self._renew_room_subscription(client, subscription, now):
+                        renewed += 1
+                except ROOM_GRAPH_ERRORS as exc:
+                    logger.warning(
+                        "Could not renew Microsoft room subscription %s of organization %s: %s",
+                        subscription.pk,
+                        organization_id,
+                        _describe_graph_error(exc),
+                    )
+        return renewed
+
+    def _renew_room_subscription(
+        self,
+        client: MSOutlookCalendarAPIClient,
+        subscription: CalendarWebhookSubscription,
+        now: datetime.datetime,
+    ) -> bool:
+        """Extend one subscription, or create it again if Graph no longer has it."""
+        try:
+            subscription_data = client.update_subscription(
+                subscription.external_subscription_id, now + ROOM_SUBSCRIPTION_LIFETIME
+            )
+        except MSGraphAPIError as exc:
+            if exc.status_code != 404:  # noqa: PLR2004
+                raise
+            subscription.is_active = False
+            subscription.save(update_fields=["is_active", "modified"])
+            return self.subscribe_microsoft_room(subscription.calendar) is not None
+        subscription.expires_at = _graph_expiration(subscription_data, now)
+        subscription.save(update_fields=["expires_at", "modified"])
+        return True
+
+    def handle_room_notifications(
+        self, organization_id: int, body: bytes
+    ) -> RoomNotificationOutcome:
+        """Check a Graph notification POST and enqueue one room sync per notified room.
+
+        Every notification for a known, active subscription must carry that
+        subscription's ``clientState``, compared in constant time; if one does not,
+        the whole POST is refused and nothing is enqueued. Notifications for unknown or
+        inactive subscriptions are ignored.
+        """
+        # Late for the import cycle: the tasks module imports CalendarService.
+        from calendar_integration.tasks import sync_microsoft_room_events_task
+
+        try:
+            payload = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            return RoomNotificationOutcome.INVALID
+        notifications = payload.get("value") if isinstance(payload, dict) else None
+        if not isinstance(notifications, list) or not all(
+            isinstance(item, dict) and isinstance(item.get("subscriptionId"), str)
+            for item in notifications
+        ):
+            return RoomNotificationOutcome.INVALID
+
+        subscriptions = {
+            subscription.external_subscription_id: subscription
+            for subscription in CalendarWebhookSubscription.objects.filter_by_organization(
+                organization_id
+            ).active_microsoft_rooms(item["subscriptionId"] for item in notifications)
+        }
+        calendar_ids: set[int] = set()
+        for item in notifications:
+            subscription = subscriptions.get(item["subscriptionId"])
+            if subscription is None:
+                continue
+            client_state = item.get("clientState")
+            if not isinstance(client_state, str) or not hmac.compare_digest(
+                client_state.encode(), subscription.verification_token.encode()
+            ):
+                logger.warning(
+                    "Refused a Microsoft room notification for subscription %s: wrong clientState",
+                    subscription.pk,
+                )
+                return RoomNotificationOutcome.FORBIDDEN
+            calendar_ids.add(subscription.calendar_fk_id)
+
+        if calendar_ids:
+            CalendarWebhookSubscription.objects.filter_by_organization(organization_id).filter(
+                pk__in=[s.pk for s in subscriptions.values() if s.calendar_fk_id in calendar_ids]
+            ).update(last_notification_at=timezone.now())
+        for calendar_id in sorted(calendar_ids):
+            transaction.on_commit(
+                functools.partial(
+                    sync_microsoft_room_events_task.delay, calendar_id, organization_id
+                )
+            )
+        return RoomNotificationOutcome.ACCEPTED
+
+    @staticmethod
+    def _write_enabled_connection(organization_id: int) -> MicrosoftOrganizationConnection | None:
+        connection = MicrosoftOrganizationConnection.objects.filter_by_organization(
+            organization_id
+        ).first()
+        if connection is None or not connection.write_enabled or not connection.tenant_id:
+            return None
+        return connection
+
+    def _client(self, connection: MicrosoftOrganizationConnection) -> MSOutlookCalendarAPIClient:
+        return MSOutlookCalendarAPIClient.app_only(self.token_provider, connection.tenant_id)
+
+
+#: What a Graph call through the app-only client can raise: Graph's own errors, and
+#: the token provider's when the tenant revoked consent or the app is not configured.
+ROOM_GRAPH_ERRORS = (
+    MSGraphAPIError,
+    MicrosoftAppOnlyTokenError,
+    MicrosoftConnectionNotConfiguredError,
+)
+
+
+def _describe_graph_error(exc: Exception) -> str:
+    """A log-safe description: the class and, for Graph errors, the HTTP status."""
+    status = getattr(exc, "status_code", None)
+    return type(exc).__name__ if status is None else f"{type(exc).__name__} (HTTP {status})"
+
+
+def _room_notification_url(organization_id: int) -> str:
+    """The absolute URL Graph posts a room's notifications to."""
+    path = reverse(
+        "calendar_integration:microsoft_room_webhook",
+        kwargs={"organization_id": organization_id},
+    )
+    # Deployed environments set API_DOMAIN with its scheme; local ones without.
+    domain = settings.API_DOMAIN
+    base = domain if "://" in domain else f"{settings.DEFAULT_PROTOCOL}://{domain}"
+    return f"{base.rstrip('/')}{path}"
+
+
+def _graph_expiration(
+    subscription_data: dict[str, Any], now: datetime.datetime
+) -> datetime.datetime:
+    """The expiry Graph reports for a subscription, or the one Vinta asked for."""
+    value = subscription_data.get("expirationDateTime")
+    if isinstance(value, str):
+        try:
+            return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return now + ROOM_SUBSCRIPTION_LIFETIME

@@ -71,4 +71,20 @@ CELERYBEAT_SCHEDULE = {
             "purge_expired_resource_calendar_create_requests_task"
         ),
     },
+    # Microsoft room event subscriptions last just under 3 days. Renewing every 12
+    # hours whatever expires within 24 hours renews each one at least once in time.
+    # Only flag-on organizations (`resource_calendar_provider_sync`) are touched.
+    "renew_microsoft_room_subscriptions": {
+        "schedule": crontab(minute=15, hour="*/12"),
+        "task": (
+            "calendar_integration.tasks.room_event_sync_tasks."
+            "renew_microsoft_room_subscriptions_task"
+        ),
+    },
+    # Daily fallback for room notifications Graph never delivered: re-subscribe any
+    # room without a live subscription and run its delta sync.
+    "sweep_microsoft_room_events": {
+        "schedule": crontab(minute=45, hour=4),
+        "task": "calendar_integration.tasks.room_event_sync_tasks.sweep_microsoft_room_events_task",
+    },
 }

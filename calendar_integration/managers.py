@@ -27,6 +27,7 @@ from calendar_integration.querysets import (
     CalendarPoolQuerySet,
     CalendarQuerySet,
     CalendarSyncQuerySet,
+    CalendarWebhookSubscriptionQuerySet,
     ExternalEventChangeRequestQuerySet,
     RecurringQuerySetMixin,
     ResourceCalendarCreateRequestQuerySet,
@@ -37,7 +38,7 @@ from common.managers import OrganizationScopedManager
 
 
 if TYPE_CHECKING:
-    from calendar_integration.models import BookingPolicy, CalendarManagementToken
+    from calendar_integration.models import BookingPolicy, Calendar, CalendarManagementToken
     from organizations.models import Organization
     from organizations.models import OrganizationMembership as OrganizationMembershipType
 
@@ -76,6 +77,9 @@ _CalendarManagementTokenManagerBase = OrganizationScopedManager.from_queryset(
 )
 _CalendarManagerBase = OrganizationScopedManager.from_queryset(CalendarQuerySet)
 _CalendarSyncManagerBase = OrganizationScopedManager.from_queryset(CalendarSyncQuerySet)
+_CalendarWebhookSubscriptionManagerBase = OrganizationScopedManager.from_queryset(
+    CalendarWebhookSubscriptionQuerySet
+)
 _ExternalEventChangeRequestManagerBase = OrganizationScopedManager.from_queryset(
     ExternalEventChangeRequestQuerySet
 )
@@ -242,6 +246,15 @@ class CalendarSyncManager(_CalendarSyncManagerBase):  # type: ignore[misc,valid-
         :return: CalendarSync instance if found, otherwise None.
         """
         return self.get_queryset().get_not_started_calendar_sync(calendar_sync_id=calendar_sync_id)
+
+    def latest_delta_token(
+        self,
+        calendar: "Calendar",
+        start_datetime: datetime.datetime,
+        end_datetime: datetime.datetime,
+    ) -> str | None:
+        """Wraps :meth:`CalendarSyncQuerySet.latest_delta_token`."""
+        return self.get_queryset().latest_delta_token(calendar, start_datetime, end_datetime)
 
 
 class BlockedTimeManager(_BlockedTimeManagerBase, RecurringManagerMixin):  # type: ignore[misc,valid-type]
@@ -678,3 +691,11 @@ class ResourceCalendarCreateRequestManager(_ResourceCalendarCreateRequestManager
     def live(self, now: datetime.datetime | None = None) -> ResourceCalendarCreateRequestQuerySet:
         """Wraps :meth:`ResourceCalendarCreateRequestQuerySet.live`."""
         return self.get_queryset().live(now)
+
+
+class CalendarWebhookSubscriptionManager(_CalendarWebhookSubscriptionManagerBase):  # type: ignore[misc,valid-type]
+    """Manager for CalendarWebhookSubscription."""
+
+    def microsoft_rooms(self) -> CalendarWebhookSubscriptionQuerySet:
+        """Wraps :meth:`CalendarWebhookSubscriptionQuerySet.microsoft_rooms`."""
+        return self.get_queryset().microsoft_rooms()
