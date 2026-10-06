@@ -62,6 +62,12 @@ class FakeRoomCalendarGraph:
         self.requests: list[tuple[str, str, dict | None]] = []
         self._rounds = 0
         self._changes: dict[str, dict] = {}
+        # Graph change-notification subscriptions, by id, and the bodies sent for them.
+        self.subscriptions: dict[str, dict] = {}
+        self.subscription_requests: list[tuple[str, str, dict | None]] = []
+        self._subscriptions_created = 0
+        # Set to make Graph refuse new subscriptions (403), as without Exchange rights.
+        self.refuse_subscription_creates = False
 
     def edit(self, event_id: str, **fields: Any) -> None:
         self.events[event_id].update(fields)
@@ -78,6 +84,8 @@ class FakeRoomCalendarGraph:
     def __call__(self, method, url, params=None, json=None, headers=None, timeout=None):
         path = url.removeprefix(GRAPH_URL)
         self.requests.append((method, path, params))
+        if path == "/subscriptions" or path.startswith("/subscriptions/"):
+            return self._subscription(method, path, json)
         if (method, path) == ("GET", f"/places/{ROOM_PLACE_ID}"):
             return _response(200, {"id": ROOM_PLACE_ID, "emailAddress": ROOM_EMAIL})
         delta_path = f"/users/{ROOM_EMAIL}/calendarView/delta"
@@ -91,6 +99,24 @@ class FakeRoomCalendarGraph:
             self._changes = {}
             return self._page(0)
         return _response(404, {"error": {"code": "ErrorItemNotFound", "message": path}})
+
+    def _subscription(self, method: str, path: str, body: dict | None) -> Mock:
+        self.subscription_requests.append((method, path, body))
+        if (method, path) == ("POST", "/subscriptions"):
+            if self.refuse_subscription_creates:
+                return _response(403, {"error": {"code": "ErrorAccessDenied", "message": path}})
+            self._subscriptions_created += 1
+            subscription = {**(body or {}), "id": f"sub-{self._subscriptions_created}"}
+            self.subscriptions[subscription["id"]] = subscription
+            return _response(201, subscription)
+        subscription_id = path.removeprefix("/subscriptions/")
+        if subscription_id not in self.subscriptions:
+            return _response(404, {"error": {"code": "ResourceNotFound", "message": path}})
+        if method == "PATCH":
+            self.subscriptions[subscription_id].update(body or {})
+            return _response(200, self.subscriptions[subscription_id])
+        del self.subscriptions[subscription_id]
+        return _response(204, {})
 
     def _page(self, offset: int) -> Mock:
         events = list(self.events.values())
@@ -119,13 +145,14 @@ def make_room(
     flag_on: bool = True,
     write_enabled: bool = True,
     email: str = ROOM_EMAIL,
+    tenant_id: str = TENANT_ID,
 ):
     """A Microsoft room calendar in ``organization``, with its connection and flag."""
     OrganizationFeatureFlag.objects.create(
         organization=organization, key=RESOURCE_CALENDAR_PROVIDER_SYNC, enabled=flag_on
     )
     MicrosoftOrganizationConnection.objects.create(
-        organization=organization, tenant_id=TENANT_ID, write_enabled=write_enabled
+        organization=organization, tenant_id=tenant_id, write_enabled=write_enabled
     )
     return Calendar.objects.create(
         organization=organization,

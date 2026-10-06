@@ -380,12 +380,14 @@ class RoomSyncService:
             {"operation": operation, "provider": link.provider, "fields": sorted(pushed_fields)},
         )
         calendar_id = calendar.id
+        organization_id = link.organization_id
         provider = link.provider
         if operation == ResourceSyncOperation.CREATE:
             transaction.on_commit(
                 lambda: resource_room_synced.send(
                     sender=ResourceCalendarProviderLink,
                     calendar_id=calendar_id,
+                    organization_id=organization_id,
                     provider=provider,
                     created=True,
                 )
@@ -395,6 +397,7 @@ class RoomSyncService:
                 lambda: resource_room_archived.send(
                     sender=ResourceCalendarProviderLink,
                     calendar_id=calendar_id,
+                    organization_id=organization_id,
                     provider=provider,
                 )
             )

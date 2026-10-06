@@ -118,11 +118,22 @@ def signals() -> Iterator[list[tuple[str, dict[str, Any]]]]:
 
     def on_synced(sender: Any, **kwargs: Any) -> None:
         sent.append(
-            ("synced", {key: kwargs[key] for key in ("calendar_id", "provider", "created")})
+            (
+                "synced",
+                {
+                    key: kwargs[key]
+                    for key in ("calendar_id", "organization_id", "provider", "created")
+                },
+            )
         )
 
     def on_archived(sender: Any, **kwargs: Any) -> None:
-        sent.append(("archived", {key: kwargs[key] for key in ("calendar_id", "provider")}))
+        sent.append(
+            (
+                "archived",
+                {key: kwargs[key] for key in ("calendar_id", "organization_id", "provider")},
+            )
+        )
 
     resource_room_synced.connect(on_synced, dispatch_uid="test_room_resync_synced")
     resource_room_archived.connect(on_archived, dispatch_uid="test_room_resync_archived")
@@ -410,7 +421,15 @@ class TestNewRooms:
         )
         assert Calendar.objects.count() == 1
         assert signals == [
-            ("synced", {"calendar_id": calendar.id, "provider": GOOGLE, "created": False})
+            (
+                "synced",
+                {
+                    "calendar_id": calendar.id,
+                    "organization_id": calendar.organization_id,
+                    "provider": GOOGLE,
+                    "created": False,
+                },
+            )
         ]
 
     def test_b_imports_an_unknown_room(
@@ -451,7 +470,15 @@ class TestNewRooms:
         assert link.location is None
         assert link.last_synced_at is not None
         assert signals == [
-            ("synced", {"calendar_id": calendar.id, "provider": GOOGLE, "created": False})
+            (
+                "synced",
+                {
+                    "calendar_id": calendar.id,
+                    "organization_id": calendar.organization_id,
+                    "provider": GOOGLE,
+                    "created": False,
+                },
+            )
         ]
 
     def test_b_promotes_a_live_calendar_of_another_type_with_the_rooms_id(
@@ -778,7 +805,14 @@ class TestProviderDeletions:
         assert link.calendar.visibility == CalendarVisibility.INACTIVE
         assert link.is_bookable is False
         assert notifier.mock_calls == [call.notify_bookings_flagged(link.calendar.id, 1)]
-        assert ("archived", {"calendar_id": link.calendar.id, "provider": GOOGLE}) in signals
+        assert (
+            "archived",
+            {
+                "calendar_id": link.calendar.id,
+                "organization_id": link.calendar.organization_id,
+                "provider": GOOGLE,
+            },
+        ) in signals
 
     def test_deleted_room_with_only_past_bookings_is_archived_without_a_flag(
         self,

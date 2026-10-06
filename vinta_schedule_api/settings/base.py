@@ -707,6 +707,12 @@ SPECTACULAR_SETTINGS = {
     "ENUM_NAME_OVERRIDES": {
         "FrequencyEnum": "calendar_integration.constants.RecurrenceFrequency.choices",
         "RSVPStatusEnum": "calendar_integration.constants.RSVPStatus.choices",
+        # The resolve-flagged-bookings serializer leaves `abort` out of the room
+        # deletion resolutions; without a name, `resolution` and `default_resolution`
+        # collide with the full set.
+        "FlaggedBookingResolutionEnum": (
+            "calendar_integration.serializers.FLAGGED_BOOKING_RESOLUTION_CHOICES"
+        ),
         # `Subscription.pending_billing_interval` shares `BillingInterval`'s
         # choices with `Subscription.billing_interval` -- without this,
         # drf-spectacular creates a second, redundant enum name for the same

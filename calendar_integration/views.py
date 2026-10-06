@@ -26,6 +26,7 @@ from calendar_integration.constants import (
     CalendarType,
     CalendarVisibility,
     ExternalEventChangeRequestStatus,
+    FlaggedBookingsOutcome,
     RoomDeletionOutcome,
 )
 from calendar_integration.exceptions import (
@@ -120,6 +121,8 @@ from calendar_integration.serializers import (
     ResourceCalendarDeleteSerializer,
     ResourceCalendarDeletionPreviewSerializer,
     ResourceCalendarUpdateSerializer,
+    ResourceFlaggedBookingsFailureSerializer,
+    ResourceFlaggedBookingsResolveSerializer,
     ResourceLocationSerializer,
     StaleSelectionSerializer,
     UnavailableTimeWindowSerializer,
@@ -146,6 +149,12 @@ from organizations.permissions import IsOrganizationAdmin
 
 if TYPE_CHECKING:
     from users.models import User
+
+
+def _resolution_failure_status(outcome: RoomDeletionOutcome | FlaggedBookingsOutcome) -> int:
+    """409 when applying the booking resolutions stopped part way, else 400."""
+    incomplete = outcome in (RoomDeletionOutcome.INCOMPLETE, FlaggedBookingsOutcome.INCOMPLETE)
+    return status.HTTP_409_CONFLICT if incomplete else status.HTTP_400_BAD_REQUEST
 
 
 def _parse_bool(value, *, default: bool = True) -> bool:
@@ -694,7 +703,8 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         summary="Preview a resource calendar's deletion",
         description=(
             "Org admins list the future bookings of a room synced with Google or Microsoft "
-            "before deleting it. A recurring series is one entry, resolved from now on "
+            "before deleting it, or, for a room the provider deleted, before resolving its "
+            "flagged bookings. A recurring series is one entry, resolved from now on "
             "when it started before now. Send fingerprint back to the delete: it is "
             "rejected if the bookings changed since. 400 for a manual room. Admin only. "
             "Returns 404 when the resource calendar provider sync feature is off for the "
@@ -787,12 +797,75 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
         if result.deleted:
             return self._resource_calendar_response(calendar, status_code=status.HTTP_200_OK)
-        failure_status = (
-            status.HTTP_409_CONFLICT
-            if result.outcome == RoomDeletionOutcome.INCOMPLETE
-            else status.HTTP_400_BAD_REQUEST
+        return Response(
+            ResourceCalendarDeleteFailureSerializer(result).data,
+            status=_resolution_failure_status(result.outcome),
         )
-        return Response(ResourceCalendarDeleteFailureSerializer(result).data, status=failure_status)
+
+    @extend_schema(
+        summary="Resolve the flagged bookings of a room the provider deleted",
+        description=(
+            "Org admins resolve the future bookings of a room that was deleted on the "
+            "provider side: the hourly resync archived it and flagged its bookings "
+            "(provider_sync.flagged_bookings_at). Preview them with "
+            "resource/deletion-preview, then send the fingerprint with a resolution per "
+            "booking: move, remove the room, or cancel the event. Every resolution is "
+            "checked first, all or nothing; then the bookings are resolved one at a "
+            "time and, when none is left, the flag is cleared. 400 for the abort "
+            "resolution (the room is already gone), invalid resolutions, a room that is "
+            "not flagged, and a manual room. 409 when the bookings changed since the "
+            "preview, or when applying stopped part way: preview again and retry. Admin "
+            "only. Returns 404 when the resource calendar provider sync feature is off "
+            "for the organization."
+        ),
+        request=ResourceFlaggedBookingsResolveSerializer,
+        responses={
+            200: ResourceCalendarCreateResponseSerializer,
+            400: ResourceFlaggedBookingsFailureSerializer,
+            409: ResourceFlaggedBookingsFailureSerializer,
+        },
+    )
+    @action(
+        methods=["post"],
+        detail=True,
+        url_path="resource/resolve-flagged-bookings",
+        url_name="resource-resolve-flagged-bookings",
+        permission_classes=[IsOrganizationAdmin],
+        filter_backends=[],
+    )
+    @inject
+    def resolve_flagged_resource_bookings(
+        self,
+        request,
+        pk: str | None = None,
+        calendar_service: Annotated[CalendarService, Provide["calendar_service"]] = None,  # type: ignore[assignment]
+    ) -> Response:
+        """POST /calendar/{id}/resource/resolve-flagged-bookings/ — admins resolve them."""
+        self._require_provider_sync(request)
+        calendar = self._organization_calendar(request, pk)
+        serializer = ResourceFlaggedBookingsResolveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        calendar_service.initialize_without_provider(
+            user_or_token=request.user, organization=calendar.organization
+        )
+        try:
+            result = calendar_service.resolve_flagged_resource_bookings(
+                calendar.id,
+                serializer.validated_data["fingerprint"],
+                serializer.validated_data["default"],
+                serializer.validated_data["overrides"],
+            )
+        except StaleBookingPreviewError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
+        except (ValueError, CalendarIntegrationError) as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+        if result.resolved:
+            return self._resource_calendar_response(calendar, status_code=status.HTTP_200_OK)
+        return Response(
+            ResourceFlaggedBookingsFailureSerializer(result).data,
+            status=_resolution_failure_status(result.outcome),
+        )
 
     @extend_schema(
         summary="Update a bundle calendar's children and primary",

@@ -27,6 +27,7 @@ from calendar_integration.querysets import (
     CalendarPoolQuerySet,
     CalendarQuerySet,
     CalendarSyncQuerySet,
+    CalendarWebhookSubscriptionQuerySet,
     ExternalEventChangeRequestQuerySet,
     RecurringQuerySetMixin,
     ResourceCalendarCreateRequestQuerySet,
@@ -76,6 +77,9 @@ _CalendarManagementTokenManagerBase = OrganizationScopedManager.from_queryset(
 )
 _CalendarManagerBase = OrganizationScopedManager.from_queryset(CalendarQuerySet)
 _CalendarSyncManagerBase = OrganizationScopedManager.from_queryset(CalendarSyncQuerySet)
+_CalendarWebhookSubscriptionManagerBase = OrganizationScopedManager.from_queryset(
+    CalendarWebhookSubscriptionQuerySet
+)
 _ExternalEventChangeRequestManagerBase = OrganizationScopedManager.from_queryset(
     ExternalEventChangeRequestQuerySet
 )
@@ -687,3 +691,11 @@ class ResourceCalendarCreateRequestManager(_ResourceCalendarCreateRequestManager
     def live(self, now: datetime.datetime | None = None) -> ResourceCalendarCreateRequestQuerySet:
         """Wraps :meth:`ResourceCalendarCreateRequestQuerySet.live`."""
         return self.get_queryset().live(now)
+
+
+class CalendarWebhookSubscriptionManager(_CalendarWebhookSubscriptionManagerBase):  # type: ignore[misc,valid-type]
+    """Manager for CalendarWebhookSubscription."""
+
+    def microsoft_rooms(self) -> CalendarWebhookSubscriptionQuerySet:
+        """Wraps :meth:`CalendarWebhookSubscriptionQuerySet.microsoft_rooms`."""
+        return self.get_queryset().microsoft_rooms()

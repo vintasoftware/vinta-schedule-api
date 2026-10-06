@@ -13,6 +13,10 @@ from dependency_injector.wiring import Provide, inject
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.exceptions import WebhookProcessingFailedError
 from calendar_integration.services.calendar_service import CalendarService
+from calendar_integration.services.calendar_webhook_service import (
+    MicrosoftRoomWebhookService,
+    RoomNotificationOutcome,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -163,3 +167,54 @@ class MicrosoftCalendarWebhookView(View):
         except Exception as e:
             logger.exception("Error processing Microsoft Calendar webhook: %s", str(e))
             return HttpResponse(status=500)
+
+
+#: Longest ``validationToken`` echoed back. Graph's tokens are far shorter.
+MAX_VALIDATION_TOKEN_LENGTH = 1024
+
+_ROOM_NOTIFICATION_STATUS = {
+    RoomNotificationOutcome.ACCEPTED: 202,
+    RoomNotificationOutcome.FORBIDDEN: 403,
+    RoomNotificationOutcome.INVALID: 400,
+}
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class MicrosoftRoomWebhookView(View):
+    """Graph change notifications for Microsoft rooms synced with app-only credentials.
+
+    Unauthenticated, like every provider webhook: a notification is trusted only when
+    it carries the ``clientState`` stored for its subscription. This is a plain
+    ``View``, so it binds no organization; the service reads the subscriptions with
+    ``filter_by_organization`` on the URL's organization id.
+    """
+
+    @inject
+    def post(
+        self,
+        request: HttpRequest,
+        organization_id: int,
+        microsoft_room_webhook_service: Annotated[
+            MicrosoftRoomWebhookService, Provide["microsoft_room_webhook_service"]
+        ],
+    ) -> HttpResponse:
+        """Answer the subscription handshake, or enqueue a sync per notified room.
+
+        Returns:
+        - 200 with the ``validationToken``, in plain text, while Graph creates a
+          subscription;
+        - 202 when the notifications were accepted (unknown subscriptions ignored);
+        - 403 when a notification's ``clientState`` does not match;
+        - 400 when the body is not a Graph notification payload.
+        """
+        validation_token = request.GET.get("validationToken")
+        if validation_token is not None:
+            if not validation_token or len(validation_token) > MAX_VALIDATION_TOKEN_LENGTH:
+                return HttpResponse(status=400)
+            # Graph requires the token back unchanged; plain text is never rendered.
+            return HttpResponse(validation_token, content_type="text/plain")
+
+        outcome = microsoft_room_webhook_service.handle_room_notifications(
+            organization_id, request.body
+        )
+        return HttpResponse(status=_ROOM_NOTIFICATION_STATUS[outcome])

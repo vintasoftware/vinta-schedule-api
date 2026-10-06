@@ -242,6 +242,17 @@ class RoomDeletionOutcome(TextChoices):
     )
 
 
+class FlaggedBookingsOutcome(TextChoices):
+    """What resolving the bookings of a provider-deleted room did. The label is the message."""
+
+    RESOLVED = "resolved", "Every flagged booking is resolved."
+    REJECTED = "rejected", "Some bookings cannot be resolved as asked."
+    INCOMPLETE = (
+        "incomplete",
+        "Resolving the bookings stopped part way; preview again and retry.",
+    )
+
+
 class BookingRoomChange(TextChoices):
     """What happened to a booking's room when a room was deleted. Sent to the organizer."""
 
@@ -267,3 +278,14 @@ class BookingRejectionReason(TextChoices):
         "on_room_calendar",
         "booking is on the room's own calendar and can only be cancelled",
     )
+
+
+# The Graph resource a Microsoft room's event subscription watches, kept in
+# ``CalendarWebhookSubscription.resource_uri``. Delegated Microsoft subscriptions leave
+# ``resource_uri`` empty, so the prefix is what tells room subscriptions apart.
+MICROSOFT_ROOM_SUBSCRIPTION_RESOURCE_PREFIX = "/users/"
+
+
+def microsoft_room_subscription_resource(room_email: str) -> str:
+    """The Graph resource for the events in a room's own mailbox."""
+    return f"{MICROSOFT_ROOM_SUBSCRIPTION_RESOURCE_PREFIX}{room_email}/events"
