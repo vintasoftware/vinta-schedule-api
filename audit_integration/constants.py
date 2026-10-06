@@ -48,3 +48,11 @@ class AuditAction(models.TextChoices):
         "calendar.event.external_change_auto_undone",
         "External change auto-undone",
     )
+    ROOM_PROVIDER_SYNCED = (
+        "calendar.resource.provider_synced",
+        "Room pushed to provider",
+    )
+    ROOM_PROVIDER_SYNC_FAILED = (
+        "calendar.resource.provider_sync_failed",
+        "Room push to provider failed",
+    )
