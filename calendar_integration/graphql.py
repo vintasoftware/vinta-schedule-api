@@ -5,9 +5,12 @@ import strawberry
 import strawberry_django
 
 from calendar_integration.constants import (
+    BookingRejectionReason,
+    BookingResolutionKind,
     CalendarProvider,
     ResourceSyncOperation,
     ResourceSyncStatus,
+    RoomDeletionOutcome,
 )
 from calendar_integration.models import (
     AppointmentType,
@@ -36,6 +39,11 @@ from calendar_integration.models import (
     ResourceAllocation,
     ResourceCalendarProviderLink,
     ResourceLocation,
+)
+from calendar_integration.services.dataclasses import (
+    RejectedBooking,
+    RoomBooking,
+    RoomBookingPreview,
 )
 from public_api.constants import PublicAPIResources
 from public_api.scoping import scoped_calendar_ids
@@ -355,6 +363,75 @@ class ResourceCalendarProviderSyncGraphQLType:
     def location(root: ResourceCalendarProviderLink) -> ResourceLocationGraphQLType | None:
         # The rows are `ResourceLocation` models, mapped onto the GraphQL type.
         return root.location  # type: ignore[return-value]
+
+
+strawberry.enum(BookingResolutionKind, name="ResourceBookingResolution")
+strawberry.enum(BookingRejectionReason, name="ResourceBookingRejectionReason")
+strawberry.enum(RoomDeletionOutcome, name="ResourceCalendarDeletionOutcome")
+
+
+@strawberry.type
+class ResourceBookingGraphQLType:
+    """A future booking of a room, as a deletion preview lists it.
+
+    ``start`` / ``end`` are its first occurrence that has not ended yet. A recurring
+    series is one entry (``is_series``); ``series_from`` is set when the series started
+    before now, and it is then resolved from that occurrence on.
+    """
+
+    event_id: int
+    calendar_id: int | None
+    title: str
+    start: datetime.datetime
+    end: datetime.datetime
+    is_series: bool
+    series_from: datetime.datetime | None
+
+    @classmethod
+    def from_booking(cls, booking: RoomBooking) -> "ResourceBookingGraphQLType":
+        return cls(
+            event_id=booking.event_id,
+            calendar_id=booking.calendar_id,
+            title=booking.title,
+            start=booking.start,
+            end=booking.end,
+            is_series=booking.is_series,
+            series_from=booking.series_from,
+        )
+
+
+@strawberry.type
+class ResourceCalendarDeletionPreviewGraphQLType:
+    """A synced room's future bookings, plus the fingerprint its delete must send back."""
+
+    fingerprint: str
+    bookings: list[ResourceBookingGraphQLType]
+
+    @classmethod
+    def from_preview(
+        cls, preview: RoomBookingPreview
+    ) -> "ResourceCalendarDeletionPreviewGraphQLType":
+        return cls(
+            fingerprint=preview.fingerprint,
+            bookings=[ResourceBookingGraphQLType.from_booking(b) for b in preview.bookings],
+        )
+
+
+@strawberry.type
+class RejectedResourceBookingGraphQLType:
+    """A booking whose resolution was rejected, and why. ``message`` is human readable."""
+
+    event_id: int
+    reason: BookingRejectionReason
+    message: str
+
+    @classmethod
+    def from_rejected(cls, rejected: RejectedBooking) -> "RejectedResourceBookingGraphQLType":
+        return cls(
+            event_id=rejected.event_id,
+            reason=rejected.reason,
+            message=str(rejected.reason.label),
+        )
 
 
 @strawberry_django.type(Calendar)

@@ -34,7 +34,7 @@ import hashlib
 import json
 import logging
 import uuid
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Mapping
 from typing import TYPE_CHECKING, Annotated, Any
 
 from django.db import transaction
@@ -55,6 +55,7 @@ from calendar_integration.constants import (
     CalendarVisibility,
     ResourceSyncOperation,
     ResourceSyncStatus,
+    RoomDeletionOutcome,
 )
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
@@ -132,9 +133,11 @@ from calendar_integration.services.calendar_webhook_service import (
     WebhookHealthStatus,
 )
 from calendar_integration.services.dataclasses import (
+    AbortDeletion,
     ApplicationCalendarData,
     AvailableTimeWindow,
     BookableSlotProposal,
+    BookingResolution,
     CalendarEventAdapterOutputData,
     CalendarEventData,
     CalendarEventInputData,
@@ -146,6 +149,8 @@ from calendar_integration.services.dataclasses import (
     EventInternalAttendeeData,
     EventsSyncChanges,
     ResourceAllocationInputData,
+    RoomBookingPreview,
+    RoomDeletionResult,
     UnavailableTimeWindow,
 )
 from calendar_integration.services.external_client_identifier_service import (
@@ -174,6 +179,9 @@ if TYPE_CHECKING:
     from vinta_billing.services.entitlement_service import EntitlementService
 
     from audit_integration.services import OrganizationAuditService
+    from calendar_integration.services.booking_resolution_service import (
+        BookingResolutionService,
+    )
     from calendar_integration.services.external_event_change_request_service import (
         ExternalEventChangeRequestService,
     )
@@ -297,12 +305,18 @@ class CalendarService(BaseCalendarService):
             "Callable[[], ResourceDirectoryAdapterResolver] | None",
             Provide["resource_directory_adapter_resolver.provider"],
         ] = None,
+        booking_resolution_service_factory: Annotated[
+            "Callable[[], BookingResolutionService] | None",
+            Provide["booking_resolution_service.provider"],
+        ] = None,
     ) -> None:
         """Initialize a CalendarService instance. Call authenticate() before using calendar operations.
 
-        The room sync service and the room directory resolver arrive as factories, not
-        instances: they are only needed to create a synced room, and building them
-        eagerly would fail on every ``CalendarService`` until a resolver is configured.
+        The room sync service, the room directory resolver and the booking resolution
+        service arrive as factories, not instances: only the synced-room writes need
+        them, building them eagerly would fail on every ``CalendarService`` until a
+        resolver is configured, and the booking resolution service is itself built
+        with a ``CalendarService``.
         """
         self.organization = None
         self.user_or_token = None
@@ -319,6 +333,7 @@ class CalendarService(BaseCalendarService):
         self.resource_directory_adapter_resolver_factory = (
             resource_directory_adapter_resolver_factory
         )
+        self.booking_resolution_service_factory = booking_resolution_service_factory
         # Set by authenticate(bypass_limits=True); disables every provider entitlement
         # guard on this instance, not just the authenticate-time one.
         self._bypass_entitlement_limits = False
@@ -329,6 +344,8 @@ class CalendarService(BaseCalendarService):
         self._calendar_cache: dict[tuple[int, str | int], Calendar] = {}
         # Shared auth-context snapshot; set by authenticate() / initialize_without_provider().
         self._context: CalendarServiceContext | None = None
+        # Set by initialize_for_room_resolution(); see that method.
+        self._is_room_resolution = False
         # Stateless recurrence engine shared by event/blocked-time/available-time methods.
         # Constructed once; it holds no auth state (everything arrives as method params).
         self._recurrence_manager = RecurrenceManager()
@@ -595,6 +612,7 @@ class CalendarService(BaseCalendarService):
             self._assert_provider_entitlement(early_provider)
 
         self.calendar_adapter, self.account = self.get_calendar_adapter_for_account(account)
+        self._is_room_resolution = False
 
         if early_provider is None:
             self._assert_provider_entitlement(_provider_for_account(self.account))
@@ -630,6 +648,7 @@ class CalendarService(BaseCalendarService):
         self.user_or_token = user_or_token
         self.account = None
         self.calendar_adapter = None
+        self._is_room_resolution = False
 
         if (
             self.calendar_permission_service
@@ -660,6 +679,20 @@ class CalendarService(BaseCalendarService):
             external_client_identifier_service=self.external_client_identifier_service,
         )
 
+    def initialize_for_room_resolution(self, organization: Organization) -> None:
+        """Initialize the service to resolve the bookings of a room that is being deleted.
+
+        Only ``BookingResolutionService.apply`` calls this. The service acts as the
+        system rather than as a user or token: event creates, updates and deletes skip
+        the per-event permission checks, because they edit other people's events on
+        behalf of a room deletion the caller was already authorized to make
+        (``IsOrganizationAdmin`` or the ``delete_resource_calendar`` grant). Everything
+        else about those writes is unchanged: provider writes, the room bookability
+        guard, billing checks, and the audit trail, which records the system actor.
+        """
+        self.initialize_without_provider(user_or_token=None, organization=organization)
+        self._is_room_resolution = True
+
     def _build_context_snapshot(self) -> CalendarServiceContext:
         """Build a context snapshot from the current auth-state instance attributes.
 
@@ -680,6 +713,7 @@ class CalendarService(BaseCalendarService):
             entitlement_service=self.entitlement_service,
             bypass_entitlement_limits=self._bypass_entitlement_limits,
             external_client_identifier_service=self.external_client_identifier_service,
+            is_room_resolution=self._is_room_resolution,
         )
 
     def _get_event_service(self) -> CalendarEventService:
@@ -1645,6 +1679,137 @@ class CalendarService(BaseCalendarService):
             raise RoomSyncStateError("This calendar is not a room synced with a provider.")
         get_room_sync_service().retry(link)
         return calendar
+
+    def preview_synced_resource_calendar_deletion(self, calendar_id: int) -> RoomBookingPreview:
+        """The future bookings of a synced room, and the fingerprint its delete must send.
+
+        :raises ResourceCalendarProviderSyncNotEnabledError: The feature flag is off.
+        :raises Calendar.DoesNotExist: No calendar with this id in the organization.
+        :raises ValueError: The calendar is not a room synced with a provider.
+        """
+        # Read before the type-guard narrows `self` below.
+        synced_room = self._synced_room_for_deletion
+        get_booking_resolution_service = self._get_booking_resolution_service
+
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+        calendar, _link = synced_room(calendar_id)
+        return get_booking_resolution_service().preview(calendar)
+
+    def _synced_room_for_deletion(
+        self, calendar_id: int
+    ) -> tuple[Calendar, ResourceCalendarProviderLink]:
+        """The synced room ``calendar_id`` and its link, for the deletion preview and delete.
+
+        :raises ResourceCalendarProviderSyncNotEnabledError: The feature flag is off.
+        :raises Calendar.DoesNotExist: No calendar with this id in the organization.
+        :raises ValueError: The calendar is not a resource calendar, or is a manual room.
+        """
+        if self.organization is None:
+            raise CalendarServiceOrganizationNotSetError()
+        if not is_enabled(RESOURCE_CALENDAR_PROVIDER_SYNC, self.organization.id):
+            raise ResourceCalendarProviderSyncNotEnabledError()
+        calendar = Calendar.objects.filter_by_organization(self.organization.id).get(id=calendar_id)
+        if calendar.calendar_type != CalendarType.RESOURCE:
+            raise ValueError(
+                f"Calendar {calendar_id} is not a resource calendar "
+                f"(type={calendar.calendar_type})."
+            )
+        link = self.synced_room_link(calendar)
+        if link is None:
+            raise ValueError(
+                "This room is not synced with a provider: use disableResourceCalendar."
+            )
+        return calendar, link
+
+    def delete_synced_resource_calendar(
+        self,
+        calendar_id: int,
+        fingerprint: str,
+        default_resolution: BookingResolution,
+        overrides: Mapping[int, BookingResolution] | None = None,
+    ) -> RoomDeletionResult:
+        """Delete a room synced with Google or Microsoft, resolving its future bookings first.
+
+        ``fingerprint`` is the one ``BookingResolutionService.preview`` returned for the
+        room. Every booking takes ``default_resolution`` unless ``overrides`` names a
+        resolution for its event id. Then:
+
+        - The resolutions are validated, all or nothing; an invalid one changes
+          nothing and is returned in ``rejected``.
+        - If any booking's resolution is ``AbortDeletion``, nothing changes and the
+          bookings are returned with ``aborted``.
+        - Otherwise the plan is applied one booking at a time. If it stops part way,
+          the result carries ``apply_result`` and the room is left as it is.
+        - Once every booking is resolved, the room is set INACTIVE, which frees its
+          plan slot, and its provider delete is queued
+          (``RoomSyncService.request_push`` with ``DELETE``). A room that never
+          reached the provider is archived at once. The deletion is audited.
+
+        A room that is already archived or being deleted returns ``deleted`` with no
+        change, so a repeated delete succeeds.
+
+        Not a single transaction: each booking is applied in its own, because each
+        one calls the provider.
+
+        :raises ResourceCalendarProviderSyncNotEnabledError: The feature flag is off.
+        :raises Calendar.DoesNotExist: No calendar with this id in the organization.
+        :raises ValueError: The calendar is not a resource calendar, or is a manual
+            room (those are disabled with ``disableResourceCalendar``).
+        :raises StaleBookingPreviewError: The room's bookings changed since the preview.
+        """
+        # Read before the type-guard narrows `self` below.
+        synced_room = self._synced_room_for_deletion
+        get_room_sync_service = self._get_room_sync_service
+        get_booking_resolution_service = self._get_booking_resolution_service
+        audit_calendar_write = self._audit_calendar_write
+
+        if not is_initialized_or_authenticated_calendar_service(self):
+            raise
+        self._check_not_restricted()
+
+        calendar, link = synced_room(calendar_id)
+        if not link.is_editable:
+            # Already archived, or its deletion is under way.
+            return RoomDeletionResult(outcome=RoomDeletionOutcome.DELETED)
+
+        resolution_service = get_booking_resolution_service()
+        validated = resolution_service.validate(
+            calendar, fingerprint, default_resolution, overrides or {}
+        )
+        if isinstance(validated, list):
+            return RoomDeletionResult(
+                outcome=RoomDeletionOutcome.REJECTED, rejected=tuple(validated)
+            )
+        if any(isinstance(entry.resolution, AbortDeletion) for entry in validated.bookings):
+            return RoomDeletionResult(
+                outcome=RoomDeletionOutcome.ABORTED,
+                bookings=tuple(entry.booking for entry in validated.bookings),
+            )
+
+        apply_result = resolution_service.apply(validated)
+        if apply_result.failed_at is not None:
+            return RoomDeletionResult(
+                outcome=RoomDeletionOutcome.INCOMPLETE, apply_result=apply_result
+            )
+
+        with transaction.atomic():
+            old_visibility = calendar.visibility
+            calendar.visibility = CalendarVisibility.INACTIVE
+            calendar.save(update_fields=["visibility"])
+            get_room_sync_service().request_push(link, ResourceSyncOperation.DELETE)
+            audit_calendar_write(
+                AuditAction.DELETE,
+                calendar,
+                diff={"visibility": {"old": old_visibility, "new": calendar.visibility}},
+            )
+        return RoomDeletionResult(outcome=RoomDeletionOutcome.DELETED, apply_result=apply_result)
+
+    def _get_booking_resolution_service(self) -> "BookingResolutionService":
+        """Build the booking resolution service from its DI factory."""
+        if self.booking_resolution_service_factory is None:
+            raise CalendarServiceNotInjectedError("booking_resolution_service is not configured.")
+        return self.booking_resolution_service_factory()
 
     def disable_bundle_calendar(self, bundle_id: int) -> Calendar:
         """Disable a bundle calendar by setting its visibility to INACTIVE.
@@ -2736,8 +2901,13 @@ class CalendarService(BaseCalendarService):
         modified_end_time_offset: datetime.timedelta | None = None,
         is_bulk_cancelled: bool = False,
         modification_rrule_string: str | None = None,
+        resource_allocations_override: list[ResourceAllocationInputData] | None = None,
     ) -> CalendarEvent | None:
-        """Create a bulk modification for a recurring event from the specified date onwards."""
+        """Create a bulk modification for a recurring event from the specified date onwards.
+
+        See ``CalendarEventService.create_recurring_event_bulk_modification``, including
+        ``resource_allocations_override``.
+        """
         return self._get_event_service().create_recurring_event_bulk_modification(
             parent_event=parent_event,
             modification_start_date=modification_start_date,
@@ -2747,6 +2917,7 @@ class CalendarService(BaseCalendarService):
             modified_end_time_offset=modified_end_time_offset,
             is_bulk_cancelled=is_bulk_cancelled,
             modification_rrule_string=modification_rrule_string,
+            resource_allocations_override=resource_allocations_override,
         )
 
     def create_recurring_blocked_time_bulk_modification(
@@ -2798,8 +2969,13 @@ class CalendarService(BaseCalendarService):
         modified_start_time_offset: datetime.timedelta | None = None,
         modified_end_time_offset: datetime.timedelta | None = None,
         modification_rrule_string: str | None = None,
+        resource_allocations_override: list[ResourceAllocationInputData] | None = None,
     ) -> CalendarEvent | None:
-        """Modify recurring event series from the given date onwards."""
+        """Modify recurring event series from the given date onwards.
+
+        See ``CalendarEventService.create_recurring_event_bulk_modification`` for
+        ``resource_allocations_override``.
+        """
         return self._get_event_service().modify_recurring_event_from_date(
             parent_event=parent_event,
             modification_start_date=modification_start_date,
@@ -2808,6 +2984,7 @@ class CalendarService(BaseCalendarService):
             modified_start_time_offset=modified_start_time_offset,
             modified_end_time_offset=modified_end_time_offset,
             modification_rrule_string=modification_rrule_string,
+            resource_allocations_override=resource_allocations_override,
         )
 
     def cancel_recurring_event_from_date(

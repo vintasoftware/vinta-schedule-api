@@ -20,6 +20,7 @@ from calendar_integration.constants import (
 )
 from calendar_integration.exceptions import (
     AppointmentTypeValidationError,
+    CalendarIntegrationError,
     InvalidTokenError,
     ResourceCalendarProviderSyncNotEnabledError,
     TokenAlreadyUsedError,
@@ -46,6 +47,7 @@ from calendar_integration.graphql import (
     CalendarWebhookEventGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
     ExternalEventChangeRequestGraphQLType,
+    ResourceCalendarDeletionPreviewGraphQLType,
     ResourceLocationGraphQLType,
     StaleSelectionGraphQLType,
     UnavailableTimeWindowGraphQLType,
@@ -1396,6 +1398,32 @@ class Query:
             raise GraphQLError(str(ResourceCalendarProviderSyncNotEnabledError()))
         qs = ResourceLocation.objects.filter_by_organization(org.id).listable(provider)
         return cast(list[ResourceLocationGraphQLType], list(_slice_qs(qs, offset, limit)))
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def resource_calendar_deletion_preview(
+        self, info: strawberry.Info, calendar_id: int
+    ) -> ResourceCalendarDeletionPreviewGraphQLType:
+        """The future bookings of a room synced with Google or Microsoft, before deleting it.
+
+        A recurring series is one entry, resolved from now on when it started before
+        now. Send ``fingerprint`` back to ``deleteResourceCalendar``: the delete is
+        rejected if the bookings changed since. Not paginated, because the fingerprint
+        covers the whole list. Requires the ``resource_calendar_provider_sync`` feature
+        for the organization.
+        """
+        org = _get_org(info)
+        deps = get_query_dependencies()
+        request: PublicApiHttpRequest = info.context.request
+        deps.calendar_service.initialize_without_provider(
+            user_or_token=request.public_api_system_user, organization=org
+        )
+        try:
+            preview = deps.calendar_service.preview_synced_resource_calendar_deletion(calendar_id)
+        except Calendar.DoesNotExist as e:
+            raise GraphQLError("Calendar not found.") from e
+        except (ValueError, CalendarIntegrationError) as e:
+            raise GraphQLError(str(e)) from e
+        return ResourceCalendarDeletionPreviewGraphQLType.from_preview(preview)
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def webhook_configurations(
