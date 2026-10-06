@@ -47,6 +47,7 @@ from organizations.permission_catalog import MANAGE_MEMBERS
 
 
 if TYPE_CHECKING:
+    from calendar_integration.models import Calendar
     from calendar_integration.models import CalendarEvent as CalendarEventType
     from calendar_integration.models import CalendarSync as CalendarSyncType
     from organizations.models import OrganizationMembership as OrganizationMembershipType
@@ -802,9 +803,9 @@ class CalendarEventQuerySet(OrganizationScopedQuerySet, RecurringQuerySetMixin):
         )
 
     def future_bookings_of_room(
-        self, room_calendar_id: int, now: datetime.datetime
+        self, room: "Calendar", now: datetime.datetime
     ) -> "CalendarEventQuerySet":
-        """Bookings of the room ``room_calendar_id`` that can still take place after ``now``.
+        """Bookings of the room ``room`` that can still take place after ``now``.
 
         A booking is a master or one-off event that is on the room's calendar, or
         that allocates the room through a ``ResourceAllocation`` the room did not
@@ -815,8 +816,8 @@ class CalendarEventQuerySet(OrganizationScopedQuerySet, RecurringQuerySetMixin):
         occurrence arithmetic in Postgres. Over-counting is the safe side here: a
         flagged booking is only something for an admin to look at.
         """
-        uses_room = Q(calendar=room_calendar_id) | (
-            Q(resource_allocations__calendar=room_calendar_id)
+        uses_room = Q(calendar=room) | (
+            Q(resource_allocations__calendar=room)
             & ~Q(resource_allocations__status=RSVPStatus.DECLINED)
         )
         still_ahead = Q(recurrence_rule__isnull=True, end_time__gt=now) | Q(

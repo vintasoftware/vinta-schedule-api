@@ -15,9 +15,8 @@ from unittest.mock import MagicMock, call
 from django.utils import timezone
 
 import pytest
-from model_bakery import baker
-from vinta_billing.constants import BillingState, LimitKind
-from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from vinta_billing.constants import LimitKind
+from vinta_billing.models import Subscription, SubscriptionPlanLimit
 from vinta_billing.services.entitlement_service import EntitlementService
 
 from audit_integration.constants import AuditAction
@@ -93,9 +92,9 @@ def notifier() -> MagicMock:
 
 
 @pytest.fixture
-def audit_service(di_container: Any, mocker: Any) -> OrganizationAuditService:
+def audit_service(di_container: Any, monkeypatch: pytest.MonkeyPatch) -> OrganizationAuditService:
     service = di_container.audit_service()
-    mocker.patch.object(service, "record")
+    monkeypatch.setattr(service, "record", MagicMock())
     return service
 
 
@@ -501,21 +500,11 @@ class TestNewRooms:
         directory: FakeRoomDirectory,
         organization: Organization,
     ) -> None:
-        now = timezone.now()
-        subscription = baker.make(
-            Subscription,
-            scope=scope_for(organization),
-            plan=baker.make(BillingPlan, is_default_for_new_scopes=False),
-            billing_state=BillingState.FREE,
-            current_period_start=now,
-            current_period_end=now + datetime.timedelta(days=30),
-        )
-        baker.make(
-            SubscriptionPlanLimit,
-            subscription=subscription,
+        # Every organization is provisioned a subscription; cap its rooms at two.
+        SubscriptionPlanLimit.objects.update_or_create(
+            subscription=Subscription.objects.get(scope=scope_for(organization)),
             resource_key=RESOURCE_CALENDARS,
-            limit_value=2,
-            kind=LimitKind.PREPAID,
+            defaults={"limit_value": 2, "kind": LimitKind.PREPAID},
         )
         existing = _room_calendar(organization, "room-0", "Room 0")
         directory.rooms = [

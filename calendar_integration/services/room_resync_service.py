@@ -449,7 +449,7 @@ class RoomResyncService:
 
         flagged_count = (
             CalendarEvent.objects.filter_by_organization(calendar.organization_id)
-            .future_bookings_of_room(calendar.id, now)
+            .future_bookings_of_room(calendar, now)
             .count()
         )
         link.sync_status = ResourceSyncStatus.ARCHIVED
