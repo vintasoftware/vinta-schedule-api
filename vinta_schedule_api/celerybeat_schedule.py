@@ -52,4 +52,12 @@ CELERYBEAT_SCHEDULE = {
         "schedule": crontab(minute=30),
         "task": "payments.tasks.close_billing_periods",
     },
+    # Google push channels expire within days and cannot be extended, so each one is
+    # replaced once it is within a day of expiring. Hourly gives every channel many
+    # attempts inside that day; a channel that is not yet due is skipped.
+    "renew_google_calendar_watch_channels": {
+        "schedule": crontab(minute=45),
+        "task": "calendar_integration.tasks.webhook_channel_tasks."
+        "renew_google_calendar_watch_channels_task",
+    },
 }

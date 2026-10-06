@@ -1109,6 +1109,13 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         except MSGraphAPIError as e:
             raise ValueError(f"Failed to get room events: {e}") from e
 
+    def stop_webhook_subscription(self, subscription_id: str, resource_id: str) -> None:
+        """Delete a Microsoft Graph subscription. Graph needs only its id."""
+        try:
+            self.client.delete_subscription(subscription_id)
+        except MSGraphAPIError as e:
+            raise ValueError(f"Failed to stop webhook subscription: {e}") from e
+
     def create_webhook_subscription_with_tracking(
         self,
         resource_id: str,

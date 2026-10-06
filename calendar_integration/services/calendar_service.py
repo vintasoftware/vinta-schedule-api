@@ -55,6 +55,7 @@ from calendar_integration.exceptions import (
     BookingPolicyViolationError,
     CalendarServiceOrganizationNotSetError,
     InvalidCalendarTokenError,
+    WebhookIgnoredError,
 )
 from calendar_integration.models import (
     AvailableTime,
@@ -113,6 +114,7 @@ from calendar_integration.services.calendar_service_utils import (
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from calendar_integration.services.calendar_sync_service import CalendarSyncService
 from calendar_integration.services.calendar_webhook_service import (
+    PROVIDER_CALL_ERRORS,
     CalendarWebhookService,
     WebhookHealthStatus,
 )
@@ -143,6 +145,7 @@ from calendar_integration.services.type_guards import (
     is_authenticated_calendar_service,
     is_initialized_or_authenticated_calendar_service,
 )
+from common.organization_context import organization_context
 from organizations.models import Organization, OrganizationMembership
 from payments.seams.resource_keys import (
     EXTERNAL_CALENDAR_GOOGLE,
@@ -2492,6 +2495,7 @@ class CalendarService(BaseCalendarService):
         external_calendar_id: str,
         webhook_event: CalendarWebhookEvent,
         sync_window_hours: int = 24,
+        calendar: Calendar | None = None,
     ) -> CalendarSync | None:
         """Request calendar sync triggered by webhook notification.
 
@@ -2505,7 +2509,15 @@ class CalendarService(BaseCalendarService):
             external_calendar_id=external_calendar_id,
             webhook_event=webhook_event,
             sync_window_hours=sync_window_hours,
+            calendar=calendar,
         )
+
+    def ensure_calendar_watch_channel(
+        self, calendar: Calendar
+    ) -> CalendarWebhookSubscription | None:
+        """Open or renew ``calendar``'s Google push channel. Delegates to
+        :class:`CalendarWebhookService`."""
+        return self._get_webhook_service().ensure_calendar_watch_channel(calendar)
 
     def create_calendar_webhook_subscription(
         self,
@@ -2579,7 +2591,57 @@ class CalendarService(BaseCalendarService):
         # request_webhook_triggered_sync callback through the host seam).
         self.organization = organization
 
+        if provider == CalendarProvider.GOOGLE:
+            # The webhook view is a plain Django view, so nothing has bound the
+            # organization yet; authenticating and syncing need it bound.
+            with organization_context(organization):
+                return self._handle_google_webhook(request, organization)
         return self._get_webhook_service().handle_webhook(provider, request)
+
+    def _handle_google_webhook(
+        self, request: HttpRequest, organization: Organization
+    ) -> CalendarWebhookEvent | None:
+        """Process a Google notification as the account that opened its channel.
+
+        A provider push carries no user, so the service starts unauthenticated. The
+        notification's channel is verified first (it must be an active channel of this
+        organization, with the secret token it was opened with), then the service
+        authenticates as the account recorded on that channel, which is what lets the
+        notification queue a sync at all.
+
+        :raises WebhookProcessingFailedError: For an unknown channel or a token mismatch.
+        """
+        headers = self._get_calendar_adapter_cls_for_provider(
+            CalendarProvider.GOOGLE
+        ).parse_webhook_headers(request.headers)
+        try:
+            subscription = self._get_webhook_service().verify_google_channel(headers)
+        except WebhookIgnoredError:
+            return None
+
+        account = subscription.account
+        if account is None:
+            logger.warning(
+                "Google channel subscription %s has no account to sync as; "
+                "recording the notification without syncing.",
+                subscription.id,
+            )
+        else:
+            try:
+                self.authenticate(account=account, organization=organization)
+            except PROVIDER_CALL_ERRORS as exc:
+                # The account lost its entitlement or its token, or Google refused it. A
+                # server-to-server push has no user to show this to, and Google would
+                # only retry. Record the notification without syncing instead.
+                logger.info(
+                    "Not syncing on Google notification for subscription %s: %s",
+                    subscription.id,
+                    type(exc).__name__,
+                )
+
+        return self._get_webhook_service().handle_webhook(
+            CalendarProvider.GOOGLE, request, subscription=subscription
+        )
 
     def list_webhook_subscriptions(self) -> QuerySet[CalendarWebhookSubscription]:
         """List active webhook subscriptions. Delegates to :class:`CalendarWebhookService`."""

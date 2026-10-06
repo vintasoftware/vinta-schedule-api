@@ -1,6 +1,7 @@
 """Tests for the Google Calendar webhook receiver."""
 
 import datetime
+from typing import Any
 from unittest.mock import Mock, patch
 
 from django.test import TestCase, override_settings
@@ -8,6 +9,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 import pytest
+from allauth.socialaccount.models import SocialAccount
 from model_bakery import baker
 from vinta_billing.constants import BillingState
 from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
@@ -15,26 +17,31 @@ from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlem
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,
+    CalendarSyncTriggerSource,
     IncomingWebhookProcessingStatus,
 )
 from calendar_integration.exceptions import (
+    InvalidCalendarTokenError,
     ServiceNotAuthenticatedError,
     WebhookIgnoredError,
     WebhookProcessingFailedError,
 )
 from calendar_integration.models import (
     Calendar,
+    CalendarOwnership,
     CalendarSync,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
+    GoogleCalendarServiceAccount,
 )
 from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
     GoogleCalendarAdapter,
 )
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from payments.seams.resource_keys import EXTERNAL_CALENDAR_GOOGLE
 from payments.seams.scopes import scope_for
+from users.models import User
 
 
 @override_settings(GOOGLE_CLIENT_ID="test_client_id", GOOGLE_CLIENT_SECRET="test_client_secret")
@@ -223,20 +230,8 @@ class CalendarServiceWebhookTest(TestCase):
         assert webhook_event.processing_status == IncomingWebhookProcessingStatus.PROCESSED
         assert webhook_event.calendar_sync == result
 
-    @patch("calendar_integration.tasks.sync_calendar_task.delay")
-    def test_request_webhook_triggered_sync_recent_sync_exists(self, mock_sync_task):
-        """Test webhook sync when recent sync already exists."""
-        # Create a recent sync
-        recent_sync = CalendarSync.objects.create(
-            calendar=self.calendar,
-            organization=self.organization,
-            start_datetime=datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=12),
-            end_datetime=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(hours=12),
-            status=CalendarSyncStatus.SUCCESS,
-            should_update_events=True,
-        )
-
-        webhook_event = CalendarWebhookEvent.objects.create(
+    def _webhook_event(self) -> CalendarWebhookEvent:
+        return CalendarWebhookEvent.objects.create(
             organization=self.organization,
             provider=CalendarProvider.GOOGLE,
             event_type="exists",
@@ -245,7 +240,22 @@ class CalendarServiceWebhookTest(TestCase):
             raw_payload={"raw": ""},
         )
 
-        # Mock the calendar service as authenticated
+    def _recent_sync(self, status: str) -> CalendarSync:
+        return CalendarSync.objects.create(
+            calendar=self.calendar,
+            organization=self.organization,
+            start_datetime=datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=12),
+            end_datetime=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(hours=12),
+            status=status,
+            should_update_events=True,
+        )
+
+    @patch("calendar_integration.tasks.sync_calendar_task.delay")
+    def test_request_webhook_triggered_sync_joins_a_queued_sync(self, mock_sync_task):
+        """A sync that has not started yet will read the latest state, so it covers
+        this notification's change too."""
+        queued_sync = self._recent_sync(CalendarSyncStatus.NOT_STARTED)
+        webhook_event = self._webhook_event()
         self.service.account = Mock()
         self.service.calendar_adapter = Mock()
 
@@ -253,16 +263,34 @@ class CalendarServiceWebhookTest(TestCase):
             external_calendar_id="test-calendar-id", webhook_event=webhook_event
         )
 
-        # Should return the existing sync, not create a new one
-        assert result == recent_sync
-
-        # Check that no new sync was created
+        assert result == queued_sync
         assert CalendarSync.objects.filter_by_organization(self.organization).count() == 1
-
-        # Verify webhook event was updated
         webhook_event.refresh_from_db()
         assert webhook_event.processing_status == IncomingWebhookProcessingStatus.PROCESSED
-        assert webhook_event.calendar_sync == recent_sync
+        assert webhook_event.calendar_sync == queued_sync
+
+    @patch("calendar_integration.tasks.sync_calendar_task.delay")
+    def test_request_webhook_triggered_sync_after_a_started_sync_queues_another(
+        self, mock_sync_task
+    ):
+        """A running or finished sync may have read the calendar before this change.
+        Folding the notification into it would lose the change."""
+        for status in (CalendarSyncStatus.IN_PROGRESS, CalendarSyncStatus.SUCCESS):
+            with self.subTest(status=str(status)):
+                earlier_sync = self._recent_sync(status)
+                webhook_event = self._webhook_event()
+                self.service.account = Mock()
+                self.service.account.id = 1
+                self.service.calendar_adapter = Mock()
+
+                result = self.service.request_webhook_triggered_sync(
+                    external_calendar_id="test-calendar-id", webhook_event=webhook_event
+                )
+
+                assert result is not None
+                assert result != earlier_sync
+                assert result.status == CalendarSyncStatus.NOT_STARTED
+                CalendarSync.objects.filter_by_organization(self.organization).delete()
 
     @override_settings(GOOGLE_CLIENT_ID="test_client_id", GOOGLE_CLIENT_SECRET="test_client_secret")
     @patch("calendar_integration.services.calendar_adapters.google_calendar_adapter.build")
@@ -539,19 +567,26 @@ class GoogleCalendarWebhookOverLimitEntitlementTest(TestCase):
             "calendar_integration:google_webhook", kwargs={"organization_id": self.organization.id}
         )
 
-    @patch.object(CalendarService, "_get_calendar_by_external_id")
-    def test_over_limit_error_from_write_adapter_does_not_500(self, mock_get_calendar):
-        """``_get_calendar_by_external_id`` is stubbed to return the calendar
-        directly: a real incoming webhook can't authenticate the facade (there is
-        no user session on a provider's server-to-server push), so this lookup
-        already always raises ``ServiceNotAuthenticatedError`` today -- a case the
-        pre-existing ``except`` clause already handles and is not what this test is
-        about. Stubbing only this call isolates the actual defect: with a real
-        (unmocked) calendar looked up, ``_get_write_adapter_for_calendar`` runs for
-        real against the real, container-wired ``entitlement_service`` and is what
-        raises the ``OverLimitError`` this test asserts does not escape as a 500.
-        """
-        mock_get_calendar.return_value = self.calendar
+    def test_over_limit_error_when_authenticating_does_not_500(self):
+        """The channel is verified, but authenticating as its account raises
+        ``OverLimitError`` because the organization lost the Google entitlement. A
+        provider push has no user to show a 402 to, and Google would only retry a 500,
+        so the notification is recorded and nothing is synced."""
+        user = User.objects.create_user(email="overlimit@example.com", password="pass")  # noqa: S106
+        social_account = SocialAccount.objects.create(
+            user=user, provider=CalendarProvider.GOOGLE, uid="overlimit-uid"
+        )
+        CalendarWebhookSubscription.objects.create(
+            calendar=self.calendar,
+            organization=self.organization,
+            provider=CalendarProvider.GOOGLE,
+            external_subscription_id="test-channel-id",
+            external_resource_id="test-resource-id",
+            channel_id="test-channel-id",
+            callback_url="https://example.com/webhook",
+            verification_token=CalendarWebhookSubscription.hash_verification_token("test-token"),
+            social_account=social_account,
+        )
 
         headers = {
             "HTTP_X_GOOG_CHANNEL_ID": "test-channel-id",
@@ -566,6 +601,195 @@ class GoogleCalendarWebhookOverLimitEntitlementTest(TestCase):
 
         response = self.client.post(self.webhook_url, **headers)
 
-        assert response.status_code != 500
         assert response.status_code == 200
         assert CalendarWebhookEvent.objects.filter_by_organization(self.organization).exists()
+        assert not CalendarSync.objects.filter_by_organization(self.organization).exists()
+
+
+class GoogleCalendarPushNotificationSyncTest(TestCase):
+    """A real notification through the real view queues a sync of the channel's
+    calendar, as the account that opened the channel.
+
+    Before this, the webhook path never authenticated: every notification was stored
+    as ``PENDING`` and nothing ever synced. Only the provider adapter and the Celery
+    dispatch are faked here.
+    """
+
+    def setUp(self):
+        self.organization = Organization.objects.create(name="Push Org")
+        self.user = User.objects.create_user(email="push@example.com", password="pass")  # noqa: S106
+        self.social_account = SocialAccount.objects.create(
+            user=self.user, provider=CalendarProvider.GOOGLE, uid="push-uid"
+        )
+        self.calendar = Calendar.objects.create(
+            name="Push Calendar",
+            organization=self.organization,
+            provider=CalendarProvider.GOOGLE,
+            external_id="push@example.com",
+        )
+        self.subscription = CalendarWebhookSubscription.objects.create(
+            calendar=self.calendar,
+            organization=self.organization,
+            provider=CalendarProvider.GOOGLE,
+            external_subscription_id="calendar-0123abcd",
+            external_resource_id="opaque-resource-id",
+            channel_id="calendar-0123abcd",
+            callback_url="https://example.com/webhook",
+            verification_token=CalendarWebhookSubscription.hash_verification_token("s3cret"),
+            social_account=self.social_account,
+        )
+        self.webhook_url = reverse(
+            "calendar_integration:google_webhook", kwargs={"organization_id": self.organization.id}
+        )
+        adapter = Mock()
+        adapter.provider = CalendarProvider.GOOGLE
+        adapter.validate_webhook_notification.side_effect = (
+            lambda headers, body, expected_channel_id=None: (
+                GoogleCalendarAdapter.validate_webhook_notification_static(headers, body)
+            )
+        )
+        self.adapter = adapter
+
+    def _headers(self, token: str = "s3cret", state: str = "exists") -> dict[str, Any]:
+        return {
+            "HTTP_X_GOOG_CHANNEL_ID": "calendar-0123abcd",
+            # The watched resource's opaque id -- not a calendar id.
+            "HTTP_X_GOOG_RESOURCE_ID": "opaque-resource-id",
+            "HTTP_X_GOOG_RESOURCE_URI": (
+                "https://www.googleapis.com/calendar/v3/calendars/push%40example.com/events"
+                "?alt=json"
+            ),
+            "HTTP_X_GOOG_RESOURCE_STATE": state,
+            "HTTP_X_GOOG_CHANNEL_TOKEN": token,
+        }
+
+    def _post(self, headers: dict[str, Any]):
+        with (
+            patch.object(
+                CalendarService,
+                "get_calendar_adapter_for_account",
+                return_value=(self.adapter, self.social_account),
+            ) as get_adapter,
+            patch("calendar_integration.tasks.sync_calendar_task.delay") as delay,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            response = self.client.post(self.webhook_url, **headers)
+        return response, get_adapter, delay
+
+    def test_notification_queues_a_sync_of_the_channel_calendar(self):
+        response, get_adapter, delay = self._post(self._headers())
+
+        assert response.status_code == 200
+        get_adapter.assert_called_once_with(self.social_account)
+        calendar_sync = CalendarSync.objects.filter_by_organization(self.organization).get()
+        assert (calendar_sync.calendar, calendar_sync.trigger_source) == (
+            self.calendar,
+            CalendarSyncTriggerSource.WEBHOOK,
+        )
+        delay.assert_called_once_with(
+            "social_account", self.social_account.id, calendar_sync.id, self.organization.id
+        )
+        event = CalendarWebhookEvent.objects.filter_by_organization(self.organization).get()
+        assert (
+            event.subscription,
+            event.calendar_sync,
+            event.processing_status,
+            event.external_calendar_id,
+        ) == (
+            self.subscription,
+            calendar_sync,
+            IncomingWebhookProcessingStatus.PROCESSED,
+            "push@example.com",
+        )
+        # The channel token authenticates notifications; storing it would let anyone
+        # who can read the table forge one.
+        assert "X-Goog-Channel-Token" not in event.headers
+        assert event.headers["X-Goog-Channel-ID"] == "calendar-0123abcd"
+
+    def test_revoked_token_records_the_notification_without_syncing(self):
+        """The channel's account lost its Google token. Before, the calendar owner's
+        adapter was resolved again while processing, ``InvalidCalendarTokenError``
+        escaped, and Google got a 500 and retried; nothing was recorded."""
+        OrganizationMembership.objects.get_or_create(user=self.user, organization=self.organization)
+        CalendarOwnership.objects.create(
+            organization=self.organization,
+            calendar=self.calendar,
+            membership_user_id=self.user.id,
+            is_default=True,
+        )
+
+        with (
+            patch.object(
+                CalendarService,
+                "get_calendar_adapter_for_account",
+                side_effect=InvalidCalendarTokenError("reauthenticate"),
+            ),
+            patch("calendar_integration.tasks.sync_calendar_task.delay") as delay,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            response = self.client.post(self.webhook_url, **self._headers())
+
+        assert response.status_code == 200
+        delay.assert_not_called()
+        assert not CalendarSync.objects.filter_by_organization(self.organization).exists()
+        event = CalendarWebhookEvent.objects.filter_by_organization(self.organization).get()
+        assert (event.subscription, event.processing_status) == (
+            self.subscription,
+            IncomingWebhookProcessingStatus.IGNORED,
+        )
+
+    def test_forged_token_is_rejected_without_recording_or_syncing(self):
+        response, get_adapter, delay = self._post(self._headers(token="forged"))
+
+        assert response.status_code == 400
+        get_adapter.assert_not_called()
+        delay.assert_not_called()
+        assert not CalendarWebhookEvent.objects.filter_by_organization(self.organization).exists()
+
+    def test_channel_of_another_organization_is_rejected(self):
+        other = Organization.objects.create(name="Other Org")
+        other_url = reverse(
+            "calendar_integration:google_webhook", kwargs={"organization_id": other.id}
+        )
+        with patch("calendar_integration.tasks.sync_calendar_task.delay") as delay:
+            response = self.client.post(other_url, **self._headers())
+
+        assert response.status_code == 400
+        delay.assert_not_called()
+
+    def test_sync_handshake_is_acknowledged_and_ignored(self):
+        response, get_adapter, delay = self._post(self._headers(state="sync"))
+
+        assert response.status_code == 200
+        get_adapter.assert_not_called()
+        delay.assert_not_called()
+        assert not CalendarWebhookEvent.objects.filter_by_organization(self.organization).exists()
+
+    def test_room_channel_syncs_as_the_service_account_that_opened_it(self):
+        service_account = GoogleCalendarServiceAccount.objects.create(
+            organization=self.organization,
+            email="sa@project.iam.gserviceaccount.com",
+            private_key_id="key-id",
+            private_key="key",
+        )
+        self.subscription.social_account = None
+        self.subscription.google_service_account = service_account
+        self.subscription.save()
+
+        with (
+            patch.object(
+                CalendarService,
+                "get_calendar_adapter_for_account",
+                return_value=(self.adapter, service_account),
+            ) as get_adapter,
+            patch("calendar_integration.tasks.sync_calendar_task.delay") as delay,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            response = self.client.post(self.webhook_url, **self._headers())
+
+        assert response.status_code == 200
+        get_adapter.assert_called_once_with(service_account)
+        calendar_sync = CalendarSync.objects.filter_by_organization(self.organization).get()
+        delay.assert_called_once_with(
+            "google_service_account", service_account.id, calendar_sync.id, self.organization.id
+        )

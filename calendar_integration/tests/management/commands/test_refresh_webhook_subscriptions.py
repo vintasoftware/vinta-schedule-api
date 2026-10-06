@@ -288,3 +288,45 @@ class TestRefreshWebhookSubscriptionsCommand(TestCase):
         assert "Network error" in output
         assert "Failed to refresh: Network error" in output
         assert "Network error" in output
+
+    @patch("di_core.containers.container")
+    @patch(
+        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.original_manager"
+    )
+    def test_google_renewal_authenticates_as_the_recorded_account(
+        self, mock_qs: Mock, mock_container: Mock
+    ) -> None:
+        """Renewing a Google channel opens a new one at Google, which needs the account
+        the channel belongs to; one without a recorded account is reported as failed."""
+        with_account = Mock()
+        with_account.id = 1
+        with_account.provider = "google"
+        with_account.organization = self.organization
+        without_account = Mock()
+        without_account.id = 2
+        without_account.provider = "google"
+        without_account.organization = self.organization
+        without_account.account = None
+        mock_qs.filter.return_value.filter.return_value.select_related.return_value = [
+            with_account,
+            without_account,
+        ]
+        mock_calendar_service = Mock()
+        mock_calendar_service.refresh_webhook_subscription.return_value = with_account
+        mock_container.calendar_service.return_value = mock_calendar_service
+
+        out = StringIO()
+        call_command(
+            "refresh_webhook_subscriptions", organization_id=self.organization.id, stdout=out
+        )
+
+        mock_calendar_service.authenticate.assert_called_once_with(
+            account=with_account.account, organization=self.organization
+        )
+        mock_calendar_service.refresh_webhook_subscription.assert_called_once_with(
+            subscription_id=1
+        )
+        output = out.getvalue()
+        assert "no account recorded on this subscription" in output
+        assert "Successfully refreshed 1 webhook subscriptions" in output
+        assert "Failed to refresh 1 webhook subscriptions" in output
