@@ -155,8 +155,16 @@ def _is_valid_rrule_key(
     ]
 
 
+# `CalendarSync.next_sync_token` holds at most this many characters. A longer delta
+# token is not stored, so the next room sync starts a fresh round instead of failing
+# to save.
+MAX_STORED_SYNC_TOKEN_LENGTH = 255
+
+
 class MSOutlookCalendarAdapter(CalendarAdapter):
     provider = "microsoft"
+    # Set by `from_app_only`: the adapter acts as Vinta's Entra app, with no user.
+    is_app_only = False
     RSVP_STATUS_MAPPING: ClassVar[dict[str, Literal["pending", "accepted", "declined"]]] = {
         "none": "pending",
         "organizer": "accepted",
@@ -525,6 +533,10 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         max_results_per_page: int = 250,
     ) -> CalendarEventsSyncTypedDict:
         """Get events from the calendar with optional sync token for incremental sync."""
+        if calendar_is_resource and self.is_app_only:
+            return self.get_room_events(
+                self._room_mailbox(calendar_id), start_date, end_date, sync_token
+            )
         try:
             if calendar_is_resource:
                 return self._get_room_events_sync_result(
@@ -1339,7 +1351,69 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         adapter = cls.__new__(cls)
         adapter.client = MSOutlookCalendarAPIClient.app_only(token_provider, connection.tenant_id)
         adapter.refresh_token = ""
+        adapter.is_app_only = True
         return adapter
+
+    def _room_mailbox(self, room_id: str) -> str:
+        """The mailbox address of a room, given it or the room's Places id.
+
+        A Microsoft room calendar's ``external_id`` is its Places id, but its events
+        are read through its mailbox.
+        """
+        if "@" in room_id:
+            return room_id
+        with _directory_errors("look up the room's mailbox"):
+            email = self.client.get_room(room_id).email_address
+        if not email:
+            raise ResourceDirectoryError("The room has no mailbox address yet.")
+        return email
+
+    def get_room_events(
+        self,
+        room_email: str,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        sync_token: str | None = None,
+    ) -> CalendarEventsSyncTypedDict:
+        """The room's events in the shape ``get_events`` returns, from a delta round.
+
+        Without ``sync_token`` every event between ``start_date`` and ``end_date``
+        is returned; with one, only what changed since. ``next_sync_token`` is the
+        delta token for the next round. An event Graph reports as removed comes back
+        ``cancelled``, with no times of its own and Graph's ``@removed`` marker in
+        ``original_payload``.
+        """
+        with _directory_errors("read the room's events"):
+            delta = self.client.get_room_calendar_view_delta(
+                room_email, start_date, end_date, delta_token=sync_token
+            )
+        events = [
+            self._convert_ms_event_to_calendar_event_data(e, room_email) for e in delta.events
+        ]
+        events.extend(
+            CalendarEventAdapterOutputData(
+                calendar_external_id=room_email,
+                title="",
+                description="",
+                start_time=start_date,
+                end_time=start_date,
+                timezone="UTC",
+                attendees=[],
+                external_id=removed_id,
+                status="cancelled",
+                original_payload={"id": removed_id, "@removed": {"reason": "deleted"}},
+            )
+            for removed_id in delta.removed_ids
+        )
+        next_sync_token = delta.delta_token
+        if next_sync_token and len(next_sync_token) > MAX_STORED_SYNC_TOKEN_LENGTH:
+            logger.warning(
+                "Microsoft delta token for a room is %s characters; not storing it, so "
+                "the next sync of the room starts a new round.",
+                len(next_sync_token),
+            )
+            next_sync_token = None
+        return CalendarEventsSyncTypedDict(events=iter(events), next_sync_token=next_sync_token)
 
     def list_locations(self) -> list[ResourceLocationData]:
         """Every building, once per floor and once per section under it.

@@ -137,6 +137,20 @@ class MSGraphRoom:
     original_payload: dict[str, Any] | None = None
 
 
+@dataclass
+class MSGraphRoomCalendarDelta:
+    """One complete round of a room's ``calendarView`` delta query.
+
+    ``removed_ids`` are the events Graph reports as ``@removed`` (deleted, or no longer
+    in the window). ``delta_token`` starts the next round; ``None`` when Graph sent no
+    delta link.
+    """
+
+    events: list[MSGraphEvent]
+    removed_ids: list[str]
+    delta_token: str | None
+
+
 class MSGraphAPIError(Exception):
     """Exception raised for Microsoft Graph API errors"""
 
@@ -839,6 +853,60 @@ class MSOutlookCalendarAPIClient:
         }
 
         return result
+
+    def get_room_calendar_view_delta(
+        self,
+        room_email: str,
+        start: datetime.datetime,
+        end: datetime.datetime,
+        delta_token: str | None = None,
+        max_page_size: int = 100,
+    ) -> MSGraphRoomCalendarDelta:
+        """Every change to the room's events since ``delta_token``, following every page.
+
+        Without ``delta_token`` this is the initial round: every event between the
+        timezone-aware ``start`` and ``end``. With one, the window is the one the token
+        was first issued for, and ``start`` / ``end`` are ignored. Uses
+        ``/users/{room}/calendarView/delta``, which works with an app-only token.
+        """
+        endpoint = f"/users/{urllib.parse.quote(room_email, safe='@')}/calendarView/delta"
+        params: dict[str, Any] | None
+        if delta_token:
+            params = {"$deltatoken": delta_token}
+        else:
+            params = {
+                "startDateTime": start.astimezone(datetime.UTC).isoformat(),
+                "endDateTime": end.astimezone(datetime.UTC).isoformat(),
+            }
+        headers = {
+            "Prefer": f'odata.maxpagesize={max_page_size}, outlook.timezone="UTC"',
+        }
+
+        events: list[MSGraphEvent] = []
+        removed_ids: list[str] = []
+        while True:
+            response = self._make_request("GET", endpoint, params=params, headers=headers)
+            for event_data in response.get("value", []):
+                if "@removed" in event_data:
+                    removed_ids.append(event_data["id"])
+                else:
+                    events.append(self._parse_event(event_data))
+
+            next_link = response.get("@odata.nextLink")
+            if not next_link:
+                break
+            # The next page's URL already carries its query string. Only follow links
+            # back to Graph itself, so the app-only token is never sent elsewhere.
+            if not next_link.startswith(f"{self.BASE_URL}/"):
+                raise MSGraphAPIError("MS Graph API returned a next link outside Graph")
+            endpoint, params = next_link.removeprefix(self.BASE_URL), None
+
+        delta_link = response.get("@odata.deltaLink") or ""
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(delta_link).query)
+        next_delta_token = next(iter(query.get("$deltatoken", [])), None)
+        return MSGraphRoomCalendarDelta(
+            events=events, removed_ids=removed_ids, delta_token=next_delta_token
+        )
 
     # Room/Resource Methods
 

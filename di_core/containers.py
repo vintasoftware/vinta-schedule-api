@@ -322,6 +322,8 @@ class AppContainer(containers.DeclarativeContainer):
         ExternalClientIdentifierService,
     )
 
+    microsoft_app_only_token_provider = providers.Factory(MicrosoftAppOnlyTokenProvider)
+
     calendar_service = providers.Factory(
         CalendarService,
         calendar_side_effects_service=calendar_side_effects_service,
@@ -331,6 +333,7 @@ class AppContainer(containers.DeclarativeContainer):
         booking_policy_service=booking_policy_service,
         entitlement_service=entitlement_service,
         external_client_identifier_service=external_client_identifier_service,
+        microsoft_app_only_token_provider=microsoft_app_only_token_provider,
     )
 
     google_write_access_service = providers.Factory(
@@ -370,8 +373,6 @@ class AppContainer(containers.DeclarativeContainer):
         ConsentService,
         audit_service=audit_service,
     )
-
-    microsoft_app_only_token_provider = providers.Factory(MicrosoftAppOnlyTokenProvider)
 
     microsoft_connection_service = providers.Factory(
         MicrosoftConnectionService,

@@ -2001,3 +2001,95 @@ class TestRoomDirectoryRequests:
 
         assert app_only_client.get_schedule([], now, now) == []
         app_only_client.session.request.assert_not_called()
+
+
+def delta_event(event_id: str) -> dict:
+    return {
+        "id": event_id,
+        "subject": f"Booking {event_id}",
+        "start": {"dateTime": "2026-10-07T10:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-10-07T11:00:00.0000000", "timeZone": "UTC"},
+    }
+
+
+class TestRoomCalendarViewDelta:
+    ROOM_DELTA = f"{GRAPH}/users/room-a@contoso.com/calendarView/delta"
+
+    def test_initial_round_follows_every_page_and_returns_the_delta_token(self, app_only_client):
+        app_only_client.session.request.side_effect = [
+            create_mock_response(
+                200,
+                {
+                    "value": [delta_event("ev-1")],
+                    "@odata.nextLink": f"{self.ROOM_DELTA}?$skiptoken=page-2",
+                },
+            ),
+            create_mock_response(
+                200,
+                {
+                    "value": [
+                        delta_event("ev-2"),
+                        {"id": "ev-0", "@removed": {"reason": "deleted"}},
+                    ],
+                    "@odata.deltaLink": f"{self.ROOM_DELTA}?$deltatoken=next-round",
+                },
+            ),
+        ]
+        sao_paulo = datetime.timezone(datetime.timedelta(hours=-3))
+
+        delta = app_only_client.get_room_calendar_view_delta(
+            "room-a@contoso.com",
+            datetime.datetime(2026, 10, 6, 0, 0, tzinfo=sao_paulo),
+            datetime.datetime(2026, 10, 7, 0, 0, tzinfo=sao_paulo),
+        )
+
+        calls = app_only_client.session.request.call_args_list
+        assert [(c.kwargs["url"], c.kwargs["params"]) for c in calls] == [
+            (
+                self.ROOM_DELTA,
+                {
+                    "startDateTime": "2026-10-06T03:00:00+00:00",
+                    "endDateTime": "2026-10-07T03:00:00+00:00",
+                },
+            ),
+            (f"{self.ROOM_DELTA}?$skiptoken=page-2", None),
+        ]
+        assert calls[0].kwargs["headers"]["Prefer"] == (
+            'odata.maxpagesize=100, outlook.timezone="UTC"'
+        )
+        assert [event.id for event in delta.events] == ["ev-1", "ev-2"]
+        assert (delta.removed_ids, delta.delta_token) == (["ev-0"], "next-round")
+
+    def test_round_from_a_delta_token_sends_only_the_token(self, app_only_client):
+        app_only_client.session.request.return_value = create_mock_response(
+            200, {"value": [], "@odata.deltaLink": f"{self.ROOM_DELTA}?$deltatoken=round-3"}
+        )
+        now = datetime.datetime(2026, 10, 6, tzinfo=datetime.UTC)
+
+        delta = app_only_client.get_room_calendar_view_delta(
+            "room-a@contoso.com", now, now, delta_token="round-2"
+        )
+
+        assert app_only_client.session.request.call_args.kwargs["params"] == {
+            "$deltatoken": "round-2"
+        }
+        assert (delta.events, delta.removed_ids, delta.delta_token) == ([], [], "round-3")
+
+    def test_answer_without_a_delta_link_has_no_token(self, app_only_client):
+        app_only_client.session.request.return_value = create_mock_response(200, {"value": []})
+        now = datetime.datetime(2026, 10, 6, tzinfo=datetime.UTC)
+
+        delta = app_only_client.get_room_calendar_view_delta("room-a@contoso.com", now, now)
+
+        assert delta.delta_token is None
+
+    def test_next_link_off_graph_is_not_followed(self, app_only_client):
+        app_only_client.session.request.return_value = create_mock_response(
+            200, {"value": [], "@odata.nextLink": "https://attacker.example/steal?$skiptoken=x"}
+        )
+        now = datetime.datetime(2026, 10, 6, tzinfo=datetime.UTC)
+
+        with pytest.raises(MSGraphAPIError):
+            app_only_client.get_room_calendar_view_delta("room-a@contoso.com", now, now)
+
+        assert app_only_client.session.request.call_count == 1

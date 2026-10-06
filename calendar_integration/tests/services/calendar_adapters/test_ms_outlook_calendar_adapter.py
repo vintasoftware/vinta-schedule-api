@@ -17,8 +17,10 @@ from calendar_integration.exceptions import (
     ResourceDirectoryNotWriteEnabledError,
     ResourceDirectoryPermissionError,
 )
+from calendar_integration.models import CalendarSync
 from calendar_integration.services.calendar_adapters import ms_outlook_calendar_adapter
 from calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter import (
+    MAX_STORED_SYNC_TOKEN_LENGTH,
     MSOutlookCalendarAdapter,
     MSOutlookCredentialTypedDict,
 )
@@ -30,6 +32,7 @@ from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_clie
     MSGraphCalendar,
     MSGraphEvent,
     MSGraphRoom,
+    MSGraphRoomCalendarDelta,
     MSOutlookCalendarAPIClient,
 )
 from calendar_integration.services.dataclasses import (
@@ -2973,5 +2976,67 @@ class TestErrorClassification:
 
         with pytest.raises(ResourceDirectoryPermissionError) as exc_info:
             directory.delete_room("room-1")
+
+        assert exc_info.value.is_transient is True
+
+
+class TestGetRoomEvents:
+    START = datetime.datetime(2026, 10, 6, tzinfo=datetime.UTC)
+    END = datetime.datetime(2027, 1, 4, tzinfo=datetime.UTC)
+
+    def delta(self, events=(), removed_ids=(), delta_token="next-round"):
+        return MSGraphRoomCalendarDelta(
+            events=list(events), removed_ids=list(removed_ids), delta_token=delta_token
+        )
+
+    def test_returns_events_and_removals_in_the_get_events_shape(self, directory, mock_ms_event):
+        directory.client.get_room_calendar_view_delta = Mock(
+            return_value=self.delta(events=[mock_ms_event], removed_ids=["gone-1"])
+        )
+
+        result = directory.get_room_events("room-a@contoso.com", self.START, self.END, "round-1")
+
+        directory.client.get_room_calendar_view_delta.assert_called_once_with(
+            "room-a@contoso.com", self.START, self.END, delta_token="round-1"
+        )
+        events = list(result["events"])
+        assert result["next_sync_token"] == "next-round"
+        assert [(e.external_id, e.status) for e in events] == [
+            ("test_event_id", "confirmed"),
+            ("gone-1", "cancelled"),
+        ]
+        assert events[1].original_payload == {"id": "gone-1", "@removed": {"reason": "deleted"}}
+
+    def test_token_too_long_to_store_is_dropped(self, directory):
+        directory.client.get_room_calendar_view_delta = Mock(
+            return_value=self.delta(delta_token="x" * (MAX_STORED_SYNC_TOKEN_LENGTH + 1))
+        )
+
+        result = directory.get_room_events("room-a@contoso.com", self.START, self.END)
+
+        assert result["next_sync_token"] is None
+
+    def test_stored_token_limit_matches_the_sync_token_column(self):
+        assert (
+            MAX_STORED_SYNC_TOKEN_LENGTH
+            == CalendarSync._meta.get_field("next_sync_token").max_length
+        )
+
+    def test_get_events_for_a_room_reads_its_mailbox_by_places_id(self, directory, graph):
+        graph.places["room-1"] = room("room-1", "hq-1")
+        directory.client.get_room_calendar_view_delta = Mock(return_value=self.delta())
+
+        directory.get_events("room-1", True, self.START, self.END, None)
+
+        assert directory.client.get_room_calendar_view_delta.call_args.args[0] == (
+            "room-1@contoso.com"
+        )
+
+    def test_room_without_a_mailbox_yet_is_a_transient_error(self, directory, graph):
+        graph.places["room-1"] = room("room-1", "hq-1")
+        del graph.places["room-1"]["emailAddress"]
+
+        with pytest.raises(ResourceDirectoryError) as exc_info:
+            directory.get_events("room-1", True, self.START, self.END, None)
 
         assert exc_info.value.is_transient is True
