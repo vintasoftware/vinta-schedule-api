@@ -6,6 +6,8 @@ from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
 
 from calendar_integration.constants import (
+    BookingCancelMode,
+    BookingRejectionReason,
     CalendarProvider,
 )
 from calendar_integration.models import (
@@ -746,3 +748,96 @@ class BusyWindow:
 
     start: datetime.datetime
     end: datetime.datetime
+
+
+@dataclass(frozen=True)
+class RoomBooking:
+    """One future booking of a room, as a deletion preview lists it.
+
+    ``start`` / ``end`` are the first occurrence that has not ended yet. A one-off
+    event is that occurrence. A series (``is_series``) is resolved as one unit:
+    ``series_from`` is set when the series started before now, and is the start of
+    that first occurrence, so the series is resolved "from now on". A series that
+    has not started yet has ``series_from=None`` and is resolved as a whole.
+    ``calendar_id`` is the calendar that holds the event.
+    """
+
+    event_id: int
+    calendar_id: int | None
+    title: str
+    start: datetime.datetime
+    end: datetime.datetime
+    is_series: bool
+    series_from: datetime.datetime | None
+
+
+@dataclass(frozen=True)
+class RoomBookingPreview:
+    """A room's future bookings, plus the fingerprint a delete must send back."""
+
+    fingerprint: str
+    bookings: tuple[RoomBooking, ...]
+
+
+@dataclass(frozen=True)
+class AbortDeletion:
+    """Resolution: cancel the room deletion; the booking and the room stay as they are."""
+
+
+@dataclass(frozen=True)
+class MoveBooking:
+    """Resolution: move the booking to the room ``target_calendar_id``."""
+
+    target_calendar_id: int
+
+
+@dataclass(frozen=True)
+class CancelBooking:
+    """Resolution: drop the room from the booking, or cancel the whole event."""
+
+    mode: BookingCancelMode
+
+
+BookingResolution = AbortDeletion | MoveBooking | CancelBooking
+
+
+@dataclass(frozen=True)
+class ResolvedBooking:
+    """A booking together with the resolution chosen for it."""
+
+    booking: RoomBooking
+    resolution: BookingResolution
+
+
+@dataclass(frozen=True)
+class BookingResolutionPlan:
+    """A validated resolution for every future booking of ``room_id``, in preview order."""
+
+    room_id: int
+    organization_id: int
+    fingerprint: str
+    bookings: tuple[ResolvedBooking, ...]
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    """What ``BookingResolutionService.apply`` did with a plan, by event id, in plan order.
+
+    ``applied`` holds the bookings that are resolved: changed by this run, or already
+    no longer referencing the room (a re-run). ``pending`` holds the bookings left
+    untouched because the apply stopped, starting with ``failed_at``, the booking
+    whose step failed. ``failed_at`` is ``None`` and ``pending`` is empty when every
+    booking was applied.
+    """
+
+    applied: tuple[int, ...]
+    pending: tuple[int, ...]
+    failed_at: int | None
+
+
+@dataclass(frozen=True)
+class RejectedBooking:
+    """A booking whose resolution is invalid. ``reason.label`` is the message to show."""
+
+    event_id: int
+    reason: BookingRejectionReason

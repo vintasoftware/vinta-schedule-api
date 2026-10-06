@@ -25,6 +25,7 @@ from calendar_integration.factories import (
 )
 from calendar_integration.models import (
     CalendarEvent,
+    CalendarOwnership,
     EventExternalAttendance,
     EventRecurrenceException,
     ExternalAttendee,
@@ -859,6 +860,42 @@ def test_build_ics_organizer_is_default_owner_when_multiple_owners():
         "ORGANIZER must be the default owner, not an arbitrary first() row"
     )
     assert "non-default@example.com" not in str(organizer)
+
+
+@pytest.mark.django_db
+def test_build_ics_organizer_skips_an_owner_less_ownership():
+    """A calendar holding an owner-less ownership beside a member one, neither the
+    default (calendar sync leaves both behind), names the member as ORGANIZER."""
+    org = baker.make("organizations.Organization")
+    calendar = baker.make("calendar_integration.Calendar", organization=org)
+    CalendarOwnership.objects.create(
+        organization=org, calendar=calendar, membership_user_id=None, is_default=False
+    )
+    member = UserFactory().create_user(email="member@example.com")
+    create_calendar_ownership(calendar=calendar, user=member, is_default=False)
+
+    event = baker.make(
+        CalendarEvent,
+        organization=org,
+        calendar=calendar,
+        title="Mixed Owners Event",
+        description="",
+        external_id="evt-mixed-owners",
+        start_time_tz_unaware=datetime.datetime(2025, 6, 23, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 23, 10, 0),
+        timezone="UTC",
+    )
+
+    event_reloaded = (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .select_related("calendar")
+        .prefetch_related("calendar__ownerships__membership__user")
+        .get(id=event.id)
+    )
+
+    vevent = _parse_vevent(CalendarEventICSService().build_ics(event_reloaded))
+
+    assert "member@example.com" in str(vevent.get("organizer"))
 
 
 @pytest.mark.django_db
