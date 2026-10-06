@@ -38,6 +38,9 @@ from calendar_integration.services.booking_policy_permission_service import (
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.booking_resolution_service import BookingResolutionService
+from calendar_integration.services.calendar_clients.ms_app_only_token import (
+    MicrosoftAppOnlyTokenProvider,
+)
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
@@ -47,10 +50,15 @@ from calendar_integration.services.external_client_identifier_service import (
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
+from calendar_integration.services.google_write_access_service import GoogleWriteAccessService
+from calendar_integration.services.microsoft_connection_service import (
+    MicrosoftConnectionService,
+)
 from calendar_integration.services.protocols.resource_directory_adapter import (
     ResourceDirectoryAdapterResolver,
 )
 from calendar_integration.services.room_resync_service import RoomResyncService
+from calendar_integration.services.room_sync_adapter_resolver import RoomSyncAdapterResolver
 from calendar_integration.services.room_sync_notifier import RoomSyncNotifier
 from calendar_integration.services.room_sync_service import RoomSyncService
 from legal.services import ConsentService
@@ -284,18 +292,19 @@ class AppContainer(containers.DeclarativeContainer):
         notification_service=notification_service,
     )
 
+    microsoft_app_only_token_provider = providers.Factory(MicrosoftAppOnlyTokenProvider)
+
     room_sync_notifier = providers.Factory(
         RoomSyncNotifier,
         notification_service=notification_service,
     )
 
-    #: The `ResourceDirectoryAdapterResolver` the room sync engines reach provider
-    #: room directories through. Declared here, unset: Phase 8 of the resource
-    #: calendar provider sync plan binds it to the real Google / Microsoft
-    #: resolver. Until then resolving a service that needs it (`room_sync_service`,
-    #: `room_resync_service`) raises, and tests override it with a fake.
-    resource_directory_adapter_resolver: providers.Dependency[ResourceDirectoryAdapterResolver] = (
-        providers.Dependency()
+    #: The `ResourceDirectoryAdapterResolver` the room sync engines write through.
+    resource_directory_adapter_resolver: providers.Provider[ResourceDirectoryAdapterResolver] = (
+        providers.Factory(
+            RoomSyncAdapterResolver,
+            microsoft_token_provider=microsoft_app_only_token_provider,
+        )
     )
 
     room_resync_service = providers.Factory(
@@ -354,6 +363,10 @@ class AppContainer(containers.DeclarativeContainer):
         booking_resolution_service_factory=booking_resolution_service.provider
     )
 
+    google_write_access_service = providers.Factory(
+        GoogleWriteAccessService,
+    )
+
     bookable_slots_service = providers.Factory(
         BookableSlotsService,
         booking_policy_service=booking_policy_service,
@@ -386,6 +399,11 @@ class AppContainer(containers.DeclarativeContainer):
     consent_service = providers.Factory(
         ConsentService,
         audit_service=audit_service,
+    )
+
+    microsoft_connection_service = providers.Factory(
+        MicrosoftConnectionService,
+        token_provider=microsoft_app_only_token_provider,
     )
 
 

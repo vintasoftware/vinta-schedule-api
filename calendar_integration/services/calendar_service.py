@@ -457,15 +457,7 @@ class CalendarService(BaseCalendarService):
                 GoogleCalendarAdapter,
             )
 
-            return GoogleCalendarAdapter.from_service_account(
-                {
-                    "account_id": str(account.id),
-                    "email": account.email,
-                    "private_key_id": account.private_key_id,
-                    "private_key": account.private_key,
-                    "admin_email": account.admin_email,
-                }
-            ), account
+            return GoogleCalendarAdapter.from_service_account_model(account), account
 
         # Do NOT exclude expired tokens here: an expired access token that still
         # carries a refresh_token (token_secret) is refreshed by the adapter on

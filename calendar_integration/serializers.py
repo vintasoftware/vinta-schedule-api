@@ -4349,3 +4349,17 @@ class CalendarEventWithManagementCodesSerializer(CalendarEventSerializer):
 
     class Meta(CalendarEventSerializer.Meta):
         fields = (*CalendarEventSerializer.Meta.fields, "management")
+
+
+class MicrosoftConsentUrlSerializer(serializers.Serializer):
+    """The admin-consent link an org admin hands to their tenant's Global Administrator."""
+
+    consent_url = serializers.URLField(read_only=True)
+
+
+class MicrosoftConnectionVerificationSerializer(serializers.Serializer):
+    """The outcome of checking that the connected Microsoft tenant allows room writes."""
+
+    write_enabled = serializers.BooleanField(read_only=True)
+    verified_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    error = serializers.CharField(read_only=True, allow_blank=True)

@@ -925,3 +925,15 @@ class RoomDeletionResult:
     @property
     def failed_at_event_id(self) -> int | None:
         return self.apply_result.failed_at if self.apply_result else None
+
+
+@dataclass(frozen=True)
+class GoogleWriteAccessResult:
+    """The outcome of verifying room write access for an organization's Google service account.
+
+    ``error`` is ``""`` on success, otherwise a message an org admin can act on.
+    """
+
+    write_enabled: bool
+    write_verified_at: datetime.datetime | None
+    error: str

@@ -20,6 +20,7 @@ from calendar_integration.tasks import (
     import_organization_calendar_resources_task,
     purge_expired_resource_calendar_create_requests_task,
     push_room_to_provider_task,
+    start_room_event_sync_task,
     sync_calendar_task,
 )
 from calendar_integration.tasks.calendar_sync_tasks import resync_organization_calendars_task
@@ -74,6 +75,12 @@ from calendar_integration.tasks.calendar_sync_tasks import resync_organization_c
             (),
             {},
             id="purge_expired_resource_calendar_create_requests-celerybeat_schedule",
+        ),
+        pytest.param(
+            start_room_event_sync_task,
+            (),
+            {"calendar_id": 1, "organization_id": 1},
+            id="start_room_event_sync-room_sync_receivers",
         ),
         pytest.param(
             resync_organization_calendars_task,

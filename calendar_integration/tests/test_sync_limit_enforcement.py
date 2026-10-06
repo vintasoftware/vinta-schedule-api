@@ -679,7 +679,7 @@ class TestSyncPathIsWiredThroughDI:
             del adapter.resolve_expression
             del adapter.get_source_expressions
             adapter_class.return_value = adapter
-            adapter_class.from_service_account.return_value = adapter
+            adapter_class.from_service_account_model.return_value = adapter
 
             service = CalendarService()
             service.authenticate(account=user, organization=organization)
