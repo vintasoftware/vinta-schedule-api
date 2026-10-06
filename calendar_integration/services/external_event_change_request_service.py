@@ -278,14 +278,8 @@ class ExternalEventChangeRequestService:
         # last-admin guard counts by, and the same question ``can_resolve``
         # asks of one membership, so the people notified are exactly the
         # people admitted.
-        admin_user_ids = (
-            OrganizationMembership.objects.filter(
-                organization_id=organization_id,
-                is_active=True,
-            )
-            .holding_permission(MANAGE_MEMBERS)
-            .values_list("user_id", flat=True)
-            .distinct()
+        admin_user_ids = OrganizationMembership.objects.administrators(organization_id).values_list(
+            "user_id", flat=True
         )
         approver_user_ids.update(admin_user_ids)
 
