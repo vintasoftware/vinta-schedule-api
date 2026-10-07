@@ -158,13 +158,11 @@
       }
     },
     {
-      "Sid": "NatInterfaceAndAddressManage",
+      "Sid": "NatInterfaceManage",
       "Effect": "Allow",
       "Action": [
         "ec2:DeleteNetworkInterface",
-        "ec2:ModifyNetworkInterfaceAttribute",
-        "ec2:AssociateAddress",
-        "ec2:DisassociateAddress"
+        "ec2:ModifyNetworkInterfaceAttribute"
       ],
       "Resource": [
         "arn:aws:ec2:us-east-1:261390480437:network-interface/*",
@@ -173,6 +171,20 @@
       "Condition": {
         "StringEquals": {
           "aws:ResourceTag/Environment": "staging"
+        }
+      }
+    },
+    {
+      "Sid": "ElasticIpAssociation",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AssociateAddress",
+        "ec2:DisassociateAddress"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1"
         }
       }
     }
