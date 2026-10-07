@@ -205,7 +205,7 @@ class EventsSyncChanges:
 class ApplicationCalendarData:
     id: int | None  # noqa: A003
     organization_id: int | None
-    external_id: str
+    external_id: str | None
     name: str
     description: str | None = None
     email: str | None = None
@@ -231,7 +231,7 @@ class AvailableTimeWindow:
 @dataclass
 class BlockedTimeData:
     id: int | None  # noqa: A003
-    calendar_external_id: str
+    calendar_external_id: str | None
     start_time: datetime.datetime
     end_time: datetime.datetime
     timezone: str  # IANA timezone string (required)

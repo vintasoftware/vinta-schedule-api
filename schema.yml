@@ -19667,6 +19667,7 @@ components:
         external_id:
           type: string
           readOnly: true
+          nullable: true
         provider:
           allOf:
           - $ref: '#/components/schemas/ProviderEnum'
@@ -22133,6 +22134,7 @@ components:
         external_id:
           type: string
           readOnly: true
+          nullable: true
         provider:
           allOf:
           - $ref: '#/components/schemas/ProviderEnum'
