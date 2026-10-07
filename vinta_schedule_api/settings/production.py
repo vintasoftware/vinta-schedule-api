@@ -57,7 +57,13 @@ EMAIL_USE_TLS = True
 
 # Security
 SECURE_HSTS_PRELOAD = True
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+# Which header carries the original scheme depends on what terminates TLS: the
+# ALB sends X-Forwarded-Proto, but API Gateway cannot, and sends X-Client-Proto
+# instead (infrastructure/modules/app-platform/api_gateway.tf sets this).
+SECURE_PROXY_SSL_HEADER = (
+    config("PROXY_SSL_HEADER", default="HTTP_X_FORWARDED_PROTO"),
+    "https",
+)
 SECURE_SSL_REDIRECT = True
 # The load balancer health-checks over plain HTTP, and a 301 counts as unhealthy.
 # Exempting the one infrastructure path costs nothing: it returns a constant and

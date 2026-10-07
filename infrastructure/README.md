@@ -48,6 +48,9 @@ infrastructure/
 
 ## Architecture
 
+This is the module's default layout, and production's. Staging uses four cheaper
+settings. See [Staging's cost switches](#stagings-cost-switches).
+
 ```
                        Route 53 (DNS account, cross-account role)
                                     |
@@ -69,11 +72,106 @@ infrastructure/
                                      MercadoPago / Twilio / SES-SMTP
 ```
 
-Nothing but the ALB has a public address. The ECS tasks reach the internet — and
-the AWS APIs they do not have a VPC endpoint for — through the NAT gateway. S3 has
-a free gateway endpoint, which matters more than it sounds: ECR keeps image layers
-in S3, so without it every task start would pull the whole image through NAT at
-per-GB rates.
+Only the ALB and the NAT have public addresses. The ECS tasks reach the internet —
+and the AWS APIs they have no VPC endpoint for — through the NAT. S3 has a free
+gateway endpoint, which matters more than it sounds: ECR keeps image layers in S3,
+so without it every task start would pull the whole image through NAT at per-GB
+rates.
+
+### Staging's cost switches
+
+Four module inputs trade resilience for money. Each one defaults to the layout
+above, so production does not change. Staging turns all four on.
+
+| Input | Replaces | Saves (~/month) |
+|---|---|---|
+| `nat_mode = "instance"` | NAT gateway → one `t4g.nano` EC2 instance | $29 |
+| `ingress_mode = "api_gateway"` | ALB → API Gateway HTTP API + VPC link + Cloud Map | $22 |
+| `use_fargate_spot_for_web = true` | on-demand web task → Spot | $12 |
+| `run_beat_in_worker = true` | beat service → `celery worker --beat` | $3 |
+
+**NAT instance.** Stock Amazon Linux 2023 with iptables doing the masquerade. It
+has no key pair and no instance profile (`modules/app-platform/network.tf`). The
+route and the Elastic IP are attached to a network interface that outlives the
+instance, so a rebuild keeps the same outbound address. Switching from the NAT
+gateway to the instance does *not* keep it: the gateway's Elastic IP is released
+and the instance gets a new one (`terragrunt output nat_public_ip`). Update any
+third party that allowlists the old address. It is one instance in one
+AZ. If it stops, the tasks lose outbound internet until it comes back: calendar
+sync, payments, SMS and email all stop, and new tasks cannot pull their image.
+AWS's default auto-recovery covers host failure. The instance does not patch
+itself, and Terraform ignores newer AMIs on purpose, so an unrelated apply never
+cuts traffic. To patch it, or to replace a broken one, taint it and let the next
+Scalr run rebuild it on the current AMI. Outbound traffic stops for the minute or
+two that takes:
+
+```bash
+cd infrastructure/environments/staging
+terragrunt run -- taint 'module.app.aws_instance.nat[0]'
+```
+
+**API Gateway ingress.** `modules/app-platform/api_gateway.tf` explains how it is
+wired. These are the differences from the ALB:
+
+- **30-second request timeout**, and it cannot be raised. A slower request gets a
+  504 from API Gateway, and gunicorn never logs it. Look in
+  `/aws/apigateway/<prefix>` instead.
+- **10 MB request body limit.** Uploads go straight to S3 through
+  django-s3direct, so API requests should stay well under it.
+- **No WAF.** WAF cannot be attached to an HTTP API.
+- **No connection draining.** A deploy can drop a request that was in flight on
+  the old task.
+- **Port 80 gets no answer.** The ALB redirected it to 443; API Gateway does not
+  listen on it at all.
+- **Different proxy headers.** API Gateway cannot send `X-Forwarded-For`,
+  `X-Forwarded-Proto` or `X-Forwarded-Host`. It sends `X-Client-IP` and
+  `X-Client-Proto` instead, and sets `Host` to the API domain. The containers get
+  `CLIENT_IP_HEADER` and `PROXY_SSL_HEADER`, which point Django at those two
+  headers. Code that needs the client IP must call
+  `common.utils.request_utils.proxied_client_ip`, never `X-Forwarded-For`
+  directly. Behind API Gateway, `X-Forwarded-For` is whatever the client sent.
+  Behind the ALB, its *first* entry (the one read today) is client-supplied too,
+  because the ALB appends rather than replaces. That is a known, accepted
+  limitation (see the comment in `public_api/extensions.py`).
+- **Health checks run inside the container** (an ECS `healthCheck`), not from a
+  load balancer. A task that fails its check is removed from Cloud Map, and the
+  same check decides whether a deploy succeeds.
+
+**Web on Spot.** AWS can reclaim the single web task with two minutes' notice. The
+API is down until ECS starts a replacement, which usually takes a minute or two.
+
+**Beat in the worker.** redbeat's lock still lets only one scheduler send tasks,
+even while two worker tasks overlap during a deploy. Beat's logs now go to the
+worker's log group. The old beat log group is deleted along with the service,
+and its history goes with it.
+
+#### Turning a switch on or off
+
+Changing any of the four needs these steps, in this order. This applies in both
+directions, including switching an environment back to the ALB.
+
+1. **Before merging, update the deployer policies** (see
+   [policies/README.md](policies/README.md)). Turning `ingress_mode` to
+   `api_gateway` also needs `<env>-deployer-ingress.json`. If a permission is
+   missing, the Scalr run stops part-way through.
+2. **Merge, and wait for the Scalr apply to finish.**
+3. **Then re-run the deploy job** (`deploy-staging`: "Re-run all jobs" on the
+   merge commit). This step is easy to miss. Terraform registers new
+   task-definition revisions, but the services ignore `task_definition` and keep
+   running the old ones until a deploy copies the newest. The deploy job that the
+   merge started runs *at the same time* as the apply, and if it finishes first,
+   it copied the old revisions. Until the re-run:
+   - with `run_beat_in_worker`, nothing is scheduled: the beat service is gone,
+     and the worker has no `--beat` yet;
+   - with an `ingress_mode` change, the containers expect the wrong proxy headers.
+     Every request redirects to itself, and after switching back to the ALB, the
+     client controls `X-Client-IP`;
+   - with `use_fargate_spot_for_web`, the provider *replaces* the web service. The
+     new service starts on Terraform's own revision (the `:latest` image tag),
+     which may be missing or out of date.
+
+   `aws ecs update-service --force-new-deployment` does not help, because it
+   reuses the revision the service already runs.
 
 ### Why SQS is the broker and ElastiCache is not
 
@@ -473,7 +571,11 @@ aws ecs execute-command --cluster vinta-schedule-staging \
 # then: python manage.py shell   /   python manage.py dbshell
 ```
 
-**Logs:** `/ecs/vinta-schedule-staging/{web,worker,beat,release}` in CloudWatch.
+**Logs:** `/ecs/vinta-schedule-staging/{web,worker,release}` in CloudWatch. An
+environment that runs beat as its own service also has a `beat` log group. Behind
+API Gateway, `/aws/apigateway/vinta-schedule-staging` holds the access log. It is
+the only place to see requests that API Gateway answered itself (429 throttled,
+503 no healthy task, 504 timeout), because those never reach gunicorn.
 
 **Roll back to a previous image:** re-run the deploy workflow on the older commit,
 or point the services at an earlier task-definition revision:
@@ -508,11 +610,11 @@ The knobs that actually move the bill, roughly largest first:
 
 | Thing | Lever | Note |
 |---|---|---|
-| NAT gateway | `single_nat_gateway` | ~$32/mo + data. One is the default; the second would only buy AZ redundancy for *outbound* traffic. |
+| NAT | `nat_mode`, `single_nat_gateway` | A gateway is ~$32/mo plus $0.045/GB, and its public address adds $3.65. One gateway is the default; a second would only add AZ redundancy for *outbound* traffic. `nat_mode = "instance"` (staging) costs ~$7 in total. |
+| ALB | `ingress_mode` | ~$16/mo fixed plus LCUs, and ~$7 for its two public addresses. `ingress_mode = "api_gateway"` (staging) costs ~$1 per million requests instead. |
 | RDS | `db_instance_class`, `db_multi_az` | `db.t4g.micro`, single-AZ on staging. Multi-AZ doubles it. |
-| Fargate | `*_cpu` / `*_memory` / `*_desired_count` | Worker and beat run on `FARGATE_SPOT` (`use_fargate_spot_for_workers`, ~30% cheaper); web stays on-demand. |
+| Fargate | `*_cpu` / `*_memory` / `*_desired_count` | Worker and beat run on `FARGATE_SPOT` (`use_fargate_spot_for_workers`, up to 70% cheaper). Web runs on-demand unless `use_fargate_spot_for_web` is set (staging). `run_beat_in_worker` (staging) removes the beat task. |
 | ElastiCache | `cache_node_type`, `cache_node_count` | `cache.t4g.micro`, one node. `cache_engine` defaults to `valkey`, which AWS prices below Redis OSS. |
-| ALB | — | Fixed hourly charge; unavoidable for a public HTTPS endpoint. |
 | CloudWatch Logs | `log_retention_days` | 14 days. |
 | SQS | — | Effectively free at this volume; long polling (`receive_wait_time_seconds = 20`) keeps idle workers from billing a request per second. |
 

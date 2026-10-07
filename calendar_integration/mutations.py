@@ -62,6 +62,7 @@ from calendar_integration.services.external_event_change_request_service import 
     ExternalEventChangeRequestService,
 )
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
+from common.utils.request_utils import proxied_client_ip
 from organizations.models import Organization, OrganizationMembership
 from public_api.extensions import raise_over_limit_graphql_error
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
@@ -467,14 +468,13 @@ def event_times_to_utc(
 def _client_ip_from_request(request: object) -> str:
     """Extract the client IP address from a Django request for audit logging.
 
-    Prefers the first entry of ``X-Forwarded-For`` (set by load balancers /
-    proxies); falls back to ``REMOTE_ADDR``.  Robust to a missing ``META``
-    attribute (returns ``""`` rather than raising).
+    Prefers the address the proxy reported (see
+    ``common.utils.request_utils.proxied_client_ip``); falls back to
+    ``REMOTE_ADDR``.  Robust to a missing ``META`` attribute (returns ``""``
+    rather than raising).
     """
-    forwarded_for = getattr(request, "META", {}).get("HTTP_X_FORWARDED_FOR", "")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return getattr(request, "META", {}).get("REMOTE_ADDR", "")
+    meta = getattr(request, "META", {})
+    return proxied_client_ip(meta) or meta.get("REMOTE_ADDR", "")
 
 
 # ---------------------------------------------------------------------------

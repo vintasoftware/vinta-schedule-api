@@ -6,14 +6,15 @@ ECS, RDS, ElastiCache, SQS, Secrets Manager or the IAM roles that
 `modules/app-platform` creates. Its first `app` plan fails on
 `ec2:DescribeAvailabilityZones`.
 
-These documents grant exactly what the module needs, split into three because a
+These documents grant exactly what the module needs. They are split up because a
 single document would exceed the managed-policy size limit:
 
 | Policy | Covers |
 |---|---|
-| `<env>-deployer-network.json` | VPC, subnets, IGW, NAT, EIP, routes, security groups, the S3 gateway endpoint, and the ALB + target group + listeners |
+| `<env>-deployer-network.json` | VPC, subnets, IGW, NAT gateway or NAT instance, EIP, routes, security groups, the S3 gateway endpoint, and the ALB + target group + listeners |
 | `<env>-deployer-compute.json` | ECS cluster/services/task definitions, ECR, RDS, ElastiCache, CloudWatch log groups |
 | `<env>-deployer-platform.json` | SQS, Secrets Manager, the SSM deploy parameter, the task/deploy IAM roles, the GitHub OIDC provider, KMS via those services, and assuming the DNS-account role |
+| `<env>-deployer-ingress.json` | Only for `ingress_mode = "api_gateway"`: the HTTP API, VPC link and custom domain, delivery of its access log, and the Cloud Map namespace plus the Route 53 private hosted zone it creates. Staging only; production keeps the ALB and has no ingress document. |
 
 **Keep the existing inline policy.** It covers the storage half — the buckets,
 CloudFront, ACM and the storage IAM user — and nothing here replaces it. The
@@ -32,7 +33,8 @@ these fits).
 ENV=staging
 USER="vinta-schedule-${ENV}-deployer"
 
-for part in network compute platform; do
+# Production has no ingress document; leave it out of the list there.
+for part in network compute platform ingress; do
   arn=$(aws iam create-policy \
     --policy-name "${USER}-${part}" \
     --policy-document "file://infrastructure/policies/${ENV}-deployer-${part}.json" \

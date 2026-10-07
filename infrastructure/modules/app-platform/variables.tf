@@ -42,6 +42,32 @@ variable "availability_zone_count" {
   }
 }
 
+variable "nat_mode" {
+  description = <<-DESC
+    How private subnets reach the internet. `gateway` is the managed NAT gateway
+    (~$32/month plus $0.045/GB): no maintenance, scales on its own. `instance` is
+    one small EC2 instance doing NAT (~$7/month with its address): fine for an
+    environment whose outbound traffic is a handful of API calls, but it is a
+    single instance in one AZ that someone has to keep patched -- see
+    infrastructure/README.md. `single_nat_gateway` only applies to `gateway`.
+  DESC
+  type        = string
+  default     = "gateway"
+  nullable    = false
+
+  validation {
+    condition     = contains(["gateway", "instance"], var.nat_mode)
+    error_message = "nat_mode must be either \"gateway\" or \"instance\"."
+  }
+}
+
+variable "nat_instance_type" {
+  description = "EC2 instance type for the NAT instance when nat_mode = \"instance\". Burstable is fine: NAT barely uses CPU."
+  type        = string
+  default     = "t4g.nano"
+  nullable    = false
+}
+
 variable "single_nat_gateway" {
   description = <<-DESC
     Route every private subnet through one NAT gateway in the first AZ. A NAT
@@ -66,6 +92,44 @@ variable "route53_zone_name" {
 variable "api_domain" {
   description = "Public hostname for the API, pointed at the ALB (e.g. api.schedule-staging.vintasoftware.com)."
   type        = string
+}
+
+########################################
+# Ingress
+########################################
+
+variable "ingress_mode" {
+  description = <<-DESC
+    What sits in front of the web tasks. `alb` is an Application Load Balancer
+    (~$16/month plus ~$7 for its two public addresses, before traffic). `api_gateway`
+    is an API Gateway HTTP API reaching the tasks over a VPC link and Cloud Map
+    (charged per request -- about $1 per million). The API Gateway path has hard
+    limits the ALB does not: a 30-second request timeout, a 10 MB request body,
+    no AWS WAF, and no connection draining on deploys. See infrastructure/README.md
+    before choosing it for an environment that serves real traffic.
+  DESC
+  type        = string
+  default     = "alb"
+  nullable    = false
+
+  validation {
+    condition     = contains(["alb", "api_gateway"], var.ingress_mode)
+    error_message = "ingress_mode must be either \"alb\" or \"api_gateway\"."
+  }
+}
+
+variable "api_gateway_throttling_rate_limit" {
+  description = "Steady-state requests per second the API Gateway stage accepts before answering 429. Only used when ingress_mode = \"api_gateway\"."
+  type        = number
+  default     = 50
+  nullable    = false
+}
+
+variable "api_gateway_throttling_burst_limit" {
+  description = "Burst size on top of api_gateway_throttling_rate_limit."
+  type        = number
+  default     = 100
+  nullable    = false
 }
 
 ########################################
@@ -269,13 +333,38 @@ variable "beat_memory" {
 
 variable "use_fargate_spot_for_workers" {
   description = <<-DESC
-    Run worker and beat on FARGATE_SPOT (roughly 70% of on-demand price). Safe for
+    Run worker and beat on FARGATE_SPOT (up to 70% below the on-demand price). Safe for
     both: the worker acks late so an interrupted task returns to SQS after the
     visibility timeout, and beat holds a redbeat lock so a replacement instance
-    picks the schedule back up. The web service always stays on on-demand FARGATE.
+    picks the schedule back up. The web service has its own switch,
+    `use_fargate_spot_for_web`.
   DESC
   type        = bool
   default     = true
+  nullable    = false
+}
+
+variable "use_fargate_spot_for_web" {
+  description = <<-DESC
+    Run the web service on FARGATE_SPOT too. AWS can reclaim a Spot task with two
+    minutes' notice, and with one web task that is a short outage until ECS starts
+    a replacement -- acceptable for staging, not for an environment users rely on.
+  DESC
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "run_beat_in_worker" {
+  description = <<-DESC
+    Embed the Celery beat scheduler in the worker process (`celery worker --beat`)
+    instead of running it as its own service, saving one task. redbeat's Redis lock
+    still guarantees one scheduler emits, so this stays correct with more than one
+    worker task, and during a rolling deploy when two overlap. The cost is
+    coupling: a worker restart also restarts the schedule.
+  DESC
+  type        = bool
+  default     = false
   nullable    = false
 }
 
@@ -294,7 +383,7 @@ variable "container_port" {
 }
 
 variable "health_check_path" {
-  description = "Path the ALB target group polls. Must be exempt from SECURE_SSL_REDIRECT (see settings/production.py)."
+  description = "Path the ALB target group (or, with ingress_mode = \"api_gateway\", the container health check) polls. Must be exempt from SECURE_SSL_REDIRECT (see settings/production.py)."
   type        = string
   default     = "/healthz/"
   nullable    = false
@@ -308,7 +397,7 @@ variable "log_retention_days" {
 }
 
 variable "alb_deletion_protection" {
-  description = "Block deletion of the load balancer."
+  description = "Block deletion of the load balancer. Only used when ingress_mode = \"alb\"."
   type        = bool
   default     = false
   nullable    = false

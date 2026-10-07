@@ -47,8 +47,22 @@ output "api_url" {
 }
 
 output "alb_dns_name" {
-  description = "Underlying load balancer hostname (DNS debugging)."
-  value       = aws_lb.this.dns_name
+  description = "Underlying load balancer hostname (DNS debugging). Null when ingress_mode = \"api_gateway\"."
+  value       = one(aws_lb.this[*].dns_name)
+}
+
+output "api_gateway_target_domain_name" {
+  description = "Underlying API Gateway regional hostname the API domain aliases (DNS debugging). Null when ingress_mode = \"alb\"."
+  value       = one(aws_apigatewayv2_domain_name.api[*].domain_name_configuration[0].target_domain_name)
+}
+
+output "nat_public_ip" {
+  description = "Address outbound traffic from the tasks leaves from -- what a third party would allowlist. With one NAT gateway per AZ, the first AZ's."
+  value = (
+    var.nat_mode == "instance"
+    ? aws_eip.nat_instance[0].public_ip
+    : aws_eip.nat[0].public_ip
+  )
 }
 
 output "celery_queue_url" {

@@ -148,7 +148,8 @@
             "ecs.amazonaws.com",
             "elasticache.amazonaws.com",
             "elasticloadbalancing.amazonaws.com",
-            "rds.amazonaws.com"
+            "rds.amazonaws.com",
+            "ops.apigateway.amazonaws.com"
           ]
         }
       }
@@ -173,7 +174,8 @@
             "rds.us-east-1.amazonaws.com",
             "elasticache.us-east-1.amazonaws.com",
             "secretsmanager.us-east-1.amazonaws.com",
-            "sqs.us-east-1.amazonaws.com"
+            "sqs.us-east-1.amazonaws.com",
+            "ec2.us-east-1.amazonaws.com"
           ]
         }
       }

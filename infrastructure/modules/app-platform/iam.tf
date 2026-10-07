@@ -233,11 +233,10 @@ data "aws_iam_policy_document" "github_deploy" {
       "ecs:DescribeServices",
       "ecs:UpdateService",
     ]
-    resources = [
-      aws_ecs_service.web.id,
-      aws_ecs_service.worker.id,
-      aws_ecs_service.beat.id,
-    ]
+    resources = concat(
+      [aws_ecs_service.web.id, aws_ecs_service.worker.id],
+      aws_ecs_service.beat[*].id,
+    )
   }
 
   statement {

@@ -1,13 +1,15 @@
 ########################################
 # Security groups
 #
-# The chain is deliberately one-directional: internet -> ALB -> ECS tasks ->
-# RDS / ElastiCache. Each hop only accepts traffic from the security group one
-# step above it, so nothing in the data tier is reachable even from another
-# resource inside the VPC.
+# The chain is deliberately one-directional: internet -> ALB (or the API
+# Gateway VPC link) -> ECS tasks -> RDS / ElastiCache. Each hop only accepts
+# traffic from the security group one step above it, so nothing in the data
+# tier is reachable even from another resource inside the VPC.
 ########################################
 
 resource "aws_security_group" "alb" {
+  count = local.use_alb ? 1 : 0
+
   name        = "${local.name_prefix}-alb"
   description = "Public entry point for the API load balancer."
   vpc_id      = aws_vpc.this.id
@@ -18,7 +20,9 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_http" {
-  security_group_id = aws_security_group.alb.id
+  count = local.use_alb ? 1 : 0
+
+  security_group_id = aws_security_group.alb[0].id
   description       = "HTTP, redirected to HTTPS by the listener."
   cidr_ipv4         = "0.0.0.0/0"
   from_port         = 80
@@ -27,7 +31,9 @@ resource "aws_vpc_security_group_ingress_rule" "alb_http" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_https" {
-  security_group_id = aws_security_group.alb.id
+  count = local.use_alb ? 1 : 0
+
+  security_group_id = aws_security_group.alb[0].id
   description       = "HTTPS from the internet."
   cidr_ipv4         = "0.0.0.0/0"
   from_port         = 443
@@ -36,7 +42,9 @@ resource "aws_vpc_security_group_ingress_rule" "alb_https" {
 }
 
 resource "aws_vpc_security_group_egress_rule" "alb_to_tasks" {
-  security_group_id            = aws_security_group.alb.id
+  count = local.use_alb ? 1 : 0
+
+  security_group_id            = aws_security_group.alb[0].id
   description                  = "Forward to the web tasks."
   referenced_security_group_id = aws_security_group.ecs_tasks.id
   from_port                    = var.container_port
@@ -55,16 +63,52 @@ resource "aws_security_group" "ecs_tasks" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "tasks_from_alb" {
+  count = local.use_alb ? 1 : 0
+
   security_group_id            = aws_security_group.ecs_tasks.id
   description                  = "Only the load balancer may reach gunicorn."
-  referenced_security_group_id = aws_security_group.alb.id
+  referenced_security_group_id = aws_security_group.alb[0].id
+  from_port                    = var.container_port
+  to_port                      = var.container_port
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_security_group" "vpc_link" {
+  count = local.use_alb ? 0 : 1
+
+  name        = "${local.name_prefix}-vpc-link"
+  description = "API Gateway VPC link: forwards API requests to the web tasks."
+  vpc_id      = aws_vpc.this.id
+
+  tags = {
+    Name = "${local.name_prefix}-vpc-link"
+  }
+}
+
+resource "aws_vpc_security_group_egress_rule" "vpc_link_to_tasks" {
+  count = local.use_alb ? 0 : 1
+
+  security_group_id            = aws_security_group.vpc_link[0].id
+  description                  = "Forward to the web tasks."
+  referenced_security_group_id = aws_security_group.ecs_tasks.id
+  from_port                    = var.container_port
+  to_port                      = var.container_port
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "tasks_from_vpc_link" {
+  count = local.use_alb ? 0 : 1
+
+  security_group_id            = aws_security_group.ecs_tasks.id
+  description                  = "Only API Gateway's VPC link may reach gunicorn."
+  referenced_security_group_id = aws_security_group.vpc_link[0].id
   from_port                    = var.container_port
   to_port                      = var.container_port
   ip_protocol                  = "tcp"
 }
 
 # Tasks talk out to ECR, CloudWatch Logs, Secrets Manager, SQS and the third-party
-# calendar / payment / SMS APIs -- all reached over the NAT gateway, none of them a
+# calendar / payment / SMS APIs -- all reached over the NAT, none of them a
 # fixed address worth enumerating.
 resource "aws_vpc_security_group_egress_rule" "tasks_all" {
   security_group_id = aws_security_group.ecs_tasks.id

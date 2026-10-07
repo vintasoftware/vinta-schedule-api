@@ -62,6 +62,12 @@ module "app" {
   vpc_cidr                = var.vpc_cidr
   availability_zone_count = var.availability_zone_count
   single_nat_gateway      = var.single_nat_gateway
+  nat_mode                = var.nat_mode
+  nat_instance_type       = var.nat_instance_type
+
+  ingress_mode                       = var.ingress_mode
+  api_gateway_throttling_rate_limit  = var.api_gateway_throttling_rate_limit
+  api_gateway_throttling_burst_limit = var.api_gateway_throttling_burst_limit
 
   db_instance_class        = var.db_instance_class
   db_engine_version        = var.db_engine_version
@@ -91,6 +97,8 @@ module "app" {
   beat_cpu                     = var.beat_cpu
   beat_memory                  = var.beat_memory
   use_fargate_spot_for_workers = var.use_fargate_spot_for_workers
+  use_fargate_spot_for_web     = var.use_fargate_spot_for_web
+  run_beat_in_worker           = var.run_beat_in_worker
   gunicorn_workers             = var.gunicorn_workers
 
   container_port            = var.container_port
