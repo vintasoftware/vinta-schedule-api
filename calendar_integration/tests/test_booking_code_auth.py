@@ -247,9 +247,10 @@ def test_resolve_booking_code_opaquely_renders_same_error_for_malformed_and_unkn
 # ---------------------------------------------------------------------------
 
 
-def test_client_ip_from_request_prefers_forwarded_for():
+@override_settings(CLIENT_IP_TRUSTED_PROXY_COUNT=1)
+def test_client_ip_from_request_takes_the_entry_the_proxy_appended():
     request = RequestFactory().get(
-        "/", HTTP_X_FORWARDED_FOR="203.0.113.5, 10.0.0.1", REMOTE_ADDR="10.0.0.2"
+        "/", HTTP_X_FORWARDED_FOR="6.6.6.6, 203.0.113.5", REMOTE_ADDR="10.0.0.2"
     )
     assert client_ip_from_request(request) == "203.0.113.5"
 
@@ -259,7 +260,7 @@ def test_client_ip_from_request_falls_back_to_remote_addr():
     assert client_ip_from_request(request) == "10.0.0.2"
 
 
-@override_settings(CLIENT_IP_HEADER="HTTP_X_CLIENT_IP")
+@override_settings(CLIENT_IP_HEADER="HTTP_X_CLIENT_IP", CLIENT_IP_TRUSTED_PROXY_COUNT=1)
 def test_client_ip_from_request_reads_the_configured_client_ip_header():
     request = RequestFactory().get(
         "/", HTTP_X_CLIENT_IP="198.51.100.7", HTTP_X_FORWARDED_FOR="203.0.113.5"

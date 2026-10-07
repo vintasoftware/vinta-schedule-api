@@ -31,15 +31,33 @@ def _anonymous_rate_limit_key(request: object) -> str:
     return extension.limiter.try_acquire.call_args.args[0]
 
 
-def test_anonymous_requests_are_keyed_by_forwarded_for_by_default():
+@override_settings(CLIENT_IP_TRUSTED_PROXY_COUNT=1)
+def test_a_forged_forwarded_for_does_not_pick_the_bucket_behind_the_alb():
+    """Rotating forged X-Forwarded-For prefixes must not give a client a fresh
+    bucket per request: only the entry the ALB appended counts."""
+    keys = {
+        _anonymous_rate_limit_key(
+            RequestFactory().get(
+                "/graphql/",
+                HTTP_X_FORWARDED_FOR=f"6.6.6.{n}, 203.0.113.5",
+                REMOTE_ADDR="10.0.0.2",
+            )
+        )
+        for n in range(3)
+    }
+
+    assert keys == {"anon:203.0.113.5"}
+
+
+def test_anonymous_requests_are_keyed_by_remote_addr_without_a_trusted_proxy():
     request = RequestFactory().get(
-        "/graphql/", HTTP_X_FORWARDED_FOR="203.0.113.5, 10.0.0.1", REMOTE_ADDR="10.0.0.2"
+        "/graphql/", HTTP_X_FORWARDED_FOR="6.6.6.6", REMOTE_ADDR="10.0.0.2"
     )
 
-    assert _anonymous_rate_limit_key(request) == "anon:203.0.113.5"
+    assert _anonymous_rate_limit_key(request) == "anon:10.0.0.2"
 
 
-@override_settings(CLIENT_IP_HEADER="HTTP_X_CLIENT_IP")
+@override_settings(CLIENT_IP_HEADER="HTTP_X_CLIENT_IP", CLIENT_IP_TRUSTED_PROXY_COUNT=1)
 def test_anonymous_requests_are_keyed_by_the_configured_client_ip_header():
     """Behind API Gateway, X-Forwarded-For is whatever the client sent. Keying on
     it would let one client spread its requests across buckets at will."""

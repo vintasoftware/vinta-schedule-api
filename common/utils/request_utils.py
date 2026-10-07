@@ -1,24 +1,61 @@
+import ipaddress
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 from django.conf import settings
 
 
+logger = logging.getLogger(__name__)
+
+
 def proxied_client_ip(meta: Mapping[str, Any]) -> str:
-    """Return the client IP the proxy in front of the app reported, or ``""``.
+    """Return the client IP that the trusted proxies in front of the app reported,
+    or ``""`` when there is none to trust.
 
-    Reads the first entry of the ``request.META`` key named by
-    ``settings.CLIENT_IP_HEADER``: ``X-Forwarded-For`` behind the ALB,
-    ``X-Client-IP`` behind API Gateway, which cannot send ``X-Forwarded-For``.
-    Every helper that derives a client IP goes through this, so a change of
-    proxy is one setting rather than a hunt for header names.
+    Reads the ``request.META`` key named by ``settings.CLIENT_IP_HEADER``:
+    ``X-Forwarded-For`` behind the ALB, and ``X-Client-IP`` behind API Gateway,
+    which cannot send ``X-Forwarded-For``.
 
-    Behind API Gateway the value is trustworthy: API Gateway overwrites the
-    header. Behind the ALB it is not, because the ALB appends to whatever
-    ``X-Forwarded-For`` the client sent, so the first entry is client-supplied.
-    That is a known, accepted limitation; see ``public_api/extensions.py``.
+    Each proxy *appends* the address it received the request from. So with
+    ``settings.CLIENT_IP_TRUSTED_PROXY_COUNT`` proxies in front of the app, the
+    entry that many places from the right is the address the outermost trusted
+    proxy saw. Every entry to its left was sent by the client and can be forged.
+    This is the same rule as allauth's ``TRUSTED_PROXY_COUNT`` and Werkzeug's
+    ``ProxyFix``. A count of 0, the default (local dev and tests), trusts no
+    proxy: the header is ignored, and callers fall back to ``REMOTE_ADDR``.
+
+    ``common.middlewares.TrustedProxyClientIPMiddleware`` writes the result into
+    ``REMOTE_ADDR``, which is how allauth and django-defender see it. Code that
+    runs inside a request can read ``REMOTE_ADDR`` and get the same answer.
     """
-    return str(meta.get(settings.CLIENT_IP_HEADER, "")).split(",")[0].strip()
+    trusted_proxy_count = settings.CLIENT_IP_TRUSTED_PROXY_COUNT
+    header = str(meta.get(settings.CLIENT_IP_HEADER, ""))
+    if trusted_proxy_count <= 0 or not header:
+        return ""
+
+    entries = [entry.strip() for entry in header.split(",")]
+    if len(entries) < trusted_proxy_count:
+        # Every trusted proxy appends one entry, so this means the count is wrong
+        # or the request did not come through the proxies. The value is not
+        # logged: it is an IP address the client may have supplied.
+        logger.warning(
+            "%s has fewer entries than CLIENT_IP_TRUSTED_PROXY_COUNT (%d); ignoring it.",
+            settings.CLIENT_IP_HEADER,
+            trusted_proxy_count,
+        )
+        return ""
+
+    candidate = entries[-trusted_proxy_count]
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        logger.warning(
+            "The trusted entry of %s is not an IP address; ignoring it.",
+            settings.CLIENT_IP_HEADER,
+        )
+        return ""
+    return candidate
 
 
 def client_ip_from_request(request: object) -> str | None:

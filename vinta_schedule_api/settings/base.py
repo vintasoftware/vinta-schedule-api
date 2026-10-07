@@ -50,11 +50,21 @@ AUDIT_REPOSITORY_FACTORY = "audit_integration.services.audit_repository_factory"
 
 ALLOWED_HOSTS: list[str] = []
 
-# `request.META` key the client IP is read from, through
-# common.utils.request_utils.proxied_client_ip. The ALB (and most proxies) send
-# X-Forwarded-For; API Gateway cannot, and sends X-Client-IP instead
-# (infrastructure/modules/app-platform/api_gateway.tf sets this).
+# Where the client IP comes from; common.utils.request_utils.proxied_client_ip
+# documents the rule. CLIENT_IP_HEADER is the `request.META` key to read: the ALB
+# (and most proxies) send X-Forwarded-For, but API Gateway cannot and sends
+# X-Client-IP instead (infrastructure/modules/app-platform/api_gateway.tf sets
+# this). CLIENT_IP_TRUSTED_PROXY_COUNT is how many proxies in front of the app
+# write to that header. It is 0 here, because local dev has none and the header
+# would be whatever the client sent; ECS sets it to 1.
+#
+# common.middlewares.TrustedProxyClientIPMiddleware writes the result into
+# REMOTE_ADDR, so allauth and django-defender must keep reading REMOTE_ADDR.
+# Leave ALLAUTH_TRUSTED_PROXY_COUNT, ALLAUTH_TRUSTED_CLIENT_IP_HEADER and
+# DEFENDER_BEHIND_REVERSE_PROXY unset: each would re-derive the address from a
+# header, and defender would take the first entry, which the client controls.
 CLIENT_IP_HEADER = config("CLIENT_IP_HEADER", default="HTTP_X_FORWARDED_FOR")
+CLIENT_IP_TRUSTED_PROXY_COUNT = config("CLIENT_IP_TRUSTED_PROXY_COUNT", default=0, cast=int)
 
 DATABASES = {
     "default": config("DATABASE_URL", cast=db_url),
@@ -216,6 +226,9 @@ BAKER_CUSTOM_FIELDS_GEN = {
 }
 
 MIDDLEWARE = [
+    # First, so that nothing reads REMOTE_ADDR before it holds the client's address
+    # rather than the proxy's. See the class docstring.
+    "common.middlewares.TrustedProxyClientIPMiddleware",
     "django.middleware.gzip.GZipMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django_permissions_policy.PermissionsPolicyMiddleware",
@@ -538,6 +551,7 @@ if DEFENDER_ENABLED:
     DEFENDER_COOLOFF_TIME = 300  # 5 minutes
     DEFENDER_LOCKOUT_TEMPLATE = "defender/lockout.html"
     DEFENDER_REDIS_URL = REDIS_URL
+    # DEFENDER_BEHIND_REVERSE_PROXY stays off on purpose; see CLIENT_IP_HEADER.
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),

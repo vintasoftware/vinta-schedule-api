@@ -158,17 +158,13 @@ class OrganizationRateLimiter(SchemaExtension):
         if organization_id is not None:
             rate_limit_key = str(organization_id)
         else:
-            # Client IP as the proxy in front of the app reported it (see
-            # common.utils.request_utils.proxied_client_ip)
-            # NAT/XFF Tradeoff (v1):
-            # - Clients behind shared NAT or a CDN that doesn't forward per-client XFF
-            #   will share one anon rate-limit bucket (reduces granularity but acceptable
-            #   for public branding endpoint with vinta-default fallback).
-            # - XFF is client-controlled and spoofable, so anon-limit evasion/forgery
-            #   is accepted in v1 (impact is low: the endpoint returns only public branding
-            #   with a vinta-default fallback, so unauthorized access doesn't expose secrets).
-            # - Trusted-proxy-count-aware IP derivation is deferred (requires ops input
-            #   on real proxy topology).
+            # Client IP as the trusted proxies in front of the app reported it. Only
+            # the entries those proxies wrote count, so a client cannot pick its
+            # own bucket by sending a forged X-Forwarded-For (see
+            # common.utils.request_utils.proxied_client_ip).
+            # Clients behind a shared NAT still share one anonymous bucket. That
+            # is accepted: the anonymous surface is public branding with a
+            # vinta-default fallback.
             client_ip = proxied_client_ip(request.META) or request.META.get("REMOTE_ADDR", "")
             rate_limit_key = f"anon:{client_ip}"
 

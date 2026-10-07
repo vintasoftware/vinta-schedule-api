@@ -120,6 +120,11 @@ variable "ingress_mode" {
   default = null
 }
 
+variable "client_ip_trusted_proxy_count" {
+  type    = number
+  default = null
+}
+
 variable "api_gateway_throttling_rate_limit" {
   type    = number
   default = null

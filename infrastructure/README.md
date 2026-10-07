@@ -127,12 +127,12 @@ wired. These are the differences from the ALB:
   `X-Forwarded-Proto` or `X-Forwarded-Host`. It sends `X-Client-IP` and
   `X-Client-Proto` instead, and sets `Host` to the API domain. The containers get
   `CLIENT_IP_HEADER` and `PROXY_SSL_HEADER`, which point Django at those two
-  headers. Code that needs the client IP must call
-  `common.utils.request_utils.proxied_client_ip`, never `X-Forwarded-For`
-  directly. Behind API Gateway, `X-Forwarded-For` is whatever the client sent.
-  Behind the ALB, its *first* entry (the one read today) is client-supplied too,
-  because the ALB appends rather than replaces. That is a known, accepted
-  limitation (see the comment in `public_api/extensions.py`).
+  headers. In both modes, `CLIENT_IP_TRUSTED_PROXY_COUNT=1` (the
+  `client_ip_trusted_proxy_count` input) tells the app to trust only the entry
+  that the one proxy wrote, which is the last one. Every entry before it came
+  from the client. A middleware writes that address into `REMOTE_ADDR`, so
+  allauth's and django-defender's rate limits key on the real client rather than
+  the proxy. Never read `X-Forwarded-For` directly.
 - **Health checks run inside the container** (an ECS `healthCheck`), not from a
   load balancer. A task that fails its check is removed from Cloud Map, and the
   same check decides whether a deploy succeeds.

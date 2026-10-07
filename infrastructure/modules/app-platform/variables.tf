@@ -118,6 +118,25 @@ variable "ingress_mode" {
   }
 }
 
+variable "client_ip_trusted_proxy_count" {
+  description = <<-DESC
+    CLIENT_IP_TRUSTED_PROXY_COUNT: how many proxies in front of the containers
+    append to the client-IP header. Both ingress modes are one hop -- the ALB
+    appends to X-Forwarded-For, API Gateway writes X-Client-IP -- so 1. Raise it
+    only when another proxy that appends (a CDN, say) is put in front; a count
+    higher than the real number of hops makes every request fall back to the
+    proxy's own address.
+  DESC
+  type        = number
+  default     = 1
+  nullable    = false
+
+  validation {
+    condition     = var.client_ip_trusted_proxy_count >= 1
+    error_message = "client_ip_trusted_proxy_count must be at least 1: the containers are never reached without a proxy."
+  }
+}
+
 variable "api_gateway_throttling_rate_limit" {
   description = "Steady-state requests per second the API Gateway stage accepts before answering 429. Only used when ingress_mode = \"api_gateway\"."
   type        = number
