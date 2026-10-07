@@ -115,8 +115,11 @@ resource "aws_apigatewayv2_integration" "web" {
 
   request_parameters = {
     # ALLOWED_HOSTS and every absolute URL Django builds read the Host header,
-    # which would otherwise carry the task's address.
-    "overwrite:header.Host" = "$context.domainName"
+    # which would otherwise carry the task's address. API Gateway accepts only a
+    # constant here, not a $context variable. The custom domain is the API's
+    # only way in (the execute-api endpoint is disabled), so the constant is
+    # always right.
+    "overwrite:header.Host" = var.api_domain
     # Read through CLIENT_IP_HEADER by rate limiting and audit logging.
     "overwrite:header.X-Client-IP" = "$context.identity.sourceIp"
     # Read through PROXY_SSL_HEADER; without it every request looks like plain
