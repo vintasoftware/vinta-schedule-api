@@ -115,6 +115,10 @@ locals {
       ACCOUNT_PHONE_VERIFICATION_ENABLED = tostring(var.account_phone_verification_enabled)
       DEFAULT_PAYMENT_PROVIDER           = var.default_payment_provider
       BILLING_DEFAULT_GRACE_PERIOD_DAYS  = tostring(var.billing_default_grace_period_days)
+
+      # Which entry of the client-IP header the proxy wrote, counted from the
+      # right -- see common.utils.request_utils.proxied_client_ip.
+      CLIENT_IP_TRUSTED_PROXY_COUNT = tostring(var.client_ip_trusted_proxy_count)
     },
     # API Gateway cannot send X-Forwarded-For or X-Forwarded-Proto, so it sends
     # its own two headers instead (see api_gateway.tf) and Django is pointed at

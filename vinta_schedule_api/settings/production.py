@@ -166,9 +166,9 @@ DJANGO_GUID = {
 }
 
 # django-log-request-id
-MIDDLEWARE.insert(  # insert RequestIDMiddleware on the top
-    0, "log_request_id.middleware.RequestIDMiddleware"
-)
+# Second, behind TrustedProxyClientIPMiddleware, which has to see the request
+# before anything else reads REMOTE_ADDR.
+MIDDLEWARE.insert(1, "log_request_id.middleware.RequestIDMiddleware")
 
 LOG_REQUEST_ID_HEADER = "HTTP_X_REQUEST_ID"
 LOG_REQUESTS = True

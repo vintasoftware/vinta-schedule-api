@@ -66,6 +66,7 @@ module "app" {
   nat_instance_type       = var.nat_instance_type
 
   ingress_mode                       = var.ingress_mode
+  client_ip_trusted_proxy_count      = var.client_ip_trusted_proxy_count
   api_gateway_throttling_rate_limit  = var.api_gateway_throttling_rate_limit
   api_gateway_throttling_burst_limit = var.api_gateway_throttling_burst_limit
 
