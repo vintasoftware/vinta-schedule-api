@@ -128,3 +128,18 @@ module "app" {
   github_deploy_ref        = var.github_deploy_ref
   github_oidc_provider_arn = var.github_oidc_provider_arn
 }
+
+# Only one environment per AWS account should set cost_alert_emails: the budget
+# and the anomaly monitor watch the whole account, and AWS allows a single
+# per-service anomaly monitor per account. Staging owns them while production,
+# which shares the account, is unapplied.
+module "cost_alerts" {
+  source = "../cost-alerts"
+  count  = length(var.cost_alert_emails) > 0 ? 1 : 0
+
+  name_prefix                  = "${var.project_name}-${var.environment}"
+  alert_emails                 = var.cost_alert_emails
+  monthly_budget_usd           = var.monthly_budget_usd
+  anomaly_threshold_usd        = var.cost_anomaly_threshold_usd
+  existing_anomaly_monitor_arn = var.existing_anomaly_monitor_arn
+}

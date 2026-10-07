@@ -157,3 +157,17 @@ output "redis_url" {
   value       = module.app.redis_url
   sensitive   = true
 }
+
+########################################
+# Cost alerts
+########################################
+
+output "cost_budget_name" {
+  description = "Monthly budget name under Billing -> Budgets. Null when this environment has no cost alerts."
+  value       = one(module.cost_alerts[*].budget_name)
+}
+
+output "cost_anomaly_monitor_arn" {
+  description = "Anomaly monitor the cost-anomaly emails are attached to. Null when this environment has no cost alerts."
+  value       = one(module.cost_alerts[*].anomaly_monitor_arn)
+}
