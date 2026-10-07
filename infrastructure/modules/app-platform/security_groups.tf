@@ -100,7 +100,7 @@ resource "aws_vpc_security_group_ingress_rule" "tasks_from_vpc_link" {
   count = local.use_alb ? 0 : 1
 
   security_group_id            = aws_security_group.ecs_tasks.id
-  description                  = "Only API Gateway's VPC link may reach gunicorn."
+  description                  = "Only the API Gateway VPC link may reach gunicorn."
   referenced_security_group_id = aws_security_group.vpc_link[0].id
   from_port                    = var.container_port
   to_port                      = var.container_port
