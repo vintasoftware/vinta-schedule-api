@@ -234,6 +234,13 @@ resource "aws_instance" "nat" {
     auto_recovery = "default"
   }
 
+  # t4g defaults to `unlimited`, which bills for CPU past the burst baseline.
+  # NAT needs almost no CPU; anything that does is a problem to notice, not pay
+  # for.
+  credit_specification {
+    cpu_credits = "standard"
+  }
+
   root_block_device {
     volume_type = "gp3"
     encrypted   = true
@@ -250,7 +257,7 @@ resource "aws_instance" "nat" {
     echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/90-nat.conf
     sysctl --system
     systemctl enable --now iptables
-    iface=$(ip route show default | awk '{print $5; exit}')
+    iface=$(ip -o route show default | awk 'NR==1 {print $5}')
     iptables -F FORWARD
     iptables -t nat -A POSTROUTING -o "$iface" -s ${var.vpc_cidr} -j MASQUERADE
     iptables-save > /etc/sysconfig/iptables
@@ -322,6 +329,12 @@ resource "aws_route" "private_default" {
     : null
   )
   network_interface_id = var.nat_mode == "instance" ? aws_network_interface.nat[0].id : null
+
+  # The route may only move to the ENI once an instance is behind it. Without
+  # this, a failed instance launch would still leave the routes pointing at a
+  # bare ENI -- and Terraform, having updated them, would go on to delete the
+  # NAT gateway, leaving the tasks with no way out at all.
+  depends_on = [aws_instance.nat]
 }
 
 resource "aws_route_table_association" "private" {

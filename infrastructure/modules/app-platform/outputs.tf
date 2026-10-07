@@ -57,7 +57,7 @@ output "api_gateway_target_domain_name" {
 }
 
 output "nat_public_ip" {
-  description = "Address outbound traffic from the tasks leaves from -- what a third party would allowlist."
+  description = "Address outbound traffic from the tasks leaves from -- what a third party would allowlist. With one NAT gateway per AZ, the first AZ's."
   value = (
     var.nat_mode == "instance"
     ? aws_eip.nat_instance[0].public_ip

@@ -199,4 +199,8 @@ resource "aws_route53_record" "api" {
     )
     evaluate_target_health = false
   }
+
+  # Behind API Gateway, the domain answers 404 until the mapping to the stage
+  # exists, so DNS waits for it. Empty in ALB mode.
+  depends_on = [aws_apigatewayv2_api_mapping.api]
 }

@@ -48,8 +48,8 @@ infrastructure/
 
 ## Architecture
 
-This is the module's default layout, and production's. Staging swaps three parts
-for cheaper ones. See [Staging's cost switches](#stagings-cost-switches).
+This is the module's default layout, and production's. Staging uses four cheaper
+settings. See [Staging's cost switches](#stagings-cost-switches).
 
 ```
                        Route 53 (DNS account, cross-account role)
@@ -93,7 +93,10 @@ above, so production does not change. Staging turns all four on.
 **NAT instance.** Stock Amazon Linux 2023 with iptables doing the masquerade. It
 has no key pair and no instance profile (`modules/app-platform/network.tf`). The
 route and the Elastic IP are attached to a network interface that outlives the
-instance, so a rebuild keeps the same outbound address. It is one instance in one
+instance, so a rebuild keeps the same outbound address. Switching from the NAT
+gateway to the instance does *not* keep it: the gateway's Elastic IP is released
+and the instance gets a new one (`terragrunt output nat_public_ip`). Update any
+third party that allowlists the old address. It is one instance in one
 AZ. If it stops, the tasks lose outbound internet until it comes back: calendar
 sync, payments, SMS and email all stop, and new tasks cannot pull their image.
 AWS's default auto-recovery covers host failure. The instance does not patch
@@ -125,8 +128,11 @@ wired. These are the differences from the ALB:
   `X-Client-Proto` instead, and sets `Host` to the API domain. The containers get
   `CLIENT_IP_HEADER` and `PROXY_SSL_HEADER`, which point Django at those two
   headers. Code that needs the client IP must call
-  `common.utils.request_utils.proxied_client_ip`. Do not read `X-Forwarded-For`
-  directly: behind API Gateway, the client controls its value.
+  `common.utils.request_utils.proxied_client_ip`, never `X-Forwarded-For`
+  directly. Behind API Gateway, `X-Forwarded-For` is whatever the client sent.
+  Behind the ALB, its *first* entry (the one read today) is client-supplied too,
+  because the ALB appends rather than replaces. That is a known, accepted
+  limitation (see the comment in `public_api/extensions.py`).
 - **Health checks run inside the container** (an ECS `healthCheck`), not from a
   load balancer. A task that fails its check is removed from Cloud Map, and the
   same check decides whether a deploy succeeds.
@@ -136,7 +142,36 @@ API is down until ECS starts a replacement, which usually takes a minute or two.
 
 **Beat in the worker.** redbeat's lock still lets only one scheduler send tasks,
 even while two worker tasks overlap during a deploy. Beat's logs now go to the
-worker's log group.
+worker's log group. The old beat log group is deleted along with the service,
+and its history goes with it.
+
+#### Turning a switch on or off
+
+Changing any of the four needs these steps, in this order. This applies in both
+directions, including switching an environment back to the ALB.
+
+1. **Before merging, update the deployer policies** (see
+   [policies/README.md](policies/README.md)). Turning `ingress_mode` to
+   `api_gateway` also needs `<env>-deployer-ingress.json`. If a permission is
+   missing, the Scalr run stops part-way through.
+2. **Merge, and wait for the Scalr apply to finish.**
+3. **Then re-run the deploy job** (`deploy-staging`: "Re-run all jobs" on the
+   merge commit). This step is easy to miss. Terraform registers new
+   task-definition revisions, but the services ignore `task_definition` and keep
+   running the old ones until a deploy copies the newest. The deploy job that the
+   merge started runs *at the same time* as the apply, and if it finishes first,
+   it copied the old revisions. Until the re-run:
+   - with `run_beat_in_worker`, nothing is scheduled: the beat service is gone,
+     and the worker has no `--beat` yet;
+   - with an `ingress_mode` change, the containers expect the wrong proxy headers.
+     Every request redirects to itself, and after switching back to the ALB, the
+     client controls `X-Client-IP`;
+   - with `use_fargate_spot_for_web`, the provider *replaces* the web service. The
+     new service starts on Terraform's own revision (the `:latest` image tag),
+     which may be missing or out of date.
+
+   `aws ecs update-service --force-new-deployment` does not help, because it
+   reuses the revision the service already runs.
 
 ### Why SQS is the broker and ElastiCache is not
 

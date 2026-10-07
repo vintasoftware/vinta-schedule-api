@@ -92,26 +92,87 @@
       }
     },
     {
-      "Sid": "NatInstance",
+      "Sid": "NatInstanceLaunch",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:us-east-1:261390480437:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Environment": "staging"
+        },
+        "StringLike": {
+          "ec2:InstanceType": "t4g.*"
+        }
+      }
+    },
+    {
+      "Sid": "NatInstanceLaunchInputs",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:us-east-1::image/*",
+        "arn:aws:ec2:us-east-1:261390480437:subnet/*",
+        "arn:aws:ec2:us-east-1:261390480437:security-group/*",
+        "arn:aws:ec2:us-east-1:261390480437:volume/*"
+      ]
+    },
+    {
+      "Sid": "NatInstanceLaunchInputEni",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:us-east-1:261390480437:network-interface/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "staging"
+        }
+      }
+    },
+    {
+      "Sid": "NatInstanceManage",
       "Effect": "Allow",
       "Action": [
-        "ec2:RunInstances",
         "ec2:TerminateInstances",
         "ec2:StartInstances",
         "ec2:StopInstances",
         "ec2:ModifyInstanceAttribute",
         "ec2:ModifyInstanceMaintenanceOptions",
         "ec2:ModifyInstanceMetadataOptions",
-        "ec2:CreateNetworkInterface",
+        "ec2:ModifyInstanceCreditSpecification"
+      ],
+      "Resource": "arn:aws:ec2:us-east-1:261390480437:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "staging"
+        }
+      }
+    },
+    {
+      "Sid": "NatInterfaceCreate",
+      "Effect": "Allow",
+      "Action": "ec2:CreateNetworkInterface",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1"
+        }
+      }
+    },
+    {
+      "Sid": "NatInterfaceAndAddressManage",
+      "Effect": "Allow",
+      "Action": [
         "ec2:DeleteNetworkInterface",
         "ec2:ModifyNetworkInterfaceAttribute",
         "ec2:AssociateAddress",
         "ec2:DisassociateAddress"
       ],
-      "Resource": "*",
+      "Resource": [
+        "arn:aws:ec2:us-east-1:261390480437:network-interface/*",
+        "arn:aws:ec2:us-east-1:261390480437:elastic-ip/*"
+      ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-1"
+          "aws:ResourceTag/Environment": "staging"
         }
       }
     }

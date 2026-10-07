@@ -70,9 +70,8 @@ resource "aws_service_discovery_service" "web" {
 
   # ECS reports health from the container health check in ecs.tf, and Cloud Map
   # stops returning a task as soon as that check fails.
-  health_check_custom_config {
-    failure_threshold = 1
-  }
+  # (`failure_threshold` is deprecated and fixed at 1, so it is left unset.)
+  health_check_custom_config {}
 }
 
 ########################################
@@ -151,12 +150,13 @@ resource "aws_apigatewayv2_stage" "default" {
   # The ALB had no access log; gunicorn's covered it. This one is kept because
   # it is the only record of requests API Gateway answers itself (429s, 503s
   # when no task is registered, 504s past the timeout) -- gunicorn never sees
-  # those.
+  # those. The client IP is left out on purpose: it is an identifier, and this
+  # would be a new place storing it next to request paths. requestId is enough
+  # to correlate with the application's own logs.
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_gateway[0].arn
     format = jsonencode({
       requestId          = "$context.requestId"
-      ip                 = "$context.identity.sourceIp"
       requestTime        = "$context.requestTime"
       httpMethod         = "$context.httpMethod"
       path               = "$context.path"

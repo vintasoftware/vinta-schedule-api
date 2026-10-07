@@ -431,9 +431,10 @@ resource "aws_ecs_service" "web" {
   }
 
   # Django's import-time work plus the first health check pass; below this the
-  # service would kill a task that was merely still booting. Applies to the ALB's
-  # health check or the container's, whichever the ingress mode uses.
-  health_check_grace_period_seconds = 60
+  # service would kill a task that was merely still booting. Load balancer only:
+  # ECS has rejected a grace period on a service without one, and the container
+  # health check carries its own `startPeriod` for the same purpose.
+  health_check_grace_period_seconds = local.use_alb ? 60 : null
 
   deployment_circuit_breaker {
     enable   = true

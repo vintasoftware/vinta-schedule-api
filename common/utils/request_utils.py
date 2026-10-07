@@ -12,6 +12,11 @@ def proxied_client_ip(meta: Mapping[str, Any]) -> str:
     ``X-Client-IP`` behind API Gateway, which cannot send ``X-Forwarded-For``.
     Every helper that derives a client IP goes through this, so a change of
     proxy is one setting rather than a hunt for header names.
+
+    Behind API Gateway the value is trustworthy: API Gateway overwrites the
+    header. Behind the ALB it is not, because the ALB appends to whatever
+    ``X-Forwarded-For`` the client sent, so the first entry is client-supplied.
+    That is a known, accepted limitation; see ``public_api/extensions.py``.
     """
     return str(meta.get(settings.CLIENT_IP_HEADER, "")).split(",")[0].strip()
 
