@@ -41,6 +41,20 @@ inputs = {
   # two could be peered later without renumbering either.
   vpc_cidr = "10.20.0.0/16"
 
+  # A NAT instance instead of the managed gateway (~$7/month against ~$36). Staging's
+  # outbound traffic is a trickle of calendar/payment API calls, and an hour of
+  # it being down is an inconvenience, not an incident.
+  nat_mode = "instance"
+
+  ####################################
+  # Ingress
+  ####################################
+
+  # API Gateway instead of an ALB: billed per request rather than ~$24/month
+  # fixed. Its limits (30s timeout, no WAF, no draining on deploys) are listed in
+  # modules/app-platform/api_gateway.tf. Production stays on the ALB.
+  ingress_mode = "api_gateway"
+
   ####################################
   # Django
   ####################################
@@ -93,6 +107,12 @@ inputs = {
   web_desired_count    = 1
   worker_desired_count = 1
   worker_concurrency   = 2
+
+  # Every task on Spot, and the beat scheduler inside the worker rather than a
+  # task of its own. A Spot reclamation of the web task is a short outage, which
+  # staging can take.
+  use_fargate_spot_for_web = true
+  run_beat_in_worker       = true
 
   db_instance_class      = "db.t4g.micro"
   db_deletion_protection = false

@@ -74,17 +74,27 @@ resource "aws_acm_certificate_validation" "api" {
 }
 
 ########################################
-# Load balancer
+# Load balancer (ingress_mode = "alb")
 #
-# The only thing in this stack with a public address. Everything it forwards to
-# lives in the private subnets.
+# Together with the NAT, the only thing in this stack with a public address.
+# Everything it forwards to lives in the private subnets. With
+# ingress_mode = "api_gateway" none of this exists; see api_gateway.tf.
+#
+# Terraform moves the pre-`count` objects to index 0 on its own, so adding
+# `count` here did not recreate anything in an environment that keeps the ALB.
 ########################################
 
+locals {
+  use_alb = var.ingress_mode == "alb"
+}
+
 resource "aws_lb" "this" {
+  count = local.use_alb ? 1 : 0
+
   name               = local.name_prefix
   load_balancer_type = "application"
   internal           = false
-  security_groups    = [aws_security_group.alb.id]
+  security_groups    = [aws_security_group.alb[0].id]
   subnets            = aws_subnet.public[*].id
 
   # Longer than gunicorn's own 30s worker timeout, so a slow request is killed by
@@ -103,6 +113,8 @@ resource "aws_lb" "this" {
 }
 
 resource "aws_lb_target_group" "web" {
+  count = local.use_alb ? 1 : 0
+
   name        = "${local.name_prefix}-web"
   port        = var.container_port
   protocol    = "HTTP"
@@ -130,7 +142,9 @@ resource "aws_lb_target_group" "web" {
 }
 
 resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.this.arn
+  count = local.use_alb ? 1 : 0
+
+  load_balancer_arn = aws_lb.this[0].arn
   port              = 80
   protocol          = "HTTP"
 
@@ -148,7 +162,9 @@ resource "aws_lb_listener" "http" {
 }
 
 resource "aws_lb_listener" "https" {
-  load_balancer_arn = aws_lb.this.arn
+  count = local.use_alb ? 1 : 0
+
+  load_balancer_arn = aws_lb.this[0].arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
@@ -156,12 +172,12 @@ resource "aws_lb_listener" "https" {
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.web.arn
+    target_group_arn = aws_lb_target_group.web[0].arn
   }
 }
 
 ########################################
-# api.<env>.vintasoftware.com -> ALB
+# api.<env>.vintasoftware.com -> ALB or API Gateway
 ########################################
 
 resource "aws_route53_record" "api" {
@@ -171,8 +187,16 @@ resource "aws_route53_record" "api" {
   type     = "A"
 
   alias {
-    name                   = aws_lb.this.dns_name
-    zone_id                = aws_lb.this.zone_id
+    name = (
+      local.use_alb
+      ? aws_lb.this[0].dns_name
+      : aws_apigatewayv2_domain_name.api[0].domain_name_configuration[0].target_domain_name
+    )
+    zone_id = (
+      local.use_alb
+      ? aws_lb.this[0].zone_id
+      : aws_apigatewayv2_domain_name.api[0].domain_name_configuration[0].hosted_zone_id
+    )
     evaluate_target_health = false
   }
 }

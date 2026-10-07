@@ -87,7 +87,7 @@ variable "vpc_cidr" {
 }
 
 variable "api_domain" {
-  description = "Public hostname the ALB answers on."
+  description = "Public hostname the API answers on (ALB or API Gateway, per ingress_mode)."
   type        = string
 }
 
@@ -98,6 +98,35 @@ variable "availability_zone_count" {
 
 variable "single_nat_gateway" {
   type    = bool
+  default = null
+}
+
+variable "nat_mode" {
+  type    = string
+  default = null
+}
+
+variable "nat_instance_type" {
+  type    = string
+  default = null
+}
+
+########################################
+# Ingress
+########################################
+
+variable "ingress_mode" {
+  type    = string
+  default = null
+}
+
+variable "api_gateway_throttling_rate_limit" {
+  type    = number
+  default = null
+}
+
+variable "api_gateway_throttling_burst_limit" {
+  type    = number
   default = null
 }
 
@@ -238,6 +267,16 @@ variable "beat_memory" {
 }
 
 variable "use_fargate_spot_for_workers" {
+  type    = bool
+  default = null
+}
+
+variable "use_fargate_spot_for_web" {
+  type    = bool
+  default = null
+}
+
+variable "run_beat_in_worker" {
   type    = bool
   default = null
 }

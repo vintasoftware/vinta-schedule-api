@@ -68,6 +68,7 @@ from calendar_integration.exceptions import (
 )
 from calendar_integration.models import AppointmentType, CalendarManagementToken
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
+from common.utils.request_utils import proxied_client_ip
 from organizations.models import Organization
 
 
@@ -147,13 +148,11 @@ def client_ip_from_request(request: HttpRequest | Request) -> str:
     """Extract the client IP address from a request for consume auditing.
 
     Mirrors ``calendar_integration.mutations._client_ip_from_request``.
-    Prefers the first entry of ``X-Forwarded-For`` (set by load balancers /
-    proxies); falls back to ``REMOTE_ADDR``.
+    Prefers the address the proxy reported (see
+    ``common.utils.request_utils.proxied_client_ip``); falls back to
+    ``REMOTE_ADDR``.
     """
-    forwarded_for = request.headers.get("x-forwarded-for", "")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "")
+    return proxied_client_ip(request.META) or request.META.get("REMOTE_ADDR", "")
 
 
 def validate_code_gated_range(start: datetime.datetime, end: datetime.datetime) -> None:

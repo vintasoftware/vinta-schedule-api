@@ -112,7 +112,9 @@
         "arn:aws:logs:us-east-1:261390480437:log-group:/ecs/vinta-schedule-staging*",
         "arn:aws:logs:us-east-1:261390480437:log-group:/ecs/vinta-schedule-staging*:*",
         "arn:aws:logs:us-east-1:261390480437:log-group:/aws/rds/instance/vinta-schedule-staging/*",
-        "arn:aws:logs:us-east-1:261390480437:log-group:/aws/rds/instance/vinta-schedule-staging/*:*"
+        "arn:aws:logs:us-east-1:261390480437:log-group:/aws/rds/instance/vinta-schedule-staging/*:*",
+        "arn:aws:logs:us-east-1:261390480437:log-group:/aws/apigateway/vinta-schedule-staging",
+        "arn:aws:logs:us-east-1:261390480437:log-group:/aws/apigateway/vinta-schedule-staging:*"
       ]
     },
     {

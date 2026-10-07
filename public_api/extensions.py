@@ -15,6 +15,7 @@ from strawberry.utils.await_maybe import AsyncIteratorOrIterator
 from vinta_billing.exceptions import OverLimitError
 
 from common.redis import ResilientLimiter
+from common.utils.request_utils import proxied_client_ip
 
 
 def raise_over_limit_graphql_error(exc: OverLimitError) -> NoReturn:
@@ -157,7 +158,8 @@ class OrganizationRateLimiter(SchemaExtension):
         if organization_id is not None:
             rate_limit_key = str(organization_id)
         else:
-            # Get client IP from headers (respects X-Forwarded-For behind proxy)
+            # Client IP as the proxy in front of the app reported it (see
+            # common.utils.request_utils.proxied_client_ip)
             # NAT/XFF Tradeoff (v1):
             # - Clients behind shared NAT or a CDN that doesn't forward per-client XFF
             #   will share one anon rate-limit bucket (reduces granularity but acceptable
@@ -167,9 +169,7 @@ class OrganizationRateLimiter(SchemaExtension):
             #   with a vinta-default fallback, so unauthorized access doesn't expose secrets).
             # - Trusted-proxy-count-aware IP derivation is deferred (requires ops input
             #   on real proxy topology).
-            client_ip = request.headers.get("X-Forwarded-For", "").split(",")[
-                0
-            ].strip() or request.META.get("REMOTE_ADDR", "")
+            client_ip = proxied_client_ip(request.META) or request.META.get("REMOTE_ADDR", "")
             rate_limit_key = f"anon:{client_ip}"
 
         try:

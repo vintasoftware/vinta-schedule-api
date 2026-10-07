@@ -112,8 +112,18 @@ output "api_url" {
 }
 
 output "alb_dns_name" {
-  description = "Underlying load balancer hostname (DNS debugging)."
+  description = "Underlying load balancer hostname (DNS debugging). Null when ingress_mode = \"api_gateway\"."
   value       = module.app.alb_dns_name
+}
+
+output "api_gateway_target_domain_name" {
+  description = "Underlying API Gateway regional hostname (DNS debugging). Null when ingress_mode = \"alb\"."
+  value       = module.app.api_gateway_target_domain_name
+}
+
+output "nat_public_ip" {
+  description = "Address outbound traffic from the tasks leaves from."
+  value       = module.app.nat_public_ip
 }
 
 output "celery_queue_url" {

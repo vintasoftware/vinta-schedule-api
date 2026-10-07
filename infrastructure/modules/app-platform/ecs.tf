@@ -23,6 +23,7 @@ resource "aws_ecs_cluster_capacity_providers" "this" {
 
 locals {
   worker_capacity_provider = var.use_fargate_spot_for_workers ? "FARGATE_SPOT" : "FARGATE"
+  web_capacity_provider    = var.use_fargate_spot_for_web ? "FARGATE_SPOT" : "FARGATE"
 }
 
 ########################################
@@ -40,6 +41,8 @@ resource "aws_cloudwatch_log_group" "worker" {
 }
 
 resource "aws_cloudwatch_log_group" "beat" {
+  count = var.run_beat_in_worker ? 0 : 1
+
   name              = "/ecs/${local.name_prefix}/beat"
   retention_in_days = var.log_retention_days
 }
@@ -113,6 +116,13 @@ locals {
       DEFAULT_PAYMENT_PROVIDER           = var.default_payment_provider
       BILLING_DEFAULT_GRACE_PERIOD_DAYS  = tostring(var.billing_default_grace_period_days)
     },
+    # API Gateway cannot send X-Forwarded-For or X-Forwarded-Proto, so it sends
+    # its own two headers instead (see api_gateway.tf) and Django is pointed at
+    # them. Behind the ALB both settings keep their X-Forwarded-* defaults.
+    local.use_api_gateway ? {
+      CLIENT_IP_HEADER = "HTTP_X_CLIENT_IP"
+      PROXY_SSL_HEADER = "HTTP_X_CLIENT_PROTO"
+    } : {},
     var.extra_environment,
   )
 
@@ -136,6 +146,28 @@ locals {
   ]
 
   image = "${aws_ecr_repository.app.repository_url}:latest"
+
+  # With no load balancer polling /healthz/, ECS runs the check inside the
+  # container instead: it decides when a new task is healthy during a deploy and
+  # when Cloud Map stops routing to one. Plain Python rather than curl, which the
+  # image does not ship. The Host header is set because Django rejects an
+  # address it does not know with a 400; the check is plain HTTP, which works
+  # because /healthz/ is exempt from SECURE_SSL_REDIRECT.
+  web_container_health_check = {
+    command = [
+      "CMD",
+      "python",
+      "-c",
+      "import urllib.request as r; r.urlopen(r.Request('http://127.0.0.1:${var.container_port}${var.health_check_path}', headers={'Host': '${var.allowed_hosts[0]}'}), timeout=4)",
+    ]
+    interval    = 30
+    timeout     = 5
+    retries     = 3
+    startPeriod = 60
+  }
+  web_container_health_check_setting = (
+    local.use_api_gateway ? { healthCheck = local.web_container_health_check } : {}
+  )
 }
 
 ########################################
@@ -169,7 +201,7 @@ resource "aws_ecs_task_definition" "web" {
   }
 
   container_definitions = jsonencode([
-    {
+    merge({
       name      = "web"
       image     = local.image
       essential = true
@@ -204,7 +236,7 @@ resource "aws_ecs_task_definition" "web" {
           "awslogs-stream-prefix" = "web"
         }
       }
-    },
+    }, local.web_container_health_check_setting),
   ])
 
 }
@@ -230,13 +262,17 @@ resource "aws_ecs_task_definition" "worker" {
       essential = true
 
       # Concurrency and prefetch come from CELERY_WORKER_* in the environment
-      # rather than flags, so there is one place to change them.
-      command = [
-        "celery",
-        "--app=vinta_schedule_api",
-        "worker",
-        "--loglevel=info",
-      ]
+      # rather than flags, so there is one place to change them. `--beat` runs the
+      # scheduler inside this process when it has no service of its own.
+      command = concat(
+        [
+          "celery",
+          "--app=vinta_schedule_api",
+          "worker",
+          "--loglevel=info",
+        ],
+        var.run_beat_in_worker ? ["--beat"] : [],
+      )
 
       environment = local.container_environment_list
       secrets     = local.container_secrets
@@ -259,6 +295,8 @@ resource "aws_ecs_task_definition" "worker" {
 }
 
 resource "aws_ecs_task_definition" "beat" {
+  count = var.run_beat_in_worker ? 0 : 1
+
   family                   = "${local.name_prefix}-beat"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
@@ -291,7 +329,7 @@ resource "aws_ecs_task_definition" "beat" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.beat.name
+          "awslogs-group"         = aws_cloudwatch_log_group.beat[0].name
           "awslogs-region"        = var.aws_region
           "awslogs-stream-prefix" = "beat"
         }
@@ -358,10 +396,11 @@ resource "aws_ecs_service" "web" {
   platform_version       = "LATEST"
   enable_execute_command = true
 
-  # Web stays on on-demand Fargate: a Spot reclamation here is a user-visible
-  # error, not a task that quietly returns to the queue.
+  # On-demand by default: a Spot reclamation here is a user-visible outage, not a
+  # task that quietly returns to the queue. `use_fargate_spot_for_web` accepts
+  # that for an environment nobody depends on.
   capacity_provider_strategy {
-    capacity_provider = "FARGATE"
+    capacity_provider = local.web_capacity_provider
     weight            = 1
   }
 
@@ -371,14 +410,29 @@ resource "aws_ecs_service" "web" {
     assign_public_ip = false
   }
 
-  load_balancer {
-    target_group_arn = aws_lb_target_group.web.arn
-    container_name   = "web"
-    container_port   = var.container_port
+  dynamic "load_balancer" {
+    for_each = local.use_alb ? [aws_lb_target_group.web[0].arn] : []
+
+    content {
+      target_group_arn = load_balancer.value
+      container_name   = "web"
+      container_port   = var.container_port
+    }
+  }
+
+  dynamic "service_registries" {
+    for_each = local.use_api_gateway ? [aws_service_discovery_service.web[0].arn] : []
+
+    content {
+      registry_arn   = service_registries.value
+      container_name = "web"
+      container_port = var.container_port
+    }
   }
 
   # Django's import-time work plus the first health check pass; below this the
-  # service would kill a task that was merely still booting.
+  # service would kill a task that was merely still booting. Applies to the ALB's
+  # health check or the container's, whichever the ingress mode uses.
   health_check_grace_period_seconds = 60
 
   deployment_circuit_breaker {
@@ -431,9 +485,11 @@ resource "aws_ecs_service" "worker" {
 }
 
 resource "aws_ecs_service" "beat" {
+  count = var.run_beat_in_worker ? 0 : 1
+
   name            = "${local.name_prefix}-beat"
   cluster         = aws_ecs_cluster.this.id
-  task_definition = aws_ecs_task_definition.beat.arn
+  task_definition = aws_ecs_task_definition.beat[0].arn
 
   # Exactly one scheduler. redbeat's Redis lock already stops a second instance
   # from double-emitting, but running one is the intent.
@@ -490,23 +546,27 @@ resource "aws_ssm_parameter" "deploy" {
     ecr_repository_url  = aws_ecr_repository.app.repository_url
     release_task_family = aws_ecs_task_definition.release.family
     release_log_group   = aws_cloudwatch_log_group.release.name
-    services = [
-      {
-        name        = aws_ecs_service.web.name
-        family      = aws_ecs_task_definition.web.family
-        launch_type = "FARGATE"
-      },
-      {
-        name        = aws_ecs_service.worker.name
-        family      = aws_ecs_task_definition.worker.family
-        launch_type = local.worker_capacity_provider
-      },
-      {
-        name        = aws_ecs_service.beat.name
-        family      = aws_ecs_task_definition.beat.family
-        launch_type = local.worker_capacity_provider
-      },
-    ]
+    services = concat(
+      [
+        {
+          name        = aws_ecs_service.web.name
+          family      = aws_ecs_task_definition.web.family
+          launch_type = local.web_capacity_provider
+        },
+        {
+          name        = aws_ecs_service.worker.name
+          family      = aws_ecs_task_definition.worker.family
+          launch_type = local.worker_capacity_provider
+        },
+      ],
+      [
+        for index, service in aws_ecs_service.beat : {
+          name        = service.name
+          family      = aws_ecs_task_definition.beat[index].family
+          launch_type = local.worker_capacity_provider
+        }
+      ],
+    )
     subnets         = aws_subnet.private[*].id
     security_groups = [aws_security_group.ecs_tasks.id]
   })

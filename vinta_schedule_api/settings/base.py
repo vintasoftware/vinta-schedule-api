@@ -50,6 +50,12 @@ AUDIT_REPOSITORY_FACTORY = "audit_integration.services.audit_repository_factory"
 
 ALLOWED_HOSTS: list[str] = []
 
+# `request.META` key the client IP is read from, through
+# common.utils.request_utils.proxied_client_ip. The ALB (and most proxies) send
+# X-Forwarded-For; API Gateway cannot, and sends X-Client-IP instead
+# (infrastructure/modules/app-platform/api_gateway.tf sets this).
+CLIENT_IP_HEADER = config("CLIENT_IP_HEADER", default="HTTP_X_FORWARDED_FOR")
+
 DATABASES = {
     "default": config("DATABASE_URL", cast=db_url),
 }
