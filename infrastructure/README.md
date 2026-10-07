@@ -110,6 +110,16 @@ cd infrastructure/environments/staging
 terragrunt run -- taint 'module.app.aws_instance.nat[0]'
 ```
 
+**Check a new NAT instance.** The instance has no key pair and no SSM access, so
+its boot log is the only view inside it. If tasks fail with timeouts reaching
+Secrets Manager, ECR or any outside API, look here first. An `Out of memory`,
+`Killed` or `error` line means the setup script stopped part-way, and the
+instance is forwarding nothing:
+
+```bash
+aws ec2 get-console-output --latest --output text --instance-id "$(aws ec2 describe-instances --filters Name=tag:Name,Values=vinta-schedule-staging-nat Name=instance-state-name,Values=running --query 'Reservations[0].Instances[0].InstanceId' --output text)" | grep -iE "out of memory|killed|error|part-001"
+```
+
 **API Gateway ingress.** `modules/app-platform/api_gateway.tf` explains how it is
 wired. These are the differences from the ALB:
 
