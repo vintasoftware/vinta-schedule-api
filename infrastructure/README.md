@@ -26,9 +26,10 @@ Cloud/Enterprise-compatible `remote` backend.
 infrastructure/
   root.hcl                             # Scalr backend + AWS providers (default + aws.dns)
   modules/
-    environment/                       # composes the two below -- the only root module
+    environment/                       # composes the ones below -- the only root module
     s3-cloudfront/                     # buckets + CDN
     app-platform/                      # the runtime platform
+    cost-alerts/                       # account budget + cost anomaly emails
   environments/
     staging/
       env.hcl                          # region, DNS role, workspace name
@@ -603,6 +604,14 @@ aws ecs update-service --cluster vinta-schedule-staging \
    production without a gate (a GitHub environment with required reviewers, or a
    tag trigger) that is a decision for whoever turns production on.
 4. Fill in the production app secret, as in step 1 above.
+5. **Revisit the cost alerts.** Staging's budget and anomaly alerts watch the
+   whole AWS account, which production shares, so production's spend will trip
+   them. Either raise staging's `monthly_budget_usd` to cover both environments,
+   or activate `Environment` as a cost allocation tag and split the budget by
+   tag. If this account belongs to an AWS Organization, only the management
+   account can activate the tag. Do not set `cost_alert_emails` in production as
+   well: that would create a second account-wide budget, and the anomaly monitor
+   would fail as a duplicate (see [Cost alerts](#cost-alerts)).
 
 ## Cost notes
 
@@ -621,6 +630,35 @@ The knobs that actually move the bill, roughly largest first:
 Interface VPC endpoints for ECR/Logs/SQS/Secrets Manager are deliberately *not*
 created: at ~$7/month each per AZ they cost more than the NAT data they'd save at
 this traffic level.
+
+### Cost alerts
+
+`modules/cost-alerts` sends email when spend drifts. Setting `cost_alert_emails`
+and `monthly_budget_usd` in an environment's `terragrunt.hcl` turns it on; staging
+sets both. It covers the **whole AWS account**, not one environment's resources,
+so only one environment per account may turn it on.
+
+- **Monthly budget** (`<prefix>-account-monthly`). It emails at 80% and 100% of
+  actual spend, and as soon as AWS forecasts that the month will end above 100%.
+  It measures usage before credits and refunds, so promotional credits can't hide
+  a runaway resource. AWS refreshes budget data a few times a day, so these
+  alerts lag by hours.
+- **Cost Anomaly Detection.** It compares each AWS service's spend with that
+  service's own history, and sends a daily email for any anomaly whose estimated
+  impact is at least `cost_anomaly_threshold_usd` ($5 by default). This catches a
+  single service jumping long before the monthly total would. Cost Explorer has
+  to be enabled on the account; it usually is once anyone has opened it in the
+  console. New monitors need about 10 days of history before they report
+  anything.
+
+Both are free: AWS charges nothing for the first two budgets or for anomaly
+detection.
+
+AWS allows one per-service anomaly monitor per account, and newer accounts get
+one automatically. If the apply fails because a monitor already exists, set
+`existing_anomaly_monitor_arn` to the existing monitor's ARN (Billing → Cost
+Anomaly Detection → Monitors). The subscription then attaches to it, and no new
+monitor is created.
 
 ## Storage IAM user
 

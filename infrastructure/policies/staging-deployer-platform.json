@@ -185,6 +185,47 @@
       "Effect": "Allow",
       "Action": "sts:AssumeRole",
       "Resource": "arn:aws:iam::310361226925:role/vinta-schedule-dns-deployer"
+    },
+    {
+      "Sid": "AccountBudget",
+      "Effect": "Allow",
+      "Action": [
+        "budgets:ModifyBudget",
+        "budgets:ViewBudget",
+        "budgets:TagResource",
+        "budgets:UntagResource",
+        "budgets:ListTagsForResource",
+        "budgets:DescribeBudgetActionsForBudget"
+      ],
+      "Resource": "arn:aws:budgets::261390480437:budget/vinta-schedule-staging-account-monthly"
+    },
+    {
+      "Sid": "CostAnomalyCreateNoArnSupport",
+      "Effect": "Allow",
+      "Action": [
+        "ce:CreateAnomalyMonitor",
+        "ce:CreateAnomalySubscription"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CostAnomalyMonitorAndSubscription",
+      "Effect": "Allow",
+      "Action": [
+        "ce:GetAnomalyMonitors",
+        "ce:UpdateAnomalyMonitor",
+        "ce:DeleteAnomalyMonitor",
+        "ce:GetAnomalySubscriptions",
+        "ce:UpdateAnomalySubscription",
+        "ce:DeleteAnomalySubscription",
+        "ce:TagResource",
+        "ce:UntagResource",
+        "ce:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:ce::261390480437:anomalymonitor/*",
+        "arn:aws:ce::261390480437:anomalysubscription/*"
+      ]
     }
   ]
 }

@@ -13,7 +13,7 @@ single document would exceed the managed-policy size limit:
 |---|---|
 | `<env>-deployer-network.json` | VPC, subnets, IGW, NAT gateway or NAT instance, EIP, routes, security groups, the S3 gateway endpoint, and the ALB + target group + listeners |
 | `<env>-deployer-compute.json` | ECS cluster/services/task definitions, ECR, RDS, ElastiCache, CloudWatch log groups |
-| `<env>-deployer-platform.json` | SQS, Secrets Manager, the SSM deploy parameter, the task/deploy IAM roles, the GitHub OIDC provider, KMS via those services, and assuming the DNS-account role |
+| `<env>-deployer-platform.json` | SQS, Secrets Manager, the SSM deploy parameter, the task/deploy IAM roles, the GitHub OIDC provider, KMS via those services, assuming the DNS-account role, and (staging only) the account's cost budget and cost-anomaly monitor and subscription |
 | `<env>-deployer-ingress.json` | Only for `ingress_mode = "api_gateway"`: the HTTP API, VPC link and custom domain, delivery of its access log, and the Cloud Map namespace plus the Route 53 private hosted zone it creates. Staging only; production keeps the ALB and has no ingress document. |
 
 **Keep the existing inline policy.** It covers the storage half — the buckets,

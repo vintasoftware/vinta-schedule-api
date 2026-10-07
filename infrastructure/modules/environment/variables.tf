@@ -407,3 +407,35 @@ variable "github_oidc_provider_arn" {
   type        = string
   default     = null
 }
+
+########################################
+# Cost alerts (modules/cost-alerts)
+########################################
+
+variable "cost_alert_emails" {
+  description = "Addresses for the account's budget and cost-anomaly emails. Empty (the default) creates no alerts. Only one environment per AWS account should set it -- see main.tf."
+  type        = list(string)
+  default     = []
+  nullable    = false
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly budget, in USD, for the whole AWS account. Required when cost_alert_emails is set."
+  type        = number
+  default     = null
+
+  validation {
+    condition     = var.monthly_budget_usd == null || try(var.monthly_budget_usd > 0, false)
+    error_message = "monthly_budget_usd must be positive."
+  }
+}
+
+variable "cost_anomaly_threshold_usd" {
+  type    = number
+  default = null
+}
+
+variable "existing_anomaly_monitor_arn" {
+  type    = string
+  default = null
+}

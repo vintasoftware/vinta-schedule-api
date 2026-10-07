@@ -119,4 +119,19 @@ inputs = {
 
   cache_node_type  = "cache.t4g.micro"
   cache_node_count = 1
+
+  ####################################
+  # Cost alerts
+  ####################################
+
+  # These watch the whole AWS account, which production shares. That is fine
+  # while production is unapplied; revisit before applying it (see "Before
+  # applying production" in infrastructure/README.md). Staging's normal spend is
+  # ~$45/month.
+  cost_alert_emails = [
+    "hugo@vinta.com.br",
+    "flavio@vinta.com.br",
+    "felipe@vinta.com.br",
+  ]
+  monthly_budget_usd = 50
 }
