@@ -250,12 +250,26 @@ resource "aws_instance" "nat" {
   # security group above is what limits who can use it. iptables-services ships
   # a rule set that rejects forwarding, so it is started, then that chain is
   # cleared and the result saved over the shipped defaults.
+  #
+  # A t4g.nano has 512 MB of RAM, which is not enough for dnf: loading the
+  # Amazon Linux repository metadata got it killed by the kernel, and the
+  # instance came up forwarding nothing. So the script first stops the SSM
+  # agent, which can do nothing here without an instance profile, and adds 1 GB
+  # of swap for the install. The swap is not persisted: nothing after the first
+  # boot needs it. IP forwarding is set directly rather than through
+  # `sysctl --system`, so an unrelated setting failing to apply cannot stop the
+  # script.
   user_data = <<-EOT
     #!/bin/bash
     set -euo pipefail
-    dnf install -y iptables-services
+    systemctl disable --now amazon-ssm-agent || true
+    dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    dnf install -y --setopt=install_weak_deps=False iptables-services
     echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/90-nat.conf
-    sysctl --system
+    sysctl -w net.ipv4.ip_forward=1
     systemctl enable --now iptables
     iface=$(ip -o route show default | awk 'NR==1 {print $5}')
     iptables -F FORWARD
