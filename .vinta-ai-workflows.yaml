@@ -95,6 +95,24 @@ maestro:
   defaults:
     gates: [lint, typecheck, test]
     chores: [review, deslop, review-canvas]
+  # The compose Postgres has a password (`password`) the host cannot supply, so a host
+  # `createdb` / `dropdb` would prompt for one. Run them inside the db container, which
+  # trusts local connections; -h/-p/-U from server_url still follow.
+  project:
+    migrate_cmd: "uv run python manage.py migrate"
+    databases:
+      test:
+        engine: postgres
+        delivery: external
+        name: vinta_schedule_api
+        server_url: "postgres://vinta_schedule_api@localhost:5432"
+        connection_url_var: DATABASE_URL
+        createdb_cmd: "docker compose exec -T db createdb"
+        dropdb_cmd: "docker compose exec -T db dropdb"
+    env_files:
+      - .env
+      - .env.docker
+      - vinta_schedule_api/settings/local.py
   gates:
     typecheck:
       cmd: "docker compose run --rm api sh -c 'uv run mypy . && uv run python manage.py check --deploy'"

@@ -16,7 +16,9 @@
         "delivery": "external",
         "name": "vinta_schedule_api",
         "server_url": "postgres://vinta_schedule_api@localhost:5432",
-        "connection_url_var": "DATABASE_URL"
+        "connection_url_var": "DATABASE_URL",
+        "createdb_cmd": "docker compose exec -T db createdb",
+        "dropdb_cmd": "docker compose exec -T db dropdb"
       }
     },
     "env_files": [
