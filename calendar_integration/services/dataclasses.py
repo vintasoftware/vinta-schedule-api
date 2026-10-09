@@ -79,6 +79,20 @@ class ExternalAttendeeInputData:
     # ``ExternalClientIdentifierService.replace_for_target``.
     external_client_identifiers: list[ExternalClientIdentifierData] | None = None
 
+    def has_contact(self) -> bool:
+        """Whether a caller's attendee carries an email or an identifier.
+
+        One with neither could never be matched again, so every input that accepts
+        an external attendee from a caller refuses it. Not checked by the service:
+        it also receives attendees copied from stored rows, which keep what they have.
+        """
+        return bool(self.email.strip()) or bool(self.external_client_identifiers)
+
+
+EXTERNAL_ATTENDEE_CONTACT_REQUIRED_MESSAGE = (
+    "Each external attendee needs an email or at least one external client identifier."
+)
+
 
 @dataclass
 class EventExternalAttendanceInputData:
@@ -290,6 +304,10 @@ class EventExternalAttendeeData:
     external_client_identifiers: list[ExternalClientIdentifierData] = dataclass_field(
         default_factory=list
     )
+    # The stored ``ExternalAttendee`` id, or ``None`` for an attendee not created yet.
+    # Internal only: webhook payloads are built field by field and leave it out. The
+    # permission check uses it to tell apart attendees that have no email.
+    external_attendee_id: int | None = None
 
 
 @dataclass
@@ -449,6 +467,8 @@ class AppointmentTypeEventInputData:
     external_attendances: list[EventExternalAttendanceInputData] = dataclass_field(
         default_factory=list
     )
+    # Identifiers stamped on the created event. None and [] both write none.
+    external_client_identifiers: list[ExternalClientIdentifierData] | None = None
 
 
 @dataclass

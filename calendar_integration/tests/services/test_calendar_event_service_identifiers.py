@@ -11,8 +11,9 @@ production wiring does), and covers:
   implementation that always clears would fail this test.
 - ``update_event`` sending ``[]`` clears the stored set.
 - An external attendee deleted-and-recreated during reconciliation (an incoming payload
-  that omits its id) keeps the identifiers supplied for it -- landed on the NEW row, not
-  silently dropped with the old one.
+  that omits its id and carries a new identifier) keeps the identifiers supplied for it --
+  landed on the NEW row, not silently dropped with the old one. Re-sent with its old
+  identifier, it keeps its row.
 - A duplicate ``(system, identifier)`` rolls the entire event write back -- no partial
   event, no partial attendee.
 - The audit diff carries the identifier change under ``external_client_identifiers`` and
@@ -631,7 +632,7 @@ def test_attendee_deleted_and_recreated_keeps_new_identifiers(
 
 
 @pytest.mark.django_db
-def test_attendee_recreated_with_unchanged_identifier_does_not_collide(
+def test_attendee_resent_with_unchanged_identifier_keeps_its_row(
     event_service,
     mock_google_adapter,
     calendar,
@@ -639,12 +640,10 @@ def test_attendee_recreated_with_unchanged_identifier_does_not_collide(
     social_account,
     django_capture_on_commit_callbacks,
 ):
-    """The far more common case than a changed identifier: the caller re-sends the
-    same logical attendee (id omitted, so reconciliation deletes-and-recreates it)
-    carrying the SAME ``(system, identifier)`` pair it already had. The old row's
-    identifier must be deleted before the new row's identifier is written, or this
-    collides on ``extclientid_uniq_system_ident`` -- both rows would otherwise briefly
-    coexist with the same ``(organization, content_type, system, identifier)``."""
+    """The caller re-sends the same logical attendee without its id, carrying the SAME
+    ``(system, identifier)`` pair it already had. The pair resolves to the stored
+    attendee, so its row, attendance and identifier stay as they are -- no
+    delete-and-recreate, and no collision on ``extclientid_uniq_system_ident``."""
     mock_google_adapter.create_event.return_value = _adapter_output("evt-attendee-unchanged")
     mock_google_adapter.update_event.return_value = _adapter_output("evt-attendee-unchanged")
 
@@ -670,11 +669,7 @@ def test_attendee_recreated_with_unchanged_identifier_does_not_collide(
     _grant_event_owner_token(created, social_account.user, calendar.organization)
 
     original_attendance = created.external_attendances.get()
-    original_attendee_id = original_attendance.external_attendee_fk_id
 
-    # Re-send the same logical attendee WITHOUT its id -- the reconciliation loop
-    # cannot match it to the existing row, so it deletes the old one and creates a new
-    # one. The identifier supplied for it is unchanged from what the old row held.
     updated_input = _base_event_input(
         external_attendances=[
             EventExternalAttendanceInputData(
@@ -695,17 +690,10 @@ def test_attendee_recreated_with_unchanged_identifier_does_not_collide(
     with django_capture_on_commit_callbacks(execute=True):
         event_service.update_event(calendar.id, created.id, updated_input)
 
-    from calendar_integration.models import ExternalAttendee
-
-    assert (
-        not ExternalAttendee.objects.filter_by_organization(calendar.organization_id)
-        .filter(pk=original_attendee_id)
-        .exists()
-    )
-
-    new_attendance = created.external_attendances.get()
-    assert new_attendance.external_attendee_fk_id != original_attendee_id
-    assert _stored_identifiers(new_attendance.external_attendee) == {
+    attendance = created.external_attendances.get()
+    assert attendance.pk == original_attendance.pk
+    assert attendance.external_attendee_fk_id == original_attendance.external_attendee_fk_id
+    assert _stored_identifiers(attendance.external_attendee) == {
         "https://crm.example.com": "same-contact"
     }
 

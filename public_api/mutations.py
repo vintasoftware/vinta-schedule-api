@@ -62,6 +62,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.mutations import (
     AppointmentTypeMutations,
+    ExternalClientIdentifierInput,
     ExternalEventChangeRequestMutations,
     event_times_to_utc,
 )
@@ -69,6 +70,7 @@ from calendar_integration.services.block_conflict_service import MAX_BLOCK_CANCE
 from calendar_integration.services.calendar_service import _UNCHANGED
 from calendar_integration.services.dataclasses import (
     BLOCK_DECLINE_MESSAGE_MAX_LENGTH,
+    EXTERNAL_ATTENDEE_CONTACT_REQUIRED_MESSAGE,
     BlockDeclineOptions,
     CalendarEventInputData,
     CalendarPoolInputData,
@@ -1094,31 +1096,16 @@ class DisableCalendarBundleResult:
 
 
 @strawberry.input
-class ExternalClientIdentifierInput:
-    """One ``(system, identifier)`` client-owned reference pair.
+class ScheduleEventExternalAttendeeInput:
+    """An external (non-user) attendee on a scheduled event.
 
-    ``system`` is normalized (case + trailing slash) before storage and matching --
-    see ``calendar_integration.external_client_identifiers.normalize_system``.
-
-    Rejected with a GraphQL error (no partial write) when:
-    - ``system`` is not a valid URL.
-    - ``identifier`` is blank or whitespace-only.
-    - ``identifier`` is over 255 characters.
-    - the ``(system, identifier)`` pair is already claimed by another record of the
-      same type (event or external attendee) in the organization.
-    - two pairs in the same payload normalize to the same ``system`` (e.g. differing
-      only by case or a trailing slash).
+    It needs an email, at least one external client identifier, or both. An attendee
+    sent with identifiers and no email is linked to the attendee that already holds
+    one of them, so one person known only by a client id stays one attendee across
+    events. Such an attendee is never sent to Google or Outlook.
     """
 
-    system: str
-    identifier: str
-
-
-@strawberry.input
-class ScheduleEventExternalAttendeeInput:
-    """An external (non-user) attendee on a scheduled event: an email and optional name."""
-
-    email: str
+    email: str = ""
     name: str = ""
     # UNSET (omitted) = leave untouched (a no-op on create, since there is nothing to
     # leave untouched yet). An explicit list -- including [] or null -- replaces the
@@ -1130,11 +1117,13 @@ class ScheduleEventExternalAttendeeInput:
         description=(
             "Client-owned (system, identifier) pairs for this external attendee. "
             "Omitted = leave untouched; an explicit list (including [] or null) replaces "
-            "the full set. Rejected with a GraphQL error, and no partial write, when: an "
-            "invalid system URL is given; an identifier is blank/whitespace or over 255 "
-            "characters; a (system, identifier) pair is already claimed by another record "
-            "of the same type in the organization; or two pairs in this payload normalize "
-            "to the same system. See ExternalClientIdentifierInput."
+            "the full set. When the attendee is sent without its id and an attendee in "
+            "the organization already holds one of these pairs, the event is linked to "
+            "that attendee and its stored email, name and identifiers are left as they "
+            "are. Rejected with a GraphQL error, and no partial write, when: an invalid "
+            "system URL is given; an identifier is blank/whitespace or over 255 "
+            "characters; the pairs belong to two different attendees; or two pairs in "
+            "this payload normalize to the same system. See ExternalClientIdentifierInput."
         ),
     )
 
@@ -3472,6 +3461,19 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                     "One or more attendees are not active members of this organization."
                 )
 
+        external_attendees = [
+            ExternalAttendeeInputData(
+                email=external.email,
+                name=external.name,
+                external_client_identifiers=_map_external_client_identifiers(
+                    external.external_client_identifiers
+                ),
+            )
+            for external in input.external_attendees
+        ]
+        if not all(attendee.has_contact() for attendee in external_attendees):
+            raise GraphQLError(EXTERNAL_ATTENDEE_CONTACT_REQUIRED_MESSAGE)
+
         start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
         event_input = CalendarEventInputData(
             title=input.title,
@@ -3483,16 +3485,8 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                 EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids
             ],
             external_attendances=[
-                EventExternalAttendanceInputData(
-                    external_attendee=ExternalAttendeeInputData(
-                        email=external.email,
-                        name=external.name,
-                        external_client_identifiers=_map_external_client_identifiers(
-                            external.external_client_identifiers
-                        ),
-                    )
-                )
-                for external in input.external_attendees
+                EventExternalAttendanceInputData(external_attendee=attendee)
+                for attendee in external_attendees
             ],
             resource_allocations=[],
             recurrence_rule=input.rrule_string,
@@ -3834,10 +3828,14 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
             # miss here routes the entry down update_event's create branch while the
             # existing row is hard-deleted, cascading away its ExternalClientIdentifier
             # rows.
+            #
+            # An attendee with a blank email is matched by none of this: it has no
+            # email to match on. It must carry identifiers (checked below), and
+            # update_event links it to the attendee holding them.
             existing_external_attendee_by_email = {
                 ea.external_attendee.email.strip().lower(): ea.external_attendee
                 for ea in existing_event.external_attendances.all()
-                if ea.external_attendee_fk_id is not None
+                if ea.external_attendee_fk_id is not None and ea.external_attendee.email.strip()
             }
 
             # Reject duplicate normalized emails up front: two entries resolving to
@@ -3846,7 +3844,9 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
             # silently overwrites the first and the caller gets one attendee back
             # after asking for two.
             supplied_normalized_emails = [
-                external.email.strip().lower() for external in (input.external_attendees or [])
+                normalized_email
+                for external in (input.external_attendees or [])
+                if (normalized_email := external.email.strip().lower())
             ]
             duplicate_emails = {
                 email
@@ -3861,8 +3861,10 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
 
             external_attendances = []
             for external in input.external_attendees or []:
-                matched_attendee = existing_external_attendee_by_email.get(
-                    external.email.strip().lower()
+                matched_attendee = (
+                    existing_external_attendee_by_email.get(external.email.strip().lower())
+                    if external.email.strip()
+                    else None
                 )
                 external_attendances.append(
                     EventExternalAttendanceInputData(
@@ -3882,6 +3884,8 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                         )
                     )
                 )
+            if not all(a.external_attendee.has_contact() for a in external_attendances):
+                raise GraphQLError(EXTERNAL_ATTENDEE_CONTACT_REQUIRED_MESSAGE)
 
         # --- recurrence rule: always preserved, never part of this mutation --------
         recurrence_rule = (

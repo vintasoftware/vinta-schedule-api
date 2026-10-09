@@ -776,12 +776,18 @@ class AppointmentTypeSlotPool(SingleOrganizationModelMixin, SafeRelationNullInit
 class ExternalAttendee(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
     """
     Represents an external user who can attend events in a calendar.
+
+    An attendee known only by an external client identifier (for example a patient
+    record in the client's system) has a blank email and name. The client's
+    identifier is its only link back to the client, and one such attendee is shared
+    by every event that names that identifier. See
+    ``CalendarEventService._resolve_external_attendee``.
     """
 
     objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     name = models.CharField(max_length=255, blank=True)
-    email = models.EmailField()
+    email = models.EmailField(blank=True)
 
     # Enables Django's deletion collector to cascade ``ExternalClientIdentifier`` rows
     # when this attendee is deleted -- including when the deletion itself cascades from
@@ -795,7 +801,9 @@ class ExternalAttendee(SingleOrganizationModelMixin, SafeRelationNullInitMixin, 
     )
 
     def __str__(self):
-        return f"{self.name} ({self.email})" if self.name else self.email
+        if self.name and self.email:
+            return f"{self.name} ({self.email})"
+        return self.name or self.email or f"External attendee {self.pk}"
 
 
 class EventExternalAttendance(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
