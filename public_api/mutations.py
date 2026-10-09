@@ -28,6 +28,7 @@ from calendar_integration.exceptions import (
     CalendarPoolInUseError,
     DuplicateBookingPolicyError,
     InvalidBlockDeclineOptionsError,
+    InvalidMeetingError,
     NoAvailableTimeWindowsError,
 )
 from calendar_integration.graphql import (
@@ -64,6 +65,7 @@ from calendar_integration.mutations import (
     AppointmentTypeMutations,
     ExternalClientIdentifierInput,
     ExternalEventChangeRequestMutations,
+    MeetingInput,
     event_times_to_utc,
 )
 from calendar_integration.services.block_conflict_service import MAX_BLOCK_CANCELS
@@ -76,6 +78,7 @@ from calendar_integration.services.dataclasses import (
     CalendarPoolInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
+    EventMeetingInputData,
     ExternalAttendeeInputData,
     ExternalClientIdentifierData,
     ResourceAllocationInputData,
@@ -1152,6 +1155,8 @@ class ScheduleEventInput:
         default_factory=list
     )
     rrule_string: str | None = None
+    #: The event's video meeting. Omitted or null schedules it with no meeting.
+    meeting: MeetingInput | None = None
     # UNSET (omitted) = leave untouched. An explicit list -- including [] or null --
     # replaces the full set. Must default to UNSET, never a list: with a list default
     # every existing scheduleEvent caller that has never heard of this field would
@@ -1265,6 +1270,9 @@ class UpdateCalendarEventInput:
     - ``external_client_identifiers``: omit to keep the event's own identifiers
       untouched. A supplied list (including ``[]`` or ``null``) replaces the full set;
       ``[]``/``null`` clears it.
+    - ``meeting``: omit to keep the event's video meeting. ``null`` removes it; a value
+      replaces it. Keeping the same kind keeps a generated link; changing to GENERATED
+      asks the calendar provider for a new one.
 
     Rejected with a GraphQL error, and no partial write, when: an invalid ``system``
     URL is given; an ``identifier`` is blank/whitespace or over 255 characters; a
@@ -1292,6 +1300,13 @@ class UpdateCalendarEventInput:
             "characters; a (system, identifier) pair is already claimed by another "
             "record of the same type in the organization; or two pairs in this payload "
             "normalize to the same system. See ExternalClientIdentifierInput."
+        ),
+    )
+    meeting: MeetingInput | None = strawberry.field(  # type: ignore[assignment]
+        default=strawberry.UNSET,
+        description=(
+            "The event's video meeting. Omitted = leave untouched; null removes it; a "
+            "value replaces it."
         ),
     )
 
@@ -3474,6 +3489,10 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         ]
         if not all(attendee.has_contact() for attendee in external_attendees):
             raise GraphQLError(EXTERNAL_ATTENDEE_CONTACT_REQUIRED_MESSAGE)
+        try:
+            meeting = input.meeting.to_data() if input.meeting else None
+        except InvalidMeetingError as exc:
+            raise GraphQLError(str(exc)) from exc
 
         start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
         event_input = CalendarEventInputData(
@@ -3494,6 +3513,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
             external_client_identifiers=_map_external_client_identifiers(
                 input.external_client_identifiers
             ),
+            meeting=meeting,
         )
 
         try:
@@ -3902,6 +3922,19 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
             if ra.calendar_fk_id
         ]
 
+        # --- meeting: tri-state -----------------------------------------------------
+        if input.meeting is strawberry.UNSET:
+            meeting = None
+        else:
+            try:
+                meeting = (
+                    input.meeting.to_data()
+                    if input.meeting is not None
+                    else EventMeetingInputData(kind=None)
+                )
+            except InvalidMeetingError as exc:
+                raise GraphQLError(str(exc)) from exc
+
         event_data = CalendarEventInputData(
             title=title,
             description=description,
@@ -3921,6 +3954,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
             external_client_identifiers=_map_external_client_identifiers(
                 input.external_client_identifiers
             ),
+            meeting=meeting,
         )
 
         try:

@@ -52,7 +52,9 @@ from calendar_integration.constants import (
     CalendarType,
     CalendarVisibility,
     ExternalEventChangeKind,
+    MeetingKind,
 )
+from calendar_integration.meeting_urls import is_meeting_url
 from calendar_integration.models import (
     BlockedTime,
     Calendar,
@@ -1089,6 +1091,14 @@ class CalendarSyncService:
         # provider response, so it always carries one. Only provider-less local rows
         # hold NULL, and those match nothing coming back from a provider.
         existing_external_id = cast("str", existing_event.external_id)
+        # Checked before ``update_events``: a link the platform asked for is filled in
+        # by every sync.
+        if event.status != "cancelled" and self._refresh_provider_meeting(
+            event,
+            existing_event,
+            outside_edits_allowed=self._update_policy() == ExternalEventUpdatePolicy.ALLOW,
+        ):
+            changes.meetings_to_update.append(existing_event)
         if not update_events:
             return
 
@@ -1302,6 +1312,51 @@ class CalendarSyncService:
 
         # Process attendees
         self._process_event_attendees(event, existing_event, changes)
+
+    def _update_policy(self) -> str:
+        """The organization's policy for edits made at the provider."""
+        organization = cast("InitializedOrAuthenticatedCalendarService", self._context).organization
+        return (
+            organization.external_event_update_policy
+            if organization is not None
+            else ExternalEventUpdatePolicy.ALLOW
+        )
+
+    @staticmethod
+    def _refresh_provider_meeting(
+        event: CalendarEventAdapterOutputData,
+        existing_event: CalendarEvent,
+        *,
+        outside_edits_allowed: bool,
+    ) -> bool:
+        """Copy the provider's conference link onto the event. Returns whether it changed.
+
+        A GENERATED meeting the platform asked for, still without a link, gets the link
+        once the provider has created it, and is removed when the provider gave up on it.
+        That is the provider finishing the platform's own request, so it happens under
+        every update policy.
+
+        Any other conference change at the provider -- one added, removed or replaced --
+        is an outside edit, applied only when ``outside_edits_allowed``. A CUSTOM link
+        belongs to the client and is left as it is. A link that is not a valid meeting url
+        counts as no link.
+        """
+        if existing_event.meeting_kind == MeetingKind.CUSTOM:
+            return False
+        provider_url = event.meeting_url if is_meeting_url(event.meeting_url) else ""
+        awaiting_link = (
+            existing_event.meeting_kind == MeetingKind.GENERATED and not existing_event.meeting_url
+        )
+        if awaiting_link and not provider_url and event.meeting_pending:
+            return False
+        if not (awaiting_link or outside_edits_allowed):
+            return False
+        kind: MeetingKind | None = MeetingKind.GENERATED if provider_url else None
+        if existing_event.meeting_kind == kind and existing_event.meeting_url == provider_url:
+            return False
+        existing_event.meeting_kind = kind
+        existing_event.meeting_url = provider_url
+        return True
 
     def _process_existing_blocked_time(
         self,
@@ -1540,6 +1595,11 @@ class CalendarSyncService:
         if changes.events_to_update:
             CalendarEvent.objects.bulk_update(
                 changes.events_to_update, ["title", "description", "start_time", "end_time"]
+            )
+
+        if changes.meetings_to_update:
+            CalendarEvent.objects.bulk_update(
+                changes.meetings_to_update, ["meeting_kind", "meeting_url"]
             )
 
         if changes.attendances_to_create:

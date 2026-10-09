@@ -386,6 +386,14 @@ class CalendarPermissionService:
         if details_permission:
             required_permissions.add(details_permission)
 
+        # The meeting link is a detail of the event: who may change the description may
+        # change where the visit is joined.
+        if (old_event.meeting_kind, old_event.meeting_url) != (
+            new_event.meeting_kind,
+            new_event.meeting_url,
+        ):
+            required_permissions.add(EventManagementPermissions.UPDATE_DETAILS)
+
         # Check for schedule changes
         reschedule_permission = self._check_event_reschedule_necessary_permissions(
             old_event.start_time,

@@ -68,8 +68,10 @@ from calendar_integration.services.calendar_service_utils import (
     serialize_event_internal_attendee,
 )
 from calendar_integration.services.dataclasses import (
+    AdapterMeeting,
     CalendarEventAdapterInputData,
     EventAttendeeData,
+    EventMeeting,
     ResourceData,
 )
 from organizations.authorization import membership_holds_permission
@@ -125,7 +127,9 @@ class ExternalEventChangeRequestService:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _build_adapter_input(self, event: CalendarEvent) -> CalendarEventAdapterInputData:
+    def _build_adapter_input(
+        self, event: CalendarEvent, meeting: AdapterMeeting
+    ) -> CalendarEventAdapterInputData:
         """Build a full-fidelity ``CalendarEventAdapterInputData`` from a local event.
 
         The Google adapter's ``create_event``/``update_event`` are full-replace PUTs,
@@ -206,6 +210,7 @@ class ExternalEventChangeRequestService:
             resources=resources,
             external_id=event.external_id,
             recurrence_rule=recurrence_rule,
+            meeting=meeting,
         )
 
     def _supersede_pending(self, event: CalendarEvent) -> None:
@@ -712,9 +717,12 @@ class ExternalEventChangeRequestService:
             For ``DELETE``: the new provider ``external_id`` the caller must rebind the
             local event to. For ``UPDATE``: ``None``.
         """
-        adapter_input = self._build_adapter_input(event)
+        meeting = EventMeeting.of(event)
 
         if kind == ExternalEventChangeKind.UPDATE:
+            adapter_input = self._build_adapter_input(
+                event, meeting.adapter_request(previous=meeting)
+            )
             # Push the local (retained) values back so the provider re-converges to the
             # approved state. The external id is preserved.
             write_adapter.update_event(
@@ -727,8 +735,14 @@ class ExternalEventChangeRequestService:
             return None
 
         # DELETE: re-create the event on the provider. The external id churns — the
-        # provider returns a brand-new id the caller must rebind locally.
-        created = write_adapter.create_event(adapter_input)
+        # provider returns a brand-new id the caller must rebind locally. A generated
+        # meeting went with the deleted event, so the new one asks for its own; the new
+        # link is saved with the rebind.
+        new_meeting = meeting.for_new_provider_event()
+        created = write_adapter.create_event(
+            self._build_adapter_input(event, new_meeting.adapter_request(previous=None))
+        )
+        new_meeting.with_provider_link(created).save_to(event)
         return created.external_id
 
     def _undo_on_provider(
@@ -854,9 +868,10 @@ class ExternalEventChangeRequestService:
                     raise RuntimeError("_resolve_with_undo: request is None after prepare_fn")
 
                 if kind == ExternalEventChangeKind.DELETE and new_external_id is not None:
-                    # Rebind the local event to the re-created provider event's new id.
+                    # Rebind the local event to the re-created provider event's new id,
+                    # and to its new meeting link.
                     event.external_id = new_external_id
-                    event.save(update_fields=["external_id"])
+                    event.save(update_fields=["external_id", "meeting_url"])
 
                 resolved_at = timezone.now()
                 request.status = final_status

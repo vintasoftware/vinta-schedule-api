@@ -1,3 +1,4 @@
+import dataclasses
 import datetime
 from unittest.mock import Mock, patch
 
@@ -19,6 +20,7 @@ from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_clie
     MSOutlookCalendarAPIClient,
 )
 from calendar_integration.services.dataclasses import (
+    AdapterMeeting,
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
     CalendarEventAdapterOutputData,
@@ -473,7 +475,7 @@ def test_update_event(mock_client_class, mock_settings, mock_credentials, mock_m
 
     adapter = MSOutlookCalendarAdapter(mock_credentials)
 
-    event_data = CalendarEventAdapterOutputData(
+    event_data = CalendarEventAdapterInputData(
         calendar_external_id="test_calendar_id",
         external_id="test_event_id",
         title="Updated Event",
@@ -482,7 +484,6 @@ def test_update_event(mock_client_class, mock_settings, mock_credentials, mock_m
         end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
         timezone="UTC",
         attendees=[EventAttendeeData(email="test@example.com", name="Test", status="accepted")],
-        status="confirmed",
         original_payload={},
     )
 
@@ -2516,3 +2517,77 @@ class TestRRuleConversion:
         result = adapter._convert_ms_recurrence_to_rrule(ms_recurrence)
 
         assert result == "RRULE:FREQ=DAILY;INTERVAL=2;COUNT=5"
+
+
+ZOOM_URL = "https://zoom.us/j/1"
+
+
+@pytest.mark.parametrize(
+    ("meeting_fields", "location"),
+    [
+        ({"meeting": AdapterMeeting(location=ZOOM_URL)}, ZOOM_URL),
+        ({}, None),
+    ],
+    ids=["custom-link", "no-meeting"],
+)
+@patch("calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter.settings")
+@patch(
+    "calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter.MSOutlookCalendarAPIClient"
+)
+def test_create_event_writes_a_custom_link_to_the_location(
+    mock_client_class,
+    mock_settings,
+    mock_credentials,
+    sample_event_input_data,
+    mock_ms_event,
+    meeting_fields,
+    location,
+):
+    mock_client = Mock()
+    mock_client.create_event.return_value = mock_ms_event
+    mock_client_class.return_value = mock_client
+    adapter = MSOutlookCalendarAdapter(mock_credentials)
+
+    adapter.create_event(dataclasses.replace(sample_event_input_data, **meeting_fields))
+
+    assert mock_client.create_event.call_args.kwargs.get("location") == location
+
+
+@pytest.mark.parametrize(
+    ("meeting_fields", "location"),
+    [
+        ({"meeting": AdapterMeeting(location=ZOOM_URL)}, ZOOM_URL),
+        ({"meeting": AdapterMeeting(conference="remove")}, ""),
+        ({}, None),
+    ],
+    ids=["custom-link", "meeting-removed", "meeting-untouched"],
+)
+@patch("calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter.settings")
+@patch(
+    "calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter.MSOutlookCalendarAPIClient"
+)
+def test_update_event_writes_or_clears_the_custom_link(
+    mock_client_class,
+    mock_settings,
+    mock_credentials,
+    sample_event_input_data,
+    mock_ms_event,
+    meeting_fields,
+    location,
+):
+    mock_client = Mock()
+    mock_client.update_event.return_value = mock_ms_event
+    mock_client_class.return_value = mock_client
+    adapter = MSOutlookCalendarAdapter(mock_credentials)
+
+    adapter.update_event(
+        "test_calendar_id",
+        "test_event_id",
+        dataclasses.replace(sample_event_input_data, **meeting_fields),
+    )
+
+    assert mock_client.update_event.call_args.kwargs["location"] == location
+
+
+def test_outlook_cannot_generate_meeting_links():
+    assert MSOutlookCalendarAdapter.supports_generated_meetings is False

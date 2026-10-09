@@ -27,6 +27,7 @@ from calendar_integration.constants import (
     ExternalEventChangeKind,
     ExternalEventChangeRequestStatus,
     IncomingWebhookProcessingStatus,
+    MeetingKind,
     QuotaPeriod,
     RecurrenceFrequency,
     RecurrenceWeekday,
@@ -1562,6 +1563,15 @@ class CalendarEvent(RecurringMixin):
     # on string fields" rule.
     external_id = models.CharField(max_length=255, unique=True, blank=True, null=True)
 
+    # Video meeting. ``meeting_kind`` is NULL for an event with no meeting. For a
+    # GENERATED meeting, ``meeting_url`` is the link the provider created, and stays
+    # empty until the provider has created it. For a CUSTOM meeting it is the link the
+    # client supplied.
+    meeting_kind = models.CharField(  # noqa: DJ001
+        max_length=16, choices=MeetingKind, null=True, blank=True
+    )
+    meeting_url = models.URLField(max_length=2048, blank=True, default="")
+
     # Bundle calendar fields
     bundle_calendar = OrganizationSafeForeignKey(
         Calendar,
@@ -1671,6 +1681,25 @@ class CalendarEvent(RecurringMixin):
 
     objects: ClassVar[CalendarEventManager] = CalendarEventManager()
 
+    class Meta(RecurringMixin.Meta):
+        constraints = (
+            # No meeting has no link, and a CUSTOM meeting always has one. A GENERATED
+            # meeting may have none while the provider is still creating it. The
+            # ``isnull=False`` keeps the kind comparisons from turning NULL, which a
+            # CHECK would let through.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(meeting_kind__isnull=True, meeting_url="")
+                    | models.Q(meeting_kind__isnull=False)
+                    & (
+                        models.Q(meeting_kind=MeetingKind.GENERATED)
+                        | (models.Q(meeting_kind=MeetingKind.CUSTOM) & ~models.Q(meeting_url=""))
+                    )
+                ),
+                name="calendarevent_meeting_consistent",
+            ),
+        )
+
     def __str__(self):
         return f"{self.title} ({self.start_time} - {self.end_time})"
 
@@ -1720,6 +1749,8 @@ class CalendarEvent(RecurringMixin):
             timezone=self.timezone,
             recurrence_rule_fk=self.recurrence_rule,
             recurrence_id=occurrence_start_time,
+            meeting_kind=self.meeting_kind,
+            meeting_url=self.meeting_url,
         )
 
 

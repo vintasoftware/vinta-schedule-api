@@ -132,6 +132,8 @@ def _is_valid_rrule_key(
 
 class MSOutlookCalendarAdapter(CalendarAdapter):
     provider = "microsoft"
+    # The client can ask for a Teams meeting, but its join link is never read back.
+    supports_generated_meetings = False
     RSVP_STATUS_MAPPING: ClassVar[dict[str, Literal["pending", "accepted", "declined"]]] = {
         "none": "pending",
         "organizer": "accepted",
@@ -382,6 +384,17 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
             "range": recurrence_range,
         }
 
+    @staticmethod
+    def _update_location(event_data: CalendarEventAdapterInputData) -> str | None:
+        """The location an update writes: a custom meeting link, or "" to clear one.
+
+        Outlook updates are partial, so ``None`` leaves the location as it is.
+        """
+        meeting = event_data.meeting
+        if meeting.location:
+            return meeting.location
+        return "" if meeting.conference == "remove" else None
+
     def _convert_calendar_event_input_to_ms_format(
         self, event_data: CalendarEventAdapterInputData
     ) -> dict:
@@ -431,6 +444,9 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
             ms_event_data["recurrence"] = self._convert_rrule_to_ms_format(
                 event_data.recurrence_rule
             )
+
+        if event_data.meeting.location:
+            ms_event_data["location"] = event_data.meeting.location
 
         return ms_event_data
 
@@ -717,6 +733,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
                 start_time=event_data.start_time,
                 end_time=event_data.end_time,
                 attendees=attendees,
+                location=self._update_location(event_data),
             )
 
             return self._convert_ms_event_to_calendar_event_data(ms_event, calendar_id)
