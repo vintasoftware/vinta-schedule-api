@@ -24,6 +24,8 @@ from calendar_integration.exceptions import (
     InvalidTokenError,
     NoAvailableTimeWindowsError,
     PermissionServiceInitializationError,
+    RoomNotFoundError,
+    RoomUnavailableError,
     TokenAlreadyUsedError,
     TokenExpiredError,
     TokenRevokedError,
@@ -391,6 +393,10 @@ class AppointmentTypeEventInput:
     external_attendances: list[EventExternalAttendanceInput] = strawberry.field(
         default_factory=list
     )
+    #: Rooms (resource calendars of the organization) booked for the event. Each one
+    #: becomes a resource allocation; an id that is not an active room of the
+    #: organization fails the booking.
+    resource_calendar_ids: list[int] = strawberry.field(default_factory=list)
 
 
 @strawberry.type
@@ -819,6 +825,10 @@ class AppointmentTypeMutations:
                 )
                 for e in input.external_attendances
             ],
+            resource_allocations=[
+                ResourceAllocationInputData(resource_id=calendar_id)
+                for calendar_id in dict.fromkeys(input.resource_calendar_ids)
+            ],
         )
         try:
             event = deps.appointment_type_service.create_appointment_type_event(
@@ -846,7 +856,7 @@ class AppointmentTypeMutations:
                     or "The requested time slot is not available under the current booking policy."
                 ),
             )
-        except AppointmentTypeError as e:
+        except (AppointmentTypeError, RoomNotFoundError, RoomUnavailableError) as e:
             return AppointmentTypeEventResult(success=False, error_message=str(e))
         return AppointmentTypeEventResult(success=True, event=event)  # type: ignore[arg-type]
 

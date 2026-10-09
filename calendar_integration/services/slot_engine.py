@@ -10,6 +10,8 @@ single-calendar / bundle walker both depend on:
   calendars.
 - :func:`fetch_blocking_spans` — batched ``CalendarEvent`` + ``BlockedTime``
   spans for a set of calendars.
+- :func:`fetch_room_booking_spans` — the same for rooms, plus the events that hold
+  each room as a resource allocation.
 - :func:`calendar_free_for_window` — the per-calendar free predicate the walkers
   apply at each candidate window.
 - :func:`apply_policy_filter` — drop candidate proposals that violate a resolved
@@ -62,7 +64,7 @@ import datetime
 from collections.abc import Iterable, Iterator
 from typing import NamedTuple
 
-from django.db.models import Q
+from django.db.models import Q, QuerySet
 
 from calendar_integration.constants import QuotaPeriod
 from calendar_integration.database_functions import GetAppointmentTypeQuotaPeriodCountsJSON
@@ -170,6 +172,38 @@ def fetch_available_spans(
     return spans
 
 
+def _add_event_spans(
+    spans: SpansByCalendarId,
+    events_qs: QuerySet[CalendarEvent],
+    calendar_id_field: str,
+    search_window_start: datetime.datetime,
+    search_window_end: datetime.datetime,
+) -> None:
+    """Add the spans of every event in ``events_qs`` that can touch the window to
+    ``spans``, keyed by the value of ``calendar_id_field``.
+
+    ``events_qs`` must carry the ``recurring_occurrences`` annotation, so a recurring
+    event adds each of its occurrences as well as its own span.
+    """
+    overlap_filter = (
+        Q(start_time__range=(search_window_start, search_window_end))
+        | Q(end_time__range=(search_window_start, search_window_end))
+        | Q(start_time__lte=search_window_start, end_time__gte=search_window_end)
+        | Q(recurring_occurrences__len__gt=0)
+    )
+
+    for ev in events_qs.filter(overlap_filter).values(
+        calendar_id_field, "start_time", "end_time", "recurring_occurrences"
+    ):
+        bucket = spans.setdefault(ev[calendar_id_field], [])
+        if ev["start_time"] and ev["end_time"]:
+            bucket.append((ev["start_time"], ev["end_time"]))
+        for occ in ev["recurring_occurrences"] or ():
+            occ_start = datetime.datetime.fromisoformat(occ["start_time"])
+            occ_end = datetime.datetime.fromisoformat(occ["end_time"])
+            bucket.append((occ_start, occ_end))
+
+
 def fetch_blocking_spans(
     organization_id: int,
     calendar_ids: set[int],
@@ -199,23 +233,13 @@ def fetch_blocking_spans(
             organization_id
         ).annotate_recurring_occurrences_on_date_range(search_window_start, search_window_end)
 
-    overlap_filter = (
-        Q(start_time__range=(search_window_start, search_window_end))
-        | Q(end_time__range=(search_window_start, search_window_end))
-        | Q(start_time__lte=search_window_start, end_time__gte=search_window_end)
-        | Q(recurring_occurrences__len__gt=0)
+    _add_event_spans(
+        spans,
+        events_qs.filter(calendar_fk_id__in=calendar_ids),
+        "calendar_fk_id",
+        search_window_start,
+        search_window_end,
     )
-
-    for ev in events_qs.filter(overlap_filter, calendar_fk_id__in=calendar_ids).values(
-        "calendar_fk_id", "start_time", "end_time", "recurring_occurrences"
-    ):
-        bucket = spans.setdefault(ev["calendar_fk_id"], [])
-        if ev["start_time"] and ev["end_time"]:
-            bucket.append((ev["start_time"], ev["end_time"]))
-        for occ in ev["recurring_occurrences"] or ():
-            occ_start = datetime.datetime.fromisoformat(occ["start_time"])
-            occ_end = datetime.datetime.fromisoformat(occ["end_time"])
-            bucket.append((occ_start, occ_end))
 
     for bt in (
         BlockedTime.objects.filter_by_organization(organization_id)
@@ -231,6 +255,40 @@ def fetch_blocking_spans(
         .values("calendar_fk_id", "start_time", "end_time")
     ):
         spans.setdefault(bt["calendar_fk_id"], []).append((bt["start_time"], bt["end_time"]))
+    return spans
+
+
+def fetch_room_booking_spans(
+    organization_id: int,
+    room_ids: set[int],
+    search_window_start: datetime.datetime,
+    search_window_end: datetime.datetime,
+) -> SpansByCalendarId:
+    """Spans during which each room is taken, keyed by the room's calendar id.
+
+    A room is taken by its own calendar's events and blocked times (for a provider
+    room, the bookings its sync brings in) and by every event that holds it as a
+    resource allocation.
+    """
+    spans = fetch_blocking_spans(
+        organization_id,
+        room_ids,
+        search_window_start,
+        search_window_end,
+        with_bulk_modifications=False,
+    )
+    if not room_ids:
+        return spans
+
+    _add_event_spans(
+        spans,
+        CalendarEvent.objects.filter_by_organization(organization_id)
+        .annotate_recurring_occurrences_on_date_range(search_window_start, search_window_end)
+        .filter(resource_allocations__calendar_fk_id__in=room_ids),
+        "resource_allocations__calendar_fk_id",
+        search_window_start,
+        search_window_end,
+    )
     return spans
 
 
