@@ -32,6 +32,16 @@
       },
       "body": "I think we should must limit the agents to run the full suite, could you make them use the semaphore system",
       "created_at": "2026-10-09T17:53:22.143Z"
+    },
+    {
+      "id": "m4",
+      "kind": "message",
+      "author": {
+        "kind": "agent",
+        "name": "claude-code"
+      },
+      "body": "Done: added a capacity-1 `test-suite` semaphore (matches uv run pytest / python -m pytest / pytest / make test) and made the `test` gate require it, so only one suite runs at a time across parallel lanes. Agents must run pytest as `vinta-ai-maestro with test-suite -- <cmd>`.",
+      "created_at": "2026-10-09T21:48:12.717Z"
     }
   ]
 }

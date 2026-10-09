@@ -54,6 +54,25 @@
       "capacity": 3,
       "kind": "worktree",
       "description": "One desk per implementer, kept for the whole run."
+    },
+    "test-suite": {
+      "capacity": 1,
+      "kind": "semaphore",
+      "match": [
+        "*uv run pytest*",
+        "*python -m pytest*",
+        "pytest*",
+        "*make test*"
+      ],
+      "description": "One test suite at a time: pytest -n auto uses every core, so parallel phases would freeze the host."
+    }
+  },
+  "gates": {
+    "test": {
+      "type": "test",
+      "requires": [
+        "test-suite"
+      ]
     }
   },
   "nodes": [
