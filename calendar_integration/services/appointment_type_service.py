@@ -3422,6 +3422,7 @@ class AppointmentTypeService:
             attendances=merged_attendances,
             external_attendances=list(data.external_attendances),
             appointment_type_authorized=True,
+            external_client_identifiers=data.external_client_identifiers,
         )
         event = self.calendar_service.create_event(
             calendar_id=primary_calendar_id, event_data=event_input

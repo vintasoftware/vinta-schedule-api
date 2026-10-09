@@ -20549,7 +20549,6 @@ components:
           readOnly: true
       required:
       - created
-      - email
       - modified
     ExternalClientIdentifier:
       type: object

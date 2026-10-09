@@ -556,3 +556,16 @@ class ExternalClientIdentifierDuplicateSystemError(ExternalClientIdentifierError
     """
 
     default_message = "Duplicate system in identifiers list; each system must appear at most once."
+
+
+class ExternalAttendeeIdentifierConflictError(ExternalClientIdentifierError):
+    """Raised when one external attendee's identifiers already belong to two different
+    stored attendees.
+
+    An attendee carrying identifiers is resolved to the stored attendee that already
+    holds them. When its pairs point at more than one stored attendee there is no
+    single attendee to link, and picking one would silently attach the event to the
+    wrong person.
+    """
+
+    default_message = "The external attendee's identifiers belong to different attendees."

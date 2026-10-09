@@ -221,6 +221,7 @@ def serialize_event_external_attendee(
             Literal["accepted", "declined", "pending"],
             external_attendance.status,
         ),
+        external_attendee_id=attendee.pk,
     )
 
 
@@ -456,6 +457,7 @@ def serialize_event_data_input(
                         external_attendance.external_attendee.id, "pending"
                     ),
                 ),
+                external_attendee_id=external_attendance.external_attendee.id,
             )
             # For recurring instances, get external attendances from the parent event; for regular events, use their own
             for external_attendance in input_external_attendances

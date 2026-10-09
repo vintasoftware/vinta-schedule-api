@@ -1054,3 +1054,115 @@ class TestCalendarPermissionServiceConstants:
         }
 
         assert set(DEFAULT_EXTERNAL_ATTENDEE_PERMISSIONS) == expected_permissions
+
+
+class TestCalendarPermissionServiceIdentifierOnlyExternalAttendees:
+    """External attendees with no email (known only by a client identifier) are told
+    apart by their stored id, never lumped together under the empty email."""
+
+    @staticmethod
+    def _identifier_only_attendee(organization) -> ExternalAttendee:
+        return ExternalAttendee.objects.create(email="", name="", organization=organization)
+
+    @staticmethod
+    def _attendee_data(attendee: ExternalAttendee | None) -> EventExternalAttendeeData:
+        return EventExternalAttendeeData(
+            email="",
+            name="",
+            status="pending",
+            external_attendee_id=attendee.pk if attendee is not None else None,
+        )
+
+    @staticmethod
+    def _initialize_for(permission_service, token, token_str, organization) -> None:
+        token_b64 = base64.b64encode(f"{token.id}:{token_str}".encode()).decode()
+        permission_service.initialize_with_token(token_b64, organization.id)
+
+    def _attendee_token(self, event, attendee, organization):
+        token_str = generate_long_lived_token()
+        token = CalendarManagementToken.objects.create(
+            event_fk=event,
+            external_attendee_fk=attendee,
+            token_hash=hash_long_lived_token(token_str),
+            organization=organization,
+        )
+        for permission in DEFAULT_EXTERNAL_ATTENDEE_PERMISSIONS:
+            CalendarManagementTokenPermission.objects.create(
+                token_fk=token, permission=permission, organization=organization
+            )
+        return token, token_str
+
+    def test_swapping_one_identifier_only_attendee_for_another_needs_update_attendees(
+        self, permission_service, event_token, organization
+    ):
+        token, token_str = event_token
+        self._initialize_for(permission_service, token, token_str, organization)
+        patient_a = self._identifier_only_attendee(organization)
+        patient_b = self._identifier_only_attendee(organization)
+
+        required_permission = permission_service._check_attendances_update_necessary_permissions(
+            [], [self._attendee_data(patient_a)], [], [self._attendee_data(patient_b)]
+        )
+
+        assert required_permission == EventManagementPermissions.UPDATE_ATTENDEES
+
+    def test_new_identifier_only_attendee_without_id_needs_update_attendees(
+        self, permission_service, event_token, organization
+    ):
+        token, token_str = event_token
+        self._initialize_for(permission_service, token, token_str, organization)
+        patient_a = self._identifier_only_attendee(organization)
+
+        required_permission = permission_service._check_attendances_update_necessary_permissions(
+            [],
+            [self._attendee_data(patient_a)],
+            [],
+            [self._attendee_data(patient_a), self._attendee_data(None)],
+        )
+
+        assert required_permission == EventManagementPermissions.UPDATE_ATTENDEES
+
+    def test_unchanged_identifier_only_attendee_needs_nothing(
+        self, permission_service, event_token, organization
+    ):
+        token, token_str = event_token
+        self._initialize_for(permission_service, token, token_str, organization)
+        patient_a = self._identifier_only_attendee(organization)
+
+        required_permission = permission_service._check_attendances_update_necessary_permissions(
+            [], [self._attendee_data(patient_a)], [], [self._attendee_data(patient_a)]
+        )
+
+        assert required_permission is None
+
+    def test_identifier_only_attendee_removing_itself_needs_self_rsvp(
+        self, permission_service, event, organization
+    ):
+        patient_a = self._identifier_only_attendee(organization)
+        token, token_str = self._attendee_token(event, patient_a, organization)
+        self._initialize_for(permission_service, token, token_str, organization)
+
+        required_permission = permission_service._check_attendances_update_necessary_permissions(
+            [], [self._attendee_data(patient_a)], [], []
+        )
+
+        assert required_permission == EventManagementPermissions.UPDATE_SELF_RSVP
+
+    def test_identifier_only_attendee_removing_another_needs_update_attendees(
+        self, permission_service, event, organization
+    ):
+        """Both attendees have an empty email. Matching on it would let one patient's
+        token remove the other as if removing itself."""
+        patient_a = self._identifier_only_attendee(organization)
+        patient_b = self._identifier_only_attendee(organization)
+        token, token_str = self._attendee_token(event, patient_a, organization)
+        self._initialize_for(permission_service, token, token_str, organization)
+
+        required_permission = permission_service._check_attendances_update_necessary_permissions(
+            [],
+            [self._attendee_data(patient_a), self._attendee_data(patient_b)],
+            [],
+            [self._attendee_data(patient_a)],
+        )
+
+        assert required_permission == EventManagementPermissions.UPDATE_ATTENDEES
