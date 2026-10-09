@@ -1,9 +1,11 @@
 import datetime
 import enum
+from typing import cast
 
 import strawberry
 import strawberry_django
 
+from calendar_integration.constants import BlockedTimeDeclineScope
 from calendar_integration.models import (
     AppointmentType,
     AppointmentTypeSlot,
@@ -663,6 +665,39 @@ class BlockedTimeRecurringExceptionGraphQLType:
         return _scoped_blocked_time_or_none(modified, _owner_scoped_calendar_ids(info))  # type: ignore[return-value,arg-type]
 
 
+@strawberry.enum(name="BlockedTimeDeclineScope")
+class BlockedTimeDeclineScopeEnum(enum.Enum):
+    """Which appointments a blocked time turns away.
+
+    NEW: invitations made after the block.
+    NEW_AND_EXISTING: those, plus the events the blocked calendar already holds in the
+    blocked period, which are cancelled when the block is created. Events on other
+    calendars that the calendar's owner attends are never cancelled by Vinta Schedule.
+    But when the block is written to Google as an Out of office event, Google declines
+    the owner's invitations to them. Those events stay in place for everyone else.
+    """
+
+    NEW = BlockedTimeDeclineScope.NEW.value
+    NEW_AND_EXISTING = BlockedTimeDeclineScope.NEW_AND_EXISTING.value
+
+
+@strawberry.type
+class BlockedTimeImpactGraphQLType:
+    """What a block over a period would do to existing events. Counts only."""
+
+    cancel_event_count: int = strawberry.field(
+        description="Events on the blocked calendar a NEW_AND_EXISTING block would cancel."
+    )
+    conflict_event_count: int = strawberry.field(
+        description=(
+            "Overlapping events held on other calendars where the calendar's owner "
+            "attends. Vinta Schedule never cancels them. But when a NEW_AND_EXISTING "
+            "block is written to Google as an Out of office event, Google declines the "
+            "owner's invitations to them. The events stay in place for everyone else."
+        )
+    )
+
+
 @strawberry_django.type(BlockedTime)
 class BlockedTimeGraphQLType:
     id: strawberry.auto  # noqa: A003
@@ -671,6 +706,12 @@ class BlockedTimeGraphQLType:
     external_id: strawberry.auto
     created: datetime.datetime
     modified: datetime.datetime
+
+    @strawberry.field
+    def decline_scope(self) -> BlockedTimeDeclineScopeEnum | None:
+        """Which appointments the block turns away. ``null`` for a block made without options."""
+        scope = cast("BlockedTime", self).decline_scope
+        return BlockedTimeDeclineScopeEnum(scope) if scope else None
 
     user: UserGraphQLType = strawberry_django.field()
     recurrence_rule: RecurrenceRuleGraphQLType = strawberry_django.field()

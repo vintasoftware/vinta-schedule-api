@@ -30,7 +30,7 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpHeaders, HttpRequest
 
-from calendar_integration.constants import CalendarProvider
+from calendar_integration.constants import BlockedTimeDeclineScope, CalendarProvider
 from calendar_integration.exceptions import WebhookProcessingFailedError
 from calendar_integration.services.calendar_clients.ms_outlook_calendar_api_client import (
     MSGraphAPIError,
@@ -132,6 +132,8 @@ def _is_valid_rrule_key(
 
 class MSOutlookCalendarAdapter(CalendarAdapter):
     provider = "microsoft"
+    # Blocked times are not written to Outlook calendars.
+    supports_blocked_time_push = False
     RSVP_STATUS_MAPPING: ClassVar[dict[str, Literal["pending", "accepted", "declined"]]] = {
         "none": "pending",
         "organizer": "accepted",
@@ -724,12 +726,45 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         except MSGraphAPIError as e:
             raise ValueError(f"Failed to update event: {e}") from e
 
-    def delete_event(self, calendar_id: str, event_id: str) -> None:
-        """Delete an event from the calendar."""
+    def delete_event(
+        self, calendar_id: str, event_id: str, send_updates: str | None = None
+    ) -> None:
+        """Delete an event from the calendar.
+
+        ``send_updates`` is accepted for the adapter contract and ignored: Outlook
+        decides on its own whom to tell.
+        """
         try:
             self.client.delete_event(event_id, calendar_id)
         except MSGraphAPIError as e:
             raise ValueError(f"Failed to delete event: {e}") from e
+
+    def write_out_of_office_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+        decline_scope: BlockedTimeDeclineScope,
+    ) -> str:
+        """Blocked times are not written to Outlook calendars."""
+        raise NotImplementedError("Blocked times are not written to Outlook calendars.")
+
+    def write_busy_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+    ) -> str:
+        """Blocked times are not written to Outlook calendars."""
+        raise NotImplementedError("Blocked times are not written to Outlook calendars.")
+
+    def delete_blocked_time_event(self, calendar_id: str, event_id: str) -> None:
+        """Blocked times are not written to Outlook calendars."""
+        raise NotImplementedError("Blocked times are not written to Outlook calendars.")
 
     def get_calendar_resources(self) -> Iterable[CalendarResourceData]:
         """Get all calendar resources (calendars)."""

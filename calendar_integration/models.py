@@ -15,6 +15,7 @@ from encrypted_fields.fields import EncryptedCharField, EncryptedTextField  # ty
 from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from calendar_integration.constants import (
+    BlockedTimeDeclineScope,
     CalendarManagementTokenKind,
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
@@ -26,6 +27,7 @@ from calendar_integration.constants import (
     ExternalEventChangeKind,
     ExternalEventChangeRequestStatus,
     IncomingWebhookProcessingStatus,
+    ProviderPushStatus,
     QuotaPeriod,
     RecurrenceFrequency,
     RecurrenceWeekday,
@@ -1829,6 +1831,23 @@ class BlockedTime(RecurringMixin):
     reason = models.CharField(max_length=255, blank=True)
     external_id = models.CharField(max_length=255, blank=True)
 
+    # Block options. A null ``decline_scope`` is a block made without them: it is
+    # never written to the calendar provider and cancels nothing. The three nullable
+    # string columns use NULL for "not set", which the partial index below relies on.
+    decline_scope = models.CharField(  # noqa: DJ001
+        max_length=32, choices=BlockedTimeDeclineScope.choices, null=True, blank=True
+    )
+    decline_message = models.TextField(blank=True, default="")
+    # The provider event this block was written to (a Google Out of office or busy
+    # event). Sync skips an incoming event with this id, so the block is not imported
+    # back as a second ``BlockedTime``.
+    provider_event_external_id = models.CharField(  # noqa: DJ001
+        max_length=1024, null=True, blank=True
+    )
+    provider_push_status = models.CharField(  # noqa: DJ001
+        max_length=16, choices=ProviderPushStatus.choices, null=True, blank=True
+    )
+
     # Bundle calendar fields
     bundle_calendar = OrganizationSafeForeignKey(
         Calendar,
@@ -1891,6 +1910,26 @@ class BlockedTime(RecurringMixin):
                 condition=models.Q(appointment_type_slot_fk__isnull=False),
                 name="blockedtime_appt_slot_idx",
             ),
+            models.Index(
+                fields=["calendar_fk", "provider_event_external_id"],
+                condition=models.Q(provider_event_external_id__isnull=False),
+                name="blockedtime_provider_evt_idx",
+            ),
+        )
+        constraints = (
+            # A block made without options has no decline message and is never written
+            # to its provider.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(decline_scope__isnull=False)
+                    | models.Q(
+                        decline_message="",
+                        provider_push_status__isnull=True,
+                        provider_event_external_id__isnull=True,
+                    )
+                ),
+                name="blockedtime_options_need_decline_scope",
+            ),
         )
 
     def __str__(self):
@@ -1929,6 +1968,8 @@ class BlockedTime(RecurringMixin):
             calendar_fk=self.calendar,
             organization=self.organization,
             reason=self.reason,
+            decline_scope=self.decline_scope,
+            decline_message=self.decline_message,
             start_time_tz_unaware=occurrence_start_time.astimezone(tz).replace(tzinfo=None),
             end_time_tz_unaware=occurrence_end_time.astimezone(tz).replace(tzinfo=None),
             start_time=occurrence_start_time,

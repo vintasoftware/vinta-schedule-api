@@ -43,16 +43,28 @@ loops, no changed query structure, no algorithmic-complexity change.
 from __future__ import annotations
 
 import datetime
+import logging
+import uuid
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from django.db import transaction
 from django.db.models import Q
+from django.db.models.functions import Now
 
 from vinta_audit_logs.diff import compute_diff
 from vinta_billing.exceptions import OverLimitError
 
 from audit_integration.constants import AuditAction
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import (
+    BlockedTimeDeclineScope,
+    CalendarType,
+    ProviderPushStatus,
+)
+from calendar_integration.exceptions import (
+    BlockDeclineOptionsWithRecurrenceError,
+    CalendarIntegrationError,
+    OutOfOfficeNotSupportedError,
+)
 from calendar_integration.models import (
     AvailableTime,
     AvailableTimeBulkModification,
@@ -75,6 +87,7 @@ from calendar_integration.services.calendar_service_utils import (
 )
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
+    BlockDeclineOptions,
     BlockedTimeData,
     UnavailableTimeWindow,
 )
@@ -94,7 +107,11 @@ if TYPE_CHECKING:
 
     from calendar_integration.services.calendar_service_context import CalendarServiceContext
     from calendar_integration.services.dataclasses import CalendarEventData
+    from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
     from calendar_integration.services.recurrence_manager import RecurrenceManager
+
+
+logger = logging.getLogger(__name__)
 
 
 class AvailabilityServiceHost(Protocol):
@@ -128,7 +145,10 @@ class AvailabilityServiceHost(Protocol):
         self,
         calendar: Calendar,
         blocked_times: Iterable[tuple[datetime.datetime, datetime.datetime, str, str, str | None]],
+        decline_options: BlockDeclineOptions | None = None,
     ) -> Iterable[BlockedTime]: ...
+
+    def _get_write_adapter_for_calendar(self, calendar: Calendar) -> CalendarAdapter | None: ...
 
     def _create_recurrence_rule_if_needed(
         self, rrule_string: str | None
@@ -822,15 +842,173 @@ class AvailabilityService:
         timezone: str,
         reason: str = "",
         rrule_string: str | None = None,
+        decline_options: BlockDeclineOptions | None = None,
     ) -> BlockedTime:
-        """Create a single blocked time (optionally recurring)."""
-        result = self._host.bulk_create_manual_blocked_times(
+        """Create a single blocked time (optionally recurring).
+
+        With ``decline_options`` the options are saved on the row, and a single block on
+        a calendar whose provider takes blocked times is queued to be written there after
+        the transaction commits (``push_blocked_time_to_provider_task``). Without them
+        the block is created exactly as before and nothing is queued.
+        """
+        [blocked_time] = self._host.bulk_create_manual_blocked_times(
             calendar=calendar,
             blocked_times=[(start_time, end_time, timezone, reason, rrule_string)],
+            decline_options=decline_options,
         )
-        blocked_time = next(iter(result))
         self._audit_availability_write(AuditAction.CREATE, blocked_time)
+        if blocked_time.provider_push_status == ProviderPushStatus.PENDING:
+            self._queue_blocked_time_push(blocked_time)
         return blocked_time
+
+    @staticmethod
+    def _queue_blocked_time_push(blocked_time: BlockedTime) -> None:
+        """Queue ``push_blocked_time_to_provider_task`` for after the transaction commits."""
+        # Imported here: the task module imports CalendarService, which imports this module.
+        from calendar_integration.tasks.blocked_time_push_tasks import (
+            push_blocked_time_to_provider_task,
+        )
+
+        blocked_time_id = blocked_time.id
+        organization_id = blocked_time.organization_id
+        transaction.on_commit(
+            lambda: push_blocked_time_to_provider_task.delay(  # type: ignore[attr-defined]
+                blocked_time_id, organization_id
+            )
+        )
+
+    def push_blocked_time_to_provider(self, blocked_time_id: int) -> None:
+        """Write a blocked time to its provider calendar, creating or updating its event.
+
+        On the calendar its owner marks as default the block becomes an Out of office
+        event that declines conflicting invitations per its ``decline_scope``, with the
+        provider's default reply. On any other calendar, or when the provider refuses Out
+        of office, it becomes a plain busy event. Either way the event gets a fixed,
+        neutral title: the block's ``reason`` and ``decline_message`` are never sent. The provider event id is saved on the row before the
+        write and sent with it, so a repeated run updates the same event instead of
+        creating a second one.
+
+        Does nothing for a block that is missing, that was never marked to be written
+        (``create_blocked_time`` decides that), or whose latest version was already
+        written. ``update_blocked_time`` marks a written block pending again. When the
+        block changes while this runs, it stays pending for the push that change queued.
+
+        :raises: The adapter's errors, for the caller to retry.
+        """
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
+
+        blocked_time = (
+            BlockedTime.objects.filter_by_organization(context.organization.id)
+            .select_related("calendar")
+            .filter(id=blocked_time_id)
+            .first()
+        )
+        if blocked_time is None or blocked_time.provider_push_status not in (
+            ProviderPushStatus.PENDING,
+            ProviderPushStatus.FAILED,
+        ):
+            return
+        calendar = blocked_time.calendar
+        write_adapter = self._host._get_write_adapter_for_calendar(calendar)
+        if write_adapter is None:
+            raise CalendarIntegrationError("No account can write to this calendar.")
+
+        if not blocked_time.provider_event_external_id:
+            # Google event ids use the characters a-v and 0-9; a hex uuid fits.
+            blocked_time.provider_event_external_id = uuid.uuid4().hex
+            saved = (
+                BlockedTime.objects.filter_by_organization(context.organization.id)
+                .filter(id=blocked_time.id)
+                .update(
+                    provider_event_external_id=blocked_time.provider_event_external_id,
+                    modified=Now(),
+                )
+            )
+            if not saved:
+                # Deleted since it was read: there is nothing to write.
+                return
+
+        event_fields = {
+            "calendar_id": calendar.provider_calendar_id,
+            "event_id": blocked_time.provider_event_external_id,
+            "start_time": blocked_time.start_time,
+            "end_time": blocked_time.end_time,
+            "timezone": blocked_time.timezone,
+        }
+        if calendar.ownerships.filter(is_default=True).exists():
+            try:
+                write_adapter.write_out_of_office_event(
+                    **event_fields,
+                    decline_scope=BlockedTimeDeclineScope(blocked_time.decline_scope),
+                )
+            except OutOfOfficeNotSupportedError as exc:
+                # Only the block id and the provider's error code: the provider's error
+                # message can echo the event's details.
+                logger.warning(
+                    "Provider refused an Out of office event for blocked time %s (%s); "
+                    "writing a busy event instead.",
+                    blocked_time.id,
+                    exc.reason_code,
+                )
+                write_adapter.write_busy_event(**event_fields)
+        else:
+            write_adapter.write_busy_event(**event_fields)
+
+        # Marked written only when the row still holds what was written. An update made
+        # meanwhile left it pending and queued its own push.
+        BlockedTime.objects.filter_by_organization(context.organization.id).filter(
+            id=blocked_time.id,
+            start_time_tz_unaware=blocked_time.start_time_tz_unaware,
+            end_time_tz_unaware=blocked_time.end_time_tz_unaware,
+            timezone=blocked_time.timezone,
+            decline_scope=blocked_time.decline_scope,
+            provider_event_external_id=blocked_time.provider_event_external_id,
+        ).update(provider_push_status=ProviderPushStatus.PUSHED)
+
+    def delete_blocked_time_from_provider(
+        self, calendar_id: int, provider_event_external_id: str
+    ) -> None:
+        """Delete the provider event a deleted blocked time was written to.
+
+        The provider is not asked to email anyone. An event the provider no longer has
+        counts as deleted, and a calendar that no longer exists leaves nothing to do.
+
+        :raises: The adapter's errors, for the caller to retry.
+        """
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
+
+        calendar = (
+            Calendar.objects.filter_by_organization(context.organization.id)
+            .filter(id=calendar_id)
+            .first()
+        )
+        if calendar is None:
+            return
+        write_adapter = self._host._get_write_adapter_for_calendar(calendar)
+        if write_adapter is None:
+            raise CalendarIntegrationError("No account can write to this calendar.")
+        write_adapter.delete_blocked_time_event(
+            calendar.provider_calendar_id, provider_event_external_id
+        )
+
+    def mark_blocked_time_push_failed(self, blocked_time_id: int) -> None:
+        """Record that writing a blocked time to its provider gave up.
+
+        The block itself stays and keeps blocking time in Vinta Schedule.
+        """
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
+
+        BlockedTime.objects.filter_by_organization(context.organization.id).filter(
+            id=blocked_time_id
+        ).exclude(provider_push_status=ProviderPushStatus.PUSHED).update(
+            provider_push_status=ProviderPushStatus.FAILED
+        )
 
     @transaction.atomic()
     def update_blocked_time(
@@ -854,6 +1032,11 @@ class AvailabilityService:
         :param rrule_string: New recurrence rule string, or None to leave unchanged.
         :return: The updated BlockedTime instance.
         :raises ValueError: If blocked_time_id is not found in this calendar.
+        :raises BlockDeclineOptionsWithRecurrenceError: When ``rrule_string`` is given for
+            a block with decline options. Nothing is changed.
+
+        A block written to its provider (``provider_push_status`` set) is marked pending
+        again and queued to be rewritten there after the transaction commits.
         """
         context = cast("BaseCalendarService", self._context)
         if not is_initialized_or_authenticated_calendar_service(context):
@@ -864,9 +1047,14 @@ class AvailabilityService:
         )
 
         try:
-            blocked_time = scoped.get(id=blocked_time_id)
+            # Locked so a push or a sync cannot write the provider event id between this
+            # read and the full save below, which would erase it.
+            blocked_time = scoped.select_for_update(of=("self",)).get(id=blocked_time_id)
         except BlockedTime.DoesNotExist as e:
             raise ValueError(f"Blocked time {blocked_time_id} not found in this calendar.") from e
+
+        if rrule_string is not None and blocked_time.decline_scope is not None:
+            raise BlockDeclineOptionsWithRecurrenceError()
 
         # Capture the cheap, comparable scalar BEFORE mutation so we can emit a
         # field-level diff. Only ``reason`` is diffed here: ``start_time`` /
@@ -889,6 +1077,9 @@ class AvailabilityService:
                 rrule_string
             )
 
+        pushable = blocked_time.provider_push_status is not None
+        if pushable:
+            blocked_time.provider_push_status = ProviderPushStatus.PENDING
         blocked_time.save()
 
         after_scalars = {"reason": blocked_time.reason}
@@ -897,6 +1088,8 @@ class AvailabilityService:
             blocked_time,
             diff=compute_diff(before_scalars, after_scalars),
         )
+        if pushable:
+            self._queue_blocked_time_push(blocked_time)
         return blocked_time
 
     @transaction.atomic()
@@ -915,6 +1108,9 @@ class AvailabilityService:
         :param calendar: The calendar the blocked time belongs to.
         :param blocked_time_id: The id of the blocked time to delete.
         :raises ValueError: If blocked_time_id is not found in this calendar.
+
+        A block written to its provider has its provider event deleted after the
+        transaction commits (``delete_blocked_time_from_provider_task``).
         """
         context = cast("BaseCalendarService", self._context)
         if not is_initialized_or_authenticated_calendar_service(context):
@@ -934,7 +1130,23 @@ class AvailabilityService:
         # only fires on transaction commit, so ordering relative to the delete below
         # is irrelevant to persistence.
         self._audit_availability_write(AuditAction.DELETE, blocked_time)
+        provider_event_external_id = blocked_time.provider_event_external_id
         blocked_time.delete()
+
+        if provider_event_external_id:
+            # Imported here: the task module imports CalendarService, which imports
+            # this module.
+            from calendar_integration.tasks.blocked_time_push_tasks import (
+                delete_blocked_time_from_provider_task,
+            )
+
+            calendar_id = calendar.id
+            organization_id = calendar.organization_id
+            transaction.on_commit(
+                lambda: delete_blocked_time_from_provider_task.delay(  # type: ignore[attr-defined]
+                    calendar_id, provider_event_external_id, organization_id
+                )
+            )
 
     def get_blocked_times_expanded(
         self,

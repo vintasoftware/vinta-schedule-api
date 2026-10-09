@@ -1,15 +1,17 @@
 """Django admin interface for calendar integration webhook management."""
 
 import datetime
+from functools import partial
 from typing import ClassVar
 
 from django import forms
 from django.contrib import admin
+from django.db import transaction
 from django.db.models import Count
 from django.http import HttpRequest
 from django.utils.html import format_html
 
-from calendar_integration.constants import IncomingWebhookProcessingStatus
+from calendar_integration.constants import IncomingWebhookProcessingStatus, ProviderPushStatus
 from calendar_integration.external_client_identifiers import normalize_system
 from calendar_integration.models import (
     AppointmentType,
@@ -27,6 +29,7 @@ from calendar_integration.models import (
     ExternalClientIdentifier,
     ExternalEventChangeRequest,
 )
+from calendar_integration.tasks.blocked_time_push_tasks import push_blocked_time_to_provider_task
 
 
 class CalendarWebhookEventInline(admin.TabularInline):
@@ -517,6 +520,43 @@ class BlockedTimeAdmin(admin.ModelAdmin):
     def get_queryset(self, request: HttpRequest):
         return self.model.objects.unscoped().select_related(
             "organization", "calendar_fk", "appointment_type_slot_fk"
+        )
+
+    # A tuple, not a `ClassVar` list: see the note on `CalendarWebhookSubscriptionAdmin`.
+    actions = ("retry_provider_push",)
+
+    @admin.action(description="Retry provider push")
+    def retry_provider_push(self, request: HttpRequest, queryset):
+        """Queue another push to the provider for the selected blocks whose push failed.
+
+        Blocks in any other push state are skipped. ``queryset`` comes from
+        ``get_queryset`` (cross-organization, like the rest of this admin); each push is
+        queued with the block's own organization, and only after the request commits.
+        """
+        selected = queryset.count()
+        failed = list(
+            queryset.filter(provider_push_status=ProviderPushStatus.FAILED).values_list(
+                "id", "organization_id"
+            )
+        )
+        retried = queryset.filter(
+            id__in=[blocked_time_id for blocked_time_id, _org_id in failed],
+            provider_push_status=ProviderPushStatus.FAILED,
+        ).update(provider_push_status=ProviderPushStatus.PENDING)
+
+        for blocked_time_id, organization_id in failed:
+            transaction.on_commit(
+                partial(
+                    push_blocked_time_to_provider_task.delay,  # type: ignore[attr-defined]
+                    blocked_time_id,
+                    organization_id,
+                )
+            )
+
+        self.message_user(
+            request,
+            f"Queued a provider push for {retried} blocked times. "
+            f"Skipped {selected - retried} that had not failed.",
         )
 
 

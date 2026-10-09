@@ -32,6 +32,7 @@ from calendar_integration.graphql import (
     AvailableTimeGraphQLType,
     AvailableTimeWindowGraphQLType,
     BlockedTimeGraphQLType,
+    BlockedTimeImpactGraphQLType,
     BookableSlotProposalGraphQLType,
     BookingPolicyGraphQLType,
     CalendarBundleGraphQLType,
@@ -73,6 +74,7 @@ from public_api.permissions import (
     OrganizationResourceAccess,
 )
 from public_api.scoping import (
+    assert_calendar_in_owner_scope,
     scoped_appointment_type_queryset,
     scoped_calendar_ids,
     scoped_calendar_pool_queryset,
@@ -90,6 +92,7 @@ from webhooks.models import WebhookConfiguration, WebhookEvent
 
 if TYPE_CHECKING:
     from calendar_integration.services.appointment_type_service import AppointmentTypeService
+    from calendar_integration.services.block_conflict_service import BlockConflictService
     from calendar_integration.services.bookable_slots_service import BookableSlotsService
     from calendar_integration.services.booking_policy_permission_service import (
         BookingPolicyPermissionService,
@@ -172,6 +175,18 @@ def get_bookable_slots_service(
     if bookable_slots_service is None:
         raise GraphQLError("Missing required dependency: bookable_slots_service")
     return bookable_slots_service
+
+
+@inject
+def get_block_conflict_service(
+    block_conflict_service: Annotated[
+        "BlockConflictService | None", Provide["block_conflict_service"]
+    ] = None,
+) -> "BlockConflictService":
+    """Resolve the BlockConflictService from the DI container."""
+    if block_conflict_service is None:
+        raise GraphQLError("Missing required dependency: block_conflict_service")
+    return block_conflict_service
 
 
 def _get_org(info: strawberry.Info):
@@ -767,6 +782,48 @@ class Query:
             )
             for window in availability_windows
         ]
+
+    @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def blocked_time_impact(
+        self,
+        info: strawberry.Info,
+        organization_id: int,
+        calendar_id: int,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+    ) -> BlockedTimeImpactGraphQLType | None:
+        """Preview what a block over a period would do to existing events. Writes nothing.
+
+        Runs the same search ``createBlockedTime`` runs for a ``NEW_AND_EXISTING`` block,
+        so the counts match what a save would cancel at this moment. ``startTime`` /
+        ``endTime`` are wall-clock times in ``timezone``, as ``createBlockedTime`` takes
+        them. Counts only: no event titles or attendees.
+
+        Needs the CREATE_BLOCKED_TIME resource, and an owner-scoped token may only ask
+        about its owner's calendars. A missing calendar, another owner's calendar and
+        another organization's id all raise the same "Calendar not found." error.
+        """
+        org = _get_org(info)
+        request: PublicApiHttpRequest = info.context.request
+        try:
+            if organization_id != org.id:
+                raise Calendar.DoesNotExist
+            assert_calendar_in_owner_scope(request.public_api_system_user, org, calendar_id)
+            calendar = Calendar.objects.filter_by_organization(org.id).get(id=calendar_id)
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Calendar not found.") from exc
+
+        try:
+            conflicts = get_block_conflict_service().find_block_conflicts(
+                calendar, start_time, end_time, timezone
+            )
+        except ValueError as exc:
+            raise GraphQLError(str(exc)) from exc
+        return BlockedTimeImpactGraphQLType(
+            cancel_event_count=len(conflicts.events_to_cancel),
+            conflict_event_count=len(conflicts.conflict_events),
+        )
 
     @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def unavailable_windows(

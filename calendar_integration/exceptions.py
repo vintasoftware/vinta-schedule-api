@@ -125,6 +125,48 @@ class MSOutlookAdapterError(CalendarAdapterError):
     pass
 
 
+class InvalidBlockDeclineOptionsError(CalendarIntegrationError):
+    """Decline options a blocked time cannot take."""
+
+
+class BlockDeclineOptionsWithRecurrenceError(InvalidBlockDeclineOptionsError):
+    """Decline options were given together with a recurrence rule.
+
+    Decline options apply to a single block only: a recurring block is never written to
+    the provider and never cancels anything, so its options would have no effect.
+    """
+
+    default_message = (
+        "Decline options cannot be used on a recurring blocked time. "
+        "Remove the recurrence rule or the decline options."
+    )
+
+
+class TooManyBlockCancelsError(CalendarIntegrationError):
+    """A block would cancel more events than one request may cancel."""
+
+    def __init__(self, cancel_count: int, limit: int) -> None:
+        self.cancel_count = cancel_count
+        self.limit = limit
+        super().__init__(
+            f"This block would cancel {cancel_count} events, more than the {limit} "
+            "one block may cancel. Block a shorter period."
+        )
+
+
+class OutOfOfficeNotSupportedError(CalendarAdapterError):
+    """The provider calendar refused an Out of office event.
+
+    ``reason_code`` is the provider's short machine-readable error code (Google's
+    ``error.errors[0].reason``), or ``"unknown"``. It never holds the provider's error
+    message, so it is safe to log.
+    """
+
+    def __init__(self, message: str | None = None, reason_code: str = "unknown") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
 class InvalidCredentialsError(CalendarAdapterError):
     """Raised when calendar credentials are invalid or expired"""
 

@@ -3455,8 +3455,13 @@ class AppointmentTypeService:
 
         return event
 
-    def cancel_appointment_type_event(self, event_id: int, delete_series: bool = False) -> None:
+    def cancel_appointment_type_event(
+        self, event_id: int, delete_series: bool = False, send_updates: str | None = None
+    ) -> None:
         """Cancel an appointment-type event by deleting the primary event and its linked non-primary BlockedTimes.
+
+        ``send_updates`` is passed to ``CalendarService.delete_event`` (who the provider
+        emails about the delete); None keeps today's call.
 
         The primary event is deleted via ``CalendarService.delete_event`` which also cascades
         the ``CalendarEventAppointmentTypeSelection`` rows (FK on_delete=CASCADE).  Non-primary
@@ -3519,6 +3524,7 @@ class AppointmentTypeService:
             calendar_id=primary_calendar_id,
             event_id=event_id,
             delete_series=delete_series,
+            send_updates=send_updates,
         )
 
     def reschedule_appointment_type_event(

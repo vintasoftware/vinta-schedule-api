@@ -50,8 +50,10 @@ from calendar_integration.constants import (
     CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
+    ProviderPushStatus,
 )
 from calendar_integration.exceptions import (
+    BlockDeclineOptionsWithRecurrenceError,
     BookingPolicyViolationError,
     CalendarServiceOrganizationNotSetError,
     InvalidCalendarTokenError,
@@ -121,6 +123,7 @@ from calendar_integration.services.calendar_webhook_service import (
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     AvailableTimeWindow,
+    BlockDeclineOptions,
     BookableSlotProposal,
     CalendarEventAdapterOutputData,
     CalendarEventData,
@@ -1794,15 +1797,25 @@ class CalendarService(BaseCalendarService):
         """
         self._get_bundle_service().delete_bundle_event(bundle_event)
 
-    def delete_event(self, calendar_id: int, event_id: int, delete_series: bool = False) -> None:
+    def delete_event(
+        self,
+        calendar_id: int,
+        event_id: int,
+        delete_series: bool = False,
+        send_updates: str | None = None,
+    ) -> None:
         """
         Delete an event from the calendar.
         :param calendar_id: Internal ID of the calendar
         :param event_id: Unique identifier of the event to delete.
         :param delete_series: If True and the event is recurring, delete the entire series
+        :param send_updates: Who the provider emails about the delete (Google's
+            ``sendUpdates``). None keeps the provider's default.
         :return: None
         """
-        return self._get_event_service().delete_event(calendar_id, event_id, delete_series)
+        return self._get_event_service().delete_event(
+            calendar_id, event_id, delete_series, send_updates=send_updates
+        )
 
     def transfer_event(self, event: CalendarEvent, new_calendar: Calendar) -> CalendarEvent:
         """
@@ -2117,13 +2130,24 @@ class CalendarService(BaseCalendarService):
         self,
         calendar: Calendar,
         blocked_times: Iterable[tuple[datetime.datetime, datetime.datetime, str, str, str | None]],
+        decline_options: BlockDeclineOptions | None = None,
     ) -> Iterable[BlockedTime]:
         """
         Create new blocked times for a calendar (with optional recurrence support).
         :param calendar: The calendar to create the blocked times for.
         :param blocked_times: Iterable of tuples containing (start_time, end_time, timezone, reason, rrule_string).
+        :param decline_options: Saved on every block. A single block on a calendar whose
+            provider takes blocked times is marked to be written there.
         :return: List of created BlockedTime instances.
+        :raises BlockDeclineOptionsWithRecurrenceError: When ``decline_options`` is given
+            and any block has a recurrence rule. Nothing is created.
         """
+        blocked_times = list(blocked_times)
+        if decline_options is not None and any(
+            rrule_string for *_fields, rrule_string in blocked_times
+        ):
+            raise BlockDeclineOptionsWithRecurrenceError()
+        pushable = decline_options is not None and self._supports_blocked_time_push(calendar)
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
@@ -2146,6 +2170,11 @@ class CalendarService(BaseCalendarService):
                 organization_id=calendar.organization_id,
                 recurrence_rule=recurrence_rule,
             )
+            if decline_options is not None:
+                blocked_time.decline_scope = decline_options.scope
+                blocked_time.decline_message = decline_options.message
+                if pushable:
+                    blocked_time.provider_push_status = ProviderPushStatus.PENDING
             blocked_times_to_create.append(blocked_time)
 
         return BlockedTime.objects.bulk_create(blocked_times_to_create)
@@ -2159,8 +2188,12 @@ class CalendarService(BaseCalendarService):
         timezone: str,
         reason: str = "",
         rrule_string: str | None = None,
+        decline_options: BlockDeclineOptions | None = None,
     ) -> BlockedTime:
-        """Create a single blocked time (optionally recurring)."""
+        """Create a single blocked time (optionally recurring).
+
+        See ``AvailabilityService.create_blocked_time`` for what ``decline_options`` adds.
+        """
         return self._get_availability_service().create_blocked_time(
             calendar=calendar,
             start_time=start_time,
@@ -2168,6 +2201,39 @@ class CalendarService(BaseCalendarService):
             timezone=timezone,
             reason=reason,
             rrule_string=rrule_string,
+            decline_options=decline_options,
+        )
+
+    def _supports_blocked_time_push(self, calendar: Calendar) -> bool:
+        """Whether blocked times can be written to ``calendar``'s provider."""
+        try:
+            adapter_cls = self._get_calendar_adapter_cls_for_provider(
+                CalendarProvider(calendar.provider)
+            )
+        except NotImplementedError:
+            return False
+        return bool(adapter_cls.supports_blocked_time_push)
+
+    def push_blocked_time_to_provider(self, blocked_time_id: int) -> None:
+        """Write a blocked time to its provider calendar, once.
+
+        See ``AvailabilityService.push_blocked_time_to_provider``.
+        """
+        self._get_availability_service().push_blocked_time_to_provider(blocked_time_id)
+
+    def mark_blocked_time_push_failed(self, blocked_time_id: int) -> None:
+        """Record that writing a blocked time to its provider gave up."""
+        self._get_availability_service().mark_blocked_time_push_failed(blocked_time_id)
+
+    def delete_blocked_time_from_provider(
+        self, calendar_id: int, provider_event_external_id: str
+    ) -> None:
+        """Delete the provider event a deleted blocked time was written to.
+
+        See ``AvailabilityService.delete_blocked_time_from_provider``.
+        """
+        self._get_availability_service().delete_blocked_time_from_provider(
+            calendar_id, provider_event_external_id
         )
 
     def update_blocked_time(
