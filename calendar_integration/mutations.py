@@ -783,7 +783,16 @@ class AppointmentTypeMutations:
         if input.organization_id != organization.id:
             return AppointmentTypeEventResult(success=False, error_message="Organization not found")
         deps = get_appointment_type_mutation_dependencies()
+        # No token is passed on purpose: initializing with the SystemUser makes
+        # ``create_event`` refuse with "Events cannot be created through the Public API".
         deps.calendar_service.initialize_without_provider(organization=organization)
+        # The container gives ``appointment_type_service`` its own CalendarService and
+        # CalendarPermissionService. Share the ones initialized above, the same way
+        # ``create_appointment_type_event_with_code`` does.
+        deps.appointment_type_service.calendar_service = deps.calendar_service
+        deps.appointment_type_service.calendar_permission_service = (
+            deps.calendar_service.calendar_permission_service
+        )
         deps.appointment_type_service.initialize(organization=organization)
         start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
         data = AppointmentTypeEventInputData(
@@ -812,7 +821,9 @@ class AppointmentTypeMutations:
             ],
         )
         try:
-            event = deps.appointment_type_service.create_appointment_type_event(data)
+            event = deps.appointment_type_service.create_appointment_type_event(
+                data, system_user=info.context.request.public_api_system_user
+            )
         except AppointmentType.DoesNotExist:
             return AppointmentTypeEventResult(
                 success=False, error_message="AppointmentType not found"

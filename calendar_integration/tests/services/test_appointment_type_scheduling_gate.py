@@ -21,6 +21,7 @@ from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 
 import pytest
+from model_bakery import baker
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -47,6 +48,7 @@ from calendar_integration.services.dataclasses import (
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization
+from public_api.models import SystemUser
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +266,62 @@ def test_private_appointment_type_codeless_booking_raises_permission_denied(
         svc.create_appointment_type_event(
             _build_event_input(appointment_type, internal_calendars, start, end)
         )
+
+
+def _private_pinned_booking(organization, calendar_service, internal_calendars):
+    """A private appointment type pinned to 30 minutes, an hour-long input for it, and
+    the service to book it with no token or code."""
+    appointment_type = _make_appointment_type(
+        organization,
+        internal_calendars,
+        accepts_public_scheduling=False,
+        duration=timedelta(minutes=30),
+    )
+
+    now = timezone.now().replace(microsecond=0)
+    start = now + timedelta(hours=1)
+    end = start + timedelta(hours=1)
+    for cal in internal_calendars.values():
+        _make_available(cal, start, end)
+
+    svc = _make_appointment_type_service(
+        organization, calendar_service, permission_service=CalendarPermissionService()
+    )
+    return svc, _build_event_input(appointment_type, internal_calendars, start, end)
+
+
+@pytest.mark.django_db
+def test_private_appointment_type_org_wide_token_books_any_length(
+    organization, calendar_service, internal_calendars
+):
+    """An org-wide token of the organization skips the appointment-type gate: a private
+    appointment type pinned to 30 minutes is booked for an hour with no code."""
+    svc, event_input = _private_pinned_booking(organization, calendar_service, internal_calendars)
+    system_user = baker.make(SystemUser, organization=organization, is_active=True)
+
+    event = svc.create_appointment_type_event(event_input, system_user=system_user)
+
+    assert event.appointment_type_fk_id == event_input.appointment_type_id
+    assert event.end_time - event.start_time == timedelta(hours=1)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("token_organization", ["other", "none"])
+def test_private_appointment_type_token_of_no_or_other_organization_is_gated(
+    organization, calendar_service, internal_calendars, token_organization
+):
+    """A token with no organization, or of another one, does not skip the gate: it
+    could name any organization in the request header."""
+    svc, event_input = _private_pinned_booking(organization, calendar_service, internal_calendars)
+    other = Organization.objects.create(name="Other Org", should_sync_rooms=False)
+    system_user = baker.make(
+        SystemUser,
+        organization=other if token_organization == "other" else None,
+        is_active=True,
+    )
+
+    with pytest.raises(PermissionDenied):
+        svc.create_appointment_type_event(event_input, system_user=system_user)
 
 
 @pytest.mark.django_db

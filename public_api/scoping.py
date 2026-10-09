@@ -82,6 +82,20 @@ def system_user_scope(system_user: SystemUser, organization: Organization) -> Sy
     return scope
 
 
+def is_org_wide_token_for(system_user: SystemUser, organization: Organization) -> bool:
+    """Whether ``system_user`` is an organization-wide token of ``organization``.
+
+    The token must not be scoped to a member, and it must belong to ``organization``.
+    ``system_user_scope`` checks only the first part. A token with no organization
+    takes the organization from the request, so it could name any organization;
+    the second part keeps it out.
+    """
+    return (
+        system_user.scoped_to_membership_user_id is None
+        and system_user.organization_id == organization.id
+    )
+
+
 def scoped_calendar_ids(system_user: SystemUser, organization: Organization) -> set[int] | None:
     """Return the set of calendar IDs this token may access, or None if unrestricted.
 

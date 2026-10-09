@@ -30,10 +30,11 @@ For each of the four mutations:
   - Authenticated for org A, targeting org B (valid credentials, wrong org): REJECTED,
     no DB row created / modified / deleted in org B. This is the case that survives if
     someone only adds ``IsAuthenticated`` and forgets the org check.
-  - Authenticated for org A, targeting its own org: SUCCEEDS (except
-    ``createAppointmentTypeEvent``, which -- pre-existing and unrelated to this fix -- is
-    broken for every caller by a DI-wiring bug in ``di_core/containers.py``; see that
-    test's docstring).
+  - Authenticated for org A, targeting its own org: SUCCEEDS.
+
+``createAppointmentTypeEvent`` also has its own suite for the organization-wide token
+bypass: an org-wide token books any appointment type, private ones included, at any
+length; member-scoped and org-less tokens do not get that bypass.
 
 A control test proves the unauthenticated ``createCalendarBookingCode`` (a sibling
 mutation that already carried ``permission_classes``) is still rejected, so a passing
@@ -41,6 +42,7 @@ suite here cannot just mean requests never reached the resolver layer.
 """
 
 import datetime
+import uuid
 
 import pytest
 from model_bakery import baker
@@ -56,9 +58,13 @@ from calendar_integration.models import (
     CalendarEvent,
 )
 from organizations.models import Organization
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
+from organizations.tests.helpers import make_membership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
+from public_api.tests.helpers import make_token_post
+from users.models import User
 
 
 pytestmark = pytest.mark.django_db
@@ -628,25 +634,11 @@ class TestCreateAppointmentTypeEvent:
         assert result["errorMessage"] is not None
         assert not CalendarEvent.objects.filter_by_organization(org_b.id).exists()
 
-    def test_authenticated_own_org_reaches_resolver_body(
+    def test_authenticated_own_org_succeeds(
         self, org_a_client, org_an_appointment_type_with_bookable_slot
     ):
-        """An authenticated caller acting on its own org passes BOTH permission
-        checks and the input.organization_id-matches-token-org validation -- proving
-        the auth fix does not block a legitimate same-org caller.
-
-        It does NOT assert ``success is True``. A pre-existing, unrelated DI-wiring
-        bug (``di_core/containers.py``: ``calendar_service`` and
-        ``appointment_type_service`` are declared as separate ``providers.Factory``
-        instances, so the resolver's ``deps.calendar_service`` is never the same
-        object as ``deps.appointment_type_service``'s internal ``calendar_service``)
-        makes ``createAppointmentTypeEvent`` fail for EVERY caller over real HTTP right
-        now, authenticated or not. Fixing that bug is explicitly out of scope for
-        this security hotfix. What this test pins down is that the failure is that
-        known DI error -- not an organization-mismatch rejection -- which is what
-        would prove the org check is over-broad and blocking legitimate same-org
-        traffic.
-        """
+        """An authenticated caller acting on its own org passes both permission checks
+        and the input.organization_id check, and the event is created."""
         appointment_type, slot = org_an_appointment_type_with_bookable_slot
         calendar_id = slot.memberships.get().calendar_fk_id
         post, _system_user, org_a = org_a_client
@@ -657,17 +649,153 @@ class TestCreateAppointmentTypeEvent:
         )
 
         assert response.status_code == 200
-        body = response.json()
-        result = body["data"]["createAppointmentTypeEvent"]
-        # Must NOT be the organization-mismatch/not-found message -- that would mean
-        # a legitimate same-org caller is being wrongly rejected by this fix.
-        assert result["errorMessage"] != "Organization not found"
-        assert result["errorMessage"] == (
-            "The injected CalendarService is not initialized with an organization."
-        ), (
-            "Expected the known, pre-existing DI-wiring failure message; got a "
-            f"different outcome -- re-investigate. result={result!r}"
+        result = response.json()["data"]["createAppointmentTypeEvent"]
+        assert result["errorMessage"] is None
+        assert result["success"] is True
+        event = CalendarEvent.objects.filter_by_organization(org_a.id).get()
+        assert result["event"] == {"id": str(event.id), "title": "Attempted Event"}
+        assert event.appointment_type_fk_id == appointment_type.id
+
+
+# ---------------------------------------------------------------------------
+# 5. createAppointmentTypeEvent: organization-wide token bypass
+# ---------------------------------------------------------------------------
+
+
+def _token_client(org, **kwargs):
+    """post() for a fresh token holding APPOINTMENT_TYPE access; see ``make_token_post``."""
+    return make_token_post(org, [PublicAPIResources.APPOINTMENT_TYPE], **kwargs)
+
+
+@pytest.fixture
+def org_a_private_pinned_appointment_type(org_a, org_a_calendar):
+    """A private appointment type in org A, pinned to 30 minutes, with a bookable slot."""
+    appointment_type = baker.make(
+        AppointmentType,
+        organization=org_a,
+        name="Org A Private Pinned AppointmentType",
+        accepts_public_scheduling=False,
+        duration=datetime.timedelta(minutes=30),
+    )
+    slot = AppointmentTypeSlot.objects.create(
+        organization=org_a,
+        appointment_type=appointment_type,
+        name="Only Slot",
+        order=0,
+        required_count=1,
+    )
+    AppointmentTypeSlotMembership.objects.create(
+        organization=org_a, slot=slot, calendar=org_a_calendar
+    )
+    AvailableTime.objects.create(
+        organization=org_a,
+        calendar=org_a_calendar,
+        start_time_tz_unaware=datetime.datetime(2030, 6, 1, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2030, 6, 1, 17, 0),
+        timezone="UTC",
+    )
+    return appointment_type, slot
+
+
+def _private_event_variables(org_id, appointment_type, slot, *, end_time):
+    variables = _event_variables(
+        org_id, appointment_type.id, slot.id, slot.memberships.get().calendar_fk_id
+    )
+    variables["input"]["startTime"] = "2030-06-01T10:00:00"
+    variables["input"]["endTime"] = end_time
+    return variables
+
+
+class TestCreateAppointmentTypeEventOrgWideTokenBypass:
+    def test_org_wide_token_books_private_appointment_type(
+        self, org_a, org_a_private_pinned_appointment_type
+    ):
+        appointment_type, slot = org_a_private_pinned_appointment_type
+        post = _token_client(org_a)
+
+        body = post(
+            CREATE_APPOINTMENT_TYPE_EVENT_MUTATION,
+            _private_event_variables(
+                org_a.id, appointment_type, slot, end_time="2030-06-01T10:30:00"
+            ),
         )
+
+        result = body["data"]["createAppointmentTypeEvent"]
+        assert result["errorMessage"] is None
+        assert result["success"] is True
+        event = CalendarEvent.objects.filter_by_organization(org_a.id).get()
+        assert event.appointment_type_fk_id == appointment_type.id
+
+    def test_org_wide_token_books_length_other_than_the_pinned_duration(
+        self, org_a, org_a_private_pinned_appointment_type
+    ):
+        appointment_type, slot = org_a_private_pinned_appointment_type
+        post = _token_client(org_a)
+
+        body = post(
+            CREATE_APPOINTMENT_TYPE_EVENT_MUTATION,
+            _private_event_variables(
+                org_a.id, appointment_type, slot, end_time="2030-06-01T11:00:00"
+            ),
+        )
+
+        result = body["data"]["createAppointmentTypeEvent"]
+        assert result["errorMessage"] is None
+        assert result["success"] is True
+        event = CalendarEvent.objects.filter_by_organization(org_a.id).get()
+        assert event.end_time - event.start_time == datetime.timedelta(hours=1)
+
+    @pytest.mark.parametrize(
+        "groups",
+        [(GROUP_ORGANIZATION_MEMBER,), (GROUP_ORGANIZATION_ADMIN,)],
+        ids=["scoped-member", "scoped-admin"],
+    )
+    def test_member_scoped_token_gets_no_bypass(
+        self, org_a, org_a_private_pinned_appointment_type, groups
+    ):
+        """A member-scoped token, here handed the APPOINTMENT_TYPE resource directly,
+        is still refused a private appointment type -- also when the member is an
+        organization admin."""
+        appointment_type, slot = org_a_private_pinned_appointment_type
+        user = baker.make(User, email=f"scoped_{uuid.uuid4().hex[:8]}@example.com")
+        membership = make_membership(user=user, organization=org_a, groups=groups, is_active=True)
+        post = _token_client(org_a, scoped_to_membership=membership)
+
+        body = post(
+            CREATE_APPOINTMENT_TYPE_EVENT_MUTATION,
+            _private_event_variables(
+                org_a.id, appointment_type, slot, end_time="2030-06-01T10:30:00"
+            ),
+        )
+
+        result = body["data"]["createAppointmentTypeEvent"]
+        assert result == {
+            "success": False,
+            "errorMessage": (
+                "This appointment type does not accept public scheduling. "
+                "A token or scheduling code is required."
+            ),
+            "event": None,
+        }
+        assert not CalendarEvent.objects.filter_by_organization(org_a.id).exists()
+
+    def test_org_less_token_gets_no_bypass(self, org_a, org_a_private_pinned_appointment_type):
+        """The org-less token reaches org A through the organization header, but it is
+        not org A's own token, so the private appointment type stays closed to it."""
+        appointment_type, slot = org_a_private_pinned_appointment_type
+        post = _token_client(None, organization_header=org_a.id)
+
+        body = post(
+            CREATE_APPOINTMENT_TYPE_EVENT_MUTATION,
+            _private_event_variables(
+                org_a.id, appointment_type, slot, end_time="2030-06-01T10:30:00"
+            ),
+        )
+
+        result = body["data"]["createAppointmentTypeEvent"]
+        assert result["success"] is False
+        assert result["event"] is None
+        assert not CalendarEvent.objects.filter_by_organization(org_a.id).exists()
 
 
 # ---------------------------------------------------------------------------

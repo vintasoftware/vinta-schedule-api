@@ -78,6 +78,7 @@ from calendar_integration.signals import reconcile_pools
 from organizations.models import Organization
 from payments.seams.resource_keys import APPOINTMENT_TYPES, AVAILABILITY_WINDOWS
 from payments.seams.scopes import scope_for
+from public_api.scoping import is_org_wide_token_for
 from users.models import User
 
 
@@ -3261,8 +3262,14 @@ class AppointmentTypeService:
     # Appointment-type event creation
     # ------------------------------------------------------------------
     @transaction.atomic()
-    def create_appointment_type_event(self, data: AppointmentTypeEventInputData) -> CalendarEvent:
+    def create_appointment_type_event(
+        self, data: AppointmentTypeEventInputData, *, system_user: "SystemUser | None" = None
+    ) -> CalendarEvent:
         """Create an event booked through an AppointmentType.
+
+        ``system_user`` is the public API token making the call, if any. An
+        organization-wide token of this organization skips the appointment-type-level
+        gate below, as an authenticated ``User`` does. Other tokens go through it.
 
         Persistence strategy: the event is created
         on the primary calendar via `CalendarService.create_event` so existing
@@ -3297,15 +3304,19 @@ class AppointmentTypeService:
         appointment_type = self._get_appointment_type_by_id(data.appointment_type_id)
 
         # --- Appointment-type-level authorization gate ---
-        # The gate applies ONLY to codeless / unauthenticated booking paths — i.e.
-        # when the caller is not an authenticated ``User``.  Authenticated users
-        # (appointment type owners, org admins) bypass this check: they already passed Django's
-        # view-level authentication and the AppointmentTypePermission object check.
+        # Two callers skip this gate:
+        #   - an authenticated ``User`` (appointment type owners, org admins), who
+        #     already passed Django's view-level authentication and the
+        #     AppointmentTypePermission object check;
+        #   - an organization-wide public API token for this organization
+        #     (``system_user``, checked by ``is_org_wide_token_for``), which holds the
+        #     ``appointment_type`` resource for the whole organization.
+        # Skipping the gate also skips the duration pin it enforces. Slot selection,
+        # availability and the booking policy below still run for every caller.
         #
-        # When the calendar service is initialized with a ``User``, the booking is
-        # an authenticated internal path and the gate is skipped.  For all other
-        # paths (no user, a raw token string, a SystemUser public-API token, or
-        # None), ``can_perform_appointment_type_scheduling`` decides:
+        # For all other paths (no user, a raw token string, a member-scoped or
+        # org-less public API token, or None), ``can_perform_appointment_type_scheduling``
+        # decides:
         #   1. ``appointment_type.accepts_public_scheduling=True`` → allow (codeless public).
         #   2. An appointment-type-scoped token/code with CREATE permission → allow.
         #   3. Otherwise → PermissionDenied.
@@ -3314,9 +3325,11 @@ class AppointmentTypeService:
             if self.calendar_service is not None
             else None
         )
-        caller_is_authenticated_user = isinstance(calendar_service_user, User)
+        caller_skips_gate = isinstance(calendar_service_user, User) or (
+            system_user is not None and is_org_wide_token_for(system_user, self.bound_organization)
+        )
 
-        if not caller_is_authenticated_user:
+        if not caller_skips_gate:
             # ``start_time`` / ``end_time`` are passed here (not just ``appointment_type``) so a
             # appointment-type-scoped booking code that pins a duration is enforced at this
             # gate. ``create_event`` below is called with ``appointment_type_authorized=True``,
