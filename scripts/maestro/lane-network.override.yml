@@ -1,0 +1,22 @@
+# Layered onto a maestro lane's compose stack by scripts/maestro/lane-compose-run.sh.
+# Joins the `api` container to the main checkout's compose network, so `db` (and
+# `result`, `floci`, `mailpit`) resolve to the main stack's containers instead of
+# one set per lane. The lane's own stack starts nothing but `api` (--no-deps).
+services:
+  api:
+    # Reuse the image the main stack built; a lane project name would otherwise
+    # trigger a fresh 2 GB build per lane.
+    image: ${LANE_API_IMAGE:-vinta-schedule-api-api:latest}
+    pull_policy: never
+    networks: [default, main_stack]
+    environment:
+      # The lane's own database on the main stack's Postgres. LANE_DB_NAME comes
+      # from the host-style DATABASE_URL maestro sets for the lane.
+      DATABASE_URL: postgres://${POSTGRES_USER:-vinta_schedule_api}:${POSTGRES_PASSWORD:-password}@db:5432/${LANE_DB_NAME:?set by lane-compose-run.sh}
+      # Parity with the host, where Redis is not configured for lanes: keeps
+      # lanes from sharing one Redis keyspace on the main stack.
+      REDIS_URL: ""
+networks:
+  main_stack:
+    external: true
+    name: ${MAIN_STACK_NETWORK:-vinta-schedule-api_default}
