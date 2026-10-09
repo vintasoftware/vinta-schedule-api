@@ -1,0 +1,290 @@
+{
+  "$schema": "https://github.com/vintasoftware/vinta-ai-workflows/schemas/workflow.v1.schema.json",
+  "schema_version": 1,
+  "id": "2026-10-09-di-container-split",
+  "plan_ref": "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md",
+  "plan_context_refs": [
+    "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#1-goals",
+    "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#2-guiding-decisions"
+  ],
+  "base_branch": "main",
+  "project": {
+    "migrate_cmd": "uv run python manage.py migrate",
+    "databases": {
+      "test": {
+        "engine": "postgres",
+        "delivery": "external",
+        "name": "vinta_schedule_api",
+        "server_url": "postgres://vinta_schedule_api@localhost:5432",
+        "connection_url_var": "DATABASE_URL"
+      }
+    },
+    "env_files": [
+      ".env",
+      ".env.docker",
+      "vinta_schedule_api/settings/local.py"
+    ]
+  },
+  "crew": {
+    "tier2": {
+      "tier": 2,
+      "model": "claude-sonnet-5-5",
+      "description": "Pattern-setting skeleton, multi-reference moves, guard test and docs."
+    },
+    "tier1-1": {
+      "tier": 1,
+      "model": "claude-haiku-4-5",
+      "description": "Small verbatim moves: audit, legal, public_api."
+    },
+    "tier1-2": {
+      "tier": 1,
+      "model": "claude-haiku-4-5",
+      "description": "Small verbatim moves: notifications, webhooks."
+    }
+  },
+  "defaults": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5-5",
+    "pipeline": "standard-phase"
+  },
+  "resources": {
+    "lane": {
+      "capacity": 3,
+      "kind": "worktree",
+      "description": "One desk per implementer, kept for the whole run."
+    }
+  },
+  "nodes": [
+    {
+      "id": "p1",
+      "name": "Composition skeleton and shared base",
+      "depends_on": [],
+      "prompt_ref": "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#phase-1",
+      "touches": [
+        "di_core/base.py",
+        "di_core/tests/__init__.py",
+        "di_core/tests/test_container_composition.py",
+        "di_core/containers.py",
+        "audit_integration/containers.py",
+        "notifications/containers.py",
+        "payments/containers.py",
+        "legal/containers.py",
+        "webhooks/containers.py",
+        "public_api/containers.py",
+        "calendar_integration/containers.py",
+        "organizations/containers.py"
+      ],
+      "crew": "tier2"
+    },
+    {
+      "id": "p2",
+      "name": "Move audit providers",
+      "depends_on": [
+        {
+          "node": "p1",
+          "artifact": "the empty `AuditContainer` shell and `BaseContainer`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#phase-2",
+      "touches": [
+        "di_core/containers.py",
+        "audit_integration/containers.py",
+        "audit_integration/tests/test_containers.py"
+      ],
+      "crew": "tier1-1"
+    },
+    {
+      "id": "p3",
+      "name": "Move notification providers",
+      "depends_on": [
+        {
+          "node": "p1",
+          "artifact": "the empty `NotificationsContainer` shell"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#phase-3",
+      "touches": [
+        "di_core/containers.py",
+        "notifications/containers.py",
+        "notifications/tests/test_containers.py"
+      ],
+      "crew": "tier1-2"
+    },
+    {
+      "id": "p4",
+      "name": "Move billing providers",
+      "depends_on": [
+        {
+          "node": "p3",
+          "artifact": "`NotificationsContainer.notification_service`, taken by `dunning_service` and `usage_warning_service`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#phase-4",
+      "touches": [
+        "di_core/containers.py",
+        "payments/containers.py",
+        "payments/tests/test_containers.py"
+      ],
+      "crew": "tier2"
+    },
+    {
+      "id": "p5",
+      "name": "Move legal providers",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "`AuditContainer.audit_service`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#phase-5",
+      "touches": [
+        "di_core/containers.py",
+        "legal/containers.py",
+        "legal/tests/test_containers.py"
+      ],
+      "crew": "tier1-1"
+    },
+    {
+      "id": "p6",
+      "name": "Move webhook providers",
+      "depends_on": [
+        {
+          "node": "p4",
+          "artifact": "`BillingContainer.entitlement_service`, taken by `webhook_service`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#phase-6",
+      "touches": [
+        "di_core/containers.py",
+        "webhooks/containers.py",
+        "webhooks/tests/test_containers.py"
+      ],
+      "crew": "tier1-2"
+    },
+    {
+      "id": "p7",
+      "name": "Move public API providers",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "`AuditContainer.audit_service`"
+        },
+        {
+          "node": "p4",
+          "artifact": "`BillingContainer.entitlement_service`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#phase-7",
+      "touches": [
+        "di_core/containers.py",
+        "public_api/containers.py",
+        "public_api/tests/test_containers.py"
+      ],
+      "crew": "tier1-1"
+    },
+    {
+      "id": "p8",
+      "name": "Move calendar providers",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "`AuditContainer.audit_service`"
+        },
+        {
+          "node": "p3",
+          "artifact": "`NotificationsContainer.notification_service`"
+        },
+        {
+          "node": "p4",
+          "artifact": "`BillingContainer.entitlement_service`"
+        },
+        {
+          "node": "p6",
+          "artifact": "`WebhooksContainer.webhook_calendar_side_effects_service`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#phase-8",
+      "touches": [
+        "di_core/containers.py",
+        "calendar_integration/containers.py",
+        "calendar_integration/tests/test_containers.py"
+      ],
+      "crew": "tier2"
+    },
+    {
+      "id": "p9",
+      "name": "Move organization providers",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "`AuditContainer.audit_service`"
+        },
+        {
+          "node": "p4",
+          "artifact": "`BillingContainer.subscription_service` and `entitlement_service`"
+        },
+        {
+          "node": "p6",
+          "artifact": "`WebhooksContainer.webhook_membership_side_effects_service`"
+        },
+        {
+          "node": "p8",
+          "artifact": "`CalendarContainer.calendar_service`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#phase-9",
+      "touches": [
+        "di_core/containers.py",
+        "organizations/containers.py",
+        "organizations/tests/test_containers.py"
+      ],
+      "crew": "tier2"
+    },
+    {
+      "id": "p10",
+      "name": "Remove aliases, add guard test and docs",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "the alias lines the moved providers left in `di_core/containers.py`"
+        },
+        {
+          "node": "p3",
+          "artifact": "the alias lines the moved providers left in `di_core/containers.py`"
+        },
+        {
+          "node": "p4",
+          "artifact": "the alias lines the moved providers left in `di_core/containers.py`"
+        },
+        {
+          "node": "p5",
+          "artifact": "the alias lines the moved providers left in `di_core/containers.py`"
+        },
+        {
+          "node": "p6",
+          "artifact": "the alias lines the moved providers left in `di_core/containers.py`"
+        },
+        {
+          "node": "p7",
+          "artifact": "the alias lines the moved providers left in `di_core/containers.py`"
+        },
+        {
+          "node": "p8",
+          "artifact": "the alias lines the moved providers left in `di_core/containers.py`"
+        },
+        {
+          "node": "p9",
+          "artifact": "the alias lines the moved providers left in `di_core/containers.py`"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-10-09-DI_CONTAINER_SPLIT_IMPLEMENTATION_PLAN.md#phase-10",
+      "touches": [
+        "di_core/containers.py",
+        "di_core/tests/test_container_composition.py",
+        "AGENTS.md",
+        "organizations/models.py"
+      ],
+      "crew": "tier2"
+    }
+  ]
+}
