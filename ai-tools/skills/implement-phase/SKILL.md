@@ -295,6 +295,8 @@ Start cold instead when any of these hold:
 
 Record which of those applied, so a phase that was unexpectedly slow can be read later without guessing.
 
+**Out of quota (no user prompt):** the spawn is refused, or the turn cut off, because the picked model's quota or credits are spent — a usage-limit, credit-balance or insufficient-quota error, not a capability gap — and its entry in `ai-models.yaml` carries a `fallback:`. Re-spawn on the fallback at once instead of waiting, and keep using the fallback in place of that model for the rest of the run; say so once. If the fallback is refused the same way, the account is out rather than the model: wait for the reset as you would with no fallback. A plan's workflow JSON may carry the same map as `defaults.model_fallbacks`; when it does, it wins over `ai-models.yaml`.
+
 **Retry escalation (no user prompt):** the picked model fails on a clear capability gap → step **one tier up** and retry once. After Tier 4 fails, STOP. Update tracking with `❌` and hand the failure back to the conductor, which asks the user how to proceed with a structured question (see its **Model escalation** rule).
 
 Record the **model actually used**, the **crew member** it came from, and **whether that member is the one the plan assigned** — a phase run by a covering peer is the difference between a run that cost what the plan said and one that did not.
@@ -308,7 +310,7 @@ Use whatever agent-spawning primitive the runtime exposes. Pass:
 - The phase prompt from the [Compose the agent prompt](#1-compose-the-agent-prompt-token-efficient) step.
 - The right **agent type** (below).
 
-**Sandbox the spawn — only when `SANDBOX_TIER = enforced`.** The prompt tells the subagent to stay in `WORKROOT`, but that's cooperative — a smaller model can resolve a path back to the main checkout and silently write there (the review-phase stray-write check catches this reactively). When `SANDBOX_TIER = enforced` **and** the runtime spawns subagents as **subprocesses** (it shells out to an agent CLI — e.g. `codex exec …`, a `claude -p …` child, a custom runner), wrap that launch command in the worktree's bundled guard so the OS blocks main-checkout writes regardless of harness:
+**Sandbox the spawn — only when `SANDBOX_TIER = enforced`.** The prompt tells the subagent to stay in `WORKROOT`, but that's cooperative — a smaller model can resolve a path back to the main checkout and silently write there (the implement-phase stray-write check catches this reactively). When `SANDBOX_TIER = enforced` **and** the runtime spawns subagents as **subprocesses** (it shells out to an agent CLI — e.g. `codex exec …`, a `claude -p …` child, a custom runner), wrap that launch command in the worktree's bundled guard so the OS blocks main-checkout writes regardless of harness:
 
 ```bash
 ai-tools/skills/prepare-worktree/scripts/sandbox-run.sh \
@@ -325,7 +327,7 @@ ai-tools/skills/prepare-worktree/scripts/sandbox-run.sh \
 `<pool_root>` is the directory that holds the lane worktrees (the worktree root prepare-worktree provisioned into). Denying it and allowing back only this lane's `WORKROOT` blocks writes into **sibling lanes** — under parallel execution the more dangerous stray write, because a sibling's tree is being edited and tested at that moment. Omit the `--deny <pool_root>` line only when the run has a single lane and no pool exists.
 
 - **In-process subagent runtimes** (orchestrator and subagent share one OS process — e.g. claude-code's Task tool) can't wrap a single spawn. Two options: (a) install a runtime pre-write guard hook scoped to `WORKROOT` (prepare-worktree ships `scripts/claude-worktree-write-guard.py` + `scripts/gen-claude-sandbox-settings.sh` for claude-code); or (b) run the **entire** invocation under `sandbox-run.sh` with the same `--deny` / `--allow` set. Pick whichever the runtime supports.
-- **`SANDBOX_TIER = none`** (no sandbox tool, or `use_worktree = false`) → skip wrapping; prevention falls back entirely to the review-phase stray-write check. Surface this once to the user when a worktree run is unsandboxed so the weaker guarantee is explicit.
+- **`SANDBOX_TIER = none`** (no sandbox tool, or `use_worktree = false`) → skip wrapping; prevention falls back entirely to the implement-phase stray-write check. Surface this once to the user when a worktree run is unsandboxed so the weaker guarantee is explicit.
 
 **Agent type per phase.** Project agents in [`ai-tools/agents/`](ai-tools/agents/) (exposed to claude-code via `.claude/agents` symlink):
 
@@ -333,7 +335,7 @@ ai-tools/skills/prepare-worktree/scripts/sandbox-run.sh \
 |---|---|
 | Default — any phase whose primary risk is correct execution of the Changes / Tests / Acceptance | `implementer` |
 | Migration-heavy — phase introduces Django schema migrations, raw-SQL DB code (functions, views, materialized views, triggers, procedures via `common/raw_sql_migration_managers.py`), or lock-sensitive operations on hot tables | `migration-author` |
-| Review-only (rare; usually a Layer 3 dispatch from inside the loop, not a whole phase) | `reviewer` |
+| Review-only (rare; usually the review loop spawning one, not a whole phase) | `reviewer` |
 | Fix-up (dispatched by the review loop, not by phase routing) | `fixer` |
 
 A phase that combines shapes → the agent type stays `implementer`, and the prompt lists every relevant SKILL.md. The agent type changes only when a stack-specialist's risk is the primary one.
@@ -341,6 +343,36 @@ A phase that combines shapes → the agent type stays `implementer`, and the pro
 **Avoid bouncing the same phase between multiple agents.** Wanting to "hand off" mid-phase → the plan should have split into sub-phases instead.
 
 **Concurrent invocations are expected.** The conductor may have several lanes in flight, each running its own copy of this skill against a different phase. Nothing here is shared: the prompt, the model pick, the spawn, and the returned report all belong to one phase in one `WORKROOT`. Never read another lane's worktree, branch, or tracking entry — if this phase needs something from another phase, that is a dependency edge the plan should have declared.
+
+## 4. Check for stray writes
+
+**Stray main-checkout writes — only when `WORKROOT != <main_checkout>` (i.e. a worktree run).** A subagent told to work inside the worktree can resolve an absolute path back to the **main checkout** and silently edit files there; because worktrees have independent working trees, those edits never reach the phase commit — they sit as uncommitted thrash in the main checkout and read as a silent implementer/fixer failure. **When `SANDBOX_TIER = enforced`, the OS sandbox already blocks these writes and this becomes a cheap backstop (a clean `git status` is the expected result). When `SANDBOX_TIER = none`, it is the *only* defense — run it religiously.** After **every** implementer **and** fixer subagent returns, run:
+
+```bash
+git -C <main_checkout> status --short | grep -vE '^\?\?'   # tracked modifications only
+```
+
+Any output is a BLOCKER for this phase:
+- Diff the stray files (`git -C <main_checkout> diff -- <path>`) to recover intent.
+- If the edit belongs in the worktree, re-dispatch the fixer/implementer with an explicit instruction to write to `WORKROOT` (the change is missing from the phase commit until it does).
+- Once recovered (or confirmed superseded by the correctly-committed worktree version), discard the stray edits with `git -C <main_checkout> restore -- <path>` so the main checkout returns clean. Never leave the main checkout dirty between phases — a later phase can't tell new thrash from old.
+
+`<main_checkout>` is the repo root the skill was invoked from (NOT `WORKROOT`). When `WORKROOT == <main_checkout>` (`use_worktree = false`), skip this check entirely — your work legitimately lives in that tree.
+
+**Sibling-lane writes — only when the pool has more than one lane.** The reviewer is bound by this too: it works in the `WORKROOT` of the phase under review, and that lane is the only one it may touch, and only to read. The main checkout is not the only tree an agent can wander into: with a pool provisioned, `<lane-2>/app/models.py` is as reachable from lane 1 as the main checkout is, and a write there is worse than a stray main-checkout write — it lands in a tree another agent is actively editing and testing. The same guard covers both: everything outside the lane's own `WORKROOT` is off-limits.
+
+- **Sandbox** (`SANDBOX_TIER = enforced`): the `--deny` / `--allow` set for a lane denies the **worktree root that holds the pool**, not just the main checkout, and allows only that lane's `WORKROOT` (plus `<main_checkout>/.git` and `<main_checkout>/.vinta-ai-workflows`). One `--deny <pool-root>` covers every sibling.
+- **Backstop check** (`SANDBOX_TIER = none`, or as the cheap confirmation when enforced): after every implementer, every review fix round and every conflict fixer returns, run the stray-write check against the main checkout **and every sibling lane's workroot**:
+
+  ```bash
+  for tree in <main_checkout> <every lane workroot except this lane's>; do
+    git -C "$tree" status --short | grep -vE '^\?\?'
+  done
+  ```
+
+  Output from a sibling lane is a BLOCKER, handled exactly like a stray main-checkout write: diff it, recover the intent into the correct lane, then `git -C <tree> restore --` it away. Do this **before** the sibling's own review reads its diff — otherwise the sibling reviews foreign changes as its own.
+
+[review-phase](../review-phase/SKILL.md) runs the same check after each round of fixes.
 
 ## Relay a sub-agent's questions (`NEEDS_INPUT`)
 

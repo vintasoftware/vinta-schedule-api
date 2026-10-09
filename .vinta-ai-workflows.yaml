@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=./node_modules/vinta-ai-workflows/schemas/vinta-ai-workflows-config.v1.schema.json
 
 schema_version: 1
-vinta_ai_workflows_version: "0.7.0-alpha26"
-last_synced_at: "2026-10-04T00:00:00Z"
+vinta_ai_workflows_version: "0.7.0-alpha27"
+last_synced_at: "2026-10-09T17:04:24Z"
 
 project:
   name: vinta_schedule_api
@@ -65,6 +65,8 @@ foundation_skills:
   deslop-comments: enabled
   handoff: enabled
   thermo-nuclear-code-quality-review: enabled
+  thermo-nuclear-review-loop: enabled
+  interview-ui: enabled
   handoff-to-client: enabled
   write-unit-test: enabled
 
@@ -77,9 +79,9 @@ integrations:
   pr-review-canvas: enabled
 
 # Tiers (1-4) into ai-tools/skills/plan-feature/resources/ai-models.yaml.
-# Unset key = that spawn uses the runtime default.
+# Unset key = that spawn uses the runtime default. There is no `reviewer` key:
+# review-phase runs its reviewer one tier above the phase's implementer.
 agent_models:
-  reviewer: 3
   fixer: 2
   worktree_prep: 1
   integrate: 1
@@ -92,11 +94,16 @@ agent_models:
 maestro:
   defaults:
     gates: [lint, typecheck, test]
-    chores: [deslop, review-canvas]
+    chores: [review, deslop, review-canvas]
   gates:
     typecheck:
       cmd: "docker compose run --rm api sh -c 'uv run mypy . && uv run python manage.py check --deploy'"
   chores:
+    review:
+      skill: thermo-nuclear-review-loop
+      when: review
+      prompt: "Run the thermo-nuclear-review-loop skill over this phase's diff until its reviewer approves it."
+      description: "The phase's code review: one reviewer sub-agent, the implementer fixing and answering it."
     deslop:
       skill: deslop-comments
       prompt: "Rewrite the comments and doc blocks this phase wrote into Simple English, and delete the ones that should not be there. Comment-only: no renames, no logic changes."

@@ -1,6 +1,6 @@
 ---
 name: plan-feature
-description: Author a phased implementation plan for a new feature following the repo's `ai-plans/` conventions — including the dependency graph that lets independent phases be implemented in parallel. Use when the user asks to "plan", "design", "scope", or "break down" a feature, write an implementation plan / IMPLEMENTATION_PLAN.md, or turn a spec/idea into a phased roadmap. Always interrogates the requester before drafting.
+description: Author a phased implementation plan for a new feature following the repo's `ai-plans/` conventions — including the dependency graph that lets independent phases be implemented in parallel. Use when the user asks to "plan", "design", "scope", or "break down" a feature, write an implementation plan / IMPLEMENTATION_PLAN.md, or turn a spec/idea into a phased roadmap. Always interrogates the requester before drafting. Validates the emitted workflow with `vinta-ai-maestro validate` when maestro is installed, then hands the plan to the human for review — on maestro's review page (graph, per-phase prompts and gates, comments, and a chat the agent answers through `vinta-ai-maestro review wait|reply`) or in chat.
 ---
 
 # Plan Feature
@@ -8,6 +8,8 @@ description: Author a phased implementation plan for a new feature following the
 Plans live in `ai-plans/` as `YYYY-MM-DD-FEATURE_NAME_IMPLEMENTATION_PLAN.md` (uppercase + underscores). `..._SPEC.md` sibling exists → **read first**. Plan translates spec into phased delivery, doesn't re-derive requirements. No spec? Point at [create-spec](../create-spec/SKILL.md) first; plan without spec = plausible-sounding but unverified. Spec/plan pair share `YYYY-MM-DD-FEATURE_NAME` prefix.
 
 Every plan ships **two** files: the markdown above, and its executable sibling `ai-plans/{TODAY}-<feature-kebab>.workflow.json` — same date prefix, the same phase graph in the form an orchestrator runs. See "Emit the executable workflow". Written every time; never gated on a question.
+
+Once both are written, the workflow is validated ("Validate the workflow with vinta-ai-maestro", when it is installed) and the plan goes to the human for review ("Review the plan with the human"). A review on maestro's page adds a third file, `ai-plans/{TODAY}-<feature-kebab>.review.json`, which holds the comments and the conversation.
 
 ## Step 0 — Interrogate before drafting (NON-NEGOTIABLE)
 
@@ -335,8 +337,6 @@ Tests:
 
 **Assigned to**: `{crew-id}` (Tier {N}) — {why this phase needs that tier, in the rubric's terms}. See "Staff the plan".
 
-**Review models** (optional — omit for the derived default): reviewer Tier {N}, fixer Tier {N} — {why this phase warrants a review above the one its tier already implies}. See "Staff the plan".
-
 **Reusable skills**: {invoke `Skill(name)` — see "Project skills"}.
 
 Acceptance: {one literal statement true after merge + deploy of this phase, only this phase}.
@@ -427,24 +427,19 @@ First thing under **Phased Rollout**, before the **Execution graph**:
 ```markdown
 ### Crew
 
-| Agent | Role | Tier | Takes | Why this tier |
-|---|---|---|---|---|
-| `tier1` | implementer | 1 | Phase 0, Phase 4 | An empty module and a flag deletion — exact precedent, both of them. |
-| `tier2-1` | implementer | 2 | Phase 1 | A DRF viewset mirroring `@app/tags/api/views.py` almost line for line. |
-| `tier2-2` | implementer | 2 | Phase 1b, Phase 2 | Serializer with cross-field validation; the producer stub is the same shape. |
-| `tier4` | implementer | 4 | Phase 3 | Cycle detection over a user-mutable tree — no precedent in this repo. |
-| `reviewer` | reviewer | 4 | — reviews every phase | Reads the tree phase too; a reviewer below the hardest phase can never take it. |
+| Agent | Tier | Takes | Why this tier |
+|---|---|---|---|
+| `tier1` | 1 | Phase 0, Phase 4 | An empty module and a flag deletion — exact precedent, both of them. |
+| `tier2-1` | 2 | Phase 1 | A DRF viewset mirroring `@app/tags/api/views.py` almost line for line. |
+| `tier2-2` | 2 | Phase 1b, Phase 2 | Serializer with cross-field validation; the producer stub is the same shape. |
+| `tier4` | 4 | Phase 3 | Cycle detection over a user-mutable tree — no precedent in this repo. |
 ```
 
-**Name members after their tier, never after a seniority.** An implementer is `tier<N>`, or `tier<N>-<k>` when the roster carries more than one at that tier; a reviewer is `reviewer`, or `reviewer-<k>` when there are several. Ids are lowercase kebab-case — the schema rejects anything else.
+**Name members after their tier, never after a seniority.** A member is `tier<N>`, or `tier<N>-<k>` when the roster carries more than one at that tier. Ids are lowercase kebab-case — the schema rejects anything else.
 
 The rule exists because the tier *is* the whole of what the orchestrator knows about a member: it is the floor on what they may be handed and the only thing compared when one covers for another. A roster that names members after seniority grades names people instead, and invites two mistakes — reading a capability ranking as a career one, and letting the label drift from the `tier` beside it, which is the number that actually decides anything.
 
-**Implementers write; reviewers read; nobody does both.** That is not a convention, it is the shape of the document — an implementer cannot be assigned a review and a reviewer cannot be assigned a phase, so an agent grading its own work is not something a plan can express. It replaces the older "review one tier above the author" rule, which was a proxy for independence and broke in both directions: a phase covered by the top-tier implementer had nobody above it, and a tier says nothing about *who* now that a member is a durable agent rather than a model id.
-
-Staff **at least one reviewer** on every plan. A roster of implementers only still runs — reviews fall back to the project's `agent_models.reviewer`, cold, one session per phase — but the reviewer then never accumulates anything about the codebase, which is most of what makes review cheap by phase three.
-
-**A reviewer's tier is a floor too.** It reads phases at or below its own tier, so a Tier 2 reviewer cannot take the Tier 4 phase. One reviewer at the plan's hardest tier is the simple answer; two (a cheap one and a capable one) is worth it on a plan with a wide tier spread, because then the Tier 1 phases are not read by the priciest model you have.
+**Every member implements; nobody on the roster reviews.** Each phase is reviewed by the `thermo-nuclear-review-loop` skill, which spawns a fresh reviewer sub-agent with no implementation context for that phase alone (see "Who reviews"). That reviewer is not a member, so it gets no row, no tier and no desk.
 
 **Every implementer has to earn their place, and there are exactly two ways to do it:**
 
@@ -488,19 +483,12 @@ When those two genuinely cannot both hold, **the floor wins and the plan says so
 
 ### Who reviews
 
-**The cheapest reviewer on the roster whose tier is at or above the phase's.** Not one tier above the author — the independence comes from the role, so a peer-tier review is a genuine second pair of eyes rather than the same agent grading itself.
+Nobody on the plan. Both executors review every phase with the same `thermo-nuclear-review-loop` skill, and each picks the loop's reviewer itself:
 
-Three things follow that are worth knowing before you staff:
+- **On the skills path**, `review-phase` spawns the reviewer **one tier above the tier the phase's implementer actually ran at** — a Tier 4 phase is reviewed at Tier 4, since nothing sits above it — and the phase's own implementer fixes what it finds.
+- **Under `vinta-ai-maestro`**, the `review` chore runs the loop on the implementer's own session (see "The review chore"), and its reviewer runs at the harness's most capable tier.
 
-- **A reviewer is claimed, not borrowed.** It has one session, so two reviews as the same reviewer would collide over it; a phase whose reviewer is busy waits its turn. One reviewer on a three-lane plan is a queue at the review step — usually fine, occasionally the reason to staff a second.
-- **A reviewer below every phase is refused.** Its tier is a floor, so a Tier 1 reviewer on a plan whose cheapest phase is Tier 2 would never be picked. The executor will not accept it.
-- **No reviewer on the roster falls back to `agent_models.reviewer`**, cold, one session per phase. That is exactly what every plan did before, and it is the one case where a roster leaves something on the table.
-
-Add `**Review models**:` **only** when a phase needs a review above what the roster would pick — high blast-radius, subtle concurrency or transaction logic, a security-sensitive surface, a migration that is hard to undo:
-
-> **Review models**: reviewer Tier 4 — this phase rewrites the transactional batch-apply protocol with deferred constraints; a subtle ordering bug here corrupts data, so the independent review runs on the most capable model regardless of the author's tier. Fixer left on the roster default.
-
-**Precedence** (resolved by `implement-plan` / `review-phase`): a phase's `**Review models**:` override wins → else the cheapest roster reviewer at or above the phase's tier → else the project-wide `agent_models.reviewer` / `agent_models.fixer` in `.vinta-ai-workflows.yaml` → else the runtime default.
+So the review needs no staffing decision, and the plan carries no reviewer rows and no per-phase review-model line. On the skills path the phase's tier sizes its review too, which is one more reason never to hand a phase down a tier.
 
 ### Every implementer gets a desk
 
@@ -508,13 +496,12 @@ Add `**Review models**:` **only** when a phase needs a review above what the ros
 
 It works because the *directory* stops moving. An agent whose worktree changed between phases would be reasoning about paths it is not standing in — that, not the reset, was what made cross-phase reuse unsafe. With the directory pinned, the only open question is which files changed while the member was away, and git answers that exactly: the executor hands the continued agent the list, plus whether the previous phase's own work is in this tree at all.
 
-**Reviewers have no desk, and that is the point.** A reviewer reads the lane it is reviewing — the implementer's worktree, with the phase's changes still **uncommitted** in it. Review sits before the commit so that findings are fixed in the working tree, rather than recorded as a mistake on the branch plus a correction after it. A reviewer with a checkout of its own would be reading a committed snapshot: strictly less than what is there, and too late to act on.
+**The reviewer has no desk, and that is the point.** On both executors it is a sub-agent that reads the lane it reviews — the implementer's worktree — so the tree it reads is the tree the implementer fixes. A reviewer with a checkout of its own would be reading a snapshot: strictly less than what is there, and always one fix round behind.
 
 What this costs, and what to weigh when sizing the roster:
 
 - **A worktree and a set of forked databases per implementer.** Adding a cheaper implementer to save a tier on two phases is a real trade now — disk against money — rather than free.
-- **Lane capacity is the number of implementers.** Not the widest wave: an implementer idle in wave 1 still has a desk waiting. Reviewers add nothing to it.
-- **A reviewer's session carries only sometimes.** Its directory moves with the phase it reads, so it continues when two consecutive reviews land in the same lane and starts cold otherwise. Nothing to declare — and a good reason to prefer fewer, busier implementers over many idle ones.
+- **Lane capacity is the number of implementers.** Not the widest wave: an implementer idle in wave 1 still has a desk waiting. The reviewer adds nothing to it.
 - **A member whose phase failed starts their next one cold.** Their context is the context that failed, and a wrong conclusion costs more to inherit than a repository costs to re-read. Nothing to declare; the executor does it.
 
 **The mechanical-step models are still not plan-owned.** Worktree prep and opening the PR stay under `agent_models` in `.vinta-ai-workflows.yaml`. Don't put them on the roster; they'd be ignored.
@@ -582,30 +569,31 @@ First key in the file is `"$schema"`, pointing at `https://github.com/vintasoftw
 | `plan_ref` | Repo-relative path of the markdown plan, e.g. `ai-plans/2026-03-04-BOOKMARK_FOLDERS_IMPLEMENTATION_PLAN.md`. |
 | `plan_context_refs` | The two plan sections that bound **every** phase, as anchors into the plan you just wrote: `<plan_ref>#1-goals` (which carries Non-goals with it) and `<plan_ref>#2-guiding-decisions`, in that order. Same file-and-anchor form as `prompt_ref`. See "Plan-level context". |
 | `base_branch` | What `**Depends on**: nothing — starts from the base branch` means concretely: the repo's default branch, unless **Guiding Decisions** names a long-lived feature branch. |
-| `project` | The databases a lane must **fork** to be a working checkout, plus the command that migrates the template they are forked from. Omit entirely when lanes can share the main checkout's database — see "The `project` block". This is the one part of the document you *ask* about rather than transcribe. |
+| `project` | The databases a lane must **fork** to be a working checkout, the command that migrates the template they are forked from, and `env_files` — the gitignored files every lane needs its own copy of (`.env`, the local settings module). Omit the databases when lanes can share the main checkout's; never omit `env_files` the project needs — see "The `project` block". This is the one part of the document you *ask* about and *read off the project* rather than transcribe from the plan. Prefer declaring it once in `.vinta-ai-workflows.yaml` under `maestro.project` (see "What the project already says"). |
 | `defaults.harness` | The agent CLI the team runs — `claude-code`, `codex`, or `opencode`. **Omit** when it is `claude-code` or `maestro.defaults.harness` already says it — see "What the project already says". |
-| `crew` | The **Crew** table, transcribed: one entry per row keyed by the Agent id, carrying that row's `tier` and the model id that tier resolves to in [resources/ai-models.yaml](resources/ai-models.yaml). Required whenever the plan has a roster, which is every plan. |
+| `crew` | The **Crew** table, transcribed: one entry per row keyed by the Agent id, carrying that row's `tier` and the model id that tier resolves to in [resources/ai-models.yaml](resources/ai-models.yaml), and no `role` field. Required whenever the plan has a roster, which is every plan. |
 | `defaults.model` | The concrete model id for the tier **most** phases carry, pulled from [resources/ai-models.yaml](resources/ai-models.yaml). A staffed workflow never reads it for a phase — every node's model comes off its member — but it is still required, and it is what an amendment adding an unstaffed node would fall back to. |
+| `defaults.model_fallbacks` | One `"<id>": "<fallback>"` entry for every model in `crew` whose [resources/ai-models.yaml](resources/ai-models.yaml) entry carries a `fallback:`. **Omit** when none does, or when `maestro.defaults.model_fallbacks` already says the same. It is what a spawn runs on once that model is out of quota or credits, instead of parking the harness until a reset that a credit allowance may never have. |
 | `defaults.pipeline` | **Omit** — it defaults to `standard-phase`. See "The pipeline block". |
 | `defaults.max_session_turns` | Omit (defaults to 12). It caps how many turns one reused agent session may take before the executor starts a fresh one; the executor reuses sessions across a phase's implement and fix turns, so this is a context-window guard rather than something a plan tunes. |
-| `resources.lane` | `{"capacity": N, "kind": "worktree"}`. **Required** — a lane pool is where phases are dispatched, and a workflow without one has nowhere to run. `N` = the number of **implementers** on the roster, because each keeps one worktree for the whole run. Reviewers add nothing: they read the lane under review. How many run *at once* is still capped by the graph and by the project's parallel-lane budget (3 when unstated); an implementer idle in wave 1 still has a desk. |
+| `resources.lane` | `{"capacity": N, "kind": "worktree"}`. **Required** — a lane pool is where phases are dispatched, and a workflow without one has nowhere to run. `N` = the number of **implementers** on the roster, because each keeps one worktree for the whole run. The `review` chore adds nothing: its reviewer is a sub-agent working in the implementer's lane. How many run *at once* is still capped by the graph and by the project's parallel-lane budget (3 when unstated); an implementer idle in wave 1 still has a desk. |
 | `resources.<pool>` | One `{"kind": "semaphore"}` pool per expensive shared thing a gate contends for — the test database, the e2e browser grid, a staging deploy slot. `capacity: 1` when only one can run at a time. |
-| `gates.<id>` | The checks a phase must pass, as **shell commands run in the phase's lane** — the project's real typecheck / test / lint invocations, not an agent and not prose. **Declare only what the project does not already supply** (see "What the project already says"): a gate the project configures by type is available under the type's name without an entry here, and an entry with `"type"` overrides just the fields it sets. Give a slow plan-specific gate `requires` naming the pool it contends for, and a `timeout_s` that is generous rather than tight. |
-| `chores.<id>` | Agent turns a phase runs beside its gates, for work that changes the diff rather than judging it. **Always emit the `deslop` chore below unless `maestro.chores.deslop` already declares it** — it is the comment-hygiene pass, and without it a maestro run has none. Add another only when the plan genuinely needs one (a changelog entry, a translation extraction); a chore is a model turn per phase, so each one has to earn it. |
+| `gates.<id>` | The checks a phase must pass, as **shell commands run in the phase's lane** — the project's real typecheck / test / lint invocations, not an agent and not prose. **Declare only what the project does not already supply** (see "What the project already says"): a gate the project configures by type is available under the type's name without an entry here, and an entry with `"type"` overrides just the fields it sets. **An entry that overrides a project gate must carry `"type"`** — `{ "type": "test", "requires": ["test-suite"] }`. Without `type`, `{ "requires": [...] }` is a new gate with no `cmd`, and the schema rejects it. Give a slow plan-specific gate `requires` naming the pool it contends for, and a `timeout_s` that is generous rather than tight. |
+| `chores.<id>` | Agent turns a phase runs once its gates are green. **Always emit the `review` and `deslop` chores below unless `maestro.chores.review` / `maestro.chores.deslop` already declare them** — `review` is the phase's code review (see "The review chore") and `deslop` the comment-hygiene pass, and without them a maestro run has neither. Add another only when the plan genuinely needs one (a changelog entry, a translation extraction); a chore is a model turn per phase, so each one has to earn it. |
 | `chores.review-canvas` | **Emit only when `.vinta-ai-workflows.yaml` has `integrations.pr-review-canvas: enabled`.** An `after_pr` chore: maestro runs it once each phase's PR is open, and it posts a review canvas on that PR. Emit it exactly as shown under "The review-canvas chore" below. Never emit it when the integration is `disabled` or absent. The skill it names is installed only when the integration is enabled. |
-| `defaults.chores` | `["deslop"]`, plus `"review-canvas"` when that chore is emitted — or omit it when `maestro.defaults.chores` already names the same list. The chores every phase runs unless it names its own. |
-| `defaults.gates` | The gate ids every phase runs. **Omit** when `maestro.defaults.gates` is already the list this plan wants; set it when most phases share a list the project does not name. A node with no `gates` takes it. |
-| `nodes[].chores` | **Omit** on almost every phase — absent means the run-wide default. Name a list only to give one phase a different set, and `[]` to opt one out. A list *replaces* the default rather than adding to it. |
+| `defaults.chores` | `["review", "deslop"]`, plus `"review-canvas"` when that chore is emitted — or **omit the key** when `maestro.defaults.chores` already names the same list. The chores every phase runs unless it names its own. **Never write `"chores": []` to mean "the project's"**: an empty list *replaces* the project's list with nothing, and the run then runs no chore at all. |
+| `defaults.gates` | The gate ids every phase runs. **Omit the key** when `maestro.defaults.gates` is already the list this plan wants; set it when most phases share a list the project does not name. A node with no `gates` key takes it. **Never `[]`**: that is a run with no gates. |
+| `nodes[].chores` | **Omit the key** on almost every phase — absent means the run-wide default. Name a list only to give one phase a different set, and `[]` only to deliberately opt one phase out. A list *replaces* the default rather than adding to it; `[]` is "no chores", never "the default". |
 | `nodes[]` | One per phase, in plan order. |
 | `nodes[].id` | `p` + the phase number, lowercased: `Phase 1` → `p1`, `Phase 4a` → `p4a`, `Phase 1b` → `p1b`. |
 | `nodes[].name` | The phase title without its `Phase N —` prefix. |
 | `nodes[].prompt_ref` | `<plan_ref>#phase-<number>` — the anchor of that phase's heading. Anchor on the number, not the slugified full title: the number is the part that survives a title edit, and the phase brief the implementer reads is located by its `### Phase N` prefix. |
 | `nodes[].depends_on[]` | **One entry per clause** of the phase's `**Depends on**:` line, each carrying both `node` (the upstream node id) and `artifact` (that clause's prose, minus the phase reference). |
 | `nodes[].touches` | That phase's **Touch List** entries as plain repo-relative paths — strip the `@` prefix and any markdown link syntax, keep the trailing `/` on a directory. |
-| `nodes[].gates` | The gate ids this phase must pass, in the order they should run. **Omit** when they are the run's `defaults.gates` (the plan's or the project's); `[]` opts a phase out. |
+| `nodes[].gates` | The gate ids this phase must pass, in the order they should run. **Omit the key** when they are the run's `defaults.gates` (the plan's or the project's `maestro.defaults.gates`). **`[]` is an ungated phase** — its gate step passes without running anything — and is for a phase that genuinely has nothing to check, declared with `defaults.allow_ungated_phases: true`; `vinta-ai-maestro validate` refuses a phase that resolves to no gates otherwise. One observed run finished twelve phases without a single check because every node carried `"gates": []` where the author meant "the project's". |
 | `nodes[].crew` | The id from this phase's `**Assigned to**:` line. **Required on every node of a staffed workflow** — a half-staffed document is refused, because the executor would be running two staffing rules at once. |
 | `nodes[].model` / `nodes[].harness` | **Omit `model` entirely on a staffed workflow** — the member carries it, and a node setting both is refused. `harness` only when this one phase runs on a different CLI than `defaults`. |
-| `nodes[].max_fix_rounds` | Omit (defaults to 4). When a phase spends it, the executor asks the operator whether to continue rather than failing the phase, so this is how often somebody is asked, not a hard cap. Set it higher only on a phase whose review you expect to iterate — a delicate migration, a concurrency protocol. |
+| `nodes[].max_fix_rounds` | Omit. Absent means no limit: the fixer works until the gates are green and the review loop until the reviewer approves. Set it to cap the fix rounds a phase may spend on red gates, and the review iterations each review turn may run, before the operator is asked. When a phase spends a set budget, the executor asks the operator whether to continue rather than failing the phase. Set one only on a phase you want a person to look at if it drags on — an expensive suite, a phase with a known risk of going in circles. |
 | `nodes[].pipeline` | Omit. A per-phase pipeline is for a phase that genuinely runs a different lifecycle, which is rare enough that needing it is a signal to re-read the plan. |
 | `pipelines` | **Omit.** The executor ships `standard-phase` — see "The pipeline block". |
 
@@ -614,8 +602,8 @@ Rules the mapping depends on:
 - **`artifact` is required on every edge, and it is the clause's own prose.** It is what the implementer's prompt uses to explain what this phase builds on, so the value is what the clause says the phase needs — "the `BookmarkFolder` model and its migration" — never `p1`, never "depends on Phase 1". If the `**Depends on**:` line has no artifact to transcribe, the edge shouldn't exist; see "`**Depends on**:` — one line per phase, always present".
 - **`touches` is what the same-wave overlap check reads.** Executors *warn* on two same-wave nodes declaring the same path rather than refusing, so an incomplete Touch List doesn't fail loudly — it fails at merge. Transcribe every file the phase creates or edits, including tests.
 - **Never invent a model id.** Pick the tier from the rubric under "Staff the plan", then read the id out of [resources/ai-models.yaml](resources/ai-models.yaml). Ids drift; tiers don't.
-- **The roster is the same decision as the Crew table.** `crew` transcribes it: one entry per row, `tier` from the Tier column, `model` from that tier in `ai-models.yaml`. A member the table does not list, or a table row with no `crew` entry, means the two were edited separately.
-- **A gate is a command; a chore is an agent.** Both run per phase and that is where the resemblance stops. A gate is a shell line that says pass or fail and decides whether the phase merges. A chore is a turn that *changes* the diff — the comment pass, a changelog entry — and it is never what stands between a phase and its merge: one that fails is recorded and the phase carries on to its gates. Anything you can express as a command belongs in `gates`, where it is cached and queued and costs no model time.
+- **The roster is the same decision as the Crew table.** `crew` transcribes it: one entry per row, `tier` from the Tier column, `model` from that tier in `ai-models.yaml`. A member the table does not list, or a row with no `crew` entry, means the two were edited separately.
+- **A gate is a command; a chore is an agent.** Both run per phase and that is where the resemblance stops. A gate is a shell line that says pass or fail and decides whether the phase merges. A chore is a turn that *changes* the diff — the review loop's fixes, the comment pass, a changelog entry — and it runs only once the phase's gates are green. Only the `review` chore stands between a phase and its merge; any other chore that fails is recorded and the phase carries on to its final gate run. Anything you can express as a command belongs in `gates`, where it is cached and queued and costs no model time.
 - **Gate commands must be commands the repo actually runs today.** Read them out of the project's task runner (`package.json` scripts, `Makefile`, `pyproject.toml`, CI config) rather than guessing a conventional one. A gate that doesn't exist fails every phase identically, and looks like a code problem.
 - **The graph must agree with the Execution graph table.** Same nodes, same edges, same waves — they are two renderings of one set of `**Depends on**:` lines, so derive both from the lines rather than transcribing one from the other. A disagreement means one was hand-edited, and the executor flags it.
 - **`plan_context_refs` is anchors, never prose.** It names sections of the plan; it never restates them. A summary written into the JSON is a second copy that drifts the first time someone edits the plan, and the whole point of the field is that the implementer reads what the plan actually says.
@@ -628,6 +616,8 @@ Read `.vinta-ai-workflows.yaml` before writing the document. Its `commands` and 
 - **`scoped_cmd`** is the same check narrowed to what a phase changed, with `{changed_files}` / `{touches}` in it. The project normally supplies it (`commands.test_unit_scoped`, `maestro.gates.<type>.scoped_cmd`). Phase gates run it, and the full command runs once on each merged wave. Set one here only for a plan whose phases need a different narrowing.
 - **Pools, chores and the `project` block** merge per id: an entry here replaces the project's entry of the same id whole. Declare `resources.lane` (it is this plan's — one desk per implementer), and a pool, chore or database only when the project has none or this plan needs a different one.
 - **`defaults`** merge field by field: omit what `maestro.defaults` already says.
+- **Omitting a key inherits; writing `[]` replaces with nothing.** `nodes[].gates`, `defaults.gates`, `defaults.chores` and `nodes[].chores` are lists, and lists replace rather than merge. The only way to take the project's list is to leave the key out. `"gates": []` on a node is a phase with no gates, `"chores": []` in `defaults` is a run with no review and no comment pass — both silent at run time, and both exactly what the observed run did. When in doubt, omit the key and read what `validate --json` resolved.
+- **`project.env_files` and `project.hooks`** are project facts, not plan facts: declare them once under `maestro.project` in `.vinta-ai-workflows.yaml` and every plan inherits them. Write them in the workflow only when the project file does not have them yet — and then tell the human they belong in the project file.
 
 When the project has no `maestro:` section and no `commands`, everything stays in this file, as before.
 
@@ -644,13 +634,13 @@ Maestro runs the plan from its own branch, `plan/<workflow-id>/base`, cut from `
 ]
 ```
 
-The executor resolves each reference the same way it resolves a `prompt_ref` — file, then the named heading's section down to the next heading of the same depth — and hands the text to the implementer and the reviewer **verbatim**, under a heading that says it is the plan's and not the phase's.
+The executor resolves each reference the same way it resolves a `prompt_ref` — file, then the named heading's section down to the next heading of the same depth — and hands the text to the implementer **verbatim**, under a heading that says it is the plan's and not the phase's. The `review` chore runs on that same session, so the review loop has it too.
 
 Rules:
 
 - **Anchor on the heading as you wrote it.** The **Plan structure** section numbers those headings — `## 1. Goals`, `## 2. Guiding Decisions` — so their anchors are `#1-goals` and `#2-guiding-decisions`. Write the anchor of the heading that is actually in your plan: an anchor that resolves to nothing fails the phase loudly at spawn time, before any code is written.
 - **Goals carries Non-goals.** Non-goals is a bulleted list *inside* the **Goals** section, so one anchor delivers both. That is why `#1-goals` is not optional here — the non-goals are the half that stops scope creep.
-- **Two entries, both of them.** Not **Data Model Changes** (large, and the phase body names the models it touches), not **Risk & Rollout Notes**, not the whole plan file. Every extra section is paid for in every phase's prompt, twice — once for the implementer, once for the reviewer.
+- **Two entries, both of them.** Not **Data Model Changes** (large, and the phase body names the models it touches), not **Risk & Rollout Notes**, not the whole plan file. Every extra section is paid for in every phase's implementer prompt.
 - **Emit it on every plan**, exactly like the file itself. A workflow without it still runs; its phases just each rediscover the boundaries the plan already drew.
 
 ### The `project` block
@@ -672,14 +662,25 @@ Fields per database, by engine:
 
 | `engine` | Fields | What they mean |
 |---|---|---|
-| `postgres` | `delivery`, `name`, `server_url`, `connection_url_var` | `delivery: "external"` forks a new database on a server that is already running — the cheap mode, and the one to prefer, because N lanes cost N cheap clones against one server. `delivery: "compose"` boots the lane its own server on its own forked volume: there is no template to clone from, so such a lane is single-use and gets re-provisioned rather than reset. `name` is the **main checkout's** database name; lane names are derived from it. `server_url` is the server *without* the database path segment — `postgres://localhost:5432`. |
+| `postgres` | `delivery`, `name`, `server_url`, `connection_url_var` | `delivery: "external"` forks a new database on a server that is already running — the cheap mode, and the one to prefer, because N lanes cost N cheap clones against one server. `delivery: "compose"` boots the lane its own server on its own forked volume: there is no template to clone from, so such a lane is single-use and gets re-provisioned rather than reset. `name` is the **main checkout's** database name; lane names are derived from it. `server_url` is the server *without* the database path segment — `postgres://localhost:5432`. For `external`, write the host, port and user the `createdb` / `dropdb` tools must reach — a Docker-published server is `postgres://app@localhost:5433`, not the compose service name — and no password (the tools read `PGPASSWORD` or `~/.pgpass`). For `compose`, `server_url` names the server as the compose network sees it (`postgres://db:5432`); the executor tells agents that URL resolves only inside the stack and to run the suite through the project's commands, so make sure `commands.test_unit` is the in-stack line (`docker compose run --rm api python -m pytest`). |
 | `sqlite` | `path`, `connection_url_var` | `path` is the repo-relative path of the database file, e.g. `db.sqlite3`. The lane gets its own copy of it. |
 
 **Each role names its own database.** A lane's copy is named from `name` (or `path`) and the lane — the role is not part of it — so declaring `dev` and `test` with the same `name` makes both roles resolve to one forked database and one template. Give them the names the project already uses for them: `bookmarks` and `bookmarks_test`, `db.sqlite3` and `db.test.sqlite3`.
 
 `connection_url_var` is the **name** of the env var the project already reads its connection string from — `DATABASE_URL`, `TEST_DATABASE_URL`, whatever the settings module names. The executor sets it per lane. Never write a connection string with credentials in it here: this file is committed beside the plan, and `server_url` is a host and port, not a login.
 
-**What does not belong in this block.** Everything a worktree's own provisioning discovers and records per worktree: dependency install-or-link strategy, env file copying, `COMPOSE_PROJECT_NAME` and network naming, volume forks, sandbox tier, redis database indices, S3 prefixes, seed commands, and the `reset_cmd` for each forked database. Those are the `prepare-worktree` skill's, are decided when a lane is created, and are read back off the summary it writes per worktree. `project` records only what has to be known *before* any worktree exists.
+**`env_files` — the files git does not carry.** A lane is a git worktree, and a worktree has only what git tracks. Every gitignored file the project needs in order to run — `.env`, `.env.docker`, `settings/local.py`, an `.envrc` — is absent from every lane unless `project.env_files` names it, and then each lane gets its own *copy*. Every hook, every `manage.py` call and every compose stack in the lane reads those files, so a run without them fails in ways that look like code problems: a pre-commit hook that cannot import the settings module, a gate that cannot find `DATABASE_URL`. **Find them by reading the project, never by guessing:**
+
+- `.gitignore` entries that have a tracked `*.example` / `*.sample` / `*.template` / `*.dist` sibling (`.env.example` → `.env`, `local.py.example` → `local.py`);
+- `env_file:` lines in `compose.yaml` / `docker-compose.yml`;
+- the module `DJANGO_SETTINGS_MODULE` (or the framework's equivalent) imports, when that module is gitignored — a local settings file is the one authors forget;
+- anything the pre-commit config or the task runner sources that git does not track.
+
+List them as repo-relative paths: `"env_files": [".env", ".env.docker", "app/settings/local.py"]`. **Prefer declaring them once in `.vinta-ai-workflows.yaml`** under `maestro.project.env_files`, where every plan inherits them; write them in the workflow only when the project file lacks them, and say so to the human. `vinta-ai-maestro doctor` warns when gitignored files have tracked examples and nothing declares them, and fails when a declared file is missing from the checkout.
+
+**`hooks`** — `run` (the default) runs the repository's git hooks on commits inside a lane *and* on the merge commits maestro makes in the integration worktree; `skip` runs neither. A hook that needs a gitignored file needs that file in `env_files`. Set `skip` only for a hook chain that is unaffordable per lane (a `language: system` pre-commit that builds a virtualenv per worktree); the gates still run.
+
+**What does not belong in this block.** Everything a worktree's own provisioning discovers and records per worktree: dependency install-or-link strategy, `COMPOSE_PROJECT_NAME` and network naming, volume forks, sandbox tier, redis database indices, S3 prefixes, seed commands, and the `reset_cmd` for each forked database. Those are the `prepare-worktree` skill's, are decided when a lane is created, and are read back off the summary it writes per worktree. `project` records only what has to be known *before* any worktree exists — which `env_files` is.
 
 #### Asking for it
 
@@ -690,15 +691,30 @@ Otherwise issue **one `AskUserQuestion` call** carrying both questions:
 1. *"What does a phase lane need its own copy of?"* — options: `Nothing — lanes share the main database`, `Test database only`, `Dev and test databases`, `Dev database only`. Put the default you found in the question header ("this repo's suite reads `TEST_DATABASE_URL` — default: test only").
 2. *"How is that database delivered?"* — options: `Postgres on a server that is already running`, `Postgres started by Docker Compose`, `SQLite file in the repo`. Both questions ride the same call; if the answer to the first is `Nothing`, this answer is discarded rather than asked again.
 
-The remaining values — `migrate_cmd`, the database names, the server URL, the env var names — are **read out of the project, not asked**. They already exist in its settings, its compose file and its task runner, and a question whose answer is on disk wastes a turn. Echo what you found in the read-back summary so a wrong guess gets corrected before the file is written, and fall back to a plain-prose question only where the repo genuinely does not say.
+The remaining values — `migrate_cmd`, the database names, the server URL, the env var names, and `env_files` — are **read out of the project, not asked**. They already exist in its settings, its compose file and its task runner, and a question whose answer is on disk wastes a turn. Echo what you found in the read-back summary so a wrong guess gets corrected before the file is written, and fall back to a plain-prose question only where the repo genuinely does not say.
 
 ### The pipeline block
 
-`pipelines` describes what happens *within* one phase — implement → review → fix → gate → integrate — as opposed to `nodes`, which describes what happens *between* phases. It is fixed machinery, not a planning decision.
+`pipelines` describes what happens *within* one phase — implement → gate → review → polish → verify → integrate — as opposed to `nodes`, which describes what happens *between* phases. It is fixed machinery, not a planning decision.
 
-**Omit `pipelines` entirely.** Naming `standard-phase` in `defaults.pipeline` is enough: the executor ships that pipeline and supplies it. Do not paste a copy into the plan — a pasted pipeline is a copy that cannot be fixed centrally, so an executor-side correction would never reach a plan already written, and a hand-edited one is how a plan silently stops running its reviewer.
+**Omit `pipelines` entirely.** Naming `standard-phase` in `defaults.pipeline` is enough: the executor ships that pipeline and supplies it. Do not paste a copy into the plan — a pasted pipeline is a copy that cannot be fixed centrally, so an executor-side correction would never reach a plan already written, and a hand-edited one is how a plan silently stops running its review.
 
 Author a `pipelines` block only when a project genuinely needs a *different* lifecycle. That is an executor-configuration decision made once per project, not a per-plan choice, and a declared id shadows the shipped pipeline of the same name.
+
+### The review chore
+
+Emit this chore on every plan unless `maestro.chores.review` already declares it, and name it first in `defaults.chores`, before `"deslop"`:
+
+```json
+"review": {
+  "skill": "thermo-nuclear-review-loop",
+  "when": "review",
+  "prompt": "Run the thermo-nuclear-review-loop skill over this phase's diff until its reviewer approves it.",
+  "description": "The phase's code review: one reviewer sub-agent, the implementer fixing and answering it."
+}
+```
+
+`"when": "review"` is what makes it the phase's review. Maestro runs it only once the phase's gates are green, on the implementer's own session. The implementer spawns one reviewer sub-agent, fixes the findings it verifies, answers the ones it rejects, and repeats until the reviewer approves; the turn then ends with a `VERDICT:` line. On a pass, the `after_review` chores run — `deslop` is one, because `after_review` is the default `when` — and then the gates run once more on the final tree. By default the loop runs until the reviewer approves; a phase with `max_fix_rounds` set stops after that many unsuccessful iterations and asks the operator whether to continue or stop. Leave out `on_failure`: it does not apply to a review chore, since a review turn that errors counts as unapproved.
 
 ### The review-canvas chore
 
@@ -739,12 +755,11 @@ A five-phase plan whose `**Depends on**:` lines are:
 staffed by this **Crew** table:
 
 ```markdown
-| Agent | Role | Tier | Takes | Why this tier |
-|---|---|---|---|---|
-| `tier1` | implementer | 1 | Phase 1, Phase 5 | A model plus its migration, and a flag deletion. Exact precedent, both. |
-| `tier2-1` | implementer | 2 | Phase 2 | A DRF viewset mirroring the tags viewset almost line for line. |
-| `tier2-2` | implementer | 2 | Phase 3, Phase 4 | Tree serializer and the list action that returns it — same shape twice. |
-| `reviewer` | reviewer | 2 | — reviews every phase | Tier 2 is the hardest phase here, so one reviewer covers the plan. |
+| Agent | Tier | Takes | Why this tier |
+|---|---|---|---|
+| `tier1` | 1 | Phase 1, Phase 5 | A model plus its migration, and a flag deletion. Exact precedent, both. |
+| `tier2-1` | 2 | Phase 2 | A DRF viewset mirroring the tags viewset almost line for line. |
+| `tier2-2` | 2 | Phase 3, Phase 4 | Tree serializer and the list action that returns it — same shape twice. |
 ```
 
 Three implementers for a graph that is never more than **two** phases wide,
@@ -755,12 +770,6 @@ cheapness: without them, Phase 1 and Phase 5 would run on a Tier 2 model for
 work that has exact precedent. `tier1` is idle in waves 2 and 3 and that is not a defect; a
 fourth implementer would be, because there would be nothing left for them to
 make cheaper and no third phase for them to run alongside.
-
-One reviewer at Tier 2 covers every phase, since Tier 2 is the hardest work on
-this plan. A Tier 1 reviewer would be refused — it could never take Phase 2,
-Phase 3 or Phase 4 — and a Tier 4 one would be paying top rate to read a
-migration. It gets no worktree: it reads whichever lane it is reviewing, with
-that phase's changes still uncommitted.
 
 and this **Execution graph** table:
 
@@ -810,28 +819,19 @@ and this `ai-plans/2026-03-04-bookmark-folders.workflow.json`:
   },
   "crew": {
     "tier1": {
-      "role": "implementer",
       "tier": 1,
       "model": "claude-haiku-4-5",
       "description": "A model plus its migration, and a flag deletion."
     },
     "tier2-1": {
-      "role": "implementer",
       "tier": 2,
       "model": "claude-sonnet-5",
       "description": "A DRF viewset mirroring the tags viewset."
     },
     "tier2-2": {
-      "role": "implementer",
       "tier": 2,
       "model": "claude-sonnet-5",
       "description": "Tree serializer and the list action that returns it."
-    },
-    "reviewer": {
-      "role": "reviewer",
-      "tier": 2,
-      "model": "claude-sonnet-5",
-      "description": "Reads every phase; Tier 2 is the hardest work here."
     }
   },
   "defaults": {
@@ -839,6 +839,7 @@ and this `ai-plans/2026-03-04-bookmark-folders.workflow.json`:
     "model": "claude-sonnet-5",
     "pipeline": "standard-phase",
     "chores": [
+      "review",
       "deslop"
     ]
   },
@@ -868,6 +869,12 @@ and this `ai-plans/2026-03-04-bookmark-folders.workflow.json`:
     }
   },
   "chores": {
+    "review": {
+      "skill": "thermo-nuclear-review-loop",
+      "when": "review",
+      "prompt": "Run the thermo-nuclear-review-loop skill over this phase's diff until its reviewer approves it.",
+      "description": "The phase's code review: one reviewer sub-agent, the implementer fixing and answering it."
+    },
     "deslop": {
       "skill": "deslop-comments",
       "prompt": "Rewrite the comments and doc blocks this phase wrote into Simple English, and delete the ones that should not be there. Comment-only: no renames, no logic changes.",
@@ -998,11 +1005,114 @@ No node carries a `model`. `p1` and `p5` are the Tier 1 phases and run on `tier1
 
 `tier2-2` takes `p3` and then `p4`, which is the pairing worth seeing: the same agent writes the tree serializer and the action that returns it, in the same worktree, **continuing the same session**. Its second phase does not pay to work out where the serializers live or how the suite is run — it did that in `p3`. What it *is* told, because the tree moved underneath it, is that it is now on `p4`'s branch, that `p3`'s work is in this tree (`p4` depends on it), and exactly which files differ from what it last saw.
 
-No node names a reviewer. Every phase is read by `reviewer`, the only member on the roster whose role is to read them — so no agent ever reads its own diff. Its session carries only between reviews that land in the same lane, because it goes where the work is rather than keeping a tree of its own.
+No node names a reviewer, and `crew` has none. Every phase's review is the `review` chore: once the phase's gates are green, its implementer runs `thermo-nuclear-review-loop`, spawns one reviewer sub-agent, and fixes or answers its findings until it approves. `deslop` follows, and the gates run once more on the final tree. Run through `implement-plan` instead, `review-phase` runs the same loop, with the reviewer one tier above each phase's implementer: Tier 2 for `p1` and `p5`, Tier 3 for the rest.
 
-`plan_context_refs` points at the same plan file the `prompt_ref`s do, at its **Goals** and **Guiding Decisions** headings. Each of the five phases is handed those two sections whole, so the implementer of `p3` knows that the tree serializer is deliberately not paginated if the plan's Non-goals said so, and the reviewer of `p3` can call a paginated one scope creep instead of a bonus.
+`plan_context_refs` points at the same plan file the `prompt_ref`s do, at its **Goals** and **Guiding Decisions** headings. Each of the five phases is handed those two sections whole, so the implementer of `p3` knows that the tree serializer is deliberately not paginated if the plan's Non-goals said so, and the review of `p3` can call a paginated one scope creep instead of a bonus.
 
-The lane pool is **three**: one desk per implementer, kept for the whole run so each one's session has a directory to come back to. Only two are ever busy at once — the graph is never wider than that — and the third idle desk is the price of `tier1`'s session. `reviewer` has no desk at all; it reads whichever lane it is reviewing, changes still uncommitted, which is what lets a finding be fixed before the commit rather than after it. The `project` block is what lets those worktrees exist at once. `bookmarks_test` is forked per lane from a template that `uv run python manage.py migrate` builds once, so `p2` and `p3` run `uv run pytest` against separate rows instead of the same ones; `test-suite` stays at capacity 1 because three suites at once melt the machine, not because they would corrupt each other. `dev` and `test` name two different databases, which is what keeps their forks from being the same database under two roles.
+The lane pool is **three**: one desk per implementer, kept for the whole run so each one's session has a directory to come back to. Only two are ever busy at once — the graph is never wider than that — and the third idle desk is the price of `tier1`'s session. The review needs no desk of its own: its reviewer is a sub-agent working in the implementer's lane. The `project` block is what lets those worktrees exist at once. `bookmarks_test` is forked per lane from a template that `uv run python manage.py migrate` builds once, so `p2` and `p3` run `uv run pytest` against separate rows instead of the same ones; `test-suite` stays at capacity 1 because three suites at once melt the machine, not because they would corrupt each other. `dev` and `test` name two different databases, which is what keeps their forks from being the same database under two roles.
+
+## Validate the workflow with vinta-ai-maestro
+
+The `$schema` line catches a typo in an editor. It cannot catch a `prompt_ref` anchor that names a heading the plan does not have, a dependency cycle, a gate that requires a pool nobody declared, or a phase that resolves to no gates. `vinta-ai-maestro validate` catches all four, plus everything a run checks when it loads the file. It spawns nothing and writes nothing. **When maestro is installed, run it on every workflow you write — before you tell the human the plan is ready — and again after every edit to the plan or the workflow.** The installed maestro's `validate` is the authority on the document's shape; the schema at the `$schema` URL is what the editor sees and may lag the installed version, so a file an editor accepts can still be refused, and the other way round. Write the file, run `validate --json`, fix every issue, and only then hand over.
+
+**Find it, never install it.** Try these in order and use the first that works:
+
+```bash
+command -v vinta-ai-maestro                      # on PATH
+test -x node_modules/.bin/vinta-ai-maestro       # a project devDependency → run it by that path
+npx --no-install vinta-ai-maestro --help         # installed or cached, without downloading
+```
+
+None works: maestro is not installed. Skip validation, and say so once in your final message ("the workflow was checked against its `$schema` only — `vinta-ai-maestro` is not installed"). Do not install it, and do not run `npx vinta-ai-maestro@…` without `--no-install`: that downloads a package the team did not choose. If the human asks how to get it, give them the install command and let them run it.
+
+**Run it from the repository root:**
+
+```bash
+vinta-ai-maestro validate ai-plans/{TODAY}-<feature-kebab>.workflow.json --json
+```
+
+| Exit | Meaning | What to do |
+|---|---|---|
+| `0` | Valid. The JSON says how many phases and waves. | Check the wave count against the **Execution graph** table, then move on. |
+| `1` | Not valid. `issues` lists each problem as `{source, path, message}`. | Fix every issue (see below) and run it again. Do not hand the plan over while it exits `1`. |
+| `2` | Bad command line. An older maestro without `validate` also answers `2` with `unknown command`. | For the older maestro, treat it as not installed and say which version would add the check. |
+
+Fix each issue by its `source`:
+
+- **`reference`**: a `plan_ref`, `prompt_ref` or `plan_context_refs` anchor names no heading in the plan. The plan is the source of truth. Usually a phase heading was renamed or renumbered and the workflow was not updated. Fix whichever side is wrong, then check that the two still agree.
+- **`workflow`**: the document's shape or graph, such as an unknown node, a cycle, an undeclared pool, a crew member that cannot take its phase, a gate entry with neither `cmd` nor `type`, a phase with no gates, or an id that does not match the filename. Re-derive the field from the plan. A gate `"has no cmd"` is an override that forgot its `"type"`. A phase that `"has no gates"` is a node carrying `"gates": []` — remove the key so it takes `defaults.gates`, name its gates, or, for a plan whose phases genuinely have nothing to run, set `defaults.allow_ungated_phases: true`. If the plan itself is wrong (a cycle in its `**Depends on**:` lines), fix the plan first.
+- **`config`**: `.vinta-ai-workflows.yaml` does not parse. That file is the project's, not the plan's. Do not edit it to make the plan pass. Tell the human what is wrong and where.
+
+## Review the plan with the human
+
+A plan is cheapest to change before anything runs. Once both files are written and the workflow validates, hand the plan over for review. Ask with `AskUserQuestion`: header `Review`, question "The plan and its workflow are written — `<plan path>` and `<workflow path>`. How do you want to review it?"
+
+| Option | Offer it when | Description |
+|---|---|---|
+| `Review page (Recommended)` | maestro is installed | "Open a page with the phase graph, each phase's real prompts and gates, the plan, and its projected schedule. Comment on anything, and chat with me while I revise it." |
+| `Review here in chat` | always (`(Recommended)` when maestro is not installed) | "I read the plan back here, and you tell me what to change." |
+| `Done for now` | always | "Stop here. The plan can be reviewed later." |
+
+When maestro is not installed, add one line before the question: a visual review page with comments and a chat comes with `vinta-ai-maestro`. Do not install it.
+
+### The review page
+
+The page is maestro's UI, opened on this plan. The person reads the graph, each phase's brief, prompts and gates, and the plan itself. They comment on any of it and send the comments to you as a batch, and they can message you directly. You answer from here, with two commands, and they see your edits to the plan as you make them.
+
+1. **Serve the page** in the background. It is a long-running server, so use your harness's background mode, or `nohup … &`:
+
+   ```bash
+   vinta-ai-maestro review open ai-plans/{TODAY}-<feature-kebab>.workflow.json
+   ```
+
+   Read its output for the line starting `http://`. That URL opens on this plan's page. **It carries the page's access token**, so give it to the human in your reply and nowhere else: not in the plan, a commit, a PR or a log.
+
+2. **Open the conversation.** Post one short message as the opening of the review. Say what the plan does, how many phases and waves it has, and the two or three decisions you are least sure of. Those are where the review should look first.
+
+   ```bash
+   vinta-ai-maestro review reply ai-plans/{TODAY}-<feature-kebab>.workflow.json --as <your harness> -m "…"
+   ```
+
+3. **Wait for the person.** This blocks until they send something, then prints it as one JSON object:
+
+   ```bash
+   vinta-ai-maestro review wait ai-plans/{TODAY}-<feature-kebab>.workflow.json --timeout 110
+   ```
+
+   Keep `--timeout` under your harness's limit for one command (110 seconds fits a two-minute limit). Act on `kind`:
+
+   - **`timeout`**: nothing arrived. Run `wait` again, and post nothing. After about 30 minutes of timeouts in a row, stop waiting. Leave the page running, and tell the human in the terminal how to bring you back: "say *check the review* and I'll pick up what you sent". Their comments are kept until then.
+   - **`messages`**: one entry per message they sent. Each entry has a `body` and the `comments` it sent. A comment carries `where` (what it is about, in words), its `anchor`, the `quote` the person selected, its `body`, and the replies so far. Handle each one (see below), then run `wait` again.
+   - **`approved`**: the person approved the plan. The loop is over. Stop the page's server, then tell the human in the terminal what was approved and what comes next (`implement-plan`, or a maestro run).
+
+4. **Handle each comment.** Read it against the thing it is about. Then:
+
+   - **It asks for a change you agree with:** edit the **markdown plan first**, re-derive the workflow from it, and run `validate` again. The two files are one graph, so never edit just one. Then answer on the thread with what changed and where. Add `--resolve` only when your edit fully does what the comment asked:
+
+     ```bash
+     vinta-ai-maestro review reply <workflow.json> --comment c3 --resolve --as <your harness> -m "Split into Phase 2a (endpoint) and 2b (tests) …"
+     ```
+
+   - **It asks a question, or you disagree:** answer on the thread without `--resolve`. Give your reasoning and what it would cost to do it their way. The person resolves it.
+   - **It needs a decision only the person can make:** ask it in the conversation, with the options and your recommendation. While the review page is open, the page is where the person is, and its chat is the structured channel for the loop. A question asked through `AskUserQuestion` in the terminal would wait unseen.
+
+   Finish each round with one message in the conversation that sums up what changed. Every edit you make shows on the page within seconds. The page tells the person the plan changed, so they can re-read it before replying.
+
+5. **The review is a file**: `ai-plans/{TODAY}-<feature-kebab>.review.json`, beside the plan, validated by `plan-review.v1.schema.json`. Never edit it by hand. Comments, replies, delivery and approval all go through `review wait` / `review reply` and the page, which share a lock. It is committed with the plan, so the next reader can see what was questioned and what changed.
+
+If the human answers in the terminal instead of on the page, that is fine. Handle it the same way, and post a line in the conversation so the page's history stays whole.
+
+### Review in chat
+
+Read the plan back in one message:
+
+- the phases, by wave, each with its agent tier and model;
+- the gates each phase must pass;
+- the feature flag and how it is removed;
+- the open questions;
+- the decisions you are least sure of.
+
+Then ask with `AskUserQuestion`: header `Plan`, question "Anything to change before the plan is final?", options `Looks good (Recommended)`, `Some corrections`, `Stop, rethink`. On `Some corrections`, edit the plan, re-derive the workflow, validate, and ask again. On `Looks good`, finish.
 
 ## What to avoid
 
@@ -1014,10 +1124,14 @@ The lane pool is **three**: one desk per implementer, kept for the whole run so 
 - **No `**Depends on**:` edge you can't justify with an artifact.** "It's later in the list" is not a dependency; it's a chain that costs the team a week of wall-clock for nothing.
 - **No two same-wave phases rewriting the same file.** Either add the edge or split differently.
 - **No phase assigned below the tier its work implies.** A cheap model on work above its tier does not fail cleanly; it fails review two rounds later, and by then nothing points at the staffing.
-- **No implementer who takes no phase**, and no reviewer below every phase on the plan. Both are agents budgeted for that can never be picked, and the executor refuses both.
-- **No phase assigned to a reviewer, and no reviewer that also implements.** The roles are disjoint so that an agent reading its own diff is not something the document can say.
+- **No member who takes no phase.** It is an agent budgeted for that can never be picked, and the executor refuses it.
+- **No reviewer rows and no per-phase review-model line.** Reviews are not staffed (see "Who reviews"); executors ignore both.
 - **No `model` on a node of a staffed workflow.** The member carries it; a node with both is refused rather than one quietly outranking the other.
 - **No repeating a defect a post-mortem already recorded.** A `wave_conflicts` entry on those paths, or a `missing_dependencies` entry between those layers, means the last run already paid for the lesson; drawing the same graph again wastes it.
+- **No handing over a workflow `vinta-ai-maestro validate` rejects**, when maestro is installed. Run it before announcing the plan, not after. And never install it yourself to run the check.
+- **No `[]` where "the project's" was meant.** `"gates": []` on a node, `"chores": []` in `defaults`: both replace the project's list with nothing. Omit the key.
+- **No `project` block that leaves out a gitignored file the lanes need.** Every `.gitignore` entry with a tracked example, every compose `env_file:`, the local settings module — in `env_files`, or in the project file's `maestro.project.env_files`.
+- **No editing the plan or the workflow alone during a review.** A comment that changes one changes both, then `validate` runs again.
 - **No plan without its `.workflow.json` sibling, and no sibling that disagrees with the plan.** Different nodes, different edges, different waves, a `prompt_ref` pointing at a phase that was renumbered — all of them mean the two files were edited separately instead of derived from the same `**Depends on**:` lines.
 - **No phase requiring manual `kubectl` / SSH / "remember to run X"** without Risk & Rollout Notes checklist.
 - **No assuming user wants what they asked for.** Watch for "wait, also…" + update plan.
@@ -1047,12 +1161,10 @@ When in doubt, model the plan after a recent example in `ai-plans/` — look for
 - [ ] Same-wave phases checked against the **Touch List** for file overlap; real overlaps either serialized with an edge or called out explicitly under the graph table.
 - [ ] Post-mortems from previous runs (`.vinta-ai-maestro/runs/*/postmortem.json`, plus any committed beside a plan) read **before** the graph was drawn; every finding either changed an edge, a wave or a split, or was consciously dismissed as not applying to this feature.
 - [ ] Slow-moving / cross-repo work sits in wave 1, and no in-repo phase depends on a cross-repo phase when it only needs the contract.
-- [ ] **Crew** table is the first thing under **Phased Rollout**: one row per agent with its **Role**, every implementer taking at least one phase, every `Takes` cell agreeing with that phase's `**Assigned to**:` line.
-- [ ] **At least one reviewer on the roster**, at or above the plan's hardest phase tier. Implementers and reviewers are disjoint — no phase is assigned to a reviewer.
+- [ ] **Crew** table is the first thing under **Phased Rollout**: one row per implementer and no reviewer rows, every member taking at least one phase, every `Takes` cell agreeing with that phase's `**Assigned to**:` line.
 - [ ] **Every member earns their place** — by concurrency (a wave genuinely needs that many hands *at or above* those phases' tiers) or by cheapness (they take work a dearer member would otherwise do). Check it wave by wave: sort the wave's phase tiers against the roster's and confirm the roster covers them one for one.
 - [ ] Every phase is assigned to a member whose tier is **at or above** the rubric tier its work implies — no phase handed down a tier to save money.
 - [ ] **Execution graph** carries the Agent column, and an **Idle** note naming who has nothing to do in which wave. A wave that serializes because the roster is smaller than it is called out rather than left to be discovered at run time.
-- [ ] `**Review models**:` appears **only** on phases needing a review above the tier-above-the-author default (not on every phase); each such line names a tier + why.
 - [ ] Feature flag declared in **Guiding Decisions** (key, scope, default, flip-on criterion) **unless** **Guiding Decisions** explicitly justifies "no flag — purely additive surface".
 - [ ] ≥1 test per gated phase asserts flag-off behavior unchanged.
 - [ ] If flag declared, **final entry under Phased Rollout is dedicated flag-removal phase** with prerequisite (soak window), full deletion touch list, `grep` acceptance check.
@@ -1064,13 +1176,17 @@ When in doubt, model the plan after a recent example in `ai-plans/` — look for
 - [ ] All file references use `@path/to/file.py` or `[name](relative-path#Lline)`.
 - [ ] **`ai-plans/{TODAY}-<feature-kebab>.workflow.json` written** — every plan, no exceptions — with `$schema` set to the canonical URL and `schema_version: 1`.
 - [ ] Workflow graph matches the **Execution graph** table: one node per phase, one `depends_on` entry per `**Depends on**:` clause carrying both the node id and the artifact, same waves.
-- [ ] Every node has `prompt_ref` (`<plan_ref>#phase-<number>`), `touches` from its **Touch List** block, and the `gates` it must pass.
-- [ ] **`plan_context_refs` names the Goals and Guiding Decisions anchors** (`<plan_ref>#1-goals`, `<plan_ref>#2-guiding-decisions`), matching the headings as written — references, never a summary of them. Every phase's implementer and reviewer read them; a phase that doesn't know the non-goals is a phase that scope-creeps.
-- [ ] `resources` declares a `lane` pool at the **number of implementers** — one worktree each, kept for the whole run; reviewers have none and read the lane under review. Every gate that contends for something shared names its pool in `requires`.
+- [ ] Every node has `prompt_ref` (`<plan_ref>#phase-<number>`), `touches` from its **Touch List** block, and either no `gates` key (inheriting `defaults.gates`, the plan's or the project's) or the list it must pass. No node carries `"gates": []` unless `defaults.allow_ungated_phases` says the plan means it.
+- [ ] `project.env_files` — here or in `.vinta-ai-workflows.yaml`'s `maestro.project` — names every gitignored file the project's hooks, gates and settings read, found by reading `.gitignore`'s `*.example` siblings, the compose `env_file:` lines and the settings module.
+- [ ] **`plan_context_refs` names the Goals and Guiding Decisions anchors** (`<plan_ref>#1-goals`, `<plan_ref>#2-guiding-decisions`), matching the headings as written — references, never a summary of them. Every phase's implementer reads them; a phase that doesn't know the non-goals is a phase that scope-creeps.
+- [ ] `resources` declares a `lane` pool at the **number of implementers** — one worktree each, kept for the whole run. Every gate that contends for something shared names its pool in `requires`.
 - [ ] **`project` decided, not defaulted** — asked via `AskUserQuestion`, then either written (roles `dev` / `test`, each naming its own database, engine fields filled from the project, `migrate_cmd` read out of its task runner) or deliberately omitted because lanes share the main checkout's database. No `reset_cmd`, no compose project name, no seed command, no env-file strategy — those are the worktree's, not the plan's.
 - [ ] No credential anywhere in the workflow file: `connection_url_var` is a variable name, and `server_url` is a host and port.
-- [ ] Model ids come from [resources/ai-models.yaml](resources/ai-models.yaml) and appear **only** in the `crew` block — no node carries a `model`, and `crew` transcribes the Crew table row for row.
-- [ ] **Nothing copied from `.vinta-ai-workflows.yaml`.** Gates the project supplies are referenced by type name or declared with `"type"` and only the overriding fields; pools, chores, `project` and `defaults` the project already declares are not repeated.
-- [ ] `deslop` is declared and named in `defaults.chores` — here, or by the project's `maestro:` section — so every phase's diff gets the comment pass before it is gated. No node carries its own `chores` unless that phase genuinely needs a different set.
+- [ ] Model ids come from [resources/ai-models.yaml](resources/ai-models.yaml) and appear **only** in the `crew` block — no node carries a `model`, and `crew` transcribes the Crew table's rows one for one, with no `role` field.
+- [ ] Every `crew` model with a `fallback:` in [resources/ai-models.yaml](resources/ai-models.yaml) has its `defaults.model_fallbacks` entry, unless the project's `maestro.defaults.model_fallbacks` already carries it.
+- [ ] **Nothing copied from `.vinta-ai-workflows.yaml`.** Gates the project supplies are referenced by type name or declared with `"type"` and only the overriding fields (never a `requires`-only entry without `"type"`); pools, chores, `project` and `defaults` the project already declares are not repeated — and not replaced with `[]`.
+- [ ] `review` (with `"when": "review"`) and `deslop` are declared and named in `defaults.chores`, in that order — here, or by the project's `maestro:` section — so every phase is reviewed once its gates are green and gets the comment pass after the review approves. No node carries its own `chores` unless that phase genuinely needs a different set.
 - [ ] `chores.review-canvas` (with `"when": "after_pr"`) is declared and in `defaults.chores` **if and only if** `.vinta-ai-workflows.yaml` has `integrations.pr-review-canvas: enabled`.
 - [ ] `pipelines` is omitted — `defaults.pipeline: standard-phase` is enough, and the executor supplies it.
+- [ ] **Validated with `vinta-ai-maestro validate --json`, exit `0`**, when maestro is installed, and again after every edit made during review. When it is not installed, the final message says the workflow was checked against its `$schema` only, and nothing was installed.
+- [ ] **Review offered** with `AskUserQuestion` (review page / in chat / done for now). On the review page: the URL went to the human and nowhere else, every sent comment got an answer on its own thread, and the loop ended on `approved` or on the human stopping it, with the page's server stopped. The `.review.json` beside the plan was written only by `review reply` and the page.

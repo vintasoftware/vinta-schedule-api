@@ -9,7 +9,7 @@ disable-model-invocation: true
 Drive a phased plan in [`ai-plans/`](ai-plans/) to completion. This skill is a **thin conductor**: it parses the plan once, builds the phase dependency graph, resolves a `WORKROOT` per lane, then runs a fixed three-step pipeline per phase — **several phases at a time when the graph allows it** — delegating the real work to focused sub-skills:
 
 1. [implement-phase](../implement-phase/SKILL.md) — compose prompt, pick model, spawn the implementer.
-2. [review-phase](../review-phase/SKILL.md) — three-layer review + fix loop.
+2. [review-phase](../review-phase/SKILL.md) — the thermo-nuclear review loop over the phase diff.
 3. the resolved integrate-phase variant — [integrate-phase-stacked](../integrate-phase-stacked/SKILL.md) when `run_options.commit_strategy_resolved = stacked-branches`, else [integrate-phase-modular](../integrate-phase-modular/SKILL.md) — push the branch + open the PR via context file.
 
 The conductor itself owns only: plan parsing, the dependency graph, phase classification, `WORKROOT` resolution, the scheduler, the progress-tracking directory, wave integration, the pause gate, and the final report. Harness-agnostic — claude-code, OpenAI Codex, Google's runtime, or any framework with a "spawn subagent with model + prompt" primitive.
@@ -47,7 +47,7 @@ Parse once, reuse for every phase:
    - **Goals + Non-goals** section — verbatim, used in every phase prompt.
    - **Guiding Decisions** section — verbatim. Pay attention to: feature flag (key, scope, default, flip-on criterion), storage shape, tenant scoping, API contract decisions.
    - **Data Model Changes** section — keep full body; later phases reference earlier subsections.
-   - **Phased Rollout** section — parse into phase records: `{ id, title, goal, body, spec_use_case, depends_on, wave, base_branch, crew_member, crew_tier, suggested_model_tier, reviewer_model_tier, fixer_model_tier, reusable_skills, acceptance, is_cross_repo, is_flag_removal }`. `depends_on` comes from the phase's `**Depends on**:` line; `wave` and `base_branch` are **derived**, never read from the plan. `reviewer_model_tier` / `fixer_model_tier` come from the phase's optional `**Review models**:` line (null when the phase doesn't override — most phases). `crew_member` comes from the phase's `**Assigned to**:` line, and its role and tier from the **Crew** table row of the same id (a phase assigned to a `reviewer` row is a plan defect — the roles are disjoint); on a legacy plan with no Crew table, read `suggested_model_tier` off `**Suggested AI model**:` instead and leave `crew_member` null.
+   - **Phased Rollout** section — parse into phase records: `{ id, title, goal, body, spec_use_case, depends_on, wave, base_branch, crew_member, crew_tier, suggested_model_tier, reusable_skills, acceptance, is_cross_repo, is_flag_removal }`. `depends_on` comes from the phase's `**Depends on**:` line; `wave` and `base_branch` are **derived**, never read from the plan. `crew_member` comes from the phase's `**Assigned to**:` line, and its tier from the **Crew** table row of the same id; on a legacy plan with no Crew table, read `suggested_model_tier` off `**Suggested AI model**:` instead and leave `crew_member` null.
    - **Risk & Rollout Notes**, **Open Questions**, **Touch List** sections — keep available; include in phase prompts only when relevant. The **Touch List** additionally feeds the file-overlap warning in the graph step below.
 3. **Classify each phase**: `is_cross_repo`, `is_flag_removal` — the conductor does NOT auto-execute these (see [Cross-repo phases](#cross-repo-phases) + [Flag-removal phase](#flag-removal-phase-always-out-of-scope)).
 4. **Build the dependency graph** — see [Build the phase dependency graph](#build-the-phase-dependency-graph) below. Do this before the opt-in questions: the answer to the parallel-execution question depends on whether the graph has any wave wider than one phase.
@@ -96,56 +96,33 @@ The plan's **Phased Rollout** section opens with an **Execution graph** table an
    - **An `**Assigned to**:` naming an agent the table does not list** → stop and ask. Don't invent a member: the roster is the plan's answer to "how many agents does this feature need", and adding one changes it.
    - **A phase with no `**Assigned to**:` line in a plan that has a Crew table** → stop and ask, for the same reason. Half a roster means two staffing rules running at once.
    - **A declared member assigned no phase** → stop and ask. That is an agent the plan budgeted for and never uses.
-   - **A phase assigned to a reviewer, or a reviewer that also takes phases** → stop and ask. The two roles are disjoint precisely so that an agent reviewing its own work is unrepresentable.
-   - **A reviewer below every phase on the plan** → stop and ask. A reviewer's tier is a floor too, so one below the cheapest phase would never be picked.
-   - **No reviewer at all** → not an error. Reviews fall back to `agent_models.reviewer`, cold, one session per phase. Say so once in the pool report so nobody reads the roster and assumes otherwise.
+   - **Reviewer rows on the table** (a plan written for the older review) → not an error. Reviews now run one tier above each phase's implementer, so those rows staff nothing: leave them out of the roster, and say so once in the pool report.
    - **A wave the roster cannot staff** → warn. Sort the wave's assigned tiers and the roster's tiers, compare one for one: a wave of two Tier 3 phases needs two members at Tier 3 or above, and a Tier 1 member on the roster does not help because the floor forbids handing them one. Such a wave still runs — it serializes — so say so now rather than letting it look like a slow machine later.
    - **A plan with no Crew table at all** is a legacy plan. Read each phase's `**Suggested AI model**:` tier instead and skip every check above.
 6. **Record the resolved graph and the roster** in `run.md` (see [Update tracking](#1d-update-tracking)) so a resume rebuilds the identical schedule and the identical staffing without re-asking anything.
 
 **The graph decides ordering — plan order does not.** Phase numbering is a reading aid for humans. A phase with no dependencies runs in wave 1 no matter how high its number is.
 
-## Agent models — reviewer, fixer, and mechanical steps
+## Agent models — reviewer, conflict fixer, and mechanical steps
 
-The per-phase **implementer** model stays plan-owned: the plan's **Crew** table names the agents and their tiers, and each phase's `**Assigned to**:` line names which one takes it (see [implement-phase](../implement-phase/SKILL.md)). The **reviewer** is another member of the same table — a row whose role is `reviewer`, which never takes a phase — picked as the cheapest one at or above this phase's tier, and falling back to `.vinta-ai-workflows.yaml`'s `agent_models` where the roster staffs none. The mechanical-step models are `agent_models`-only and never plan-owned. Read that section once in [Step 0](#step-0--locate--parse-plan) alongside `run_options`.
+The per-phase **implementer** model stays plan-owned: the plan's **Crew** table names the agents and their tiers, and each phase's `**Assigned to**:` line names which one takes it (see [implement-phase](../implement-phase/SKILL.md)). The **reviewer** is derived, never configured: [review-phase](../review-phase/SKILL.md) runs it one tier above the tier the phase's implementer actually ran at. The conflict-fixer and mechanical-step models are `.vinta-ai-workflows.yaml`'s `agent_models` only, and never plan-owned. Read that section once in [Step 0](#step-0--locate--parse-plan) alongside `run_options`. A plan written for the older review may still carry a `Role` column and reviewer rows on its **Crew** table, or `**Review models**:` lines on its phases: ignore all three.
 
-## Resolve an `agent_models` tier to a spawn model
+## Resolve a tier to a spawn model
 
-`.vinta-ai-workflows.yaml` may carry an `agent_models` section mapping a role/task (`reviewer`, `fixer`, `worktree_prep`, `integrate`) to a **tier** (1–4) into the same table the per-phase implementer suggestion uses — [`ai-tools/skills/plan-feature/resources/ai-models.yaml`](../plan-feature/resources/ai-models.yaml). `agent_models` is the **project default** for these roles; for `reviewer` / `fixer`, a plan phase's optional `**Review models**:` line may override the tier for that one phase (the caller resolves that precedence and hands this block the effective tier). The mechanical steps (`worktree_prep`, `integrate`) are never plan-named. To turn a tier into the model a spawn actually uses:
+Every model choice below is a **tier** (1–4) into the same table the per-phase implementer uses — [`ai-tools/skills/plan-feature/resources/ai-models.yaml`](../plan-feature/resources/ai-models.yaml). Where the tier comes from depends on the role:
 
-1. Determine the **effective tier** for the role. For the mechanical steps it is simply `agent_models.<role>`. For `reviewer` / `fixer` there are now three sources, in this order:
-   1. a per-phase `**Review models**:` override the conductor passed;
-   2. **the cheapest reviewer on the plan's Crew table at or above the phase's tier** (see [Who reviews](#who-reviews-a-member-not-a-tier) below);
-   3. `agent_models.<role>`.
-2. **No effective tier (override absent AND key unset, or the whole `agent_models` section absent) → do not force a model.** Spawn with the runtime's default model (today's behavior). Skip the rest.
-3. Open [`ai-tools/skills/plan-feature/resources/ai-models.yaml`](../plan-feature/resources/ai-models.yaml), take that tier's `models`, **filter to the vendors the runtime actually exposes**, pick the cheapest/fastest survivor, and translate it to the runner's spawn form — the same resolution [implement-phase](../implement-phase/SKILL.md) runs for the implementer, only keyed by a config tier instead of a plan line.
-4. `ai-models.yaml` missing, or the tier has no runtime-available vendor → fall back to the runtime default and surface the fallback once. Never hard-fail a phase over a model-selection miss.
+- **`reviewer`** — one tier above the phase's implementer, derived by [review-phase](../review-phase/SKILL.md). Never configured and never plan-named. (`agent_models.reviewer` in older configs, and a plan's `**Review models**:` line or reviewer rows on its **Crew** table, are ignored.)
+- **`fixer`** — `agent_models.fixer`, for the merge-conflict fixer. A review finding is not this role's: the phase's own implementer fixes it, at its own tier.
+- **`worktree_prep`, `integrate`** — `agent_models.<role>`, for the mechanical steps below. Never plan-named.
 
-### Who reviews: a member, not a tier
+To turn the tier into the model a spawn actually uses:
 
-**Reviewers are their own members on the plan's Crew table**, with `role: reviewer`, and they never take phases. That is what makes an agent reviewing its own work impossible rather than merely unlikely — and it replaces an earlier rule that resolved a reviewer *model* one tier above the author, which was a proxy for independence and failed in both directions: a phase covered by the top-tier implementer had nobody above it and fell back to being read at its own tier, and a tier says nothing about *who* once a member is a durable agent rather than a model id.
+1. **No tier** (an `agent_models` key unset, or the whole section absent) → do not force a model. Spawn with the runtime's default model (today's behavior). Skip the rest.
+2. Open [`ai-tools/skills/plan-feature/resources/ai-models.yaml`](../plan-feature/resources/ai-models.yaml), take that tier's `models`, **filter to the vendors the runtime actually exposes**, pick the cheapest/fastest survivor, and translate it to the runner's spawn form — the same resolution [implement-phase](../implement-phase/SKILL.md) runs for the implementer.
+3. `ai-models.yaml` missing, or the tier has no runtime-available vendor → fall back to the runtime default and surface the fallback once. Never hard-fail a phase over a model-selection miss.
+4. The resolved model is out of quota or credits and its `ai-models.yaml` entry carries a `fallback:` → spawn on the fallback instead, by the same **Out of quota** rule the implementer follows in [implement-phase](../implement-phase/SKILL.md).
 
-Resolve it from the roster: the **cheapest reviewer at or above the phase's tier**. A reviewer's tier is a floor in the same way an implementer's is — it reads work at or below its own capability, never above it.
-
-Three consequences worth knowing:
-
-- **A reviewer is claimed, not borrowed.** It has one session ledger, so two reviews running as the same reviewer would collide over it; a phase whose reviewer is busy waits. That cannot deadlock — reviewers never take phases, so the wait is always on a review already running.
-- **A reviewer reads the lane it is reviewing**, uncommitted changes and all, so findings are fixed before the commit. It has no worktree of its own, and therefore keeps a session only when consecutive reviews land in the same lane.
-- **No reviewer on the roster → fall through to `agent_models.reviewer`**, cold, one session per phase. That is what every plan did before, and the one thing a roster-less plan leaves on the table.
-
-A plan with no **Crew** table skips this step entirely and resolves `agent_models.<role>` as it always did.
-
-### What `fixer` still governs
-
-`fixer` governs fewer rounds than it used to. A finding goes back to the phase's
-own implementer — the same agent, in the same session — which fixes at the tier
-of the crew member that took the phase
-because it *is* that member; `agent_models.fixer` applies to the cold cases
-only — a runtime that cannot continue a sub-agent, and the last round before
-giving up, which is deliberately handed to an agent that has not seen the work.
-See the fix loop in [review-phase](../review-phase/SKILL.md).
-
-Record the **model actually used** in tracking, **and which of the three sources it came from** — a review that quietly fell through to the project default because the roster had nobody above the author is a fact worth being able to read later. For `reviewer` / `fixer`, alongside the review note; for the mechanical steps, in the phase's tracking row next to the branch/PR fields.
+Record the **model actually used** in tracking: for the reviewer, alongside the review note in the phase's record; for the mechanical steps, in the phase's tracking row next to the branch/PR fields.
 
 ## Delegate a mechanical step to a configured model
 
@@ -158,7 +135,7 @@ Rules that hold **regardless of who runs the step**:
 
 - The **PR-context file + `open-pr.sh` is still the only PR-creation path.** An `integrate` delegate uses the bundled script; it never calls raw `gh pr create` / `glab mr create`.
 - The delegate is `read-write` (worktree provisioning writes dirs/DBs; integrate pushes + writes the PR-context file) but **makes no plan or code decisions** — a malformed or failed delegate report is surfaced to the user, never worked around.
-- This delegation is **separate from the phase-work sub-agents** (implementer / reviewer / fixer). Those still never branch, push, or open PRs — that prohibition is about code-authoring agents, not the dedicated mechanical delegate the conductor spawns to run the integrate step itself.
+- This delegation is **separate from the phase-work sub-agents** (implementer / reviewer / conflict fixer). Those still never branch, push, or open PRs — that prohibition is about code-authoring agents, not the dedicated mechanical delegate the conductor spawns to run the integrate step itself.
 
 ## Step 0.5 — Resolve `WORKROOT`
 
@@ -267,15 +244,13 @@ Parallel execution **requires** a worktree provisioner: the project's `commands.
 
 **Pool, don't provision per phase.** Provisioning a runnable worktree costs a dep install plus a DB fork. A plan with 14 phases must not pay that 14 times. Provision **`max_parallel_lanes` worktrees once** and reuse each one across the phases assigned to it:
 
-1. **Size the pool by the roster: one worktree per *implementer***, named for the member rather than numbered. Reviewers get none — see below. A plan with no **Crew** table falls back to `lanes = min(run_options.max_parallel_lanes, widest_wave)`.
+1. **Size the pool by the roster: one worktree per *implementer***, named for the member rather than numbered. A plan with no **Crew** table falls back to `lanes = min(run_options.max_parallel_lanes, widest_wave)`.
 
    **An implementer keeps their worktree for the whole run**, and that is the point rather than a detail. A sub-agent can only be continued into a directory it is already standing in, so a member that moved between phases would have to start cold every time — which is most of a phase's first turn spent rediscovering a codebase the same agent read an hour ago. Pinning the directory is what makes "reuse the agent" possible at all.
 
    It costs a checkout and a set of forked databases per implementer, including for members idle in most waves. That is the trade, and it is worth stating to the user in the pool report rather than discovering on a full disk.
 
-   **Reviewers work in the lane they are reviewing.** A reviewer reads the phase's `WORKROOT` directly — the implementer's own worktree, with that phase's changes still uncommitted in it. That is deliberate and is the whole reason review sits where it does in the phase: findings are fixed **before the commit**, in the working tree, rather than recorded as a mistake and then a correction on top of it. A reviewer with a checkout of its own would be reading a committed snapshot, which is strictly less than what is there and too late to act on.
-
-   The cost is that a reviewer's directory moves from phase to phase, so its session carries only when two consecutive reviews happen to land in the same lane. Nothing to configure: the runtime decides per turn, the same way it decides for anyone whose lane changed.
+   **The reviewer works in the lane it is reviewing.** [review-phase](../review-phase/SKILL.md) spawns it per phase, in that phase's `WORKROOT`, and it gets no worktree of its own.
 2. **Provision each lane.** Run the provisioner once per lane, plan-driven, with worktree name `plan-{plan-id-kebab}-crew-{implementer-id}` (or `plan-{plan-id-kebab}-lane-{i}` on a plan with no roster).
    - **Skill:** this is the mechanical `worktree_prep` step. Delegate all of them per the [Delegate a mechanical step to a configured model](#delegate-a-mechanical-step-to-a-configured-model) pattern when `agent_models.worktree_prep` is set, and **dispatch the provisioning calls concurrently**, because they are independent.
    - **Command:** run `commands.worktree_prepare` inline with `VINTA_WORKTREE_KIND=lane`, **one lane at a time**, and post-check each one per [Provisioning with the project's command](#provisioning-with-the-projects-command).
@@ -414,11 +389,7 @@ while PENDING or RUNNING:
 2. **Otherwise the cheapest free member at or above that member's tier.** A wave should not serialize behind one agent when a qualified peer is idle. Reach for the *cheapest* qualified one, not the best available — covering for a peer must not quietly promote the phase to the top tier, or a busy wave silently runs every Tier 2 phase on the Tier 4 member's model.
 3. **Otherwise nobody, and the phase waits** — even with a lane free. This is the one place staffing costs throughput, and it is deliberate: a phase run below its tier does not fail cleanly. It produces plausible code that fails review two rounds later, by which point nothing points back at the staffing decision.
 
-An implementer is held for the **whole phase**, not one turn of it: the fixer answering a review finding is the implementer continuing its own session, so handing the phase to someone else mid-flight would hand it to an agent with no session to continue. Release it when the phase settles.
-
-**A reviewer is claimed per review turn, not per phase.** It has one session ledger, so two reviews running as the same reviewer would either resume one session twice or overwrite each other's record of it. Claim it when the review starts, release it when the verdict is in — holding it for a whole phase would make a plan with one reviewer and three implementers run three phases strictly in series. A phase whose reviewer is busy waits, and that wait cannot deadlock: reviewers never take phases, so it is always waiting on a review already in flight. A plan that finds one reviewer too serialising staffs a second.
-
-Pick the reviewer the same way: the **cheapest reviewer on the roster at or above the phase's tier**. Never the phase's own implementer — the roles are disjoint, so that is not a rule to remember but a state the plan cannot describe.
+An implementer is held for the **whole phase**, not one turn of it: answering the review's findings is the implementer continuing its own session, so handing the phase to someone else mid-flight would hand it to an agent with no session to continue. Release it when the phase settles.
 
 **The wait cannot deadlock.** The floor is the assigned member's own tier, so a waiting phase is always waiting on somebody who is *holding another phase* — never on a qualification nobody on the roster has. If you find yourself with every agent idle and a phase that cannot be staffed, the plan assigned it to a member the **Crew** table does not list; stop and ask.
 
@@ -446,7 +417,7 @@ Invoke [implement-phase](../implement-phase/SKILL.md), passing the phase record,
 
 ### 1b. Review
 
-Invoke [review-phase](../review-phase/SKILL.md) against the phase diff, passing the phase body to walk, this lane's `WORKROOT`, `main_checkout`, **every sibling lane's workroot** (its Layer 1 stray-write check covers those too), `run_options.full_test_suite`, and the `reviewer` / `fixer` agent types with their `agent_models.reviewer` / `agent_models.fixer` tiers, **this phase's `reviewer_model_tier` / `fixer_model_tier` overrides (null when the phase didn't set a `**Review models**:` line)**, and **the phase's author tier plus the roster's reviewers** so a reviewer can be picked for it. review-phase prefers a phase override, then the cheapest qualified reviewer on the roster, then the `agent_models` default. It loops its three layers + fix loop until clean, then returns `PASS` (or the surfaced findings). Do not proceed to integrate while any layer is red.
+Invoke [review-phase](../review-phase/SKILL.md) against the phase diff, passing the phase body (the stated requirement), the phase's `base_branch`, the plan's **Goals + Non-goals** and **Guiding Decisions**, this lane's `WORKROOT` / `SANDBOX_TIER`, `main_checkout`, **every sibling lane's workroot** (for the stray-write check after each fix round), the phase's implementer sub-agent to continue, and the tier that implementer actually ran at — after any escalation, and the covering member's tier when a peer took the phase. review-phase runs the thermo-nuclear review loop with a reviewer one tier above that, and returns `PASS` only once the reviewer explicitly approves, or `STOPPED` when the human stopped the loop. Do not proceed to integrate unless it returned `PASS`. Record in `phase-{id}.md` the reviewer's model, the iterations, the rejected findings and the settled decisions it returns.
 
 ### 1c. Integrate
 
@@ -477,7 +448,7 @@ ai-plans/TRACKING_{plan-id}/
 
 **`run.md`** carries: feature name, plan path, started / last-updated dates, optional feature-flag info, **run options** (`pause_between_phases`, `generate_inline_comments`, `full_test_suite`, `use_worktree`, `parallel_phases`, `max_parallel_lanes`), the **resolved dependency graph** (phase id → `depends_on` + computed wave), the **lane pool** (per lane: `workroot`, `branch`, `worktree_summary`, `sandbox_tier`, `current_phase`), the **crew roster** (per member: id, role, tier, resolved model, its worktree for an implementer, the phases the plan assigned them, and the phases they actually took), the integration worktree, **If `run_options.commit_strategy_resolved = "modular-commits"`:** top-level `plan_branch:` field **Else (`stacked-branches`):** (per-phase branch lives inline under the per-phase fields), and per-phase status (`done` / `running` / `blocked` / `failed` / `deferred`) with the lane each ran on.
 
-**`phase-{id}.md`** carries: status, the crew member that took it + the model actually used + whether that member is the one the plan assigned + whether its session was continued from an earlier phase or started cold (and why, when cold) + the reviewer that read it, branch (stacked-branches only), base branch, wave, `depends_on`, and the 5–15 line summary the conductor writes **from the git diff plus the agent's report** — not from the agent's narration.
+**`phase-{id}.md`** carries: status, the crew member that took it + the model actually used + whether that member is the one the plan assigned + whether its session was continued from an earlier phase or started cold (and why, when cold) + the reviewer's model, the review iterations, the rejected findings and the settled decisions, branch (stacked-branches only), base branch, wave, `depends_on`, and the 5–15 line summary the conductor writes **from the git diff plus the agent's report** — not from the agent's narration.
 
 **`waves/wave-{N}.md`** carries: which lane branches were merged, in what order, any conflicts and how they were resolved, and the outer-gate result on the merged tree.
 
@@ -558,25 +529,25 @@ After the scheduler loop exits — every executable phase is `done`, `failed`, o
 - **Read AGENTS.md** in every phase prompt.
 - **Stage explicitly.** No `git add -A`.
 - **Subagents work in fresh sessions.** Each phase = a new subagent. The plan file plus the phase's dependency-closure tracking files = the context handoff.
-- **Conductor owns git topology.** Phase-work subagents (implementer / reviewer / fixer) commit but never branch, push, or open PRs. The one exception is a **mechanical `integrate` delegate** spawned per `agent_models.integrate` — it exists precisely to run the conductor's integrate step (push + PR via `open-pr.sh`) on a cheaper model, and the conductor still dictates the branch/base topology it uses.
+- **Conductor owns git topology.** Phase-work subagents (implementer / conflict fixer) commit, and the reviewer never edits; none of them branch, push, or open PRs. The one exception is a **mechanical `integrate` delegate** spawned per `agent_models.integrate` — it exists precisely to run the conductor's integrate step (push + PR via `open-pr.sh`) on a cheaper model, and the conductor still dictates the branch/base topology it uses.
 - **No AI co-author trailers in commits.** The project forbids them; treat any AI trailer as a BLOCKER.
 - **Trust the plan's per-phase model suggestion.** Implementer model selection lives in [implement-phase](../implement-phase/SKILL.md); the conductor never re-derives tiers.
-- **Reviewer / fixer / mechanical-step models come from `agent_models`, not the plan.** Resolve each configured tier via the [Agent models](#agent-models--reviewer-fixer-and-mechanical-steps) step; an unset key means the spawn uses the runtime default. The plan never names these models.
+- **The plan never names the reviewer, conflict-fixer or mechanical-step models.** The reviewer runs one tier above the phase's implementer; the others come from `agent_models` (see [Agent models](#agent-models--reviewer-conflict-fixer-and-mechanical-steps)), and an unset key means the spawn uses the runtime default.
 - **Don't re-implement what a project skill encodes.**
 - **Two-tier verification, in order, every phase.** Inner scoped, then the outer gate — enforced inside [implement-phase](../implement-phase/SKILL.md). The outer gate always runs the repo-wide type/build gate; its test scope follows `run_options.full_test_suite` (scoped suite by default, full repo suite when opted in).
-- **Three-layer review, every phase, no exceptions** — [review-phase](../review-phase/SKILL.md) is not optional and not inlined here.
+- **The review loop, every phase, no exceptions** — [review-phase](../review-phase/SKILL.md) is not optional and not inlined here, and a phase merges only on the reviewer's explicit approval.
 - **Orchestrator never edits code.**
 - **Feature flags = gates, not toggles for tests.**
 - **Never remove a feature flag from this skill.**
 - **Stop on Tier-4 failure.**
 - **Every stop for human input is a structured question.** Use `AskUserQuestion` (see **Asking the human** in [AGENTS.md](../../../AGENTS.md)) with 2–4 concrete options, the recommended one first. Never end a turn with a prose question or "reply go". Sub-agents return `NEEDS_INPUT`; the orchestrator relays it.
-- **Honor opt-in flags.** `run_options.pause_between_phases` controls the [pause gate](#1g-pause-gate-opt-in); `run_options.generate_inline_comments` controls whether the resolved integrate-phase variant — [integrate-phase-stacked](../integrate-phase-stacked/SKILL.md) when `run_options.commit_strategy_resolved = stacked-branches`, else [integrate-phase-modular](../integrate-phase-modular/SKILL.md) drafts inline comments (always writes the file when that step runs at all — empty comments when off); `run_options.use_worktree` controls whether the [Resolve WORKROOT step](#step-05--resolve-workroot) provisions worktrees and thus what `WORKROOT` / `SANDBOX_TIER` resolve to; `run_options.full_test_suite` controls the outer-gate test scope ([Implement](#1a-implement) + [Review](#1b-review) Layer 1) — scoped suite by default, full repo suite when `true`; `run_options.parallel_phases` + `run_options.max_parallel_lanes` control how many phases the [scheduler](#dispatch-loop) keeps in flight.
+- **Honor opt-in flags.** `run_options.pause_between_phases` controls the [pause gate](#1g-pause-gate-opt-in); `run_options.generate_inline_comments` controls whether the resolved integrate-phase variant — [integrate-phase-stacked](../integrate-phase-stacked/SKILL.md) when `run_options.commit_strategy_resolved = stacked-branches`, else [integrate-phase-modular](../integrate-phase-modular/SKILL.md) drafts inline comments (always writes the file when that step runs at all — empty comments when off); `run_options.use_worktree` controls whether the [Resolve WORKROOT step](#step-05--resolve-workroot) provisions worktrees and thus what `WORKROOT` / `SANDBOX_TIER` resolve to; `run_options.full_test_suite` controls the outer-gate test scope ([Implement](#1a-implement)) — scoped suite by default, full repo suite when `true`; `run_options.parallel_phases` + `run_options.max_parallel_lanes` control how many phases the [scheduler](#dispatch-loop) keeps in flight.
 - **The graph decides order, not the plan's numbering.** Never run a phase before every id in its `**Depends on**:` set is green, and never serialize two phases the graph says are independent just because one has a lower number.
 - **A lane only ever knows its own dependencies.** Pass a phase the tracking summaries of its transitive dependency closure and nothing more. Telling a lane about a sibling's work that is not in its base branch makes it code against files it cannot see.
 - **One worktree pool per plan run.** Size it once in the [pool step](#provision-the-lane-worktree-pool) and reuse each lane across phases. Never grow the pool mid-run; never silently fall back to the main checkout when provisioning fails (skill or project command), and never fall back to sequential without asking — parallel execution requires worktrees and refusing is the correct move.
 - **Reset a lane's DB before reusing it.** A lane carrying a previous phase's migrations silently invalidates the next phase's tests. No `reset_cmd` in the lane's summary (or no summary) and a migration on either side → re-provision that lane instead.
 - **Don't auto-tear-down any worktree.** Step 2 surfaces every lane's teardown command; the user runs them when ready. A failed phase's lane is the only place its state survives.
-- **`WORKROOT` is resolved once per lane, used everywhere.** Every sub-skill takes `WORKROOT` / `SANDBOX_TIER` as data — no step re-derives worktree state, and no step reads another lane's. OS-level prevention (sandbox wrap in implement-phase when `SANDBOX_TIER = enforced`, denying the whole pool root) plus the review-phase stray-write backstop across the main checkout and every sibling lane keep foreign writes out; see [worktree-seam](../implement-phase/SKILL.md#3-spawn-the-subagent).
+- **`WORKROOT` is resolved once per lane, used everywhere.** Every sub-skill takes `WORKROOT` / `SANDBOX_TIER` as data — no step re-derives worktree state, and no step reads another lane's. OS-level prevention (sandbox wrap in implement-phase when `SANDBOX_TIER = enforced`, denying the whole pool root) plus the stray-write backstop across the main checkout and every sibling lane, run after the implementer and after every fix round, keep foreign writes out; see [worktree-seam](../implement-phase/SKILL.md#3-spawn-the-subagent).
 - **The orchestrator never edits code — merge conflicts included.** A conflicted wave or `integ-` merge goes to a fixer subagent in the integration worktree, then back through the outer gate.
 - **A failed phase blocks its dependents, not the run.** Let in-flight lanes finish, mark the transitive dependents blocked, keep dispatching what is still reachable, and report the whole picture.
 - **PR-context file + `open-pr.sh` is the only PR-creation path.** No raw `gh pr create` / `glab mr create` calls outside the bundled script.
@@ -592,7 +563,7 @@ After the scheduler loop exits — every executable phase is `done`, `failed`, o
 - [ ] This phase dispatched only after every id in its `depends_on` was green; its `base_branch` computed from that set (not from plan order).
 - [ ] Lane reset before reuse: base checked out, phase branch created, DB reset via `db_reset_cmd`.
 - [ ] [implement-phase](../implement-phase/SKILL.md) run: prompt composed with **Goals + Non-goals** + **Guiding Decisions** + relevant **Data Model Changes** subsection + **dependency-closure** tracking summaries + this phase's body; agent claimed off the roster and model resolved from their tier (cheapest available); implementer report received.
-- [ ] [review-phase](../review-phase/SKILL.md) run: Layers 1–3 clean; BLOCKERs fixed; SHOULD-FIX fixed or noted; outer gate re-run after any fix; when worktrees are in use, `git -C <tree> status --short` clean after the implementer and after every fixing round, whoever ran it, for the main checkout **and every sibling lane**.
+- [ ] [review-phase](../review-phase/SKILL.md) run: the reviewer explicitly approved; every fix round re-ran the outer gate and was committed; questions only a person could settle were asked and recorded; when worktrees are in use, `git -C <tree> status --short` clean after the implementer and after every fix round, for the main checkout **and every sibling lane**.
 - [ ] the resolved integrate-phase variant — [integrate-phase-stacked](../integrate-phase-stacked/SKILL.md) when `run_options.commit_strategy_resolved = stacked-branches`, else [integrate-phase-modular](../integrate-phase-modular/SKILL.md) run: **If `run_options.commit_strategy_resolved = "modular-commits"`:** Plan branch updated with phase commits (directly, or via the lane branch's wave merge); pushed. **Else (`stacked-branches`):** Phase branch created from its dependency-derived base; pushed. PR opened via the context file + `open-pr.sh`; PR URL captured.
   - [ ] When `run_options.commit_strategy_resolved = "modular-commits"`:
     - [ ] Commit units listed upfront before any staging.
