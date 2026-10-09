@@ -1,0 +1,29 @@
+{
+  "$schema": "https://github.com/vintasoftware/vinta-ai-workflows/schemas/plan-review.v1.schema.json",
+  "schema_version": 1,
+  "workflow_id": "2026-10-09-di-container-split",
+  "status": "approved",
+  "approved_at": "2026-10-09T17:41:49.653Z",
+  "comments": [],
+  "conversation": [
+    {
+      "id": "m1",
+      "kind": "message",
+      "author": {
+        "kind": "agent",
+        "name": "claude-code"
+      },
+      "body": "Plan: split AppContainer into per-app containers (flat access via inheritance), 10 phases in 7 waves, never more than 2 wide because billing -> webhooks -> calendar -> organizations are real code dependencies. Least sure of: (1) that an alias line (name = Upstream.name) in a subclass body behaves as assumed -- Phase 1's test decides, fallback is in Open Questions; (2) that billing belongs in payments/ rather than billing_integration/; (3) whether per-module phases are worth 7 waves vs bundling.",
+      "created_at": "2026-10-09T17:21:31.390Z"
+    },
+    {
+      "id": "m2",
+      "kind": "approval",
+      "author": {
+        "kind": "human"
+      },
+      "body": "",
+      "created_at": "2026-10-09T17:41:49.653Z"
+    }
+  ]
+}
