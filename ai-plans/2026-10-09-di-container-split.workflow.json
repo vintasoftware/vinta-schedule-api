@@ -9,7 +9,7 @@
   ],
   "base_branch": "main",
   "project": {
-    "migrate_cmd": "uv run python manage.py migrate",
+    "migrate_cmd": "scripts/maestro/lane-compose-run.sh python manage.py migrate",
     "databases": {
       "test": {
         "engine": "postgres",
@@ -17,8 +17,8 @@
         "name": "vinta_schedule_api",
         "server_url": "postgres://vinta_schedule_api@localhost:5432",
         "connection_url_var": "DATABASE_URL",
-        "createdb_cmd": "docker compose exec -T db createdb",
-        "dropdb_cmd": "docker compose exec -T db dropdb"
+        "createdb_cmd": "env -u COMPOSE_FILE docker compose -p vinta-schedule-api exec -T db createdb",
+        "dropdb_cmd": "env -u COMPOSE_FILE docker compose -p vinta-schedule-api exec -T db dropdb"
       }
     },
     "env_files": [
@@ -59,6 +59,7 @@
       "capacity": 1,
       "kind": "semaphore",
       "match": [
+        "*lane-compose-run.sh pytest*",
         "*uv run pytest*",
         "*python -m pytest*",
         "pytest*",
@@ -70,9 +71,18 @@
   "gates": {
     "test": {
       "type": "test",
+      "cmd": "scripts/maestro/lane-compose-run.sh pytest -n auto",
       "requires": [
         "test-suite"
       ]
+    },
+    "lint": {
+      "type": "lint",
+      "cmd": "scripts/maestro/lane-compose-run.sh ruff check ./"
+    },
+    "typecheck": {
+      "type": "typecheck",
+      "cmd": "scripts/maestro/lane-compose-run.sh sh -c 'mypy . && python manage.py check --deploy'"
     }
   },
   "nodes": [

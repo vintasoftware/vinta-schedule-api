@@ -96,8 +96,10 @@ maestro:
     gates: [lint, typecheck, test]
     chores: [review, deslop, review-canvas]
   # The compose Postgres has a password (`password`) the host cannot supply, so a host
-  # `createdb` / `dropdb` would prompt for one. Run them inside the db container, which
-  # trusts local connections; -h/-p/-U from server_url still follow.
+  # `createdb` / `dropdb` would prompt for one. Run them inside the main stack's db container,
+  # which trusts local connections; -h/-p/-U from server_url still follow. They run in a lane's
+  # environment too (the per-lane clone), where COMPOSE_FILE and the project name point at the
+  # lane's own stack, so both are pinned to the main stack here.
   project:
     migrate_cmd: "uv run python manage.py migrate"
     databases:
@@ -107,8 +109,8 @@ maestro:
         name: vinta_schedule_api
         server_url: "postgres://vinta_schedule_api@localhost:5432"
         connection_url_var: DATABASE_URL
-        createdb_cmd: "docker compose exec -T db createdb"
-        dropdb_cmd: "docker compose exec -T db dropdb"
+        createdb_cmd: "env -u COMPOSE_FILE docker compose -p vinta-schedule-api exec -T db createdb"
+        dropdb_cmd: "env -u COMPOSE_FILE docker compose -p vinta-schedule-api exec -T db dropdb"
     env_files:
       - .env
       - .env.docker
