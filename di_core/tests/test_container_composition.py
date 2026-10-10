@@ -45,30 +45,28 @@ EXPECTED_APP_CONTAINER_PROVIDERS = {
 
 
 class Leaf(BaseContainer):
-    leaf_value = providers.Object("leaf")
+    shared = providers.Singleton(object)
+
+
+class Left(Leaf):
+    left = providers.Factory(lambda shared: shared, shared=Leaf.shared)
     greeting = providers.Factory(
         lambda prefix: f"{prefix}-hello", prefix=BaseContainer.config.prefix
     )
 
 
-class Left(Leaf):
-    left = providers.Factory(lambda v: f"left:{v}", v=Leaf.leaf_value)
-
-
 class Right(Leaf):
-    right = providers.Factory(lambda v: f"right:{v}", v=Leaf.leaf_value)
+    right = providers.Factory(lambda shared: shared, shared=Leaf.shared)
 
 
 class Bottom(Left, Right):
     """Diamond: Left and Right share the Leaf base."""
 
-    both = providers.Factory(lambda a, b: (a, b), a=Left.left, b=Right.right)
-
 
 class Aliased(Leaf):
     # An alias line: the name is re-bound to the very same provider object.
-    leaf_value = Leaf.leaf_value
-    consumer = providers.Factory(lambda v: f"consumed:{v}", v=leaf_value)
+    shared = Leaf.shared
+    consumer = providers.Factory(lambda shared: shared, shared=shared)
 
 
 def test_app_container_provider_names_are_unchanged() -> None:
@@ -76,16 +74,18 @@ def test_app_container_provider_names_are_unchanged() -> None:
     assert set(AppContainer.providers) - {"__self__"} == EXPECTED_APP_CONTAINER_PROVIDERS
 
 
-def test_diamond_inheritance_exposes_every_provider_once() -> None:
-    assert {"leaf_value", "greeting", "left", "right", "both", "config"} <= set(Bottom.providers)
+def test_diamond_inheritance_shares_one_upstream_provider() -> None:
+    assert Bottom.shared is Leaf.shared
 
     container = Bottom()
 
-    assert container.both() == ("left:leaf", "right:leaf")
+    assert container.left() is container.right() is container.shared()
 
 
 def test_subclass_body_can_reference_upstream_provider() -> None:
-    assert Left().left() == "left:leaf"
+    container = Left()
+
+    assert container.left() is container.shared()
 
 
 def test_base_container_config_reference_resolves_from_dict() -> None:
@@ -101,9 +101,8 @@ def test_config_is_declared_once_across_the_hierarchy() -> None:
 
 
 def test_alias_line_keeps_a_single_provider_object() -> None:
-    assert Aliased.leaf_value is Leaf.leaf_value
+    assert Aliased.shared is Leaf.shared
 
     container = Aliased()
 
-    assert container.leaf_value() == "leaf"
-    assert container.consumer() == "consumed:leaf"
+    assert container.consumer() is container.shared()

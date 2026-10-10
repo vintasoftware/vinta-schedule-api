@@ -12,7 +12,9 @@ class BaseContainer(containers.DeclarativeContainer):
     - Reference configuration as ``BaseContainer.config.X``. Never declare a second
       ``providers.Configuration()``: it would silently shadow this one.
     - Never redeclare a provider name that another container owns. A later
-      declaration replaces the earlier one without any error.
+      declaration replaces the earlier one without any error. The only exception
+      is the temporary ``name = Upstream.name`` alias lines in ``AppContainer``
+      while providers are being moved out of it.
     """
 
     config = providers.Configuration()
