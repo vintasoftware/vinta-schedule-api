@@ -21,13 +21,6 @@ from vinta_billing.services.subscription_plan_factory.billing_plan_factory impor
 )
 from vinta_billing.services.subscription_service import SubscriptionService
 from vinta_billing.services.usage_warning_service import UsageWarningService
-from vintasend.services.notification_service import NotificationService
-from vintasend_django.services.notification_backends.django_db_notification_backend import (
-    DjangoDbNotificationBackend,
-)
-from vintasend_django.services.notification_template_renderers.django_templated_email_renderer import (
-    DjangoTemplatedEmailRenderer,
-)
 
 from audit_integration.containers import AuditContainer
 from audit_integration.repositories import OrganizationAuditRepository
@@ -52,24 +45,11 @@ from di_core.base import BaseContainer
 from legal.containers import LegalContainer
 from legal.services import ConsentService
 from notifications.containers import NotificationsContainer
-from notifications.notification_adapters.django_email import (
-    ReplyToDjangoEmailNotificationAdapter,
-)
-from notifications.notification_adapters.django_in_app import DjangoInAppNotificationAdapter
-from notifications.notification_template_renderers.django_in_app_renderer import (
-    DjangoTemplatedInAppRenderer,
-)
 from organizations.containers import OrganizationsContainer
 from organizations.services import OrganizationService
 from payments.containers import BillingContainer
 from public_api.containers import PublicApiContainer
 from public_api.services import PublicAPIAuthService
-from vintasend_django_sms_template_renderer.services.notification_template_renderers.django_sms_template_renderer import (
-    DjangoTemplatedSMSRenderer,
-)
-from vintasend_twilio.services.notification_adapters.twilio import (
-    TwilioSMSNotificationAdapter,
-)
 from webhooks.containers import WebhooksContainer
 from webhooks.services import (
     WebhookCalendarEventSideEffectsService,
@@ -211,29 +191,7 @@ class AppContainer(
         entitlement_service=entitlement_service,
     )
 
-    notification_service = providers.Singleton(
-        NotificationService[
-            ReplyToDjangoEmailNotificationAdapter[
-                DjangoDbNotificationBackend, DjangoTemplatedEmailRenderer
-            ],
-            DjangoDbNotificationBackend,
-        ],
-        notification_adapters=[
-            ReplyToDjangoEmailNotificationAdapter(
-                DjangoTemplatedEmailRenderer(),
-                DjangoDbNotificationBackend(),
-            ),
-            TwilioSMSNotificationAdapter(
-                DjangoTemplatedSMSRenderer(),
-                DjangoDbNotificationBackend(),
-            ),
-            DjangoInAppNotificationAdapter(
-                DjangoTemplatedInAppRenderer(),
-                DjangoDbNotificationBackend(),
-            ),
-        ],
-        notification_backend=DjangoDbNotificationBackend(),
-    )
+    notification_service = NotificationsContainer.notification_service
 
     dunning_service = providers.Factory(
         DunningService,
