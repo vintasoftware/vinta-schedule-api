@@ -119,7 +119,15 @@ def test_app_container_gateways_resolve_credentials_from_base_config() -> None:
         }
     )
 
-    assert container.stripe_payment_gateway().is_configured is True
-    assert container.stripe_subscription_gateway().is_configured is True
-    assert container.payment_gateway().is_configured is True
-    assert container.subscription_gateway().is_configured is True
+    stripe_payment = container.stripe_payment_gateway()
+    stripe_subscription = container.stripe_subscription_gateway()
+    mercadopago_payment = container.payment_gateway()
+    mercadopago_subscription = container.subscription_gateway()
+
+    assert (stripe_payment.api_key, stripe_payment.webhook_secret) == ("sk", "wh")
+    assert (stripe_subscription.api_key, stripe_subscription.webhook_secret) == ("sk", "wh")
+    assert (mercadopago_payment.access_token, mercadopago_payment.webhook_secret) == ("at", "mw")
+    assert (
+        mercadopago_subscription.access_token,
+        mercadopago_subscription.webhook_secret,
+    ) == ("at", "mw")
