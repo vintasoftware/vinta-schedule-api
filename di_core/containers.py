@@ -23,7 +23,6 @@ from organizations.containers import OrganizationsContainer
 from organizations.services import OrganizationService
 from payments.containers import BillingContainer
 from public_api.containers import PublicApiContainer
-from public_api.services import PublicAPIAuthService
 from webhooks.containers import WebhooksContainer
 
 
@@ -134,11 +133,7 @@ class AppContainer(
         entitlement_service=entitlement_service,
     )
 
-    public_api_auth_service = providers.Factory(
-        PublicAPIAuthService,
-        audit_service=audit_service,
-        entitlement_service=entitlement_service,
-    )
+    public_api_auth_service = PublicApiContainer.public_api_auth_service
 
     consent_service = LegalContainer.consent_service
 
