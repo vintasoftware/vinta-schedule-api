@@ -5,20 +5,18 @@ from legal.containers import LegalContainer
 
 
 class TestLegalContainerProviders:
-    """Verify that legal providers moved from AppContainer to LegalContainer."""
+    """Test that legal providers are properly wired in LegalContainer."""
 
     def test_consent_service_identity(self):
-        """AppContainer.consent_service is an alias to LegalContainer.consent_service."""
+        """Provider alias is correctly set."""
         assert AppContainer.consent_service is LegalContainer.consent_service
 
     def test_consent_service_has_audit_service_dependency(self):
-        """consent_service is properly wired with audit_service."""
+        """consent_service is wired with audit_service as a dependency."""
         container = AppContainer()
         consent = container.consent_service()
         audit = container.audit_service()
-        # Both should be properly instantiated
         assert consent is not None
         assert audit is not None
-        # consent_service should have the audit_service attribute
         assert hasattr(consent, "audit_service")
         assert consent.audit_service is not None
