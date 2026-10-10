@@ -48,7 +48,6 @@ from calendar_integration.services.external_event_change_request_service import 
 )
 from di_core.base import BaseContainer
 from legal.containers import LegalContainer
-from legal.services import ConsentService
 from notifications.containers import NotificationsContainer
 from notifications.notification_adapters.django_email import (
     ReplyToDjangoEmailNotificationAdapter,
@@ -321,10 +320,7 @@ class AppContainer(
         entitlement_service=entitlement_service,
     )
 
-    consent_service = providers.Factory(
-        ConsentService,
-        audit_service=audit_service,
-    )
+    consent_service = LegalContainer.consent_service
 
 
 container: AppContainer | None = None  # set during app startup
