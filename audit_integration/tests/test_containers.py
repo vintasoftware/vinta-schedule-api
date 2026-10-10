@@ -1,5 +1,7 @@
 """Tests for audit_integration.containers."""
 
+from dependency_injector import providers
+
 from audit_integration.containers import AuditContainer
 from di_core.containers import AppContainer
 
@@ -23,7 +25,7 @@ class TestAuditContainerProviders:
         )
 
     def test_singleton_repository_across_resolutions(self) -> None:
-        """Built AppContainer() resolves audit_repository as a Singleton across multiple calls."""
+        """audit_repository is a Singleton on a built AppContainer."""
         container = AppContainer()
         assert container.audit_repository() is container.audit_repository()
 
@@ -36,7 +38,8 @@ class TestAuditContainerProviders:
         assert first.repository is second.repository is container.audit_repository()
 
     def test_audit_service_receives_additional_repositories(self) -> None:
-        """audit_service is wired with the (empty) additional repositories mapping."""
+        """audit_service is wired with whatever audit_additional_repositories provides."""
         container = AppContainer()
-        assert container.audit_additional_repositories() == {}
-        assert container.audit_service().additional_repositories == {}
+        extra = object()
+        with container.audit_additional_repositories.override(providers.Dict(extra=extra)):
+            assert container.audit_service().additional_repositories == {"extra": extra}
