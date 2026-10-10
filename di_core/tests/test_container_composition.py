@@ -106,3 +106,20 @@ def test_alias_line_keeps_a_single_provider_object() -> None:
     container = Aliased()
 
     assert container.consumer() is container.shared()
+
+
+def test_app_container_gateways_resolve_credentials_from_base_config() -> None:
+    container = AppContainer()
+    container.config.from_dict(
+        {
+            "STRIPE_SECRET_KEY": "sk",
+            "STRIPE_WEBHOOK_SECRET": "wh",
+            "MERCADOPAGO_ACCESS_TOKEN": "at",
+            "MERCADOPAGO_WEBHOOK_SECRET": "mw",
+        }
+    )
+
+    assert container.stripe_payment_gateway().is_configured is True
+    assert container.stripe_subscription_gateway().is_configured is True
+    assert container.payment_gateway().is_configured is True
+    assert container.subscription_gateway().is_configured is True
