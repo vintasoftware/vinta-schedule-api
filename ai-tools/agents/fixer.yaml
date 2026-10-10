@@ -59,8 +59,8 @@ body: |
     one to skip the `_fk` column.
   - Celery task missing org context → add the organization id to the task signature;
     hydrate the context at the top of the task.
-  - Direct service import → register the service (if missing) in
-    `di_core/containers.py`; inject via the consumer's constructor / fixture.
+  - Direct service import → register the service (if missing) in the
+    owning app's `<app>/containers.py`; inject via the consumer's constructor / fixture.
 
   ## When you need a human decision
 

@@ -30,7 +30,7 @@ Postgres is the only persistent store. Recurring-event occurrences are calculate
 - **Strawberry GraphQL** + **strawberry-graphql-django** — public API at `public_api/`.
 - **django-allauth 65** (with `socialaccount`, `mfa`) — auth, social login, MFA.
 - **django-virtual-models** — queryset optimization driven by DRF serializers.
-- **dependency_injector 4.47** — DI containers in `di_core/containers.py`.
+- **dependency_injector 4.47** — DI containers, one per app in `<app>/containers.py`, composed in `di_core/containers.py`.
 - **vinta-django-billing** — billing engine of record (models, services, provider
   adapters, REST views); `payments/` configures it. See [Billing](#billing).
 - **django-fernet-encrypted-fields** — at-rest encrypted fields.
@@ -118,11 +118,19 @@ Skill-specific Verification blocks add commands on top (schema regenerate, migra
 
 ### Dependency Injection (`di_core/`)
 
-Every service registers in `di_core/containers.py`. Services receive dependencies via the container, not direct imports. When adding a new service:
+Every service registers in the container of the app that owns it, in `<app>/containers.py`. `di_core/containers.py` only composes them: `AppContainer` inherits every domain container and declares no provider itself, so each provider is still an attribute of `AppContainer` (`container.calendar_service`). Services receive dependencies via the container, not direct imports. When adding a new service:
 
 1. Define it in `<app>/services/<name>.py` as a stateless class.
-2. Register it in the appropriate provider in `di_core/containers.py`.
+2. Declare its provider in `<app>/containers.py`, in the container of the owning app.
 3. Inject it where consumed (views, GraphQL resolvers, other services) — do not import directly.
+
+Layering and conventions:
+
+- A container inherits the containers whose providers it consumes: `AuditContainer` and `NotificationsContainer` are leaves; `BillingContainer(Notifications)`, `LegalContainer(Audit)`, `WebhooksContainer(Billing)`, `PublicApiContainer(Billing, Audit)`, `CalendarContainer(Audit, Notifications, Billing, Webhooks)`, `OrganizationsContainer(Audit, Billing, Webhooks, Calendar)`. A new dependency between apps means a new base class.
+- Name an upstream provider as `Upstream.provider` (for example `AuditContainer.audit_service`). Inherited providers are not names in a subclass body.
+- `config` is declared once in `di_core/base.py`. Read it as `BaseContainer.config.X`; never declare a second `providers.Configuration()`.
+- Never declare a provider name that another container already owns: the later declaration silently replaces the earlier one. `di_core/tests/test_container_composition.py` fails on a duplicate name and on any provider declared in `AppContainer`.
+- A new domain container goes in `<app>/containers.py` and in `AppContainer`'s bases (the list stays explicit).
 
 This is enforced by convention, not the type system; a PR that direct-imports a service is a review block.
 
@@ -358,7 +366,7 @@ pin, and known package gaps); this is the load-bearing summary.
     project's audit trail and resume calendar sync, respectively.
 - **`VINTA_BILLING` in `settings/base.py`** is where every one of those seams, plus the
   provider credentials, the manager predicate, and the tenant-scoping `VIEW_MIXIN` /
-  `SERVICE_CONTAINER`, are wired in. `di_core/containers.py` still constructs every
+  `SERVICE_CONTAINER`, are wired in. `payments/containers.py` still constructs every
   billing service explicitly, importing the classes from `vinta_billing.services.*` —
   DI ownership stayed with the host.
 - **Routes** come from `vinta_billing.routing.get_routes()` (tenant-scoped REST views,
