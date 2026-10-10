@@ -6,7 +6,6 @@ from legal.containers import LegalContainer
 from legal.services import ConsentService
 from notifications.containers import NotificationsContainer
 from organizations.containers import OrganizationsContainer
-from organizations.services import OrganizationService
 from payments.containers import BillingContainer
 from public_api.containers import PublicApiContainer
 from public_api.services import PublicAPIAuthService
@@ -61,14 +60,7 @@ class AppContainer(
     bookable_slots_service = CalendarContainer.bookable_slots_service
     appointment_type_service = CalendarContainer.appointment_type_service
 
-    organization_service = providers.Factory(
-        OrganizationService,
-        calendar_service=calendar_service,
-        webhook_membership_side_effects_service=webhook_membership_side_effects_service,
-        audit_service=audit_service,
-        subscription_service=subscription_service,
-        entitlement_service=entitlement_service,
-    )
+    organization_service = OrganizationsContainer.organization_service
 
     public_api_auth_service = providers.Factory(
         PublicAPIAuthService,
