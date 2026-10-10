@@ -12,9 +12,8 @@ class BaseContainer(containers.DeclarativeContainer):
     - Reference configuration as ``BaseContainer.config.X``. Never declare a second
       ``providers.Configuration()``: it would silently shadow this one.
     - Never redeclare a provider name that another container owns. A later
-      declaration replaces the earlier one without any error. The only exception
-      is the temporary ``name = Upstream.name`` alias lines in ``AppContainer``
-      while providers are being moved out of it.
+      declaration replaces the earlier one without any error. A guard test in
+      ``di_core/tests/test_container_composition.py`` enforces this.
     """
 
     config = providers.Configuration()

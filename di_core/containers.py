@@ -1,5 +1,3 @@
-from dependency_injector import providers
-
 from audit_integration.containers import AuditContainer
 from calendar_integration.containers import CalendarContainer
 from legal.containers import LegalContainer
@@ -20,49 +18,10 @@ class AppContainer(
     NotificationsContainer,
     AuditContainer,
 ):
-    audit_repository = AuditContainer.audit_repository
-    audit_additional_repositories = AuditContainer.audit_additional_repositories
-    audit_service = AuditContainer.audit_service
+    """Composition of every domain container; it declares no provider of its own.
 
-    payment_gateway = BillingContainer.payment_gateway
-    subscription_gateway = BillingContainer.subscription_gateway
-    stripe_payment_gateway = BillingContainer.stripe_payment_gateway
-    stripe_subscription_gateway = BillingContainer.stripe_subscription_gateway
-    payment_provider_registry = BillingContainer.payment_provider_registry
-    subscription_provider_registry = BillingContainer.subscription_provider_registry
-    subscription_plan_factory = BillingContainer.subscription_plan_factory
-    payment_provider_resolver = BillingContainer.payment_provider_resolver
-    payment_service = BillingContainer.payment_service
-    subscription_service = BillingContainer.subscription_service
-    entitlement_service = BillingContainer.entitlement_service
-    metering_service = BillingContainer.metering_service
-
-    notification_service = NotificationsContainer.notification_service
-    dunning_service = BillingContainer.dunning_service
-    usage_warning_service = BillingContainer.usage_warning_service
-    cycle_close_service = BillingContainer.cycle_close_service
-
-    webhook_service = WebhooksContainer.webhook_service
-    webhook_calendar_side_effects_service = WebhooksContainer.webhook_calendar_side_effects_service
-    webhook_membership_side_effects_service = (
-        WebhooksContainer.webhook_membership_side_effects_service
-    )
-
-    calendar_side_effects_service = CalendarContainer.calendar_side_effects_service
-    calendar_permission_service = CalendarContainer.calendar_permission_service
-    external_event_change_request_service = CalendarContainer.external_event_change_request_service
-    booking_policy_service = CalendarContainer.booking_policy_service
-    booking_policy_permission_service = CalendarContainer.booking_policy_permission_service
-    external_client_identifier_service = CalendarContainer.external_client_identifier_service
-    calendar_service = CalendarContainer.calendar_service
-    bookable_slots_service = CalendarContainer.bookable_slots_service
-    appointment_type_service = CalendarContainer.appointment_type_service
-
-    organization_service = OrganizationsContainer.organization_service
-
-    public_api_auth_service = PublicApiContainer.public_api_auth_service
-
-    consent_service = LegalContainer.consent_service
+    Add a provider to the container of the app that owns it (``<app>/containers.py``).
+    """
 
 
 container: AppContainer | None = None  # set during app startup

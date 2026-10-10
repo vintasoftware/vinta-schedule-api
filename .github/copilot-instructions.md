@@ -18,7 +18,7 @@ Welcome to the Vinta Schedule project! This guide provides instructions for cont
 
 ## Dependency Injection
 - We use [`dependency_injector`](https://python-dependency-injector.ets-labs.org/) for dependency injection.
-- The `di_core` app contains our DI containers and configuration. All services and components should be registered in the container defined in `di_core/containers.py`.
+- Each app declares its providers in the container of the app that owns them, in `<app>/containers.py`; `di_core/containers.py` only composes them into `AppContainer`.
 - When developing new services, inject dependencies via the container rather than direct imports.
 
 ## Service Development
