@@ -48,7 +48,7 @@ body: |
   ### Convention violations
   - Complex queryset inline in a view / service / serializer / resolver (3+ chained
     filters, annotate-across-joins, complex Q-objects). Must live on the manager / queryset.
-  - Service direct-imported instead of DI-injected via `di_core/containers.py`.
+  - Service direct-imported instead of DI-injected via the owning app's container.
   - Business logic in a view / serializer / queryset instead of a service.
   - Missing `transaction.on_commit(lambda: task.delay(...))` when a Celery task is queued
     from a view or from a service called by a view (race against `ATOMIC_REQUESTS`).

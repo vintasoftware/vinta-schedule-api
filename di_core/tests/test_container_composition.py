@@ -1,7 +1,17 @@
+from collections import Counter
+
 from dependency_injector import providers
 
+from audit_integration.containers import AuditContainer
+from calendar_integration.containers import CalendarContainer
 from di_core.base import BaseContainer
 from di_core.containers import AppContainer
+from legal.containers import LegalContainer
+from notifications.containers import NotificationsContainer
+from organizations.containers import OrganizationsContainer
+from payments.containers import BillingContainer
+from public_api.containers import PublicApiContainer
+from webhooks.containers import WebhooksContainer
 
 
 # Captured from the unmodified ``AppContainer`` before the composition split.
@@ -41,6 +51,18 @@ EXPECTED_APP_CONTAINER_PROVIDERS = {
     "webhook_calendar_side_effects_service",
     "webhook_membership_side_effects_service",
     "webhook_service",
+}
+
+
+DOMAIN_CONTAINERS = {
+    "audit_integration": AuditContainer,
+    "notifications": NotificationsContainer,
+    "payments": BillingContainer,
+    "legal": LegalContainer,
+    "webhooks": WebhooksContainer,
+    "public_api": PublicApiContainer,
+    "calendar_integration": CalendarContainer,
+    "organizations": OrganizationsContainer,
 }
 
 
@@ -131,3 +153,28 @@ def test_app_container_gateways_resolve_credentials_from_base_config() -> None:
         mercadopago_subscription.access_token,
         mercadopago_subscription.webhook_secret,
     ) == ("at", "mw")
+
+
+def test_no_provider_name_is_declared_in_more_than_one_domain_container() -> None:
+    declared = Counter(
+        name
+        for container in DOMAIN_CONTAINERS.values()
+        for name in container.cls_providers
+        if name != "config"
+    )
+
+    assert {name: count for name, count in declared.items() if count > 1} == {}
+
+
+def test_app_container_declares_no_provider_of_its_own() -> None:
+    assert set(AppContainer.cls_providers) - {"__self__"} == set()
+
+
+def test_every_domain_container_is_a_base_of_app_container() -> None:
+    assert all(issubclass(AppContainer, container) for container in DOMAIN_CONTAINERS.values())
+
+
+def test_each_domain_container_lives_in_its_app_containers_module() -> None:
+    assert {app: container.__module__ for app, container in DOMAIN_CONTAINERS.items()} == {
+        app: f"{app}.containers" for app in DOMAIN_CONTAINERS
+    }
