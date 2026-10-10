@@ -1,4 +1,5 @@
-from vinta_billing.services.entitlement_service import EntitlementService
+import pytest
+from dependency_injector import providers
 
 from di_core.containers import AppContainer
 from webhooks.containers import WebhooksContainer
@@ -9,41 +10,44 @@ from webhooks.services import (
 )
 
 
-def test_webhook_service_receives_entitlement_service() -> None:
-    """webhook_service resolves to a WebhookService with entitlement_service."""
-    container = AppContainer()
-
-    webhook_svc = container.webhook_service()
-
-    assert isinstance(webhook_svc, WebhookService)
-    assert isinstance(webhook_svc.entitlement_service, EntitlementService)
+WEBHOOK_PROVIDER_NAMES = [
+    "webhook_service",
+    "webhook_calendar_side_effects_service",
+    "webhook_membership_side_effects_service",
+]
 
 
-def test_side_effects_services_receive_webhook_service() -> None:
-    """Both side-effects services receive WebhookService with correct type."""
-    container = AppContainer()
+@pytest.mark.parametrize("name", WEBHOOK_PROVIDER_NAMES)
+def test_app_container_alias_is_webhooks_container_provider(name: str) -> None:
+    assert getattr(AppContainer, name) is getattr(WebhooksContainer, name)
 
-    calendar_side_effects = container.webhook_calendar_side_effects_service()
-    membership_side_effects = container.webhook_membership_side_effects_service()
 
-    assert isinstance(calendar_side_effects, WebhookCalendarEventSideEffectsService)
-    assert isinstance(membership_side_effects, WebhookMembershipSideEffectsService)
-    assert isinstance(calendar_side_effects.webhook_service, WebhookService)
-    assert isinstance(membership_side_effects.webhook_service, WebhookService)
-    assert isinstance(calendar_side_effects.webhook_service.entitlement_service, EntitlementService)
+def test_webhooks_container_resolves_on_its_own() -> None:
+    container = WebhooksContainer()
+
+    assert isinstance(container.webhook_service(), WebhookService)
     assert isinstance(
-        membership_side_effects.webhook_service.entitlement_service, EntitlementService
+        container.webhook_calendar_side_effects_service(),
+        WebhookCalendarEventSideEffectsService,
+    )
+    assert isinstance(
+        container.webhook_membership_side_effects_service(),
+        WebhookMembershipSideEffectsService,
     )
 
 
-def test_webhook_providers_same_from_both_containers() -> None:
-    """The alias in AppContainer points to the same provider object."""
-    assert AppContainer.webhook_service is WebhooksContainer.webhook_service
-    assert (
-        AppContainer.webhook_calendar_side_effects_service
-        is WebhooksContainer.webhook_calendar_side_effects_service
-    )
-    assert (
-        AppContainer.webhook_membership_side_effects_service
-        is WebhooksContainer.webhook_membership_side_effects_service
-    )
+def test_webhook_service_receives_the_billing_entitlement_service() -> None:
+    container = AppContainer()
+    sentinel = object()
+
+    with container.entitlement_service.override(providers.Object(sentinel)):
+        assert container.webhook_service().entitlement_service is sentinel
+
+
+def test_side_effects_services_share_the_webhook_service_provider() -> None:
+    container = AppContainer()
+    sentinel = object()
+
+    with container.webhook_service.override(providers.Object(sentinel)):
+        assert container.webhook_calendar_side_effects_service().webhook_service is sentinel
+        assert container.webhook_membership_side_effects_service().webhook_service is sentinel
