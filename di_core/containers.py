@@ -25,11 +25,6 @@ from payments.containers import BillingContainer
 from public_api.containers import PublicApiContainer
 from public_api.services import PublicAPIAuthService
 from webhooks.containers import WebhooksContainer
-from webhooks.services import (
-    WebhookCalendarEventSideEffectsService,
-    WebhookMembershipSideEffectsService,
-    WebhookService,
-)
 
 
 class AppContainer(
@@ -64,19 +59,10 @@ class AppContainer(
     usage_warning_service = BillingContainer.usage_warning_service
     cycle_close_service = BillingContainer.cycle_close_service
 
-    webhook_service = providers.Factory(
-        WebhookService,
-        entitlement_service=entitlement_service,
-    )
-
-    webhook_calendar_side_effects_service = providers.Factory(
-        WebhookCalendarEventSideEffectsService,
-        webhook_service=webhook_service,
-    )
-
-    webhook_membership_side_effects_service = providers.Factory(
-        WebhookMembershipSideEffectsService,
-        webhook_service=webhook_service,
+    webhook_service = WebhooksContainer.webhook_service
+    webhook_calendar_side_effects_service = WebhooksContainer.webhook_calendar_side_effects_service
+    webhook_membership_side_effects_service = (
+        WebhooksContainer.webhook_membership_side_effects_service
     )
 
     calendar_side_effects_service = providers.Factory(
