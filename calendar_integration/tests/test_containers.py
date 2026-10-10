@@ -33,9 +33,10 @@ def test_calendar_side_effects_pipeline_holds_resolved_handler() -> None:
     service = AppContainer().calendar_side_effects_service()
 
     assert isinstance(service, CalendarSideEffectsService)
-    assert len(service.side_effects_pipeline) == 1
-    assert isinstance(service.side_effects_pipeline[0], WebhookCalendarEventSideEffectsService)
-    assert not isinstance(service.side_effects_pipeline[0], providers.Provider)
+    pipeline = list(service.side_effects_pipeline)
+    assert len(pipeline) == 1
+    assert isinstance(pipeline[0], WebhookCalendarEventSideEffectsService)
+    assert not isinstance(pipeline[0], providers.Provider)
 
 
 def test_calendar_container_resolves_on_its_own() -> None:
