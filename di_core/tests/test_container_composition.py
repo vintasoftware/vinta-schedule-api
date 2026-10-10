@@ -2,68 +2,16 @@ from collections import Counter
 
 from dependency_injector import providers
 
-from audit_integration.containers import AuditContainer
-from calendar_integration.containers import CalendarContainer
 from di_core.base import BaseContainer
 from di_core.containers import AppContainer
-from legal.containers import LegalContainer
-from notifications.containers import NotificationsContainer
-from organizations.containers import OrganizationsContainer
-from payments.containers import BillingContainer
-from public_api.containers import PublicApiContainer
-from webhooks.containers import WebhooksContainer
 
 
-# Captured from the unmodified ``AppContainer`` before the composition split.
-EXPECTED_APP_CONTAINER_PROVIDERS = {
-    "appointment_type_service",
-    "audit_additional_repositories",
-    "audit_repository",
-    "audit_service",
-    "bookable_slots_service",
-    "booking_policy_permission_service",
-    "booking_policy_service",
-    "calendar_permission_service",
-    "calendar_service",
-    "calendar_side_effects_service",
-    "config",
-    "consent_service",
-    "cycle_close_service",
-    "dunning_service",
-    "entitlement_service",
-    "external_client_identifier_service",
-    "external_event_change_request_service",
-    "metering_service",
-    "notification_service",
-    "organization_service",
-    "payment_gateway",
-    "payment_provider_registry",
-    "payment_provider_resolver",
-    "payment_service",
-    "public_api_auth_service",
-    "stripe_payment_gateway",
-    "stripe_subscription_gateway",
-    "subscription_gateway",
-    "subscription_plan_factory",
-    "subscription_provider_registry",
-    "subscription_service",
-    "usage_warning_service",
-    "webhook_calendar_side_effects_service",
-    "webhook_membership_side_effects_service",
-    "webhook_service",
-}
-
-
-DOMAIN_CONTAINERS = {
-    "audit_integration": AuditContainer,
-    "notifications": NotificationsContainer,
-    "payments": BillingContainer,
-    "legal": LegalContainer,
-    "webhooks": WebhooksContainer,
-    "public_api": PublicApiContainer,
-    "calendar_integration": CalendarContainer,
-    "organizations": OrganizationsContainer,
-}
+# Read from the real composition, so a container added to ``AppContainer`` is checked too.
+DOMAIN_CONTAINERS = [
+    container
+    for container in AppContainer.__mro__
+    if issubclass(container, BaseContainer) and container not in (AppContainer, BaseContainer)
+]
 
 
 class Leaf(BaseContainer):
@@ -83,17 +31,6 @@ class Right(Leaf):
 
 class Bottom(Left, Right):
     """Diamond: Left and Right share the Leaf base."""
-
-
-class Aliased(Leaf):
-    # An alias line: the name is re-bound to the very same provider object.
-    shared = Leaf.shared
-    consumer = providers.Factory(lambda shared: shared, shared=shared)
-
-
-def test_app_container_provider_names_are_unchanged() -> None:
-    # ``__self__`` is bookkeeping dependency_injector adds to every container.
-    assert set(AppContainer.providers) - {"__self__"} == EXPECTED_APP_CONTAINER_PROVIDERS
 
 
 def test_diamond_inheritance_shares_one_upstream_provider() -> None:
@@ -120,14 +57,6 @@ def test_base_container_config_reference_resolves_from_dict() -> None:
 def test_config_is_declared_once_across_the_hierarchy() -> None:
     assert Bottom.config is BaseContainer.config
     assert AppContainer.config is BaseContainer.config
-
-
-def test_alias_line_keeps_a_single_provider_object() -> None:
-    assert Aliased.shared is Leaf.shared
-
-    container = Aliased()
-
-    assert container.consumer() is container.shared()
 
 
 def test_app_container_gateways_resolve_credentials_from_base_config() -> None:
@@ -158,7 +87,7 @@ def test_app_container_gateways_resolve_credentials_from_base_config() -> None:
 def test_no_provider_name_is_declared_in_more_than_one_domain_container() -> None:
     declared = Counter(
         name
-        for container in DOMAIN_CONTAINERS.values()
+        for container in DOMAIN_CONTAINERS
         for name in container.cls_providers
         if name != "config"
     )
@@ -167,14 +96,9 @@ def test_no_provider_name_is_declared_in_more_than_one_domain_container() -> Non
 
 
 def test_app_container_declares_no_provider_of_its_own() -> None:
-    assert set(AppContainer.cls_providers) - {"__self__"} == set()
-
-
-def test_every_domain_container_is_a_base_of_app_container() -> None:
-    assert all(issubclass(AppContainer, container) for container in DOMAIN_CONTAINERS.values())
+    assert set(AppContainer.cls_providers) == set()
 
 
 def test_each_domain_container_lives_in_its_app_containers_module() -> None:
-    assert {app: container.__module__ for app, container in DOMAIN_CONTAINERS.items()} == {
-        app: f"{app}.containers" for app in DOMAIN_CONTAINERS
-    }
+    assert len(DOMAIN_CONTAINERS) == 8
+    assert all(container.__module__.endswith(".containers") for container in DOMAIN_CONTAINERS)

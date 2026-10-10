@@ -96,7 +96,7 @@ class ExternalEventChangeRequestService:
     ``FORBIDDEN`` policy.
 
     Constructor arguments are supplied by the DI container, which passes them
-    explicitly (see ``di_core/containers.py``) rather than through ``@inject``. There is
+    explicitly (see ``calendar_integration/containers.py``) rather than through ``@inject``. There is
     deliberately **no** ``@inject`` here: this module carries
     ``from __future__ import annotations``, which stringifies the ``Annotated[...,
     Provide[...]]`` markers ``@inject`` introspects at wiring time, making the decorator
