@@ -1,4 +1,4 @@
-from dependency_injector import containers, providers
+from dependency_injector import providers
 from vinta_billing.constants import PaymentProviders
 from vinta_billing.services.cycle_close_service import CycleCloseService
 from vinta_billing.services.dunning_service import DunningService
@@ -29,8 +29,10 @@ from vintasend_django.services.notification_template_renderers.django_templated_
     DjangoTemplatedEmailRenderer,
 )
 
+from audit_integration.containers import AuditContainer
 from audit_integration.repositories import OrganizationAuditRepository
 from audit_integration.services import OrganizationAuditService
+from calendar_integration.containers import CalendarContainer
 from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.bookable_slots_service import BookableSlotsService
 from calendar_integration.services.booking_policy_permission_service import (
@@ -46,7 +48,10 @@ from calendar_integration.services.external_client_identifier_service import (
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
+from di_core.base import BaseContainer
+from legal.containers import LegalContainer
 from legal.services import ConsentService
+from notifications.containers import NotificationsContainer
 from notifications.notification_adapters.django_email import (
     ReplyToDjangoEmailNotificationAdapter,
 )
@@ -54,7 +59,10 @@ from notifications.notification_adapters.django_in_app import DjangoInAppNotific
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
 )
+from organizations.containers import OrganizationsContainer
 from organizations.services import OrganizationService
+from payments.containers import BillingContainer
+from public_api.containers import PublicApiContainer
 from public_api.services import PublicAPIAuthService
 from vintasend_django_sms_template_renderer.services.notification_template_renderers.django_sms_template_renderer import (
     DjangoTemplatedSMSRenderer,
@@ -62,6 +70,7 @@ from vintasend_django_sms_template_renderer.services.notification_template_rende
 from vintasend_twilio.services.notification_adapters.twilio import (
     TwilioSMSNotificationAdapter,
 )
+from webhooks.containers import WebhooksContainer
 from webhooks.services import (
     WebhookCalendarEventSideEffectsService,
     WebhookMembershipSideEffectsService,
@@ -69,9 +78,16 @@ from webhooks.services import (
 )
 
 
-class AppContainer(containers.DeclarativeContainer):
-    config = providers.Configuration()
-
+class AppContainer(
+    OrganizationsContainer,
+    CalendarContainer,
+    PublicApiContainer,
+    WebhooksContainer,
+    LegalContainer,
+    BillingContainer,
+    NotificationsContainer,
+    AuditContainer,
+):
     #: The audit log's system of record. Every audit record is written here
     #: first, and this is what `AuditService` reads from unless a caller names
     #: another repository.
@@ -101,13 +117,13 @@ class AppContainer(containers.DeclarativeContainer):
 
     payment_gateway = providers.Factory(
         MercadoPagoPaymentAdapter,
-        access_token=config.MERCADOPAGO_ACCESS_TOKEN,
-        webhook_secret=config.MERCADOPAGO_WEBHOOK_SECRET,
+        access_token=BaseContainer.config.MERCADOPAGO_ACCESS_TOKEN,
+        webhook_secret=BaseContainer.config.MERCADOPAGO_WEBHOOK_SECRET,
     )
     subscription_gateway = providers.Factory(
         MercadoPagoSubscriptionAdapter,
-        access_token=config.MERCADOPAGO_ACCESS_TOKEN,
-        webhook_secret=config.MERCADOPAGO_WEBHOOK_SECRET,
+        access_token=BaseContainer.config.MERCADOPAGO_ACCESS_TOKEN,
+        webhook_secret=BaseContainer.config.MERCADOPAGO_WEBHOOK_SECRET,
     )
 
     #: Registered so the `payment_provider_registry`/`subscription_provider_registry`
@@ -116,13 +132,13 @@ class AppContainer(containers.DeclarativeContainer):
     #: unpinned organization routes onto this adapter.
     stripe_payment_gateway = providers.Factory(
         StripePaymentAdapter,
-        api_key=config.STRIPE_SECRET_KEY,
-        webhook_secret=config.STRIPE_WEBHOOK_SECRET,
+        api_key=BaseContainer.config.STRIPE_SECRET_KEY,
+        webhook_secret=BaseContainer.config.STRIPE_WEBHOOK_SECRET,
     )
     stripe_subscription_gateway = providers.Factory(
         StripeSubscriptionAdapter,
-        api_key=config.STRIPE_SECRET_KEY,
-        webhook_secret=config.STRIPE_WEBHOOK_SECRET,
+        api_key=BaseContainer.config.STRIPE_SECRET_KEY,
+        webhook_secret=BaseContainer.config.STRIPE_WEBHOOK_SECRET,
     )
 
     #: Selects the payment/subscription adapter by provider slug (the `provider`
