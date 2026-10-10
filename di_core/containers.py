@@ -5,7 +5,6 @@ from calendar_integration.containers import CalendarContainer
 from legal.containers import LegalContainer
 from notifications.containers import NotificationsContainer
 from organizations.containers import OrganizationsContainer
-from organizations.services import OrganizationService
 from payments.containers import BillingContainer
 from public_api.containers import PublicApiContainer
 from webhooks.containers import WebhooksContainer
@@ -59,14 +58,7 @@ class AppContainer(
     bookable_slots_service = CalendarContainer.bookable_slots_service
     appointment_type_service = CalendarContainer.appointment_type_service
 
-    organization_service = providers.Factory(
-        OrganizationService,
-        calendar_service=calendar_service,
-        webhook_membership_side_effects_service=webhook_membership_side_effects_service,
-        audit_service=audit_service,
-        subscription_service=subscription_service,
-        entitlement_service=entitlement_service,
-    )
+    organization_service = OrganizationsContainer.organization_service
 
     public_api_auth_service = PublicApiContainer.public_api_auth_service
 
