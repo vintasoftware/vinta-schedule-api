@@ -18,7 +18,6 @@ from calendar_integration.services.external_event_change_request_service import 
     ExternalEventChangeRequestService,
 )
 from legal.containers import LegalContainer
-from legal.services import ConsentService
 from notifications.containers import NotificationsContainer
 from organizations.containers import OrganizationsContainer
 from organizations.services import OrganizationService
@@ -155,10 +154,7 @@ class AppContainer(
         entitlement_service=entitlement_service,
     )
 
-    consent_service = providers.Factory(
-        ConsentService,
-        audit_service=audit_service,
-    )
+    consent_service = LegalContainer.consent_service
 
 
 container: AppContainer | None = None  # set during app startup
