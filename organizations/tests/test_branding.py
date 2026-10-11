@@ -958,7 +958,7 @@ class TestInvitationContextLogoUrl:
 
 def _build_email_notification_service() -> NotificationService:
     """A NotificationService wired with only the real email adapter (mirrors the
-    email channel of the DI wiring in di_core/containers.py), so
+    email channel of the DI wiring in notifications/containers.py), so
     ``create_one_off_notification`` sends through the actual send path -- context
     resolution, template rendering, and ``ReplyToDjangoEmailNotificationAdapter`` --
     landing in ``django.core.mail.outbox`` under the test settings' locmem backend."""

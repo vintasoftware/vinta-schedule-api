@@ -44,7 +44,7 @@ body: |
     querysets in `<app>/managers.py` + `<app>/querysets.py`. Chainable + composable.
     Examples: `calendar_integration/managers.py`, `calendar_integration/querysets.py`.
   - **Services in `<app>/services/`** — stateless, DI-injected, single responsibility.
-    Register in `di_core/containers.py`. Consumers (views, GraphQL resolvers, other
+    Register in the owning app's `<app>/containers.py`. Consumers (views, GraphQL resolvers, other
     services) receive services through DI — **never direct-import them.**
   - **Virtual models** (`<app>/virtual_models.py`) optimize querysets for DRF serializers.
     Add one when the resulting queryset would N+1 or over-fetch.

@@ -198,7 +198,7 @@ def payment_service(
     four collaborators but falls back to building its own from ``VINTA_BILLING``
     when they are not passed, which no ``di_container.<provider>.override(...)``
     can reach. The container is where this project wires all four
-    (``di_core/containers.py``), so asking it for the service is what keeps the
+    (the containers in ``<app>/containers.py``), so asking it for the service is what keeps the
     mocks in the loop -- and what makes these tests exercise the object
     production actually builds.
     """

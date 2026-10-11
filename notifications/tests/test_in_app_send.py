@@ -29,7 +29,7 @@ def _build_notification_service() -> NotificationService:
     """
     Build a NotificationService with the in-app adapter only.
 
-    Mirrors the DI wiring in di_core/containers.py for the IN_APP channel
+    Mirrors the DI wiring in notifications/containers.py for the IN_APP channel
     (without Email/SMS adapters to avoid needing their credentials/templates).
     Uses the stock DjangoDbNotificationBackend (the 1.1.3 enum bug is fixed
     upstream in vintasend-django 1.2.0).

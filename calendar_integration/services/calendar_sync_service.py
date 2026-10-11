@@ -1068,7 +1068,7 @@ class CalendarSyncService:
                     raise ImproperlyConfigured(
                         "ExternalEventChangeRequestService must be injected when an "
                         "organization's external_event_update_policy is CHANGE_REQUEST "
-                        "(check di_core/containers.py wiring)."
+                        "(check calendar_integration/containers.py wiring)."
                     )
                 retained_values = {
                     "title": existing_event.title,
@@ -1107,7 +1107,7 @@ class CalendarSyncService:
                     raise ImproperlyConfigured(
                         "ExternalEventChangeRequestService must be injected when an "
                         "organization's external_event_update_policy is FORBIDDEN "
-                        "(check di_core/containers.py wiring)."
+                        "(check calendar_integration/containers.py wiring)."
                     )
                 if context.calendar_adapter is None:
                     raise ImproperlyConfigured(
@@ -1162,7 +1162,7 @@ class CalendarSyncService:
             if self._external_event_change_request_service is None:
                 raise ImproperlyConfigured(
                     "ExternalEventChangeRequestService must be injected when an organization's "
-                    "external_event_update_policy is CHANGE_REQUEST (check di_core/containers.py wiring)."
+                    "external_event_update_policy is CHANGE_REQUEST (check calendar_integration/containers.py wiring)."
                 )
             proposed_values = {
                 "title": event.title,
@@ -1210,7 +1210,7 @@ class CalendarSyncService:
             if self._external_event_change_request_service is None:
                 raise ImproperlyConfigured(
                     "ExternalEventChangeRequestService must be injected when an organization's "
-                    "external_event_update_policy is FORBIDDEN (check di_core/containers.py wiring)."
+                    "external_event_update_policy is FORBIDDEN (check calendar_integration/containers.py wiring)."
                 )
             if context.calendar_adapter is None:
                 raise ImproperlyConfigured(

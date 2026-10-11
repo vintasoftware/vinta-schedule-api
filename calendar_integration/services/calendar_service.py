@@ -1,7 +1,7 @@
 """CalendarService — thin facade over the calendar sub-services.
 
 ``CalendarService`` is the injected entry point for all calendar operations. It is
-registered in ``di_core/containers.py`` as a ``providers.Factory`` and is the only
+registered in ``calendar_integration/containers.py`` as a ``providers.Factory`` and is the only
 calendar service visible to views, GraphQL resolvers, Celery tasks, and sibling
 services such as ``AppointmentTypeService``.
 

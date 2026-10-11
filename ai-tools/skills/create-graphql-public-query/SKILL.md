@@ -159,7 +159,7 @@ Mutations follow the same shape, on `Mutation` in `public_api/mutations.py` (or 
        return appointment_type
    ```
 
-3. **Register the service in `di_core/containers.py`** if it's new. See [AGENTS.md](../../../AGENTS.md) → Dependency Injection.
+3. **Register the service in the owning app's `<app>/containers.py`** if it's new. See [AGENTS.md](../../../AGENTS.md) → Dependency Injection.
 
 4. **Per-app mutation classes** — `<app>/mutations.py` defines a `@strawberry.type` class (e.g. `AppointmentTypeMutations`), then `Mutation(AppointmentTypeMutations, ...)` inherits it in `public_api/mutations.py`. Match the existing pattern.
 
