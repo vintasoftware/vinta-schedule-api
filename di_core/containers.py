@@ -1,5 +1,3 @@
-from dependency_injector import providers
-
 from audit_integration.containers import AuditContainer
 from calendar_integration.containers import CalendarContainer
 from legal.containers import LegalContainer
