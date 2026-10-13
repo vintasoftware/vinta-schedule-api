@@ -78,7 +78,6 @@ from calendar_integration.signals import reconcile_pools
 from organizations.models import Organization
 from payments.seams.resource_keys import APPOINTMENT_TYPES, AVAILABILITY_WINDOWS
 from payments.seams.scopes import scope_for
-from public_api.scoping import is_org_wide_token_for
 from users.models import User
 
 
@@ -3263,13 +3262,15 @@ class AppointmentTypeService:
     # ------------------------------------------------------------------
     @transaction.atomic()
     def create_appointment_type_event(
-        self, data: AppointmentTypeEventInputData, *, system_user: "SystemUser | None" = None
+        self, data: AppointmentTypeEventInputData, *, may_book_any_appointment_type: bool = False
     ) -> CalendarEvent:
         """Create an event booked through an AppointmentType.
 
-        ``system_user`` is the public API token making the call, if any. An
-        organization-wide token of this organization skips the appointment-type-level
-        gate below, as an authenticated ``User`` does. Other tokens go through it.
+        ``may_book_any_appointment_type`` is the caller's decision that whoever is
+        booking holds booking rights over every appointment type of the organization
+        (the public API sets it for an organization-wide token holding the
+        ``appointment_type`` resource). It skips the appointment-type-level gate below,
+        as an authenticated ``User`` does.
 
         Persistence strategy: the event is created
         on the primary calendar via `CalendarService.create_event` so existing
@@ -3308,9 +3309,9 @@ class AppointmentTypeService:
         #   - an authenticated ``User`` (appointment type owners, org admins), who
         #     already passed Django's view-level authentication and the
         #     AppointmentTypePermission object check;
-        #   - an organization-wide public API token for this organization
-        #     (``system_user``, checked by ``is_org_wide_token_for``), which holds the
-        #     ``appointment_type`` resource for the whole organization.
+        #   - a caller that passed ``may_book_any_appointment_type=True``: the public
+        #     API sets it for an organization-wide token of this organization holding
+        #     the ``appointment_type`` resource.
         # Skipping the gate also skips the duration pin it enforces. Slot selection,
         # availability and the booking policy below still run for every caller.
         #
@@ -3325,9 +3326,7 @@ class AppointmentTypeService:
             if self.calendar_service is not None
             else None
         )
-        caller_skips_gate = isinstance(calendar_service_user, User) or (
-            system_user is not None and is_org_wide_token_for(system_user, self.bound_organization)
-        )
+        caller_skips_gate = may_book_any_appointment_type or isinstance(calendar_service_user, User)
 
         if not caller_skips_gate:
             # ``start_time`` / ``end_time`` are passed here (not just ``appointment_type``) so a

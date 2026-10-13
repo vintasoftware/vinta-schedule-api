@@ -5,6 +5,7 @@ from calendar_integration.querysets import AppointmentTypeQuerySet, CalendarPool
 from organizations.authorization import membership_holds_permission
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import MANAGE_MEMBERS
+from public_api.constants import PublicAPIResources
 from public_api.models import SystemUser
 
 
@@ -82,17 +83,22 @@ def system_user_scope(system_user: SystemUser, organization: Organization) -> Sy
     return scope
 
 
-def is_org_wide_token_for(system_user: SystemUser, organization: Organization) -> bool:
-    """Whether ``system_user`` is an organization-wide token of ``organization``.
+def can_book_any_appointment_type(system_user: SystemUser, organization: Organization) -> bool:
+    """Whether ``system_user`` may book any appointment type of ``organization``.
 
-    The token must not be scoped to a member, and it must belong to ``organization``.
-    ``system_user_scope`` checks only the first part. A token with no organization
-    takes the organization from the request, so it could name any organization;
-    the second part keeps it out.
+    That is an organization-wide token of ``organization`` holding the
+    ``appointment_type`` resource. The token must not be scoped to a member, and it
+    must belong to ``organization``: ``system_user_scope`` checks only the first
+    part, and a token with no organization takes the organization from the request,
+    so it could name any organization. The resource is checked here too, so the
+    answer does not depend on the caller having run ``OrganizationResourceAccess``.
     """
     return (
         system_user.scoped_to_membership_user_id is None
         and system_user.organization_id == organization.id
+        and system_user.available_resources.filter(
+            resource_name=PublicAPIResources.APPOINTMENT_TYPE
+        ).exists()
     )
 
 
