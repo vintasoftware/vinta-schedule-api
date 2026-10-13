@@ -66,7 +66,6 @@ from common.utils.request_utils import proxied_client_ip
 from organizations.models import Organization, OrganizationMembership
 from public_api.extensions import raise_over_limit_graphql_error
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
-from public_api.scoping import can_book_any_appointment_type
 
 
 if TYPE_CHECKING:
@@ -821,14 +820,9 @@ class AppointmentTypeMutations:
                 for e in input.external_attendances
             ],
         )
-        system_user = info.context.request.public_api_system_user
         try:
             event = deps.appointment_type_service.create_appointment_type_event(
-                data,
-                may_book_any_appointment_type=(
-                    system_user is not None
-                    and can_book_any_appointment_type(system_user, organization)
-                ),
+                data, system_user=info.context.request.public_api_system_user
             )
         except AppointmentType.DoesNotExist:
             return AppointmentTypeEventResult(

@@ -3262,15 +3262,15 @@ class AppointmentTypeService:
     # ------------------------------------------------------------------
     @transaction.atomic()
     def create_appointment_type_event(
-        self, data: AppointmentTypeEventInputData, *, may_book_any_appointment_type: bool = False
+        self, data: AppointmentTypeEventInputData, *, system_user: "SystemUser | None" = None
     ) -> CalendarEvent:
         """Create an event booked through an AppointmentType.
 
-        ``may_book_any_appointment_type`` is the caller's decision that whoever is
-        booking holds booking rights over every appointment type of the organization
-        (the public API sets it for an organization-wide token holding the
-        ``appointment_type`` resource). It skips the appointment-type-level gate below,
-        as an authenticated ``User`` does.
+        ``system_user`` is the public API token making the call, if any. This method
+        checks it itself (``SystemUser.can_book_any_appointment_type``): an
+        organization-wide token of this organization holding the ``appointment_type``
+        resource skips the appointment-type-level gate below, as an authenticated
+        ``User`` does. Any other token goes through the gate.
 
         Persistence strategy: the event is created
         on the primary calendar via `CalendarService.create_event` so existing
@@ -3309,9 +3309,9 @@ class AppointmentTypeService:
         #   - an authenticated ``User`` (appointment type owners, org admins), who
         #     already passed Django's view-level authentication and the
         #     AppointmentTypePermission object check;
-        #   - a caller that passed ``may_book_any_appointment_type=True``: the public
-        #     API sets it for an organization-wide token of this organization holding
-        #     the ``appointment_type`` resource.
+        #   - an organization-wide public API token of this organization holding the
+        #     ``appointment_type`` resource (``system_user``, checked here by
+        #     ``SystemUser.can_book_any_appointment_type``, not trusted from the caller).
         # Skipping the gate also skips the duration pin it enforces. Slot selection,
         # availability and the booking policy below still run for every caller.
         #
@@ -3326,7 +3326,10 @@ class AppointmentTypeService:
             if self.calendar_service is not None
             else None
         )
-        caller_skips_gate = may_book_any_appointment_type or isinstance(calendar_service_user, User)
+        caller_skips_gate = isinstance(calendar_service_user, User) or (
+            system_user is not None
+            and system_user.can_book_any_appointment_type(self.organization_id)
+        )
 
         if not caller_skips_gate:
             # ``start_time`` / ``end_time`` are passed here (not just ``appointment_type``) so a

@@ -21,6 +21,7 @@ from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 
 import pytest
+from model_bakery import baker
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -53,6 +54,8 @@ from calendar_integration.services.dataclasses import (
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization
+from public_api.constants import PublicAPIResources
+from public_api.models import ResourceAccess, SystemUser
 
 
 # ---------------------------------------------------------------------------
@@ -301,22 +304,48 @@ def _private_pinned_booking(
     return svc, _build_event_input(appointment_type, internal_calendars, start, end)
 
 
+def _org_wide_token(organization: Organization | None) -> SystemUser:
+    """An organization-wide token of ``organization`` holding the appointment_type resource."""
+    system_user = baker.make(SystemUser, organization=organization, is_active=True)
+    baker.make(
+        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.APPOINTMENT_TYPE
+    )
+    return system_user
+
+
 @pytest.mark.django_db
-def test_private_appointment_type_may_book_any_appointment_type_books_any_length(
+def test_private_appointment_type_org_wide_token_books_any_length(
     organization, calendar_service, internal_calendars
 ):
-    """``may_book_any_appointment_type=True`` skips the appointment-type gate: a private
+    """An org-wide token of the organization skips the appointment-type gate: a private
     appointment type pinned to 30 minutes is booked for an hour with no code."""
     svc, event_input = _private_pinned_booking(organization, calendar_service, internal_calendars)
 
-    event = svc.create_appointment_type_event(event_input, may_book_any_appointment_type=True)
+    event = svc.create_appointment_type_event(
+        event_input, system_user=_org_wide_token(organization)
+    )
 
     assert event.appointment_type_fk_id == event_input.appointment_type_id
     assert event.end_time - event.start_time == timedelta(hours=1)
 
 
 @pytest.mark.django_db
-def test_may_book_any_appointment_type_still_respects_availability(
+def test_private_appointment_type_token_of_another_organization_is_gated(
+    organization, calendar_service, internal_calendars
+):
+    """The service checks the token itself: an org-wide token of another organization,
+    holding the resource, still goes through the gate and is refused."""
+    svc, event_input = _private_pinned_booking(organization, calendar_service, internal_calendars)
+    other = Organization.objects.create(name="Other Org", should_sync_rooms=False)
+
+    with pytest.raises(PermissionDenied):
+        svc.create_appointment_type_event(event_input, system_user=_org_wide_token(other))
+
+    assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
+
+
+@pytest.mark.django_db
+def test_org_wide_token_still_respects_availability(
     organization, calendar_service, internal_calendars
 ):
     """Skipping the appointment-type gate does not skip availability: a booking outside
@@ -326,13 +355,13 @@ def test_may_book_any_appointment_type_still_respects_availability(
     event_input.end_time += timedelta(hours=3)
 
     with pytest.raises(AppointmentTypeValidationError, match="not available"):
-        svc.create_appointment_type_event(event_input, may_book_any_appointment_type=True)
+        svc.create_appointment_type_event(event_input, system_user=_org_wide_token(organization))
 
     assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
 
 
 @pytest.mark.django_db
-def test_may_book_any_appointment_type_still_respects_the_booking_policy(
+def test_org_wide_token_still_respects_the_booking_policy(
     organization, calendar_service, internal_calendars
 ):
     """Skipping the appointment-type gate does not skip the booking policy: a booking an
@@ -349,7 +378,7 @@ def test_may_book_any_appointment_type_still_respects_the_booking_policy(
     create_booking_policy(appointment_type=appointment_type, lead_time_seconds=2 * 3600)
 
     with pytest.raises(BookingPolicyViolationError):
-        svc.create_appointment_type_event(event_input, may_book_any_appointment_type=True)
+        svc.create_appointment_type_event(event_input, system_user=_org_wide_token(organization))
 
     assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
 
