@@ -61,8 +61,6 @@ from organizations.models import Organization
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
 from organizations.tests.helpers import make_membership
 from public_api.constants import PublicAPIResources
-from public_api.models import ResourceAccess
-from public_api.services import PublicAPIAuthService
 from public_api.tests.helpers import make_token_post
 from users.models import User
 
@@ -159,40 +157,15 @@ def anon_client():
     return APIClient()
 
 
-def _grant_and_client(system_user, token, auth_service):
-    """Return an APIClient + a post() helper bound to the given credentials."""
-    from di_core.containers import container
-
-    assert container is not None  # noqa: S101
-
-    client = APIClient()
-
-    def post(query: str, variables: dict):
-        with container.public_api_auth_service.override(auth_service):
-            return client.post(
-                "/graphql/",
-                data={"query": query, "variables": variables},
-                format="json",
-                headers={"authorization": f"Bearer {system_user.id}:{token}"},
-            )
-
-    return post
+def _token_client(org, **kwargs):
+    """post() for a fresh token holding APPOINTMENT_TYPE access; see ``make_token_post``."""
+    return make_token_post(org, [PublicAPIResources.APPOINTMENT_TYPE], **kwargs)
 
 
 @pytest.fixture
-def org_a_client(org_a):
-    """(post_fn, system_user, org) for a token scoped to org A with APPOINTMENT_TYPE access."""
-    auth_service = PublicAPIAuthService()
-    system_user, token = auth_service.create_system_user(
-        integration_name="appointment_type_auth_probe_org_a", organization=org_a
-    )
-    baker.make(
-        ResourceAccess,
-        system_user=system_user,
-        resource_name=PublicAPIResources.APPOINTMENT_TYPE,
-    )
-    post = _grant_and_client(system_user, token, auth_service)
-    return post, system_user, org_a
+def org_a_post(org_a):
+    """post() for an org-wide token of org A with APPOINTMENT_TYPE access."""
+    return _token_client(org_a)
 
 
 def post_graphql_anon(client: APIClient, query: str, variables: dict) -> tuple[int, dict]:
@@ -351,11 +324,9 @@ class TestCreateAppointmentType:
             .exists()
         )
 
-    def test_cross_tenant_with_valid_credentials_rejected(self, org_a_client, org_b):
+    def test_cross_tenant_with_valid_credentials_rejected(self, org_a_post, org_b):
         """A token valid for org A cannot create an appointment type in org B."""
-        post, _system_user, _org_a = org_a_client
-
-        response = post(
+        body = org_a_post(
             CREATE_APPOINTMENT_TYPE_MUTATION,
             {
                 "input": {
@@ -368,8 +339,6 @@ class TestCreateAppointmentType:
             },
         )
 
-        assert response.status_code == 200
-        body = response.json()
         result = body["data"]["createAppointmentType"]
         assert result["success"] is False
         assert result["errorMessage"] is not None
@@ -379,11 +348,9 @@ class TestCreateAppointmentType:
             .exists()
         )
 
-    def test_authenticated_own_org_succeeds(self, org_a_client):
+    def test_authenticated_own_org_succeeds(self, org_a, org_a_post):
         """A token acting on its own organization still succeeds."""
-        post, _system_user, org_a = org_a_client
-
-        response = post(
+        body = org_a_post(
             CREATE_APPOINTMENT_TYPE_MUTATION,
             {
                 "input": {
@@ -400,8 +367,6 @@ class TestCreateAppointmentType:
             },
         )
 
-        assert response.status_code == 200
-        body = response.json()
         assert "errors" not in body or not body["errors"]
         result = body["data"]["createAppointmentType"]
         assert result["success"] is True
@@ -445,12 +410,10 @@ class TestUpdateAppointmentType:
         assert org_b_existing_appointment_type.name == original_name
 
     def test_cross_tenant_with_valid_credentials_rejected(
-        self, org_a_client, org_b, org_b_existing_appointment_type
+        self, org_a_post, org_b, org_b_existing_appointment_type
     ):
         original_name = org_b_existing_appointment_type.name
-        post, _system_user, _org_a = org_a_client
-
-        response = post(
+        body = org_a_post(
             UPDATE_APPOINTMENT_TYPE_MUTATION,
             {
                 "input": {
@@ -464,18 +427,16 @@ class TestUpdateAppointmentType:
             },
         )
 
-        assert response.status_code == 200
-        body = response.json()
         result = body["data"]["updateAppointmentType"]
         assert result["success"] is False
         assert result["errorMessage"] is not None
         org_b_existing_appointment_type.refresh_from_db()
         assert org_b_existing_appointment_type.name == original_name
 
-    def test_authenticated_own_org_succeeds(self, org_a_client, org_a_existing_appointment_type):
-        post, _system_user, org_a = org_a_client
-
-        response = post(
+    def test_authenticated_own_org_succeeds(
+        self, org_a, org_a_post, org_a_existing_appointment_type
+    ):
+        body = org_a_post(
             UPDATE_APPOINTMENT_TYPE_MUTATION,
             {
                 "input": {
@@ -493,8 +454,6 @@ class TestUpdateAppointmentType:
             },
         )
 
-        assert response.status_code == 200
-        body = response.json()
         assert "errors" not in body or not body["errors"]
         result = body["data"]["updateAppointmentType"]
         assert result["success"] is True
@@ -528,18 +487,14 @@ class TestDeleteAppointmentType:
         )
 
     def test_cross_tenant_with_valid_credentials_rejected(
-        self, org_a_client, org_b, org_b_existing_appointment_type
+        self, org_a_post, org_b, org_b_existing_appointment_type
     ):
         appointment_type_id = org_b_existing_appointment_type.id
-        post, _system_user, _org_a = org_a_client
-
-        response = post(
+        body = org_a_post(
             DELETE_APPOINTMENT_TYPE_MUTATION,
             {"input": {"organizationId": org_b.id, "appointmentTypeId": appointment_type_id}},
         )
 
-        assert response.status_code == 200
-        body = response.json()
         result = body["data"]["deleteAppointmentType"]
         assert result["success"] is False
         assert result["errorMessage"] is not None
@@ -549,17 +504,15 @@ class TestDeleteAppointmentType:
             .exists()
         )
 
-    def test_authenticated_own_org_succeeds(self, org_a_client, org_a_existing_appointment_type):
+    def test_authenticated_own_org_succeeds(
+        self, org_a, org_a_post, org_a_existing_appointment_type
+    ):
         appointment_type_id = org_a_existing_appointment_type.id
-        post, _system_user, org_a = org_a_client
-
-        response = post(
+        body = org_a_post(
             DELETE_APPOINTMENT_TYPE_MUTATION,
             {"input": {"organizationId": org_a.id, "appointmentTypeId": appointment_type_id}},
         )
 
-        assert response.status_code == 200
-        body = response.json()
         assert "errors" not in body or not body["errors"]
         result = body["data"]["deleteAppointmentType"]
         assert result["success"] is True
@@ -614,42 +567,35 @@ class TestCreateAppointmentTypeEvent:
         assert not CalendarEvent.objects.filter_by_organization(org_b.id).exists()
 
     def test_cross_tenant_with_valid_credentials_rejected(
-        self, org_a_client, org_b, org_b_appointment_type_with_bookable_slot
+        self, org_a_post, org_b, org_b_appointment_type_with_bookable_slot
     ):
         appointment_type, slot = org_b_appointment_type_with_bookable_slot
         calendar_id = slot.memberships.get().calendar_fk_id
-        post, _system_user, _org_a = org_a_client
-
         assert not CalendarEvent.objects.filter_by_organization(org_b.id).exists()
 
-        response = post(
+        body = org_a_post(
             CREATE_APPOINTMENT_TYPE_EVENT_MUTATION,
             _event_variables(org_b.id, appointment_type.id, slot.id, calendar_id),
         )
 
-        assert response.status_code == 200
-        body = response.json()
         result = body["data"]["createAppointmentTypeEvent"]
         assert result["success"] is False
         assert result["errorMessage"] is not None
         assert not CalendarEvent.objects.filter_by_organization(org_b.id).exists()
 
     def test_authenticated_own_org_succeeds(
-        self, org_a_client, org_an_appointment_type_with_bookable_slot
+        self, org_a, org_a_post, org_an_appointment_type_with_bookable_slot
     ):
         """An authenticated caller acting on its own org passes both permission checks
         and the input.organization_id check, and the event is created."""
         appointment_type, slot = org_an_appointment_type_with_bookable_slot
         calendar_id = slot.memberships.get().calendar_fk_id
-        post, _system_user, org_a = org_a_client
-
-        response = post(
+        body = org_a_post(
             CREATE_APPOINTMENT_TYPE_EVENT_MUTATION,
             _event_variables(org_a.id, appointment_type.id, slot.id, calendar_id),
         )
 
-        assert response.status_code == 200
-        result = response.json()["data"]["createAppointmentTypeEvent"]
+        result = body["data"]["createAppointmentTypeEvent"]
         assert result["errorMessage"] is None
         assert result["success"] is True
         event = CalendarEvent.objects.filter_by_organization(org_a.id).get()
@@ -660,11 +606,6 @@ class TestCreateAppointmentTypeEvent:
 # ---------------------------------------------------------------------------
 # 5. createAppointmentTypeEvent: organization-wide token bypass
 # ---------------------------------------------------------------------------
-
-
-def _token_client(org, **kwargs):
-    """post() for a fresh token holding APPOINTMENT_TYPE access; see ``make_token_post``."""
-    return make_token_post(org, [PublicAPIResources.APPOINTMENT_TYPE], **kwargs)
 
 
 @pytest.fixture
