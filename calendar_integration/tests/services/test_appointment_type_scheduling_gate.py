@@ -27,7 +27,11 @@ from calendar_integration.constants import (
     CalendarType,
     EventManagementPermissions,
 )
-from calendar_integration.exceptions import AppointmentTypeValidationError
+from calendar_integration.exceptions import (
+    AppointmentTypeValidationError,
+    BookingPolicyViolationError,
+)
+from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import (
     AppointmentType,
     AppointmentTypeSlot,
@@ -38,6 +42,7 @@ from calendar_integration.models import (
     CalendarManagementToken,
 )
 from calendar_integration.services.appointment_type_service import AppointmentTypeService
+from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
@@ -156,10 +161,12 @@ def _make_appointment_type_service(
     organization: Organization,
     calendar_service: CalendarService,
     permission_service: CalendarPermissionService | None = None,
+    booking_policy_service: BookingPolicyService | None = None,
 ) -> AppointmentTypeService:
     svc = AppointmentTypeService(
         calendar_service=calendar_service,
         calendar_permission_service=permission_service,
+        booking_policy_service=booking_policy_service,
     )
     svc.initialize(organization=organization)
     return svc
@@ -267,7 +274,9 @@ def test_private_appointment_type_codeless_booking_raises_permission_denied(
         )
 
 
-def _private_pinned_booking(organization, calendar_service, internal_calendars):
+def _private_pinned_booking(
+    organization, calendar_service, internal_calendars, booking_policy_service=None
+):
     """A private appointment type pinned to 30 minutes, an hour-long input for it, and
     the service to book it with no token or code."""
     appointment_type = _make_appointment_type(
@@ -284,7 +293,10 @@ def _private_pinned_booking(organization, calendar_service, internal_calendars):
         _make_available(cal, start, end)
 
     svc = _make_appointment_type_service(
-        organization, calendar_service, permission_service=CalendarPermissionService()
+        organization,
+        calendar_service,
+        permission_service=CalendarPermissionService(),
+        booking_policy_service=booking_policy_service,
     )
     return svc, _build_event_input(appointment_type, internal_calendars, start, end)
 
@@ -314,6 +326,29 @@ def test_may_book_any_appointment_type_still_respects_availability(
     event_input.end_time += timedelta(hours=3)
 
     with pytest.raises(AppointmentTypeValidationError, match="not available"):
+        svc.create_appointment_type_event(event_input, may_book_any_appointment_type=True)
+
+    assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
+
+
+@pytest.mark.django_db
+def test_may_book_any_appointment_type_still_respects_the_booking_policy(
+    organization, calendar_service, internal_calendars
+):
+    """Skipping the appointment-type gate does not skip the booking policy: a booking an
+    hour out, under a two-hour lead time, is still refused, and no event is created."""
+    svc, event_input = _private_pinned_booking(
+        organization,
+        calendar_service,
+        internal_calendars,
+        booking_policy_service=BookingPolicyService(),
+    )
+    appointment_type = AppointmentType.objects.filter_by_organization(organization.id).get(
+        id=event_input.appointment_type_id
+    )
+    create_booking_policy(appointment_type=appointment_type, lead_time_seconds=2 * 3600)
+
+    with pytest.raises(BookingPolicyViolationError):
         svc.create_appointment_type_event(event_input, may_book_any_appointment_type=True)
 
     assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
