@@ -6638,7 +6638,7 @@ def test_create_resource_calendar(organization):
 
 
 @pytest.mark.django_db
-def test_create_several_internal_calendars_in_one_organization(organization):
+def test_internal_calendars_store_null_external_id_so_several_fit_in_one_organization(organization):
     """Internal calendars store a NULL external_id, so the unique index lets them coexist.
 
     Regression: they used to store the empty string, so the second internal calendar in

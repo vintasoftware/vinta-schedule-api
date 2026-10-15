@@ -150,7 +150,7 @@ def existing_event(organization, calendar, attendee_membership):
         timezone="UTC",
         start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
         end_time_tz_unaware=datetime.datetime(2030, 6, 1, 11, 0),
-        external_id="",
+        external_id=None,
     )
     EventAttendance.objects.create(
         organization=organization,
@@ -667,7 +667,7 @@ def appointment_type_event(
         timezone="UTC",
         start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
         end_time_tz_unaware=datetime.datetime(2030, 6, 1, 11, 0),
-        external_id="",
+        external_id=None,
     )
     BlockedTime.objects.create(
         organization=organization,
@@ -1002,7 +1002,7 @@ class TestRescheduleAppointmentTypeEventWithCodePinnedDuration:
             timezone="UTC",
             start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
             end_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 45),
-            external_id="",
+            external_id=None,
         )
         token, code = permission_service.create_booking_token(
             organization_id=organization.id,
