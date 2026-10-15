@@ -233,6 +233,7 @@ def org_a_existing_appointment_type(org_a):
         organization=org_a,
         name="Org A Pre-existing AppointmentType",
         accepts_public_scheduling=True,
+        duration=datetime.timedelta(hours=1),
     )
 
 
@@ -604,7 +605,7 @@ class TestCreateAppointmentTypeEvent:
 
 
 # ---------------------------------------------------------------------------
-# 5. createAppointmentTypeEvent: organization-wide token bypass
+# 5. createAppointmentTypeEvent: org-wide and admin-scoped token bypass
 # ---------------------------------------------------------------------------
 
 
@@ -667,9 +668,11 @@ class TestCreateAppointmentTypeEventOrgWideTokenBypass:
         event = CalendarEvent.objects.filter_by_organization(org_a.id).get()
         assert event.appointment_type_fk_id == appointment_type.id
 
-    def test_org_wide_token_books_length_other_than_the_pinned_duration(
+    def test_org_wide_token_must_book_the_pinned_duration(
         self, org_a, org_a_private_pinned_appointment_type
     ):
+        """The token skips only the private-type check: an hour-long booking of an
+        appointment type pinned to 30 minutes is refused."""
         appointment_type, slot = org_a_private_pinned_appointment_type
         post = _token_client(org_a)
 
@@ -681,25 +684,47 @@ class TestCreateAppointmentTypeEventOrgWideTokenBypass:
         )
 
         result = body["data"]["createAppointmentTypeEvent"]
+        assert result == {
+            "success": False,
+            "errorMessage": "The requested time does not match this appointment type's duration.",
+            "event": None,
+        }
+        assert not CalendarEvent.objects.filter_by_organization(org_a.id).exists()
+
+    def test_admin_scoped_token_books_private_appointment_type(
+        self, org_a, org_a_private_pinned_appointment_type
+    ):
+        """A token scoped to an organization admin, here handed the APPOINTMENT_TYPE
+        resource directly, books a private appointment type, as an org-wide token does:
+        the public API gives it the same appointment-type powers (``system_user_scope``)."""
+        appointment_type, slot = org_a_private_pinned_appointment_type
+        user = baker.make(User, email=f"scoped_{uuid.uuid4().hex[:8]}@example.com")
+        membership = make_membership(
+            user=user, organization=org_a, groups=(GROUP_ORGANIZATION_ADMIN,), is_active=True
+        )
+        post = _token_client(org_a, scoped_to_membership=membership)
+
+        body = post(
+            CREATE_APPOINTMENT_TYPE_EVENT_MUTATION,
+            _private_event_variables(
+                org_a.id, appointment_type, slot, end_time="2030-06-01T10:30:00"
+            ),
+        )
+
+        result = body["data"]["createAppointmentTypeEvent"]
         assert result["errorMessage"] is None
         assert result["success"] is True
         event = CalendarEvent.objects.filter_by_organization(org_a.id).get()
-        assert event.end_time - event.start_time == datetime.timedelta(hours=1)
+        assert event.appointment_type_fk_id == appointment_type.id
 
-    @pytest.mark.parametrize(
-        "groups",
-        [(GROUP_ORGANIZATION_MEMBER,), (GROUP_ORGANIZATION_ADMIN,)],
-        ids=["scoped-member", "scoped-admin"],
-    )
-    def test_member_scoped_token_gets_no_bypass(
-        self, org_a, org_a_private_pinned_appointment_type, groups
-    ):
-        """A member-scoped token, here handed the APPOINTMENT_TYPE resource directly,
-        is still refused a private appointment type -- also when the member is an
-        organization admin."""
+    def test_member_scoped_token_gets_no_bypass(self, org_a, org_a_private_pinned_appointment_type):
+        """A token scoped to a regular member, here handed the APPOINTMENT_TYPE resource
+        directly, is still refused a private appointment type."""
         appointment_type, slot = org_a_private_pinned_appointment_type
         user = baker.make(User, email=f"scoped_{uuid.uuid4().hex[:8]}@example.com")
-        membership = make_membership(user=user, organization=org_a, groups=groups, is_active=True)
+        membership = make_membership(
+            user=user, organization=org_a, groups=(GROUP_ORGANIZATION_MEMBER,), is_active=True
+        )
         post = _token_client(org_a, scoped_to_membership=membership)
 
         body = post(

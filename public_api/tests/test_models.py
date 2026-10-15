@@ -3,7 +3,9 @@
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationMembership
+from organizations.models import Organization
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
+from organizations.tests.helpers import make_membership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from users.models import User
@@ -11,8 +13,9 @@ from users.models import User
 
 @pytest.mark.django_db
 class TestSystemUserCanBookAnyAppointmentType:
-    """Only an organization-wide token of the organization holding the
-    ``appointment_type`` resource may book any of its appointment types."""
+    """Only a token of the organization holding the ``appointment_type`` resource, and
+    either organization-wide or scoped to an admin member, may book any of its
+    appointment types."""
 
     @pytest.fixture
     def organization(self):
@@ -33,12 +36,32 @@ class TestSystemUserCanBookAnyAppointmentType:
 
         assert system_user.can_book_any_appointment_type(organization.id) is False
 
-    def test_member_scoped_token_may_not_book(self, organization):
-        membership = baker.make(
-            OrganizationMembership,
+    @pytest.mark.parametrize(
+        ("groups", "may_book"),
+        [((GROUP_ORGANIZATION_ADMIN,), True), ((GROUP_ORGANIZATION_MEMBER,), False)],
+        ids=["scoped-admin", "scoped-member"],
+    )
+    def test_member_scoped_token_may_book_only_as_an_admin(self, organization, groups, may_book):
+        """A token scoped to an admin member reaches every appointment type, as it does
+        everywhere else in the public API (``system_user_scope``); one scoped to a
+        regular member does not."""
+        membership = make_membership(
             user=baker.make(User, email="scoped-booker@example.com"),
             organization=organization,
+            groups=groups,
             is_active=True,
+        )
+        system_user = self._token(organization, scoped_to_membership_user_id=membership.user_id)
+
+        assert system_user.can_book_any_appointment_type(organization.id) is may_book
+
+    def test_token_scoped_to_an_inactive_admin_may_not_book(self, organization):
+        """A scoped token whose admin membership was deactivated fails closed."""
+        membership = make_membership(
+            user=baker.make(User, email="former-admin@example.com"),
+            organization=organization,
+            groups=(GROUP_ORGANIZATION_ADMIN,),
+            is_active=False,
         )
         system_user = self._token(organization, scoped_to_membership_user_id=membership.user_id)
 
