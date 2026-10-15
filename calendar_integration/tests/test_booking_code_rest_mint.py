@@ -348,7 +348,7 @@ class TestSixPurposeTargetCombinations:
             timezone="UTC",
             start_time_tz_unaware=BOOKING_START.replace(tzinfo=None),
             end_time_tz_unaware=BOOKING_END.replace(tzinfo=None),
-            external_id="",
+            external_id=None,
         )
 
         mint = _mint(
@@ -399,7 +399,7 @@ class TestSixPurposeTargetCombinations:
             timezone="UTC",
             start_time_tz_unaware=BOOKING_START.replace(tzinfo=None),
             end_time_tz_unaware=BOOKING_END.replace(tzinfo=None),
-            external_id="",
+            external_id=None,
         )
 
         mint = _mint(
@@ -440,7 +440,7 @@ class TestSixPurposeTargetCombinations:
             timezone="UTC",
             start_time_tz_unaware=BOOKING_START.replace(tzinfo=None),
             end_time_tz_unaware=BOOKING_END.replace(tzinfo=None),
-            external_id="",
+            external_id=None,
         )
 
         mint = _mint(
@@ -481,7 +481,7 @@ class TestSixPurposeTargetCombinations:
             timezone="UTC",
             start_time_tz_unaware=BOOKING_START.replace(tzinfo=None),
             end_time_tz_unaware=BOOKING_END.replace(tzinfo=None),
-            external_id="",
+            external_id=None,
         )
 
         mint = _mint(
@@ -1021,7 +1021,7 @@ class TestRevokeAuthorization:
             timezone="UTC",
             start_time_tz_unaware=BOOKING_START.replace(tzinfo=None),
             end_time_tz_unaware=BOOKING_END.replace(tzinfo=None),
-            external_id="",
+            external_id=None,
         )
         external_attendee = ExternalAttendee.objects.create(
             email="external@example.com",

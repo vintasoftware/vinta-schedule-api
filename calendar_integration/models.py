@@ -92,7 +92,13 @@ class Calendar(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseMode
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     email = models.EmailField(blank=True)
-    external_id = models.CharField(max_length=255, blank=True)
+    # ``null=True`` because of the ``(external_id, provider, organization_id)`` unique
+    # constraint below: an internal calendar (virtual, resource, bundle) has no external
+    # id, and Postgres exempts NULL from a unique index, so an organization can hold any
+    # number of them. The empty string would not -- only one per organization could hold
+    # it. Same exception to Django's "avoid null on string fields" rule as
+    # ``CalendarEvent.external_id``.
+    external_id = models.CharField(max_length=255, blank=True, null=True)  # noqa: DJ001
     provider = models.CharField(
         max_length=255, choices=CalendarProvider, default=CalendarProvider.INTERNAL
     )
@@ -232,7 +238,9 @@ class Calendar(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseMode
         """
         if self.provider == CalendarProvider.GOOGLE and self.is_resource and self.email:
             return self.email
-        return self.external_id
+        # Internal calendars have no external id. Callers only reach this for calendars
+        # that live at a provider, which always carry one.
+        return self.external_id or ""
 
     @property
     def latest_sync(self) -> "CalendarSync | None":

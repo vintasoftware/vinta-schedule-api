@@ -89,7 +89,7 @@ def existing_event(organization, calendar):
         timezone="UTC",
         start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
         end_time_tz_unaware=datetime.datetime(2030, 6, 1, 11, 0),
-        external_id="",
+        external_id=None,
         appointment_type=None,
     )
 
@@ -194,7 +194,7 @@ def appointment_type_event(organization, appointment_type, primary_calendar, sec
         timezone="UTC",
         start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
         end_time_tz_unaware=datetime.datetime(2030, 6, 1, 11, 0),
-        external_id="",
+        external_id=None,
     )
 
     slot_a = AppointmentTypeSlot.objects.filter_by_organization(organization.id).get(

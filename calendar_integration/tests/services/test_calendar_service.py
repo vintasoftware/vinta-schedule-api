@@ -6638,6 +6638,24 @@ def test_create_resource_calendar(organization):
 
 
 @pytest.mark.django_db
+def test_internal_calendars_store_null_external_id_so_several_fit_in_one_organization(organization):
+    """Internal calendars store a NULL external_id, so the unique index lets them coexist.
+
+    Regression: they used to store the empty string, so the second internal calendar in
+    an organization violated the (external_id, provider, organization) unique index.
+    """
+    service = CalendarService()
+    service.initialize_without_provider(organization=organization)
+
+    virtual = service.create_virtual_calendar(name="My Virtual Calendar")
+    room_a = service.create_resource_calendar(name="Conference Room A")
+    room_b = service.create_resource_calendar(name="Conference Room B")
+
+    assert [virtual.external_id, room_a.external_id, room_b.external_id] == [None, None, None]
+    assert len({virtual.pk, room_a.pk, room_b.pk}) == 3
+
+
+@pytest.mark.django_db
 def test_create_bundle_calendar_with_children(
     organization, child_calendar_internal, child_calendar_google
 ):

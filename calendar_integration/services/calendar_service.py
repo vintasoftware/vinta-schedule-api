@@ -781,7 +781,7 @@ class CalendarService(BaseCalendarService):
             created_calendar = ApplicationCalendarData(
                 id=None,
                 organization_id=organization.id,
-                external_id="",
+                external_id=None,
                 name=name,
                 description=None,
                 email=None,

@@ -203,7 +203,7 @@ def test_reject_update_pushes_retained_values_to_provider(
 
     write_adapter = MagicMock()
     write_adapter.update_event.return_value = _adapter_output(
-        "event_external_001", calendar.external_id
+        "event_external_001", calendar.provider_calendar_id
     )
 
     result = service.reject(
@@ -317,7 +317,7 @@ def test_reject_update_preserves_attendees_and_recurrence(
 
     write_adapter = MagicMock()
     write_adapter.update_event.return_value = _adapter_output(
-        "event_external_001", calendar.external_id
+        "event_external_001", calendar.provider_calendar_id
     )
 
     service.reject(change_request, membership=attendee_membership, write_adapter=write_adapter)
@@ -368,7 +368,7 @@ def test_reject_delete_recreates_and_rebinds_external_id(
 
     write_adapter = MagicMock()
     write_adapter.create_event.return_value = _adapter_output(
-        "event_external_NEW_999", calendar.external_id
+        "event_external_NEW_999", calendar.provider_calendar_id
     )
 
     result = service.reject(
@@ -570,7 +570,7 @@ def test_reject_delete_partial_failure_compensates(
 
     write_adapter = MagicMock()
     write_adapter.create_event.return_value = _adapter_output(
-        "event_external_NEW_999", calendar.external_id
+        "event_external_NEW_999", calendar.provider_calendar_id
     )
 
     # Force the local external-id rebind save (inside the post-create atomic block) to

@@ -87,7 +87,7 @@ def test_build_ics_synthetic_uid():
         calendar=calendar,
         title="Lunch",
         description="",
-        external_id="",  # No external ID
+        external_id=None,  # No external ID
         start_time_tz_unaware=datetime.datetime(2025, 6, 21, 12, 0),
         end_time_tz_unaware=datetime.datetime(2025, 6, 21, 13, 0),
         timezone="America/New_York",
