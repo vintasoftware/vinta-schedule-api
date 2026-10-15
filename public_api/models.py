@@ -178,8 +178,8 @@ class SystemUser(
         from public_api.scoping import system_user_scope  # noqa: PLC0415
 
         return (
-            self.organization is not None
-            and self.organization_id == organization_id
+            self.organization_id == organization_id
+            and self.organization is not None
             and self.available_resources.filter(
                 resource_name=PublicAPIResources.APPOINTMENT_TYPE
             ).exists()
