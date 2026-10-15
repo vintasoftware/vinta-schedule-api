@@ -3261,8 +3261,16 @@ class AppointmentTypeService:
     # Appointment-type event creation
     # ------------------------------------------------------------------
     @transaction.atomic()
-    def create_appointment_type_event(self, data: AppointmentTypeEventInputData) -> CalendarEvent:
+    def create_appointment_type_event(
+        self, data: AppointmentTypeEventInputData, *, system_user: "SystemUser | None" = None
+    ) -> CalendarEvent:
         """Create an event booked through an AppointmentType.
+
+        ``system_user`` is the public API token making the call, if any. This method
+        checks it itself (``SystemUser.can_book_any_appointment_type``): an
+        organization-wide token of this organization holding the ``appointment_type``
+        resource skips the appointment-type-level gate below, as an authenticated
+        ``User`` does. Any other token goes through the gate.
 
         Persistence strategy: the event is created
         on the primary calendar via `CalendarService.create_event` so existing
@@ -3297,15 +3305,22 @@ class AppointmentTypeService:
         appointment_type = self._get_appointment_type_by_id(data.appointment_type_id)
 
         # --- Appointment-type-level authorization gate ---
-        # The gate applies ONLY to codeless / unauthenticated booking paths — i.e.
-        # when the caller is not an authenticated ``User``.  Authenticated users
-        # (appointment type owners, org admins) bypass this check: they already passed Django's
-        # view-level authentication and the AppointmentTypePermission object check.
+        # An authenticated ``User`` (appointment type owners, org admins) skips this
+        # gate: they already passed Django's view-level authentication and the
+        # AppointmentTypePermission object check.
         #
-        # When the calendar service is initialized with a ``User``, the booking is
-        # an authenticated internal path and the gate is skipped.  For all other
-        # paths (no user, a raw token string, a SystemUser public-API token, or
-        # None), ``can_perform_appointment_type_scheduling`` decides:
+        # A public API token that may book any appointment type of this organization
+        # (``system_user``, checked here by ``SystemUser.can_book_any_appointment_type``,
+        # not trusted from the caller) skips only the private-type check. It still has
+        # to book the appointment type's pinned duration: a token is a long-lived
+        # credential, so it must not book any length the way a logged-in ``User`` can.
+        #
+        # Slot selection, availability and the booking policy below still run for
+        # every caller.
+        #
+        # For all other paths (no user, a raw token string, a member-scoped or
+        # org-less public API token, or None), ``can_perform_appointment_type_scheduling``
+        # decides:
         #   1. ``appointment_type.accepts_public_scheduling=True`` → allow (codeless public).
         #   2. An appointment-type-scoped token/code with CREATE permission → allow.
         #   3. Otherwise → PermissionDenied.
@@ -3314,9 +3329,21 @@ class AppointmentTypeService:
             if self.calendar_service is not None
             else None
         )
-        caller_is_authenticated_user = isinstance(calendar_service_user, User)
+        token_may_book_any_type = system_user is not None and (
+            system_user.can_book_any_appointment_type(self.organization_id)
+        )
 
-        if not caller_is_authenticated_user:
+        if token_may_book_any_type:
+            if (
+                self.calendar_permission_service is None
+                or not self.calendar_permission_service.appointment_type_duration_pin_satisfied(
+                    appointment_type, data.start_time, data.end_time
+                )
+            ):
+                raise PermissionDenied(
+                    "The requested time does not match this appointment type's duration."
+                )
+        elif not isinstance(calendar_service_user, User):
             # ``start_time`` / ``end_time`` are passed here (not just ``appointment_type``) so a
             # appointment-type-scoped booking code that pins a duration is enforced at this
             # gate. ``create_event`` below is called with ``appointment_type_authorized=True``,

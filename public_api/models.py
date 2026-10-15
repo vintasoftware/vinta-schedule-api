@@ -161,6 +161,31 @@ class SystemUser(
         # Skips exactly one class in the MRO -- the mixin -- and nothing below it.
         return super(SingleOrganizationModelMixin, self).save(*args, **kwargs)
 
+    def can_book_any_appointment_type(self, organization_id: int) -> bool:
+        """Whether this token may book any appointment type of the given organization.
+
+        That is a token of that organization holding the ``appointment_type`` resource
+        whose scope reaches every appointment type: an organization-wide token, or one
+        scoped to an active admin member. The scope comes from
+        ``public_api.scoping.system_user_scope``, the rule the rest of the public API
+        uses for appointment types, so the two cannot drift apart. The token must
+        belong to the organization: an org-less token takes its organization from the
+        request, so it could name any organization. The resource is checked here too,
+        so the answer does not depend on the caller having run
+        ``OrganizationResourceAccess``.
+        """
+        # Imported here: ``public_api.scoping`` imports this module.
+        from public_api.scoping import system_user_scope  # noqa: PLC0415
+
+        return (
+            self.organization_id == organization_id
+            and self.organization is not None
+            and self.available_resources.filter(
+                resource_name=PublicAPIResources.APPOINTMENT_TYPE
+            ).exists()
+            and system_user_scope(self, self.organization) in ("org_wide", "scoped_admin")
+        )
+
 
 class ResourceAccess(BaseModel):
     """

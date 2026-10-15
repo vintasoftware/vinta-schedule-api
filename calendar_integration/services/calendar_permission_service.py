@@ -378,7 +378,7 @@ class CalendarPermissionService:
 
         return required_permissions
 
-    def _appointment_type_duration_pin_satisfied(
+    def appointment_type_duration_pin_satisfied(
         self,
         appointment_type: AppointmentType,
         start_time: datetime.datetime,
@@ -435,7 +435,7 @@ class CalendarPermissionService:
         column, no extra query needed. When set and ``new_event`` is not
         ``None`` (i.e. this is a reschedule, not a cancellation), the NEW span
         is checked against that appointment type's duration pin
-        (``_appointment_type_duration_pin_satisfied``, including its fail-closed rule for
+        (``appointment_type_duration_pin_satisfied``, including its fail-closed rule for
         a misconfigured public appointment type). Single-calendar events
         (``appointment_type_id is None``) carry no duration constraint at all --
         see ``can_perform_scheduling``'s docstring for why that pin was
@@ -447,7 +447,7 @@ class CalendarPermissionService:
         # Appointment-type-duration guard, checked before anything else: a reschedule of a
         # appointment-type event is constrained by the APPOINTMENT_TYPE's pinned duration, not any
         # per-code pin -- duration pinning lives on AppointmentType (see
-        # ``_appointment_type_duration_pin_satisfied``). Skipped for cancellation
+        # ``appointment_type_duration_pin_satisfied``). Skipped for cancellation
         # (``new_event is None`` -- no new span to check) and for non-appointment-type
         # events (``appointment_type_id is None``).
         if new_event is not None and appointment_type_id is not None:
@@ -462,7 +462,7 @@ class CalendarPermissionService:
             # this should not happen: CalendarEvent.appointment type is a
             # PROTECT FK, so the appointment type cannot have been deleted out from under
             # a live event.
-            if appointment_type is None or not self._appointment_type_duration_pin_satisfied(
+            if appointment_type is None or not self.appointment_type_duration_pin_satisfied(
                 appointment_type, new_event.start_time, new_event.end_time
             ):
                 return False
@@ -497,7 +497,7 @@ class CalendarPermissionService:
         Single-calendar codes carry NO duration pin -- there is no
         ``Calendar.duration``. Duration pinning is a property of the
         ``AppointmentType`` being booked (see ``can_perform_appointment_type_scheduling`` /
-        ``_appointment_type_duration_pin_satisfied``): it exists specifically because a
+        ``appointment_type_duration_pin_satisfied``): it exists specifically because a
         codeless PUBLIC-APPOINTMENT_TYPE booking has no code to pin a length to. A
         single-calendar booking always requires a code (there is no codeless
         single-calendar path), so there was never an unconstrained hole here
@@ -544,7 +544,7 @@ class CalendarPermissionService:
 
         ``start_time`` / ``end_time`` are optional and keyword-only: when
         both are supplied, ``appointment_type``'s duration pin is checked
-        (``_appointment_type_duration_pin_satisfied``) BEFORE anything else -- including
+        (``appointment_type_duration_pin_satisfied``) BEFORE anything else -- including
         before clause 1 below, which returns ``True`` without reading
         anything else. Checking the pin after that short-circuit would leave
         it silently unenforced on exactly the appointment types most likely to be
@@ -576,7 +576,7 @@ class CalendarPermissionService:
         if (
             start_time is not None
             and end_time is not None
-            and not self._appointment_type_duration_pin_satisfied(
+            and not self.appointment_type_duration_pin_satisfied(
                 appointment_type, start_time, end_time
             )
         ):
