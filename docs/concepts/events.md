@@ -29,8 +29,10 @@ IANA `timezone`. Around that core, it carries:
   in its own system. Such an attendee is shared: every event that names the
   same pair links to one `ExternalAttendee` row, through its own
   `EventExternalAttendance`, and the row is created only by the first of
-  them. A later event never changes the shared row's email, name or
-  identifiers. An attendee with no email is never sent to Google or
+  them. A later event links the shared row as it is: one that sends a
+  different email or name, an identifier the row does not hold, or (by id)
+  a different identifier set is refused rather than silently ignored. An
+  attendee with no email is never sent to Google or
   Outlook. Every input that accepts an external attendee refuses one with
   neither an email nor an identifier.
 

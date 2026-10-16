@@ -569,3 +569,31 @@ class ExternalAttendeeIdentifierConflictError(ExternalClientIdentifierError):
     """
 
     default_message = "The external attendee's identifiers belong to different attendees."
+
+
+class ExternalAttendeePartialIdentifierMatchError(ExternalClientIdentifierError):
+    """Raised when a stored attendee holds some of an external attendee's identifiers
+    but not all of them.
+
+    Linking it would silently drop the identifiers it does not hold, and writing them
+    onto it would change a row other events link too.
+    """
+
+    default_message = (
+        "Some of the external attendee's identifiers belong to a stored attendee and others do not."
+    )
+
+
+class SharedExternalAttendeeEditError(ExternalClientIdentifierError):
+    """Raised when an event asks to change the email, name or identifiers of an
+    external attendee it may only link as stored.
+
+    That is an attendee other events link too, or one found by its identifiers: the
+    row is every linking event's, so one event may link it but not rewrite it. A
+    blank email or name, and omitted identifiers, ask for no change.
+    """
+
+    default_message = (
+        "This external attendee is linked as stored: its email, name and identifiers "
+        "cannot be changed through this event."
+    )
