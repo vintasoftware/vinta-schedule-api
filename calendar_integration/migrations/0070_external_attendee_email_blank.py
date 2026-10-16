@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('calendar_integration', '0068_calendar_external_id_nullable'),
+        ('calendar_integration', '0069_blocked_time_options'),
     ]
 
     operations = [
