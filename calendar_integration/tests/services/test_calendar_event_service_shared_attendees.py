@@ -249,11 +249,11 @@ def test_bookings_racing_for_a_new_patient_end_on_one_attendee(
     original_find = CalendarEventService._find_external_attendee_by_identifiers
     lookups = []
 
-    def find_after_the_race(self, identifier_service, identifiers):
+    def find_after_the_race(self, identifier_service, identifiers, holders=None):
         lookups.append(identifiers)
         if len(lookups) == 1:
             return None
-        return original_find(self, identifier_service, identifiers)
+        return original_find(self, identifier_service, identifiers, holders)
 
     with patch.object(
         CalendarEventService, "_find_external_attendee_by_identifiers", find_after_the_race

@@ -522,6 +522,34 @@ class TestExternalClientIdentifiersGraphQL:
             .exists()
         )
 
+    def test_schedule_event_attendee_with_neither_email_nor_identifier_errors(
+        self, mock_rate_limiter
+    ):
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        self._seed_window(org, system_user, calendar)
+
+        response = self._post(
+            _SCHEDULE_EVENT_PLAIN,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._event_input(org, calendar, externalAttendees=[{"name": "Nobody"}])},
+        )
+
+        assert [e["message"] for e in assert_graphql_error(response)] == [
+            "Each external attendee needs an email or at least one external client identifier."
+        ]
+        assert (
+            not CalendarEvent.objects.filter_by_organization(org.id)
+            .filter(title="Scheduled Visit")
+            .exists()
+        )
+
     def test_schedule_event_blank_identifier_errors(self, mock_rate_limiter):
         mock_rate_limiter.return_value = iter([None])
         org = self._make_org()

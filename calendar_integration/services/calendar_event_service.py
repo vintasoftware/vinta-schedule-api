@@ -115,6 +115,18 @@ from public_api.models import SystemUser
 from users.models import User
 
 
+# The stored attendee holding a payload's identifiers, or None, keyed by those pairs.
+# ``update_event`` looks each one up for the permission check and again for the write;
+# this lets the second lookup reuse the first.
+ExternalAttendeeHolders = dict[tuple[tuple[str, str], ...], ExternalAttendee | None]
+
+
+def _identifiers_key(
+    identifiers: list[ExternalClientIdentifierData],
+) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((i.system, i.identifier) for i in identifiers))
+
+
 def _resolve_token_audit_actor(
     token: CalendarManagementToken | None,
 ) -> User | CalendarManagementToken | None:
@@ -453,23 +465,35 @@ class CalendarEventService:
         self,
         identifier_service: ExternalClientIdentifierService,
         identifiers: list[ExternalClientIdentifierData],
+        holders: ExternalAttendeeHolders | None = None,
     ) -> ExternalAttendee | None:
         """Return the stored attendee holding any of ``identifiers``, or ``None``.
 
         Raises ``ExternalAttendeeIdentifierConflictError`` when the pairs belong to
-        more than one stored attendee.
+        more than one stored attendee. With ``holders``, a pair set looked up before
+        is answered from it, and a new answer is added to it.
         """
+        key = _identifiers_key(identifiers)
+        if holders is not None and key in holders:
+            return holders[key]
         attendee_ids = identifier_service.find_target_ids(ExternalAttendee, identifiers)
-        if not attendee_ids:
-            return None
         if len(attendee_ids) > 1:
             raise ExternalAttendeeIdentifierConflictError()
-        return ExternalAttendee.objects.filter_by_organization(
-            self._context.bound_organization.id
-        ).get(pk=attendee_ids.pop())
+        attendee = (
+            ExternalAttendee.objects.filter_by_organization(
+                self._context.bound_organization.id
+            ).get(pk=attendee_ids.pop())
+            if attendee_ids
+            else None
+        )
+        if holders is not None:
+            holders[key] = attendee
+        return attendee
 
     def _resolve_external_attendee(
-        self, attendee_data: ExternalAttendeeInputData
+        self,
+        attendee_data: ExternalAttendeeInputData,
+        holders: ExternalAttendeeHolders | None = None,
     ) -> ExternalAttendee:
         """Return the ``ExternalAttendee`` row an event should link for ``attendee_data``.
 
@@ -488,7 +512,9 @@ class CalendarEventService:
             # Nothing to share the row by, and no identifiers to write on a new one.
             return self._create_external_attendee(attendee_data)
 
-        existing = self._find_external_attendee_by_identifiers(identifier_service, identifiers)
+        existing = self._find_external_attendee_by_identifiers(
+            identifier_service, identifiers, holders
+        )
         if existing is not None:
             return existing
         try:
@@ -503,11 +529,17 @@ class CalendarEventService:
             existing = self._find_external_attendee_by_identifiers(identifier_service, identifiers)
             if existing is None:
                 raise
-            return existing
+            attendee = existing
+        if holders is not None:
+            # A later entry with the same pairs links this row.
+            holders[_identifiers_key(identifiers)] = attendee
         return attendee
 
     def _with_resolved_external_attendee_ids(
-        self, event: CalendarEvent, event_data: CalendarEventInputData
+        self,
+        event: CalendarEvent,
+        event_data: CalendarEventInputData,
+        holders: ExternalAttendeeHolders,
     ) -> CalendarEventInputData:
         """``event_data`` with the stored id filled in on each external attendee that
         came without one, naming the attendee the update will link.
@@ -536,7 +568,7 @@ class CalendarEventService:
             if attendee.external_client_identifiers:
                 if identifier_service is not None:
                     holder = self._find_external_attendee_by_identifiers(
-                        identifier_service, attendee.external_client_identifiers
+                        identifier_service, attendee.external_client_identifiers, holders
                     )
                     resolved_id = holder.pk if holder is not None else None
             elif attendee.email:
@@ -1059,6 +1091,7 @@ class CalendarEventService:
             is_public_token_write = True
 
         serialized_old_event = self._serialize_event(event)
+        external_attendee_holders: ExternalAttendeeHolders = {}
         if not is_public_token_write and not context.calendar_permission_service.can_perform_update(
             old_event=serialized_old_event,
             # ``serialized_old_event`` doubles as the fall-back for the tri-state
@@ -1068,7 +1101,9 @@ class CalendarEventService:
             # built costs no extra query.
             new_event=self._serialize_event_data_input(
                 event,
-                self._with_resolved_external_attendee_ids(event, event_data),
+                self._with_resolved_external_attendee_ids(
+                    event, event_data, external_attendee_holders
+                ),
                 current_event=serialized_old_event,
             ),
             # A plain FK id column -- no extra query. Lets can_perform_update
@@ -1321,7 +1356,9 @@ class CalendarEventService:
                 # or a new one (see ``_resolve_external_attendee``). An attendee this
                 # event already holds keeps its attendance; any other gets a new one.
                 # Its id joins the maintained ids either way, so it is not removed below.
-                external_attendee = self._resolve_external_attendee(attendee_data)
+                external_attendee = self._resolve_external_attendee(
+                    attendee_data, external_attendee_holders
+                )
                 if (
                     external_attendee.pk not in existing_external_attendances
                     and external_attendee.pk not in maintained_external_attendees_ids

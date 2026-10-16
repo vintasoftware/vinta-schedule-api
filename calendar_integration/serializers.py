@@ -771,8 +771,14 @@ class ExternalAttendeeSerializer(VirtualModelSerializer):
         )
 
     def validate(self, attrs: dict) -> dict:
-        """Refuse an attendee with neither an email nor an identifier (see
-        ``ExternalAttendeeInputData.has_contact``)."""
+        """Refuse a new attendee with neither an email nor an identifier (see
+        ``ExternalAttendeeInputData.has_contact``).
+
+        One sent by id names a stored attendee, which a PATCH may send without
+        its email or identifiers.
+        """
+        if attrs.get("id") is not None:
+            return attrs
         attendee = ExternalAttendeeInputData(
             email=attrs.get("email", ""),
             external_client_identifiers=attrs.get("external_client_identifiers"),
