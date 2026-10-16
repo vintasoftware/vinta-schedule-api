@@ -48,6 +48,8 @@ from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
     EventManagementError,
     NoAvailableTimeWindowsError,
+    RoomNotFoundError,
+    RoomUnavailableError,
 )
 from calendar_integration.models import (
     Calendar,
@@ -63,6 +65,7 @@ from calendar_integration.models import (
     RecurringMixin,
     ResourceAllocation,
 )
+from calendar_integration.services import slot_engine
 from calendar_integration.services.calendar_service_utils import (
     convert_naive_utc_datetime_to_timezone as _convert_naive_utc_datetime_to_timezone,
 )
@@ -887,6 +890,85 @@ class CalendarEventService:
         )
 
         return event
+
+    def validate_requested_rooms(
+        self,
+        room_ids: Iterable[int],
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+    ) -> None:
+        """Check that a caller may book ``room_ids`` for ``[start_time, end_time)``.
+
+        Every id must be an active room (resource calendar) of the organization, and
+        no room may already be taken during that time: not by its own calendar's
+        events or blocked times, and not by another event that holds it. Touching
+        spans do not overlap, so back-to-back bookings are fine.
+
+        Call it only for rooms the caller asks for. ``create_event`` and
+        ``update_event`` do not call it, because other flows (moving an event,
+        splitting a series) send an event's existing rooms again, and those must
+        not collide with the event they came from or fail once a room is disabled.
+        A recurring event is checked over its first occurrence only.
+
+        The rooms stay locked until the caller's transaction commits, so call it
+        inside the transaction that writes the allocations.
+
+        :raises RoomNotFoundError: an id is not an active room of the organization.
+        :raises RoomUnavailableError: a room is taken during the requested time.
+        """
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
+
+        requested = set(room_ids)
+        if not requested:
+            return
+        # Lock the rooms until the caller's transaction commits, so two bookings of the
+        # same room run one after the other and the second one sees the first one's
+        # allocation. Ordered by id so bookings of overlapping rooms lock in the same
+        # order and cannot deadlock.
+        found = list(
+            Calendar.objects.filter_by_organization(context.organization.id)
+            .live_of_type(CalendarType.RESOURCE)
+            .filter(id__in=requested)
+            .order_by("id")
+            .select_for_update()
+            .values_list("id", flat=True)
+        )
+        if len(found) != len(requested):
+            raise RoomNotFoundError()
+
+        booked = slot_engine.fetch_room_booking_spans(
+            context.organization.id, requested, start_time, end_time
+        )
+        if any(
+            slot_engine.intervals_overlap(span, (start_time, end_time))
+            for spans in booked.values()
+            for span in spans
+        ):
+            raise RoomUnavailableError()
+
+    def validate_room_changes(
+        self,
+        event: CalendarEvent,
+        room_ids: Iterable[int],
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+    ) -> None:
+        """Check the rooms an update gives ``event`` for ``[start_time, end_time)``.
+
+        Only rooms in ``room_ids`` that ``event`` does not hold yet go through
+        ``validate_requested_rooms``. A room it already holds is kept as it is, even if
+        it was disabled since. The rooms it holds are not checked at a new time, so a
+        caller that moves the event must check them itself.
+
+        :raises RoomNotFoundError: an added id is not an active room of the organization.
+        :raises RoomUnavailableError: an added room is taken during the requested time.
+        """
+        current_room_ids = {
+            ra.calendar_fk_id for ra in event.resource_allocations.all() if ra.calendar_fk_id
+        }
+        self.validate_requested_rooms(set(room_ids) - current_room_ids, start_time, end_time)
 
     @transaction.atomic()
     def update_event(
