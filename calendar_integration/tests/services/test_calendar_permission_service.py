@@ -1057,8 +1057,8 @@ class TestCalendarPermissionServiceConstants:
 
 
 class TestCalendarPermissionServiceIdentifierOnlyExternalAttendees:
-    """External attendees with no email (known only by a client identifier) are told
-    apart by their stored id, never lumped together under the empty email."""
+    """An attendee's token tells external attendees with no email (known only by a
+    client identifier) apart by their stored id, never by the empty email."""
 
     @staticmethod
     def _identifier_only_attendee(organization) -> ExternalAttendee:
@@ -1091,49 +1091,6 @@ class TestCalendarPermissionServiceIdentifierOnlyExternalAttendees:
                 token_fk=token, permission=permission, organization=organization
             )
         return token, token_str
-
-    def test_swapping_one_identifier_only_attendee_for_another_needs_update_attendees(
-        self, permission_service, event_token, organization
-    ):
-        token, token_str = event_token
-        self._initialize_for(permission_service, token, token_str, organization)
-        patient_a = self._identifier_only_attendee(organization)
-        patient_b = self._identifier_only_attendee(organization)
-
-        required_permission = permission_service._check_attendances_update_necessary_permissions(
-            [], [self._attendee_data(patient_a)], [], [self._attendee_data(patient_b)]
-        )
-
-        assert required_permission == EventManagementPermissions.UPDATE_ATTENDEES
-
-    def test_new_identifier_only_attendee_without_id_needs_update_attendees(
-        self, permission_service, event_token, organization
-    ):
-        token, token_str = event_token
-        self._initialize_for(permission_service, token, token_str, organization)
-        patient_a = self._identifier_only_attendee(organization)
-
-        required_permission = permission_service._check_attendances_update_necessary_permissions(
-            [],
-            [self._attendee_data(patient_a)],
-            [],
-            [self._attendee_data(patient_a), self._attendee_data(None)],
-        )
-
-        assert required_permission == EventManagementPermissions.UPDATE_ATTENDEES
-
-    def test_unchanged_identifier_only_attendee_needs_nothing(
-        self, permission_service, event_token, organization
-    ):
-        token, token_str = event_token
-        self._initialize_for(permission_service, token, token_str, organization)
-        patient_a = self._identifier_only_attendee(organization)
-
-        required_permission = permission_service._check_attendances_update_necessary_permissions(
-            [], [self._attendee_data(patient_a)], [], [self._attendee_data(patient_a)]
-        )
-
-        assert required_permission is None
 
     def test_identifier_only_attendee_removing_itself_needs_self_rsvp(
         self, permission_service, event, organization

@@ -78,15 +78,17 @@ def _external_attendee_diff_key(
 ) -> tuple[str, str | int]:
     """Key an external attendee for the before/after permission diff.
 
-    An attendee with an email is keyed by it, lowercased. One with no email (known
-    only by a client identifier) is keyed by its stored id, so two such attendees
-    are never taken for each other. One with neither is not stored yet: its key is
-    unique to its position, so it always counts as added.
+    An attendee with a stored id is keyed by it. ``update_event`` fills that id in
+    with the attendee the update will link, so the key names the stored row, not
+    the email the caller typed: re-sending the event's attendee email with another
+    patient's identifiers swaps the patient and must count as a change. One with
+    no id is keyed by its email, lowercased. One with neither is not stored yet:
+    its key is unique to its position, so it always counts as added.
     """
-    if attendee.email:
-        return ("email", attendee.email.lower())
     if attendee.external_attendee_id is not None:
         return ("id", attendee.external_attendee_id)
+    if attendee.email:
+        return ("email", attendee.email.lower())
     return ("new", position)
 
 

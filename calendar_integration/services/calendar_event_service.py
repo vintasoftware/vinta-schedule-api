@@ -506,40 +506,53 @@ class CalendarEventService:
             return existing
         return attendee
 
-    def _with_held_external_attendee_ids(
+    def _with_resolved_external_attendee_ids(
         self, event: CalendarEvent, event_data: CalendarEventInputData
     ) -> CalendarEventInputData:
         """``event_data`` with the stored id filled in on each external attendee that
-        came without one but whose identifiers belong to an attendee ``event`` holds.
+        came without one, naming the attendee the update will link.
 
-        Only the permission check reads it. It keys attendees with no email by their
-        stored id, so an attendee known only by identifiers, sent again unchanged,
-        would otherwise look removed and added. The update itself still goes through
-        ``_resolve_external_attendee``, which links that same attendee and leaves it
-        as it is.
+        Only the permission check reads it. It keys attendees by stored id, so it
+        must see the same attendee the update links:
+
+        - one with identifiers is the attendee holding them, which
+          ``_resolve_external_attendee`` links whether or not ``event`` holds it yet;
+        - one without identifiers is the attendee ``event`` holds with that email,
+          so re-sending it unchanged is not an attendee change.
+
+        Any other entry keeps no id and counts as added.
         """
-        identifier_service = self._context.external_client_identifier_service
-        if identifier_service is None or not event_data.external_attendances:
+        if not event_data.external_attendances:
             return event_data
-        held_ids: set[int] | None = None
+        identifier_service = self._context.external_client_identifier_service
+        held_ids_by_email: dict[str, int] | None = None
         entries = []
         for entry in event_data.external_attendances:
             attendee = entry.external_attendee
-            if attendee.id is None and attendee.external_client_identifiers:
-                holder = self._find_external_attendee_by_identifiers(
-                    identifier_service, attendee.external_client_identifiers
+            if attendee.id is not None:
+                entries.append(entry)
+                continue
+            resolved_id: int | None = None
+            if attendee.external_client_identifiers:
+                if identifier_service is not None:
+                    holder = self._find_external_attendee_by_identifiers(
+                        identifier_service, attendee.external_client_identifiers
+                    )
+                    resolved_id = holder.pk if holder is not None else None
+            elif attendee.email:
+                if held_ids_by_email is None:
+                    held_ids_by_email = {
+                        email.lower(): attendee_id
+                        for attendee_id, email in event.external_attendances.values_list(
+                            "external_attendee__id", "external_attendee__email"
+                        )
+                        if email
+                    }
+                resolved_id = held_ids_by_email.get(attendee.email.lower())
+            if resolved_id is not None:
+                entry = EventExternalAttendanceInputData(
+                    external_attendee=dataclasses.replace(attendee, id=resolved_id)
                 )
-                if holder is not None:
-                    if held_ids is None:
-                        held_ids = set(
-                            event.external_attendances.values_list(
-                                "external_attendee_fk_id", flat=True
-                            )
-                        )
-                    if holder.pk in held_ids:
-                        entry = EventExternalAttendanceInputData(
-                            external_attendee=dataclasses.replace(attendee, id=holder.pk)
-                        )
             entries.append(entry)
         return dataclasses.replace(event_data, external_attendances=entries)
 
@@ -1055,7 +1068,7 @@ class CalendarEventService:
             # built costs no extra query.
             new_event=self._serialize_event_data_input(
                 event,
-                self._with_held_external_attendee_ids(event, event_data),
+                self._with_resolved_external_attendee_ids(event, event_data),
                 current_event=serialized_old_event,
             ),
             # A plain FK id column -- no extra query. Lets can_perform_update

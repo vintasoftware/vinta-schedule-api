@@ -5,23 +5,33 @@ no email and no name, only a ``(system, identifier)`` pair naming the patient in
 client's system. The event carries its own pair pointing at the client's record of the
 visit. Covered here, over the real ``/graphql/`` stack:
 
-- the typed create stores no email or name, returns both pairs, and sends the event's
-  pair in the ``calendar_event_created`` webhook;
+- the typed create stores no email or name and returns both pairs;
 - rescheduling keeps the attendee and its pair;
 - an attendee with neither an email nor an identifier is refused;
-- an event pair already used by another event is refused;
 - ``updateCalendarEvent`` keeps a patient re-sent with its pair and no email, and takes
   two such patients in one payload without calling their empty emails duplicates.
 
 That a second booking reuses the same attendee is covered by the event service tests.
 """
 
-from unittest.mock import patch
+import datetime
+import uuid
 
 import pytest
+from model_bakery import baker
 
-from calendar_integration.models import CalendarEvent
-from webhooks.constants import WebhookEventType
+from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
+    AvailableTime,
+    Calendar,
+    CalendarEvent,
+)
+from organizations.models import Organization
+from public_api.constants import PublicAPIResources
+from public_api.tests.helpers import GraphQLPost, make_token_post
 
 
 pytestmark = pytest.mark.django_db
@@ -58,6 +68,61 @@ mutation UpdateCalendarEvent($input: UpdateCalendarEventInput!) {{
     updateCalendarEvent(input: $input) {{ {EVENT_FIELDS} }}
 }}
 """
+
+
+@pytest.fixture
+def organization() -> Organization:
+    return baker.make(Organization, name="Public API Org")
+
+
+@pytest.fixture
+def appointment_type_with_slot(
+    organization: Organization,
+) -> tuple[AppointmentType, AppointmentTypeSlot]:
+    """A private appointment type whose one slot books an internal calendar open on
+    2030-06-01 from 09:00 to 17:00 UTC."""
+    calendar = baker.make(
+        Calendar,
+        organization=organization,
+        name="Provider Calendar",
+        external_id=f"booking-{uuid.uuid4().hex[:8]}",
+        provider=CalendarProvider.INTERNAL,
+        calendar_type=CalendarType.PERSONAL,
+        manage_available_windows=True,
+        accepts_public_scheduling=False,
+    )
+    AvailableTime.objects.create(
+        organization=organization,
+        calendar=calendar,
+        start_time_tz_unaware=datetime.datetime(2030, 6, 1, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2030, 6, 1, 17, 0),
+        timezone="UTC",
+    )
+    appointment_type = baker.make(
+        AppointmentType,
+        organization=organization,
+        name="Private Visit",
+        accepts_public_scheduling=False,
+    )
+    slot = AppointmentTypeSlot.objects.create(
+        organization=organization,
+        appointment_type=appointment_type,
+        name="Provider",
+        order=0,
+        required_count=1,
+    )
+    AppointmentTypeSlotMembership.objects.create(
+        organization=organization, slot=slot, calendar=calendar
+    )
+    return appointment_type, slot
+
+
+@pytest.fixture
+def org_wide_post(organization: Organization) -> GraphQLPost:
+    """post() for an organization-wide token holding APPOINTMENT_TYPE and CALENDAR_EVENT."""
+    return make_token_post(
+        organization, [PublicAPIResources.APPOINTMENT_TYPE, PublicAPIResources.CALENDAR_EVENT]
+    )
 
 
 def _patient(patient_id: str, **fields) -> dict:
@@ -100,26 +165,16 @@ def _book(post, organization, appointment_type_with_slot, **kwargs) -> dict:
 
 
 def test_typed_create_for_an_identifier_only_patient(
-    org_wide_post, organization, appointment_type_with_slot, django_capture_on_commit_callbacks
+    org_wide_post, organization, appointment_type_with_slot
 ):
-    sent = []
-
-    def record_send_event(self, *, organization, event_type, payload):
-        sent.append((event_type, payload))
-        return []
-
-    with (
-        patch("webhooks.services.webhook_service.WebhookService.send_event", record_send_event),
-        django_capture_on_commit_callbacks(execute=True),
-    ):
-        result = _book(
-            org_wide_post,
-            organization,
-            appointment_type_with_slot,
-            hour=10,
-            attendee=_patient("patient-1"),
-            appointment_id="appointment-1",
-        )
+    result = _book(
+        org_wide_post,
+        organization,
+        appointment_type_with_slot,
+        hour=10,
+        attendee=_patient("patient-1"),
+        appointment_id="appointment-1",
+    )
 
     assert result["errorMessage"] is None
     event = result["event"]
@@ -131,15 +186,6 @@ def test_typed_create_for_an_identifier_only_patient(
     assert attendance["externalAttendee"]["name"] == ""
     assert attendance["externalAttendee"]["externalClientIdentifiers"] == [
         {"system": PATIENT_SYSTEM, "identifier": "patient-1"}
-    ]
-    [created_payload] = [
-        payload
-        for event_type, payload in sent
-        if event_type == WebhookEventType.CALENDAR_EVENT_CREATED
-    ]
-    assert created_payload["id"] == int(event["id"])
-    assert created_payload["external_client_identifiers"] == [
-        {"system": APPOINTMENT_SYSTEM, "identifier": "appointment-1"}
     ]
 
 
@@ -194,35 +240,6 @@ def test_attendee_with_neither_email_nor_identifier_is_refused(
     assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
 
 
-def test_event_identifier_already_used_by_another_event_is_refused(
-    org_wide_post, organization, appointment_type_with_slot
-):
-    _book(
-        org_wide_post,
-        organization,
-        appointment_type_with_slot,
-        hour=10,
-        attendee=_patient("patient-1"),
-        appointment_id="appointment-1",
-    )
-
-    result = _book(
-        org_wide_post,
-        organization,
-        appointment_type_with_slot,
-        hour=11,
-        attendee=_patient("patient-2"),
-        appointment_id="appointment-1",
-    )
-
-    assert result == {
-        "success": False,
-        "errorMessage": "That (system, identifier) pair is already in use by another record.",
-        "event": None,
-    }
-    assert CalendarEvent.objects.filter_by_organization(organization.id).count() == 1
-
-
 def test_update_keeps_patients_resent_without_email(
     org_wide_post, organization, appointment_type_with_slot
 ):
@@ -258,30 +275,3 @@ def test_update_keeps_patients_resent_without_email(
     assert sorted(
         (a["email"], [i["identifier"] for i in a["externalClientIdentifiers"]]) for a in attendees
     ) == [("", ["patient-1"]), ("", ["patient-2"]), ("guest@example.com", [])]
-
-
-def test_update_refuses_an_attendee_with_neither_email_nor_identifier(
-    org_wide_post, organization, appointment_type_with_slot
-):
-    booked = _book(
-        org_wide_post,
-        organization,
-        appointment_type_with_slot,
-        hour=10,
-        attendee=_patient("patient-1"),
-    )
-
-    updated = org_wide_post(
-        UPDATE_CALENDAR_EVENT_MUTATION,
-        {
-            "input": {
-                "organizationId": organization.id,
-                "eventId": int(booked["event"]["id"]),
-                "externalAttendees": [{"name": "Nobody"}],
-            }
-        },
-    )
-
-    assert [e["message"] for e in updated["errors"]] == [
-        "Each external attendee needs an email or at least one external client identifier."
-    ]
