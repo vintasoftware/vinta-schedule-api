@@ -938,8 +938,12 @@ class CalendarEventService:
         if len(found) != len(requested):
             raise RoomNotFoundError()
 
-        booked = slot_engine.fetch_room_booking_spans(
-            context.organization.id, requested, start_time, end_time
+        booked = slot_engine.fetch_blocking_spans(
+            context.organization.id,
+            requested,
+            start_time,
+            end_time,
+            with_bulk_modifications=False,
         )
         if any(
             slot_engine.intervals_overlap(span, (start_time, end_time))

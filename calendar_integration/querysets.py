@@ -478,19 +478,20 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
                 )
                 recurring_occurrences_field = "recurring_occurrences"
 
+            event_overlaps_range = (
+                Q(start_time__range=(start_datetime, end_datetime))
+                | Q(end_time__range=(start_datetime, end_datetime))
+                | Q(start_time__lte=start_datetime, end_time__gte=end_datetime)
+                | Q(**{f"{recurring_occurrences_field}__len__gt": 0})
+            )
+
             # For unmanaged calendars: must NOT have conflicting events or blocked times
             unmanaged_query = Q(
                 manage_available_windows=False,
             ) & ~Q(
                 Q(
                     id__in=Subquery(
-                        events_qs.filter(
-                            Q(start_time__range=(start_datetime, end_datetime))
-                            | Q(end_time__range=(start_datetime, end_datetime))
-                            | Q(start_time__lte=start_datetime, end_time__gte=end_datetime)
-                            | Q(**{f"{recurring_occurrences_field}__len__gt": 0}),
-                            calendar_fk_id=OuterRef("id"),
-                        )
+                        events_qs.filter(event_overlaps_range, calendar_fk_id=OuterRef("id"))
                         .values("calendar_fk_id")
                         .distinct()
                     )
@@ -512,8 +513,22 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
                 )
             )
 
+            # A room (resource calendar), managed or not, is also taken by an event on
+            # another calendar that holds it as a resource allocation. Such an event
+            # writes nothing on the room's own calendar, so neither check above sees it.
+            held_as_room = Q(
+                id__in=Subquery(
+                    events_qs.filter(
+                        event_overlaps_range,
+                        resource_allocations__calendar_fk_id=OuterRef("id"),
+                    )
+                    .values("resource_allocations__calendar_fk_id")
+                    .distinct()
+                )
+            )
+
             # Combine both conditions
-            range_query = managed_query | unmanaged_query
+            range_query = (managed_query | unmanaged_query) & ~held_as_room
             queries.append(range_query)
 
         # All ranges must be satisfied (AND operation)

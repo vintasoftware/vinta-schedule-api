@@ -9,9 +9,8 @@ single-calendar / bundle walker both depend on:
 - :func:`fetch_available_spans` — batched ``AvailableTime`` spans for managed
   calendars.
 - :func:`fetch_blocking_spans` — batched ``CalendarEvent`` + ``BlockedTime``
-  spans for a set of calendars.
-- :func:`fetch_room_booking_spans` — the same for rooms, plus the events that hold
-  each room as a resource allocation.
+  spans for a set of calendars, plus the events that hold a room as a resource
+  allocation.
 - :func:`calendar_free_for_window` — the per-calendar free predicate the walkers
   apply at each candidate window.
 - :func:`apply_policy_filter` — drop candidate proposals that violate a resolved
@@ -217,6 +216,10 @@ def fetch_blocking_spans(
     One query per type for the whole window, then walked in Python.  Recurring
     occurrences are expanded through the queryset annotation (optionally through
     the bulk-modification continuation series).
+
+    A room (resource calendar) is also taken by every event that holds it as a
+    resource allocation. Those events live on other calendars and write nothing on
+    the room's own calendar, so a third query adds them under the room's id.
     """
     spans: SpansByCalendarId = {}
     if not calendar_ids:
@@ -240,6 +243,13 @@ def fetch_blocking_spans(
         search_window_start,
         search_window_end,
     )
+    _add_event_spans(
+        spans,
+        events_qs.filter(resource_allocations__calendar_fk_id__in=calendar_ids),
+        "resource_allocations__calendar_fk_id",
+        search_window_start,
+        search_window_end,
+    )
 
     for bt in (
         BlockedTime.objects.filter_by_organization(organization_id)
@@ -255,40 +265,6 @@ def fetch_blocking_spans(
         .values("calendar_fk_id", "start_time", "end_time")
     ):
         spans.setdefault(bt["calendar_fk_id"], []).append((bt["start_time"], bt["end_time"]))
-    return spans
-
-
-def fetch_room_booking_spans(
-    organization_id: int,
-    room_ids: set[int],
-    search_window_start: datetime.datetime,
-    search_window_end: datetime.datetime,
-) -> SpansByCalendarId:
-    """Spans during which each room is taken, keyed by the room's calendar id.
-
-    A room is taken by its own calendar's events and blocked times (for a provider
-    room, the bookings its sync brings in) and by every event that holds it as a
-    resource allocation.
-    """
-    spans = fetch_blocking_spans(
-        organization_id,
-        room_ids,
-        search_window_start,
-        search_window_end,
-        with_bulk_modifications=False,
-    )
-    if not room_ids:
-        return spans
-
-    _add_event_spans(
-        spans,
-        CalendarEvent.objects.filter_by_organization(organization_id)
-        .annotate_recurring_occurrences_on_date_range(search_window_start, search_window_end)
-        .filter(resource_allocations__calendar_fk_id__in=room_ids),
-        "resource_allocations__calendar_fk_id",
-        search_window_start,
-        search_window_end,
-    )
     return spans
 
 

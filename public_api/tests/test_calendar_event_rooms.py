@@ -11,7 +11,9 @@ changes them later through ``updateCalendarEvent``. Covered here, over the real
 - an update that omits the field keeps the rooms, even one disabled since; an empty
   list clears them; a new list replaces them;
 - an update naming another organization's room, or adding a room taken at the
-  event's time, is refused and changes nothing.
+  event's time, is refused and changes nothing;
+- a room booked this way is taken for an appointment type that books rooms through
+  a slot.
 """
 
 import datetime
@@ -21,7 +23,16 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.constants import CalendarProvider, CalendarType, CalendarVisibility
-from calendar_integration.models import BlockedTime, Calendar, CalendarEvent, ResourceAllocation
+from calendar_integration.models import (
+    AppointmentType,
+    AppointmentTypeSlot,
+    AppointmentTypeSlotMembership,
+    AvailableTime,
+    BlockedTime,
+    Calendar,
+    CalendarEvent,
+    ResourceAllocation,
+)
 from organizations.models import Organization
 
 
@@ -231,3 +242,74 @@ def test_update_keeps_a_room_disabled_after_it_was_booked(
 
     assert updated.get("errors") is None
     assert _room_ids(organization, event_id) == {room.id}
+
+
+def test_a_room_booked_on_an_event_is_taken_for_a_room_slot(
+    org_wide_post, organization, appointment_type_with_slot, room
+):
+    """An appointment type can also book rooms as a slot. That check reads the room's
+    own calendar, which an allocation writes nothing on, so it must see allocations."""
+    _book(org_wide_post, organization, appointment_type_with_slot, [room.id])
+    other_host = _calendar(organization, "Other Provider", CalendarType.PERSONAL)
+    AvailableTime.objects.create(
+        organization=organization,
+        calendar=other_host,
+        start_time_tz_unaware=datetime.datetime(2030, 6, 1, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2030, 6, 1, 17, 0),
+        timezone="UTC",
+    )
+    other_host.manage_available_windows = True
+    other_host.save(update_fields=["manage_available_windows"])
+    room_type = baker.make(
+        AppointmentType,
+        organization=organization,
+        name="Visit With Room",
+        accepts_public_scheduling=False,
+    )
+    host_slot, room_slot = (
+        AppointmentTypeSlot.objects.create(
+            organization=organization,
+            appointment_type=room_type,
+            name=name,
+            order=order,
+            required_count=1,
+        )
+        for order, name in enumerate(["Provider", "Room"])
+    )
+    AppointmentTypeSlotMembership.objects.create(
+        organization=organization, slot=host_slot, calendar=other_host
+    )
+    AppointmentTypeSlotMembership.objects.create(
+        organization=organization, slot=room_slot, calendar=room
+    )
+
+    result = org_wide_post(
+        CREATE_APPOINTMENT_TYPE_EVENT_MUTATION,
+        {
+            "input": {
+                "organizationId": organization.id,
+                "appointmentTypeId": room_type.id,
+                "title": "Visit",
+                "description": "",
+                "startTime": "2030-06-01T10:00:00",
+                "endTime": "2030-06-01T10:30:00",
+                "timezone": "UTC",
+                "slotSelections": [
+                    {"slotId": host_slot.id, "calendarIds": [other_host.id]},
+                    {"slotId": room_slot.id, "calendarIds": [room.id]},
+                ],
+                "externalAttendances": [
+                    {"externalAttendee": {"email": "patient@example.com", "name": "Patient"}}
+                ],
+            }
+        },
+    )["data"]["createAppointmentTypeEvent"]
+
+    assert result == {
+        "success": False,
+        "errorMessage": (
+            f"Selected calendars [{room.id}] are not available for the requested time window."
+        ),
+        "event": None,
+    }
+    assert CalendarEvent.objects.filter_by_organization(organization.id).count() == 1
