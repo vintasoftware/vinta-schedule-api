@@ -908,11 +908,14 @@ class AppointmentTypeMutations:
             )
         except (AppointmentTypeError, ExternalClientIdentifierError) as e:
             return AppointmentTypeEventResult(success=False, error_message=str(e))
-        except IntegrityError:
+        except IntegrityError as e:
             # The event's (system, identifier) pair is already claimed by another
-            # event. The service runs in its own atomic block, so the request
-            # transaction is still usable. str() of the error is not returned: it
-            # names the constraint and internal ids.
+            # event. Any other constraint is a real failure and is raised as one.
+            # The service runs in its own atomic block, so the request transaction
+            # is still usable. str() of the error is not returned: it names the
+            # constraint and internal ids.
+            if "extclientid_uniq_system_ident" not in str(e):
+                raise
             return AppointmentTypeEventResult(
                 success=False,
                 error_message="That (system, identifier) pair is already in use by another record.",

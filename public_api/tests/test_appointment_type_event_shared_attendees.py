@@ -8,8 +8,9 @@ visit. Covered here, over the real ``/graphql/`` stack:
 - the typed create stores no email or name and returns both pairs;
 - rescheduling keeps the attendee and its pair;
 - an attendee with neither an email nor an identifier is refused;
-- ``updateCalendarEvent`` keeps a patient re-sent with its pair and no email, and takes
-  two such patients in one payload without calling their empty emails duplicates.
+- ``updateCalendarEvent`` keeps a patient re-sent with its pair and no email, takes
+  two such patients in one payload without calling their empty emails duplicates, and
+  refuses an attendee with neither an email nor an identifier.
 
 That a second booking reuses the same attendee is covered by the event service tests.
 """
@@ -275,3 +276,30 @@ def test_update_keeps_patients_resent_without_email(
     assert sorted(
         (a["email"], [i["identifier"] for i in a["externalClientIdentifiers"]]) for a in attendees
     ) == [("", ["patient-1"]), ("", ["patient-2"]), ("guest@example.com", [])]
+
+
+def test_update_refuses_an_attendee_with_neither_email_nor_identifier(
+    org_wide_post, organization, appointment_type_with_slot
+):
+    booked = _book(
+        org_wide_post,
+        organization,
+        appointment_type_with_slot,
+        hour=10,
+        attendee=_patient("patient-1"),
+    )
+
+    updated = org_wide_post(
+        UPDATE_CALENDAR_EVENT_MUTATION,
+        {
+            "input": {
+                "organizationId": organization.id,
+                "eventId": int(booked["event"]["id"]),
+                "externalAttendees": [{"name": "Nobody"}],
+            }
+        },
+    )
+
+    assert [e["message"] for e in updated["errors"]] == [
+        "Each external attendee needs an email or at least one external client identifier."
+    ]

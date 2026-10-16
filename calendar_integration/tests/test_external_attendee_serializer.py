@@ -25,3 +25,10 @@ def test_attendee_with_neither_is_refused():
 
     assert not serializer.is_valid()
     assert serializer.errors == {"non_field_errors": [EXTERNAL_ATTENDEE_CONTACT_REQUIRED_MESSAGE]}
+
+
+def test_attendee_sent_by_id_needs_neither():
+    """A PATCH may name a stored attendee by id alone."""
+    serializer = ExternalAttendeeSerializer(data={"id": 5, "name": "Pat"})
+
+    assert serializer.is_valid(), serializer.errors

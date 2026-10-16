@@ -258,12 +258,10 @@ class CalendarPermissionService:
         old_external_attendance_dict = {
             _external_attendee_diff_key(a, position): a
             for position, a in enumerate(old_external_attendances)
-            if a.email is not None
         }
         new_external_attendance_dict = {
             _external_attendee_diff_key(a, position): a
             for position, a in enumerate(new_external_attendances)
-            if a.email is not None
         }
 
         # Check for changes in internal attendances
@@ -290,12 +288,10 @@ class CalendarPermissionService:
         for attendee_key in old_external_attendance_dict.keys():
             new_external_attendance = new_external_attendance_dict.get(attendee_key)
             if not new_external_attendance:
-                # External attendance removed
+                # External attendance removed. The old side is the stored event, so
+                # every attendee on it is keyed by its id.
                 token_attendee = self.token.external_attendee
-                if token_attendee and attendee_key in (
-                    ("email", token_attendee.email),
-                    ("id", token_attendee.pk),
-                ):
+                if token_attendee and attendee_key == ("id", token_attendee.pk):
                     return EventManagementPermissions.UPDATE_SELF_RSVP
                 return EventManagementPermissions.UPDATE_ATTENDEES
 
