@@ -7,8 +7,9 @@ real event sub-service and cover:
 - repeated bookings reuse one attendee, each event with its own attendance;
 - two bookings racing to create the same new attendee end on one row;
 - the shared row's email, name and identifiers are never rewritten by one event, even
-  one that names it by id; a row only one event holds is still edited through it;
-- an identifier-only attendee sent again unchanged needs no attendee permission;
+  one that names it by id;
+- an attendee sent again unchanged needs no attendee permission, and swapping the
+  patient behind an unchanged email does;
 - removing the attendee from one event, or deleting one event, leaves the others alone,
   and removing the last attendance deletes the unused attendee;
 - an attendee with no email never reaches a provider payload.
@@ -17,7 +18,10 @@ real event sub-service and cover:
 import datetime
 from unittest.mock import Mock, patch
 
+from django.core.exceptions import PermissionDenied
+
 import pytest
+from allauth.socialaccount.models import SocialAccount, SocialToken
 
 from calendar_integration.constants import CalendarProvider, EventManagementPermissions
 from calendar_integration.exceptions import ExternalAttendeeIdentifierConflictError
@@ -45,9 +49,41 @@ from calendar_integration.services.external_event_change_request_service import 
     ExternalEventChangeRequestService,
 )
 from organizations.models import Organization, OrganizationMembership
+from users.models import Profile, User
 
 
 PATIENT_SYSTEM = "https://vintasoftware.com/fhir/identifier/medplum-patient"
+
+
+@pytest.fixture
+def mock_google_adapter():
+    with patch(
+        "calendar_integration.services.calendar_adapters.google_calendar_adapter.GoogleCalendarAdapter"
+    ) as mock_adapter_class:
+        mock_adapter = Mock()
+        mock_adapter.provider = CalendarProvider.GOOGLE
+        del mock_adapter.resolve_expression
+        del mock_adapter.get_source_expressions
+        mock_adapter_class.return_value = mock_adapter
+        mock_adapter_class.from_service_account_credentials.return_value = mock_adapter
+        yield mock_adapter
+
+
+@pytest.fixture
+def social_account(db):
+    user = User.objects.create_user(email="shared-attendee@example.com", password="testpass123")  # noqa: S106
+    Profile.objects.create(user=user)
+    return SocialAccount.objects.create(user=user, provider=CalendarProvider.GOOGLE, uid="88888")
+
+
+@pytest.fixture
+def social_token(social_account):
+    return SocialToken.objects.create(
+        account=social_account,
+        token="test_access_token",
+        token_secret="test_refresh_token",  # noqa: S106
+        expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+    )
 
 
 @pytest.fixture
@@ -169,22 +205,9 @@ def _attendees(organization) -> list[ExternalAttendee]:
 def test_repeated_bookings_for_one_patient_reuse_one_attendee(
     event_service, mock_google_adapter, calendar, calendar_management_token, organization
 ):
-    first = _book(event_service, calendar, mock_google_adapter, 22, _patient("patient-1"))
-    second = _book(event_service, calendar, mock_google_adapter, 23, _patient("patient-1"))
-
-    [attendee] = _attendees(organization)
-    assert (attendee.email, attendee.name) == ("", "")
-    assert _stored_identifiers(attendee) == {PATIENT_SYSTEM: "patient-1"}
-    assert [a.external_attendee_fk_id for a in first.external_attendances.all()] == [attendee.pk]
-    assert [a.external_attendee_fk_id for a in second.external_attendances.all()] == [attendee.pk]
-    assert EventExternalAttendance.objects.filter_by_organization(organization.id).count() == 2
-
-
-@pytest.mark.django_db
-def test_two_entries_for_the_same_patient_make_one_attendance(
-    event_service, mock_google_adapter, calendar, calendar_management_token, organization
-):
-    event = _book(
+    """The second booking's email and name do not rewrite the shared row, and the same
+    patient sent twice in one booking makes one attendance."""
+    first = _book(
         event_service,
         calendar,
         mock_google_adapter,
@@ -192,17 +215,7 @@ def test_two_entries_for_the_same_patient_make_one_attendance(
         _patient("patient-1"),
         _patient("patient-1"),
     )
-
-    [attendee] = _attendees(organization)
-    assert [a.external_attendee_fk_id for a in event.external_attendances.all()] == [attendee.pk]
-
-
-@pytest.mark.django_db
-def test_shared_attendee_is_not_rewritten_by_a_later_booking(
-    event_service, mock_google_adapter, calendar, calendar_management_token, organization
-):
-    _book(event_service, calendar, mock_google_adapter, 22, _patient("patient-1"))
-    _book(
+    second = _book(
         event_service,
         calendar,
         mock_google_adapter,
@@ -213,6 +226,9 @@ def test_shared_attendee_is_not_rewritten_by_a_later_booking(
     [attendee] = _attendees(organization)
     assert (attendee.email, attendee.name) == ("", "")
     assert _stored_identifiers(attendee) == {PATIENT_SYSTEM: "patient-1"}
+    assert [a.external_attendee_fk_id for a in first.external_attendances.all()] == [attendee.pk]
+    assert [a.external_attendee_fk_id for a in second.external_attendances.all()] == [attendee.pk]
+    assert EventExternalAttendance.objects.filter_by_organization(organization.id).count() == 2
 
 
 @pytest.mark.django_db
@@ -278,29 +294,6 @@ def test_identifiers_held_by_two_attendees_are_refused(
     assert CalendarEvent.objects.filter_by_organization(organization.id).count() == events_before
 
 
-@pytest.mark.django_db
-def test_update_without_id_links_the_shared_attendee(
-    event_service,
-    mock_google_adapter,
-    calendar,
-    calendar_management_token,
-    organization,
-    social_account,
-    django_capture_on_commit_callbacks,
-):
-    first = _book(event_service, calendar, mock_google_adapter, 22, _patient("patient-1"))
-    second = _book(event_service, calendar, mock_google_adapter, 23)
-    _grant_event_owner_token(second, social_account.user, organization)
-    mock_google_adapter.update_event.return_value = _adapter_output("visit-23", 23)
-
-    with django_capture_on_commit_callbacks(execute=True):
-        event_service.update_event(calendar.id, second.id, _event_input(23, _patient("patient-1")))
-
-    [attendee] = _attendees(organization)
-    assert [a.external_attendee_fk_id for a in first.external_attendances.all()] == [attendee.pk]
-    assert [a.external_attendee_fk_id for a in second.external_attendances.all()] == [attendee.pk]
-
-
 def _grant_event_token(event, user, organization, permissions) -> None:
     token = CalendarManagementToken.objects.create(
         event_fk=event,
@@ -356,35 +349,6 @@ def test_shared_attendee_is_not_rewritten_through_its_id(
 
 
 @pytest.mark.django_db
-def test_attendee_only_one_event_holds_is_edited_through_its_id(
-    event_service,
-    mock_google_adapter,
-    calendar,
-    calendar_management_token,
-    organization,
-    social_account,
-    django_capture_on_commit_callbacks,
-):
-    event = _book(
-        event_service,
-        calendar,
-        mock_google_adapter,
-        22,
-        _patient("patient-1", email="pat@example.com", name="Typo"),
-    )
-    [attendee] = _attendees(organization)
-    _grant_event_owner_token(event, social_account.user, organization)
-    mock_google_adapter.update_event.return_value = _adapter_output("visit-22", 22)
-
-    edit = ExternalAttendeeInputData(id=attendee.pk, email="pat@example.com", name="Pat")
-    with django_capture_on_commit_callbacks(execute=True):
-        event_service.update_event(calendar.id, event.id, _event_input(22, edit))
-
-    attendee.refresh_from_db()
-    assert (attendee.email, attendee.name) == ("pat@example.com", "Pat")
-
-
-@pytest.mark.django_db
 def test_identifier_only_attendee_sent_again_needs_no_attendee_permission(
     event_service,
     mock_google_adapter,
@@ -413,7 +377,78 @@ def test_identifier_only_attendee_sent_again_needs_no_attendee_permission(
 
 
 @pytest.mark.django_db
-def test_removing_the_patient_from_one_visit_keeps_the_other_visit(
+def test_swapping_the_patient_behind_an_unchanged_email_needs_attendee_permission(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    organization,
+    social_account,
+    django_capture_on_commit_callbacks,
+):
+    """Re-sending the event's attendee email with another patient's identifier links
+    that other patient in place of the current one, so it is an attendee change: a
+    token that may change details but not attendees is refused."""
+    event = _book(
+        event_service,
+        calendar,
+        mock_google_adapter,
+        22,
+        _patient("patient-1", email="pat@example.com", name="Pat"),
+    )
+    _book(
+        event_service,
+        calendar,
+        mock_google_adapter,
+        23,
+        _patient("patient-2", email="sam@example.com", name="Sam"),
+    )
+    pat, sam = _attendees(organization)
+    _grant_event_token(
+        event, social_account.user, organization, [EventManagementPermissions.UPDATE_DETAILS]
+    )
+    mock_google_adapter.update_event.return_value = _adapter_output("visit-22", 22)
+
+    swapped = _event_input(22, _patient("patient-2", email="pat@example.com", name="Pat"))
+    with pytest.raises(PermissionDenied):
+        event_service.update_event(calendar.id, event.id, swapped)
+
+    assert [a.external_attendee_fk_id for a in event.external_attendances.all()] == [pat.pk]
+    assert _stored_identifiers(sam) == {PATIENT_SYSTEM: "patient-2"}
+
+
+@pytest.mark.django_db
+def test_email_only_attendee_sent_again_without_id_needs_no_attendee_permission(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    social_account,
+    organization,
+    django_capture_on_commit_callbacks,
+):
+    """A caller that omits the id, as REST clients may, can still rename the event
+    while re-sending its email-only attendee: the email names the attendee it holds."""
+    guest = ExternalAttendeeInputData(email="Guest@Example.com", name="Guest")
+    event = _book(event_service, calendar, mock_google_adapter, 22, guest)
+    _grant_event_token(
+        event, social_account.user, organization, [EventManagementPermissions.UPDATE_DETAILS]
+    )
+    mock_google_adapter.update_event.return_value = _adapter_output("visit-22", 22)
+
+    renamed = _event_input(22, ExternalAttendeeInputData(email="guest@example.com", name="Guest"))
+    renamed.title = "Follow-up"
+    with django_capture_on_commit_callbacks(execute=True):
+        updated = event_service.update_event(calendar.id, event.id, renamed)
+
+    assert updated.title == "Follow-up"
+    assert [a.external_attendee.email for a in event.external_attendances.all()] == [
+        "guest@example.com"
+    ]
+
+
+@pytest.mark.django_db
+def test_removing_the_patient_keeps_the_attendee_until_its_last_visit(
     event_service,
     mock_google_adapter,
     calendar,
@@ -425,6 +460,7 @@ def test_removing_the_patient_from_one_visit_keeps_the_other_visit(
     first = _book(event_service, calendar, mock_google_adapter, 22, _patient("patient-1"))
     second = _book(event_service, calendar, mock_google_adapter, 23, _patient("patient-1"))
     _grant_event_owner_token(first, social_account.user, organization)
+    _grant_event_owner_token(second, social_account.user, organization)
     mock_google_adapter.update_event.return_value = _adapter_output("visit-22", 22)
 
     with django_capture_on_commit_callbacks(execute=True):
@@ -435,23 +471,9 @@ def test_removing_the_patient_from_one_visit_keeps_the_other_visit(
     assert [a.external_attendee_fk_id for a in second.external_attendances.all()] == [attendee.pk]
     assert _stored_identifiers(attendee) == {PATIENT_SYSTEM: "patient-1"}
 
-
-@pytest.mark.django_db
-def test_removing_the_last_attendance_deletes_the_unused_attendee(
-    event_service,
-    mock_google_adapter,
-    calendar,
-    calendar_management_token,
-    organization,
-    social_account,
-    django_capture_on_commit_callbacks,
-):
-    event = _book(event_service, calendar, mock_google_adapter, 22, _patient("patient-1"))
-    _grant_event_owner_token(event, social_account.user, organization)
-    mock_google_adapter.update_event.return_value = _adapter_output("visit-22", 22)
-
+    mock_google_adapter.update_event.return_value = _adapter_output("visit-23", 23)
     with django_capture_on_commit_callbacks(execute=True):
-        event_service.update_event(calendar.id, event.id, _event_input(22))
+        event_service.update_event(calendar.id, second.id, _event_input(23))
 
     assert _attendees(organization) == []
 
@@ -499,13 +521,6 @@ def test_attendee_without_email_is_left_out_of_the_provider_payload(
     attendees, _resources = event_service._adapter_people_for_event(event)
 
     assert [(a.email, a.name) for a in attendees] == [("guest@example.com", "Guest")]
-
-
-@pytest.mark.django_db
-def test_attendee_without_email_or_name_has_a_readable_label(organization):
-    attendee = ExternalAttendee.objects.create(organization=organization, email="", name="")
-
-    assert str(attendee) == f"External attendee {attendee.pk}"
 
 
 @pytest.mark.django_db

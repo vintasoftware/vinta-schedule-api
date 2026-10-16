@@ -544,7 +544,12 @@ def test_update_event_on_commit_dispatch_reuses_prefetched_identifiers(
     # request path this test is otherwise measuring. The identifier prefetch this
     # test exists to guard is untouched -- still one identifier query shared by all
     # three dispatches.
-    with django_assert_num_queries(86):
+    #
+    # 87, up from 86: the permission check now reads the emails of the attendees
+    # the event holds, once, to tell whether the id-less attendee sent here is one
+    # of them. It keys attendees by stored id, so without that read it could not
+    # tell a re-sent attendee from a swapped one.
+    with django_assert_num_queries(87):
         with django_capture_on_commit_callbacks(execute=True):
             event_service.update_event(calendar.id, created.id, updated_input)
 
