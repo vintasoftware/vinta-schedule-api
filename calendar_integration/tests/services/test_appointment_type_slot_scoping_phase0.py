@@ -38,8 +38,11 @@ class _FakeAvailabilityHost:
     def get_calendar_events_expanded(self, calendar, start_date, end_date):
         return []
 
-    def bulk_create_manual_blocked_times(self, calendar, blocked_times):
+    def bulk_create_manual_blocked_times(self, calendar, blocked_times, decline_options=None):
         return []
+
+    def _get_write_adapter_for_calendar(self, calendar):
+        return None
 
     def _create_recurrence_rule_if_needed(self, rrule_string):
         return None

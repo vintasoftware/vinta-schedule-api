@@ -1020,12 +1020,19 @@ class CalendarSyncService:
     ) -> EventsSyncChanges:
         """Process events and determine what changes need to be made."""
         changes = EventsSyncChanges()
+        events = list(events)
+        pushed_blocks_by_provider_event_id = self._get_pushed_blocked_times(
+            calendar, {e.external_id for e in events if e.external_id}
+        )
 
         for event in events:
             existing_event = calendar_events_by_external_id.get(event.external_id)
             existing_blocked_time = blocked_times_by_external_id.get(event.external_id)
+            pushed_block = pushed_blocks_by_provider_event_id.get(event.external_id)
 
-            if existing_event:
+            if pushed_block:
+                self._process_pushed_blocked_time(event, pushed_block, changes)
+            elif existing_event:
                 self._process_existing_event(event, existing_event, changes, update_events)
             elif existing_blocked_time:
                 self._process_existing_blocked_time(event, existing_blocked_time, changes)
@@ -1033,6 +1040,43 @@ class CalendarSyncService:
                 self._process_new_event(event, calendar, changes)
 
         return changes
+
+    @staticmethod
+    def _get_pushed_blocked_times(
+        calendar: Calendar, incoming_external_ids: set[str]
+    ) -> dict[str, BlockedTime]:
+        """The calendar's blocks written to the provider as one of the incoming events.
+
+        One query per batch, keyed by the provider event id.
+        """
+        if not incoming_external_ids:
+            return {}
+        return {
+            block.provider_event_external_id: block
+            for block in BlockedTime.objects.filter_by_organization(calendar.organization_id)
+            .filter(
+                calendar_fk_id=calendar.id,
+                provider_event_external_id__in=incoming_external_ids,
+            )
+            .only("id", "provider_event_external_id")
+            if block.provider_event_external_id
+        }
+
+    @staticmethod
+    def _process_pushed_blocked_time(
+        event: CalendarEventAdapterOutputData,
+        pushed_block: BlockedTime,
+        changes: EventsSyncChanges,
+    ) -> None:
+        """Match a provider event that is a block this platform wrote there.
+
+        The block already exists here, so the event is not imported. When the event was
+        deleted at the provider, the block keeps blocking time here and only forgets
+        the provider event.
+        """
+        changes.matched_event_ids.add(event.external_id)
+        if event.status == "cancelled":
+            changes.blocked_times_to_unlink_from_provider.append(pushed_block.id)
 
     def _process_existing_event(
         self,
@@ -1522,6 +1566,12 @@ class CalendarSyncService:
                 calendar_fk_id=calendar_id,
                 external_id__in=changes.blocks_to_delete,
             ).delete()
+
+        if changes.blocked_times_to_unlink_from_provider:
+            BlockedTime.objects.filter_by_organization(context.organization).filter(
+                calendar_fk_id=calendar_id,
+                id__in=changes.blocked_times_to_unlink_from_provider,
+            ).update(provider_event_external_id=None)
 
         # After all changes are applied, link orphaned recurring instances to their parents
         self._link_orphaned_recurring_instances(calendar_id)

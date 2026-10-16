@@ -2,6 +2,7 @@ import datetime
 import uuid
 import zoneinfo
 from datetime import timedelta
+from typing import Literal
 from unittest.mock import MagicMock, Mock, patch
 from zoneinfo import ZoneInfo
 
@@ -13,12 +14,14 @@ from allauth.socialaccount.models import SocialAccount, SocialToken
 
 from audit_integration.constants import AuditAction
 from calendar_integration.constants import (
+    BlockedTimeDeclineScope,
     CalendarProvider,
     CalendarSyncStatus,
     CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
     EventManagementPermissions,
+    ProviderPushStatus,
     RecurrenceFrequency,
 )
 from calendar_integration.exceptions import (
@@ -2849,7 +2852,7 @@ def test_delete_recurring_event_series_deletes_all(
 
     # Adapter should have been called once for deleting series
     mock_google_adapter.delete_event.assert_called_once_with(
-        calendar.external_id, parent_event.external_id
+        calendar.external_id, parent_event.external_id, send_updates=None
     )
     # Parent, rule, modified instance, and exception gone
     assert (
@@ -3101,7 +3104,7 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
 
     # Adapter should be called for deletion (treated as direct deletion)
     mock_google_adapter.delete_event.assert_called_once_with(
-        calendar.external_id, modified_instance.external_id
+        calendar.external_id, modified_instance.external_id, send_updates=None
     )
     # Instance removed
     assert not CalendarEvent.original_manager.filter(id=modified_instance.id).exists()
@@ -3836,7 +3839,7 @@ def test_delete_event(
         .exists()
     )
     mock_google_adapter.delete_event.assert_called_once_with(
-        calendar_event.calendar.external_id, calendar_event.external_id
+        calendar_event.calendar.external_id, calendar_event.external_id, send_updates=None
     )
 
 
@@ -9080,7 +9083,7 @@ def test_delete_event_uses_write_adapter_for_non_owned_calendar(
 
     # Verify that the owner's adapter was used
     mock_owner_adapter.delete_event.assert_called_once_with(
-        owned_calendar.external_id, event.external_id
+        owned_calendar.external_id, event.external_id, send_updates=None
     )
 
 
@@ -11047,3 +11050,98 @@ class TestUpdateResourceCalendarService:
 
             # Verify the audit hook was NOT called
             mock_audit.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Sync leaves alone the provider events a block was written to
+# ---------------------------------------------------------------------------
+
+
+def _pushed_block(calendar: Calendar, provider_event_id: str) -> BlockedTime:
+    return BlockedTime.objects.create(
+        calendar_fk=calendar,
+        organization=calendar.organization,
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 14, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 15, 0),
+        timezone="UTC",
+        reason="Out of office",
+        external_id="manual-2025-06-22T14:00:00-0",
+        decline_scope=BlockedTimeDeclineScope.NEW,
+        provider_event_external_id=provider_event_id,
+        provider_push_status=ProviderPushStatus.PUSHED,
+    )
+
+
+def _google_event(
+    external_id: str, status: Literal["confirmed", "cancelled"] = "confirmed"
+) -> CalendarEventAdapterOutputData:
+    return CalendarEventAdapterOutputData(
+        calendar_external_id="cal_123",
+        external_id=external_id,
+        title="Out of office",
+        description="",
+        start_time=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendees=[],
+        status=status,
+    )
+
+
+def _run_full_sync(service: CalendarService, calendar: Calendar) -> None:
+    calendar_sync = CalendarSync.objects.create(
+        calendar_fk=calendar,
+        start_datetime=datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC),
+        end_datetime=datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC),
+        should_update_events=True,
+        organization=calendar.organization,
+        status=CalendarSyncStatus.IN_PROGRESS,
+    )
+    service._execute_calendar_sync(calendar_sync, sync_token=None)
+
+
+@pytest.mark.django_db
+def test_sync_skips_the_event_a_block_was_written_to(
+    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+):
+    """The block's own Google event is not imported as a second block; other events are."""
+    block = _pushed_block(calendar, "vsblockevent1")
+    mock_google_adapter.get_events.return_value = {
+        "events": [_google_event("vsblockevent1"), _google_event("someone_elses_event")],
+        "next_sync_token": "tok",
+    }
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+
+    _run_full_sync(service, calendar)
+
+    blocks = BlockedTime.original_manager.filter(calendar_fk=calendar)
+    assert sorted(blocks.values_list("external_id", flat=True)) == [
+        "manual-2025-06-22T14:00:00-0",
+        "someone_elses_event",
+    ]
+    block.refresh_from_db()
+    assert block.provider_event_external_id == "vsblockevent1"
+
+
+@pytest.mark.django_db
+def test_sync_of_a_deleted_block_event_keeps_the_block(
+    social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
+):
+    """When the block's Google event is deleted there, the block stays and forgets the event."""
+    block = _pushed_block(calendar, "vsblockevent1")
+    mock_google_adapter.get_events.return_value = {
+        "events": [_google_event("vsblockevent1", status="cancelled")],
+        "next_sync_token": "tok",
+    }
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+
+    _run_full_sync(service, calendar)
+
+    block.refresh_from_db()
+    assert block.provider_event_external_id is None
+    assert block.reason == "Out of office"
+    assert list(
+        BlockedTime.original_manager.filter(calendar_fk=calendar).values_list("id", flat=True)
+    ) == [block.id]

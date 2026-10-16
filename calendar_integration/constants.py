@@ -16,6 +16,34 @@ class CalendarProvider(TextChoices):
     ICS = "ics", "ICS"
 
 
+class BlockedTimeDeclineScope(TextChoices):
+    """Which appointments a blocked time turns away.
+
+    NEW: invitations made after the block. NEW_AND_EXISTING: those, plus the events the
+    blocked calendar already holds in the blocked period, which are cancelled when the
+    block is created.
+    """
+
+    NEW = "new", "Only new appointments"
+    NEW_AND_EXISTING = "new_and_existing", "New and existing appointments"
+
+
+class ProviderPushStatus(TextChoices):
+    """Where a blocked time stands in being written to its calendar provider."""
+
+    PENDING = "pending", "Pending"
+    PUSHED = "pushed", "Pushed"
+    FAILED = "failed", "Failed"
+
+
+#: Title of the Out of office event a blocked time is written to its provider as. A
+#: fixed, neutral title: the block's own ``reason`` can hold patient details and is
+#: never sent to the provider.
+BLOCKED_TIME_OUT_OF_OFFICE_TITLE = "Out of office"
+#: Title of the busy event a blocked time is written as when Out of office is not used.
+BLOCKED_TIME_BUSY_TITLE = "Busy"
+
+
 class RSVPStatus(TextChoices):
     ACCEPTED = "accepted", "Accepted"
     DECLINED = "declined", "Declined"

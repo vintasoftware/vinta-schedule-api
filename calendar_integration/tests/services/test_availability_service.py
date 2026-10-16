@@ -31,6 +31,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.availability_service import AvailabilityService
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
+from calendar_integration.services.dataclasses import BlockDeclineOptions
 from calendar_integration.services.recurrence_manager import RecurrenceManager
 from organizations.models import Organization
 from users.models import Profile, User
@@ -70,6 +71,7 @@ class FakeHost:
         self,
         calendar: Calendar,
         blocked_times: Iterable[tuple[datetime.datetime, datetime.datetime, str, str, str | None]],
+        decline_options: BlockDeclineOptions | None = None,
     ) -> Iterable[BlockedTime]:
         times_list = list(blocked_times)
         created: list[BlockedTime] = []
@@ -87,6 +89,9 @@ class FakeHost:
             )
             created.append(bt)
         return created
+
+    def _get_write_adapter_for_calendar(self, calendar: Calendar) -> None:
+        return None
 
     def _create_recurrence_rule_if_needed(self, rrule_string: str | None) -> RecurrenceRule | None:
         if not rrule_string or not self._organization:

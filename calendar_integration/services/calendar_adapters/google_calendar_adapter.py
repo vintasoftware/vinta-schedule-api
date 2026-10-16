@@ -15,10 +15,20 @@ from google.auth.transport.requests import Request
 from google.oauth2 import service_account as google_service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from pyrate_limiter import Duration, Rate
 
-from calendar_integration.constants import CalendarProvider
-from calendar_integration.exceptions import WebhookIgnoredError, WebhookProcessingFailedError
+from calendar_integration.constants import (
+    BLOCKED_TIME_BUSY_TITLE,
+    BLOCKED_TIME_OUT_OF_OFFICE_TITLE,
+    BlockedTimeDeclineScope,
+    CalendarProvider,
+)
+from calendar_integration.exceptions import (
+    OutOfOfficeNotSupportedError,
+    WebhookIgnoredError,
+    WebhookProcessingFailedError,
+)
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
@@ -562,9 +572,117 @@ class GoogleCalendarAdapter(CalendarAdapter):
             status=updated_event.get("status", "confirmed"),
         )
 
-    def delete_event(self, calendar_id: str, event_id: str):
+    def delete_event(self, calendar_id: str, event_id: str, send_updates: str | None = None):
+        """Delete an event. ``send_updates`` is Google's ``sendUpdates``, sent only when set."""
         write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
-        self.client.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+        kwargs: dict[str, Any] = {"calendarId": calendar_id, "eventId": event_id}
+        if send_updates is not None:
+            kwargs["sendUpdates"] = send_updates
+        self.client.events().delete(**kwargs).execute()
+
+    #: Google's ``autoDeclineMode`` for each decline scope of a blocked time.
+    AUTO_DECLINE_MODES: dict[str, str] = {  # noqa: RUF012
+        BlockedTimeDeclineScope.NEW: "declineOnlyNewConflictingInvitations",
+        BlockedTimeDeclineScope.NEW_AND_EXISTING: "declineAllConflictingInvitations",
+    }
+
+    def write_out_of_office_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+        decline_scope: BlockedTimeDeclineScope,
+    ) -> None:
+        """Create or update a blocked time's Out of office event, titled "Out of office".
+
+        The event declines conflicting invitations per ``decline_scope`` with Google's
+        default reply. No message of the block's is sent.
+
+        Google accepts Out of office events only on a user's primary calendar. A 400
+        from Google is raised as ``OutOfOfficeNotSupportedError`` so the caller can
+        write a busy event instead.
+        """
+        body = self._blocked_time_body(
+            event_id, BLOCKED_TIME_OUT_OF_OFFICE_TITLE, start_time, end_time, timezone
+        )
+        body["eventType"] = "outOfOffice"
+        body["outOfOfficeProperties"] = {
+            "autoDeclineMode": self.AUTO_DECLINE_MODES[decline_scope],
+        }
+        try:
+            self._upsert_blocked_time_event(calendar_id, event_id, body)
+        except HttpError as exc:
+            if exc.resp.status == 400:
+                raise OutOfOfficeNotSupportedError(
+                    "The calendar refused an Out of office event."
+                ) from exc
+            raise
+
+    def write_busy_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+    ) -> None:
+        """Create or update a blocked time's busy event, titled "Busy". Declines nothing."""
+        body = self._blocked_time_body(
+            event_id, BLOCKED_TIME_BUSY_TITLE, start_time, end_time, timezone
+        )
+        self._upsert_blocked_time_event(calendar_id, event_id, body)
+
+    def delete_blocked_time_event(self, calendar_id: str, event_id: str) -> None:
+        """Delete a blocked time's event without emailing anyone.
+
+        An event Google no longer has (404 or 410) counts as deleted.
+        """
+        write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
+        try:
+            self.client.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+        except HttpError as exc:
+            if exc.resp.status in (404, 410):
+                return
+            raise
+
+    @staticmethod
+    def _blocked_time_body(
+        event_id: str,
+        title: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+    ) -> dict[str, Any]:
+        """The event fields a blocked time's Out of office and busy events share."""
+        return {
+            "id": event_id,
+            "summary": title,
+            "transparency": "opaque",
+            "start": {"dateTime": start_time.isoformat(), "timeZone": timezone},
+            "end": {"dateTime": end_time.isoformat(), "timeZone": timezone},
+        }
+
+    def _upsert_blocked_time_event(
+        self, calendar_id: str, event_id: str, body: dict[str, Any]
+    ) -> None:
+        """Insert a blocked time's event, or update it when it exists.
+
+        The body carries its own id, so an insert for an event that is already there
+        gets a 409 from Google. That event is then updated with the same body, which
+        covers both a changed block and a retry of a write that was not recorded.
+        """
+        write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
+        try:
+            self.client.events().insert(calendarId=calendar_id, body=body).execute()
+        except HttpError as exc:
+            if exc.resp.status != 409:
+                raise
+            write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
+            self.client.events().update(
+                calendarId=calendar_id, eventId=event_id, body=body
+            ).execute()
 
     def get_calendar_resources(self) -> Iterable[CalendarResourceData]:
         """List all Google Workspace resource calendars via the Admin SDK Directory API.

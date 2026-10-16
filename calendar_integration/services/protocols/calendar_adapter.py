@@ -4,6 +4,7 @@ from typing import Any, Protocol
 
 from django.http import HttpHeaders, HttpRequest
 
+from calendar_integration.constants import BlockedTimeDeclineScope
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
@@ -78,11 +79,55 @@ class CalendarAdapter(Protocol):
         """
         ...
 
-    def delete_event(self, calendar_id: str, event_id: str):
+    def delete_event(self, calendar_id: str, event_id: str, send_updates: str | None = None):
         """
         Delete an event from the calendar.
         :param event_id: Unique identifier of the event to delete.
+        :param send_updates: Who the provider emails about the delete (Google's
+            ``sendUpdates``, e.g. ``"all"``). None keeps the provider's default.
         :return: Response from the calendar client.
+        """
+        ...
+
+    def write_out_of_office_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+        decline_scope: BlockedTimeDeclineScope,
+    ) -> None:
+        """
+        Create or update a blocked time's Out of office event, which declines conflicting
+        invitations with the provider's default reply. The title is a fixed, neutral one;
+        the block's reason and decline message are never sent.
+        :param event_id: The id of the provider event. When an event with this id exists it
+            is updated, so a repeated write never creates a second event.
+        :param decline_scope: Which invitations to decline.
+        :raises OutOfOfficeNotSupportedError: When the calendar refuses Out of office events.
+        """
+        ...
+
+    def write_busy_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+    ) -> None:
+        """
+        Create or update a blocked time's plain event that shows the time as busy. The
+        title is a fixed, neutral one.
+        :param event_id: The id of the provider event (see ``write_out_of_office_event``).
+        """
+        ...
+
+    def delete_blocked_time_event(self, calendar_id: str, event_id: str) -> None:
+        """
+        Delete a blocked time's provider event without notifying anyone. An event the
+        provider no longer has counts as deleted.
         """
         ...
 
