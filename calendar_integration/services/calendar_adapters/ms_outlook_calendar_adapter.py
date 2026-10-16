@@ -132,8 +132,6 @@ def _is_valid_rrule_key(
 
 class MSOutlookCalendarAdapter(CalendarAdapter):
     provider = "microsoft"
-    # Blocked times are not written to Outlook calendars.
-    supports_blocked_time_push = False
     RSVP_STATUS_MAPPING: ClassVar[dict[str, Literal["pending", "accepted", "declined"]]] = {
         "none": "pending",
         "organizer": "accepted",
@@ -747,7 +745,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         end_time: datetime.datetime,
         timezone: str,
         decline_scope: BlockedTimeDeclineScope,
-    ) -> str:
+    ) -> None:
         """Blocked times are not written to Outlook calendars."""
         raise NotImplementedError("Blocked times are not written to Outlook calendars.")
 
@@ -758,7 +756,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         start_time: datetime.datetime,
         end_time: datetime.datetime,
         timezone: str,
-    ) -> str:
+    ) -> None:
         """Blocked times are not written to Outlook calendars."""
         raise NotImplementedError("Blocked times are not written to Outlook calendars.")
 

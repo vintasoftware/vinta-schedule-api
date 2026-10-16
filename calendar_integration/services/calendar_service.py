@@ -2136,8 +2136,8 @@ class CalendarService(BaseCalendarService):
         Create new blocked times for a calendar (with optional recurrence support).
         :param calendar: The calendar to create the blocked times for.
         :param blocked_times: Iterable of tuples containing (start_time, end_time, timezone, reason, rrule_string).
-        :param decline_options: Saved on every block. A single block on a calendar whose
-            provider takes blocked times is marked to be written there.
+        :param decline_options: Saved on every block. A single block on a Google calendar
+            is marked to be written there.
         :return: List of created BlockedTime instances.
         :raises BlockDeclineOptionsWithRecurrenceError: When ``decline_options`` is given
             and any block has a recurrence rule. Nothing is created.
@@ -2147,7 +2147,8 @@ class CalendarService(BaseCalendarService):
             rrule_string for *_fields, rrule_string in blocked_times
         ):
             raise BlockDeclineOptionsWithRecurrenceError()
-        pushable = decline_options is not None and self._supports_blocked_time_push(calendar)
+        # Blocked times are written to Google calendars only.
+        pushable = decline_options is not None and calendar.provider == CalendarProvider.GOOGLE
         if not is_initialized_or_authenticated_calendar_service(self):
             raise
 
@@ -2203,16 +2204,6 @@ class CalendarService(BaseCalendarService):
             rrule_string=rrule_string,
             decline_options=decline_options,
         )
-
-    def _supports_blocked_time_push(self, calendar: Calendar) -> bool:
-        """Whether blocked times can be written to ``calendar``'s provider."""
-        try:
-            adapter_cls = self._get_calendar_adapter_cls_for_provider(
-                CalendarProvider(calendar.provider)
-            )
-        except NotImplementedError:
-            return False
-        return bool(adapter_cls.supports_blocked_time_push)
 
     def push_blocked_time_to_provider(self, blocked_time_id: int) -> None:
         """Write a blocked time to its provider calendar, once.

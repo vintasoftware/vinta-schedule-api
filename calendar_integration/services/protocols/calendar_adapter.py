@@ -16,8 +16,6 @@ from calendar_integration.services.dataclasses import (
 
 class CalendarAdapter(Protocol):
     provider: str
-    #: Whether blocked times can be written to this provider's calendars as events.
-    supports_blocked_time_push: bool
 
     def __init__(self, credentials: dict | None = None): ...
 
@@ -99,7 +97,7 @@ class CalendarAdapter(Protocol):
         end_time: datetime.datetime,
         timezone: str,
         decline_scope: BlockedTimeDeclineScope,
-    ) -> str:
+    ) -> None:
         """
         Create or update a blocked time's Out of office event, which declines conflicting
         invitations with the provider's default reply. The title is a fixed, neutral one;
@@ -107,7 +105,6 @@ class CalendarAdapter(Protocol):
         :param event_id: The id of the provider event. When an event with this id exists it
             is updated, so a repeated write never creates a second event.
         :param decline_scope: Which invitations to decline.
-        :return: The provider event id.
         :raises OutOfOfficeNotSupportedError: When the calendar refuses Out of office events.
         """
         ...
@@ -119,12 +116,11 @@ class CalendarAdapter(Protocol):
         start_time: datetime.datetime,
         end_time: datetime.datetime,
         timezone: str,
-    ) -> str:
+    ) -> None:
         """
         Create or update a blocked time's plain event that shows the time as busy. The
         title is a fixed, neutral one.
         :param event_id: The id of the provider event (see ``write_out_of_office_event``).
-        :return: The provider event id.
         """
         ...
 

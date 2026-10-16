@@ -18,6 +18,20 @@ PUSH_MAX_RETRIES = 5
 PUSH_RETRY_BASE_DELAY = 60
 
 
+def _retry_or_give_up(task: Task, exc: Exception, action: str) -> None:
+    """Retry ``task`` with a growing delay, or return after its last retry.
+
+    An eager run (local development) gives up at once: a retry would raise into the
+    request that queued it, after the block was already saved. ``action`` names what
+    failed, by ids only, for the log.
+    """
+    if task.request.retries >= PUSH_MAX_RETRIES or task.request.is_eager:
+        logger.warning("Giving up %s: %s", action, type(exc).__name__)
+        return
+    logger.info("Retrying %s: %s", action, type(exc).__name__)
+    raise task.retry(countdown=PUSH_RETRY_BASE_DELAY * 2**task.request.retries) from exc
+
+
 # Services are injected as defaults rather than inside ``Annotated``; see the note
 # above the tasks in ``calendar_sync_tasks``.
 @app.task(bind=True, max_retries=PUSH_MAX_RETRIES)
@@ -52,22 +66,8 @@ def push_blocked_time_to_provider_task(
         try:
             calendar_service.push_blocked_time_to_provider(blocked_time_id)
         except PROVIDER_CALL_ERRORS as exc:
-            # An eager run (local development) gives up at once: a retry would raise
-            # into the request that queued it, after the block was already saved.
-            if self.request.retries >= PUSH_MAX_RETRIES or self.request.is_eager:
-                logger.warning(
-                    "Giving up writing blocked time %s to its provider: %s",
-                    blocked_time_id,
-                    type(exc).__name__,
-                )
-                calendar_service.mark_blocked_time_push_failed(blocked_time_id)
-                return
-            logger.info(
-                "Retrying the write of blocked time %s to its provider: %s",
-                blocked_time_id,
-                type(exc).__name__,
-            )
-            raise self.retry(countdown=PUSH_RETRY_BASE_DELAY * 2**self.request.retries) from exc
+            _retry_or_give_up(self, exc, f"writing blocked time {blocked_time_id} to its provider")
+            calendar_service.mark_blocked_time_push_failed(blocked_time_id)
 
 
 @app.task(bind=True, max_retries=PUSH_MAX_RETRIES)
@@ -101,19 +101,9 @@ def delete_blocked_time_from_provider_task(
                 calendar_id, provider_event_external_id
             )
         except PROVIDER_CALL_ERRORS as exc:
-            # See push_blocked_time_to_provider_task on giving up at once when eager.
-            if self.request.retries >= PUSH_MAX_RETRIES or self.request.is_eager:
-                logger.warning(
-                    "Giving up deleting provider event %s of a blocked time on calendar %s: %s",
-                    provider_event_external_id,
-                    calendar_id,
-                    type(exc).__name__,
-                )
-                return
-            logger.info(
-                "Retrying the delete of provider event %s of a blocked time on calendar %s: %s",
-                provider_event_external_id,
-                calendar_id,
-                type(exc).__name__,
+            _retry_or_give_up(
+                self,
+                exc,
+                f"deleting provider event {provider_event_external_id} "
+                f"of a blocked time on calendar {calendar_id}",
             )
-            raise self.retry(countdown=PUSH_RETRY_BASE_DELAY * 2**self.request.retries) from exc

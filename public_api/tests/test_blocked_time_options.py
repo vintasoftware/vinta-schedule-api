@@ -1,10 +1,11 @@
-"""Public API: block decline options on ``createBlockedTime`` and the ``blockedTimeImpact`` preview."""
+"""Public API: block decline options on ``createBlockedTime``."""
 
 import datetime
 import uuid
 from unittest.mock import Mock, patch
 
 import pytest
+from model_bakery import baker
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.factories import create_calendar_ownership
@@ -23,32 +24,10 @@ mutation CreateBlockedTime($input: CreateBlockedTimeInput!) {
         errorMessage
         cancelledEventCount
         failedEventCount
-        conflictEventCount
         blockedTime {
             id
             declineScope
         }
-    }
-}
-"""
-
-BLOCKED_TIME_IMPACT = """
-query BlockedTimeImpact(
-    $organizationId: Int!
-    $calendarId: Int!
-    $startTime: DateTime!
-    $endTime: DateTime!
-    $timezone: String!
-) {
-    blockedTimeImpact(
-        organizationId: $organizationId
-        calendarId: $calendarId
-        startTime: $startTime
-        endTime: $endTime
-        timezone: $timezone
-    ) {
-        cancelEventCount
-        conflictEventCount
     }
 }
 """
@@ -129,6 +108,11 @@ def adapter():
         yield write_adapter
 
 
+@pytest.fixture
+def organization(db) -> Organization:
+    return baker.make(Organization, name="Public API Org")
+
+
 CREATE_AND_CANCEL = [PublicAPIResources.CREATE_BLOCKED_TIME, PublicAPIResources.CALENDAR_EVENT]
 
 
@@ -156,7 +140,6 @@ class TestCreateBlockedTimeOptions:
             "errorMessage": None,
             "cancelledEventCount": 0,
             "failedEventCount": 0,
-            "conflictEventCount": 0,
             "blockedTime": {
                 "id": result["blockedTime"]["id"],
                 "declineScope": "NEW",
@@ -186,11 +169,7 @@ class TestCreateBlockedTimeOptions:
         result = data["data"]["createBlockedTime"]
         assert result["success"] is True
         assert result["blockedTime"]["declineScope"] is None
-        assert (
-            result["cancelledEventCount"],
-            result["failedEventCount"],
-            result["conflictEventCount"],
-        ) == (0, 0, 0)
+        assert (result["cancelledEventCount"], result["failedEventCount"]) == (0, 0)
         block = BlockedTime.objects.filter_by_organization(organization).get(
             id=int(result["blockedTime"]["id"])
         )
@@ -201,9 +180,7 @@ class TestCreateBlockedTimeOptions:
             CalendarEvent.objects.filter_by_organization(organization).filter(id=visit.id).exists()
         )
 
-    def test_new_and_existing_cancels_the_calendars_events_and_counts_conflicts(
-        self, organization, adapter
-    ):
+    def test_new_and_existing_cancels_only_the_calendars_events(self, organization, adapter):
         owner, membership, calendar = _owner_with_calendar(organization)
         post = make_token_post(organization, CREATE_AND_CANCEL, scoped_to_membership=membership)
         kept, elsewhere = _events_around_the_block(organization, owner, calendar)
@@ -216,11 +193,7 @@ class TestCreateBlockedTimeOptions:
 
         result = data["data"]["createBlockedTime"]
         assert result["success"] is True
-        assert (
-            result["cancelledEventCount"],
-            result["failedEventCount"],
-            result["conflictEventCount"],
-        ) == (2, 0, 1)
+        assert (result["cancelledEventCount"], result["failedEventCount"]) == (2, 0)
         remaining = set(
             CalendarEvent.objects.filter_by_organization(organization).values_list("id", flat=True)
         )
@@ -250,86 +223,46 @@ class TestCreateBlockedTimeOptions:
             CalendarEvent.objects.filter_by_organization(organization).filter(id=visit.id).exists()
         )
 
-    def test_overlong_decline_message_is_refused(self, organization, adapter):
-        _owner, membership, calendar = _owner_with_calendar(organization)
-        post = make_token_post(organization, CREATE_AND_CANCEL, scoped_to_membership=membership)
-
-        data = post(
-            CREATE_BLOCKED_TIME,
-            _block_input(organization, calendar, declineScope="NEW", declineMessage="x" * 1001),
-        )
-
-        result = data["data"]["createBlockedTime"]
-        assert result["success"] is False
-        assert result["errorMessage"] == "The decline message must be at most 1000 characters."
-        assert not BlockedTime.objects.filter_by_organization(organization).exists()
-
     @pytest.mark.parametrize(
-        "options",
+        ("options", "error_message"),
         [
-            pytest.param({"declineScope": "NEW"}, id="scope"),
-            pytest.param({"declineMessage": "Back on Monday."}, id="message"),
             pytest.param(
-                {"declineScope": "NEW_AND_EXISTING", "declineMessage": "Back on Monday."},
-                id="both",
+                {"declineScope": "NEW", "declineMessage": "x" * 1001},
+                "The decline message must be at most 1000 characters.",
+                id="overlong-message",
+            ),
+            pytest.param(
+                {"declineScope": "NEW", "rruleString": "FREQ=WEEKLY;BYDAY=FR"},
+                "Decline options cannot be used on a recurring blocked time. "
+                "Remove the recurrence rule or the decline options.",
+                id="recurrence-rule",
+            ),
+            pytest.param(
+                {"declineMessage": "Back on Monday."},
+                "A declineMessage needs a declineScope.",
+                id="message-without-scope",
+            ),
+            pytest.param(
+                {"declineScope": "NEW_AND_EXISTING"},
+                "This block would cancel 2 events, more than the 1 one block may cancel. "
+                "Block a shorter period.",
+                id="too-many-cancels",
             ),
         ],
     )
-    def test_decline_options_with_a_recurrence_rule_are_refused(
-        self, organization, adapter, options
+    def test_invalid_options_are_refused_and_write_nothing(
+        self, organization, adapter, options, error_message
     ):
-        _owner, membership, calendar = _owner_with_calendar(organization)
-        post = make_token_post(organization, CREATE_AND_CANCEL, scoped_to_membership=membership)
-        visit = _event(calendar, 10, 11, "visit")
-
-        data = post(
-            CREATE_BLOCKED_TIME,
-            _block_input(organization, calendar, rruleString="FREQ=WEEKLY;BYDAY=FR", **options),
-        )
-
-        result = data["data"]["createBlockedTime"]
-        assert result["success"] is False
-        assert result["errorMessage"] == (
-            "Decline options cannot be used on a recurring blocked time. "
-            "Remove the recurrence rule or the decline options."
-        )
-        assert not BlockedTime.objects.filter_by_organization(organization).exists()
-        assert (
-            CalendarEvent.objects.filter_by_organization(organization).filter(id=visit.id).exists()
-        )
-
-    def test_a_decline_message_without_a_scope_is_refused(self, organization, adapter):
-        _owner, membership, calendar = _owner_with_calendar(organization)
-        post = make_token_post(organization, CREATE_AND_CANCEL, scoped_to_membership=membership)
-
-        data = post(
-            CREATE_BLOCKED_TIME,
-            _block_input(organization, calendar, declineMessage="Back on Monday."),
-        )
-
-        result = data["data"]["createBlockedTime"]
-        assert result["success"] is False
-        assert result["errorMessage"] == "A declineMessage needs a declineScope."
-        assert not BlockedTime.objects.filter_by_organization(organization).exists()
-
-    def test_a_block_that_would_cancel_too_many_events_is_refused(self, organization, adapter):
         _owner, membership, calendar = _owner_with_calendar(organization)
         post = make_token_post(organization, CREATE_AND_CANCEL, scoped_to_membership=membership)
         _event(calendar, 10, 11, "first")
         _event(calendar, 11, 12, "second")
 
         with patch(MAX_BLOCK_CANCELS, 1), patch(PUSH_TASK_DELAY) as delay:
-            data = post(
-                CREATE_BLOCKED_TIME,
-                _block_input(organization, calendar, declineScope="NEW_AND_EXISTING"),
-            )
+            data = post(CREATE_BLOCKED_TIME, _block_input(organization, calendar, **options))
 
         result = data["data"]["createBlockedTime"]
-        assert result["success"] is False
-        assert result["errorMessage"] == (
-            "This block would cancel 2 events, more than the 1 one block may cancel. "
-            "Block a shorter period."
-        )
+        assert (result["success"], result["errorMessage"]) == (False, error_message)
         assert not BlockedTime.objects.filter_by_organization(organization).exists()
         assert CalendarEvent.objects.filter_by_organization(organization).count() == 2
         adapter.delete_event.assert_not_called()
@@ -349,54 +282,3 @@ class TestCreateBlockedTimeOptions:
             f"Cannot query field '{field}' on type 'BlockedTimeGraphQLType'."
         )
         assert not BlockedTime.objects.filter_by_organization(organization).exists()
-
-
-@pytest.mark.django_db
-class TestBlockedTimeImpact:
-    def _variables(self, organization, calendar):
-        return {
-            "organizationId": organization.id,
-            "calendarId": calendar.id,
-            "startTime": START,
-            "endTime": END,
-            "timezone": "UTC",
-        }
-
-    def test_counts_what_a_block_would_cancel_and_writes_nothing(self, organization):
-        owner, membership, calendar = _owner_with_calendar(organization)
-        post = make_token_post(
-            organization, [PublicAPIResources.CREATE_BLOCKED_TIME], scoped_to_membership=membership
-        )
-        _events_around_the_block(organization, owner, calendar)
-
-        data = post(BLOCKED_TIME_IMPACT, self._variables(organization, calendar))
-
-        assert data["data"]["blockedTimeImpact"] == {
-            "cancelEventCount": 2,
-            "conflictEventCount": 1,
-        }
-        assert CalendarEvent.objects.filter_by_organization(organization).count() == 4
-        assert not BlockedTime.objects.filter_by_organization(organization).exists()
-
-    def test_another_owners_calendar_is_not_found(self, organization):
-        _owner, membership, _calendar = _owner_with_calendar(organization)
-        _other, _other_membership, other_calendar = _owner_with_calendar(organization)
-        post = make_token_post(
-            organization, [PublicAPIResources.CREATE_BLOCKED_TIME], scoped_to_membership=membership
-        )
-
-        data = post(BLOCKED_TIME_IMPACT, self._variables(organization, other_calendar))
-
-        assert data["data"]["blockedTimeImpact"] is None
-        assert [error["message"] for error in data["errors"]] == ["Calendar not found."]
-
-    def test_needs_the_create_blocked_time_resource(self, organization):
-        _owner, membership, calendar = _owner_with_calendar(organization)
-        post = make_token_post(
-            organization, [PublicAPIResources.CALENDAR_EVENT], scoped_to_membership=membership
-        )
-
-        data = post(BLOCKED_TIME_IMPACT, self._variables(organization, calendar))
-
-        assert data["data"]["blockedTimeImpact"] is None
-        assert data["errors"][0]["message"] == "You don't have access to query this resource."

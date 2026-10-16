@@ -1968,8 +1968,6 @@ class BlockedTime(RecurringMixin):
             calendar_fk=self.calendar,
             organization=self.organization,
             reason=self.reason,
-            decline_scope=self.decline_scope,
-            decline_message=self.decline_message,
             start_time_tz_unaware=occurrence_start_time.astimezone(tz).replace(tzinfo=None),
             end_time_tz_unaware=occurrence_end_time.astimezone(tz).replace(tzinfo=None),
             start_time=occurrence_start_time,

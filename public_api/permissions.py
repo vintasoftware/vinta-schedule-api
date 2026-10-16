@@ -92,7 +92,6 @@ class OrganizationResourceAccess(BasePermission):
             PublicAPIResources.BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_QUOTA_RULES
         ),
         "createBlockedTime": PublicAPIResources.CREATE_BLOCKED_TIME,
-        "blockedTimeImpact": PublicAPIResources.CREATE_BLOCKED_TIME,
         "updateBlockedTime": PublicAPIResources.UPDATE_BLOCKED_TIME,
         "deleteBlockedTime": PublicAPIResources.DELETE_BLOCKED_TIME,
         "scheduleEvent": PublicAPIResources.CALENDAR_EVENT,

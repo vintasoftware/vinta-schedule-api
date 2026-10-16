@@ -22,7 +22,6 @@ from calendar_integration.constants import BlockedTimeDeclineScope, CalendarType
 from calendar_integration.exceptions import (
     AppointmentTypeSlotConfigNotFoundError,
     AppointmentTypeValidationError,
-    BlockDeclineOptionsWithRecurrenceError,
     BookingPolicyViolationError,
     CalendarIntegrationError,
     CalendarPoolError,
@@ -904,8 +903,8 @@ class CreateBlockedTimeInput:
 class CreateBlockedTimeResult:
     """Result of the createBlockedTime mutation.
 
-    The three counts describe the cancels a NEW_AND_EXISTING block caused, and are 0
-    for any other block.
+    The counts describe the cancels a NEW_AND_EXISTING block caused, and are 0 for any
+    other block.
     """
 
     success: bool
@@ -917,15 +916,6 @@ class CreateBlockedTimeResult:
     failed_event_count: int = strawberry.field(
         default=0,
         description="Events on the blocked calendar the block tried to cancel and could not.",
-    )
-    conflict_event_count: int = strawberry.field(
-        default=0,
-        description=(
-            "Overlapping events held on other calendars where the calendar's owner "
-            "attends. Vinta Schedule never cancels them. But when the block is written to "
-            "Google as an Out of office event, Google declines the owner's invitations to "
-            "them. The events stay in place for everyone else."
-        ),
     )
 
 
@@ -3103,10 +3093,6 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         except Calendar.DoesNotExist:
             return CreateBlockedTimeResult(success=False, error_message="Calendar not found.")
 
-        if input.rrule_string and (input.decline_scope is not None or input.decline_message):
-            return CreateBlockedTimeResult(
-                success=False, error_message=BlockDeclineOptionsWithRecurrenceError.default_message
-            )
         if input.decline_message and input.decline_scope is None:
             return CreateBlockedTimeResult(
                 success=False, error_message="A declineMessage needs a declineScope."
@@ -3153,7 +3139,6 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
             blocked_time=blocked_time,  # type: ignore[arg-type]
             cancelled_event_count=cancel_result.cancelled_event_count,
             failed_event_count=cancel_result.failed_event_count,
-            conflict_event_count=cancel_result.conflict_event_count,
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])

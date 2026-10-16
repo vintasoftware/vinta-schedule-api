@@ -1,5 +1,4 @@
 import datetime
-import json
 import logging
 import re
 import urllib.parse
@@ -43,26 +42,6 @@ from common.redis import build_resilient_limiter
 
 
 logger = logging.getLogger(__name__)
-
-#: What a Google error reason code looks like (``invalid``, ``eventTypeRestriction``...).
-#: Anything else is reported as ``"unknown"``, so free text never passes as a code.
-_GOOGLE_ERROR_REASON_CODE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
-
-
-def _google_error_reason_code(exc: HttpError) -> str:
-    """Google's short error code for ``exc`` (``error.errors[0].reason``), or ``"unknown"``.
-
-    Only the code is returned, never the error message, so the result is safe to log.
-    """
-    try:
-        data = json.loads(exc.content.decode("utf-8"))
-        code = data["error"]["errors"][0]["reason"]
-    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-        return "unknown"
-    if isinstance(code, str) and _GOOGLE_ERROR_REASON_CODE.match(code):
-        return code
-    return "unknown"
-
 
 # Precompiled regex for extracting calendar ID from Google Calendar resource URIs
 _CALENDAR_ID_RE = re.compile(r"/calendars/([^/]+)/events")
@@ -120,7 +99,6 @@ class GoogleServiceAccountCredentialsTypedDict(TypedDict):
 
 class GoogleCalendarAdapter(CalendarAdapter):
     provider = "google"
-    supports_blocked_time_push = True
     account_id: str
     # admin_client is set only on service-account adapters built via from_service_account().
     # Regular OAuth adapters created by __init__ do not have this attribute.
@@ -616,7 +594,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
         end_time: datetime.datetime,
         timezone: str,
         decline_scope: BlockedTimeDeclineScope,
-    ) -> str:
+    ) -> None:
         """Create or update a blocked time's Out of office event, titled "Out of office".
 
         The event declines conflicting invitations per ``decline_scope`` with Google's
@@ -634,12 +612,11 @@ class GoogleCalendarAdapter(CalendarAdapter):
             "autoDeclineMode": self.AUTO_DECLINE_MODES[decline_scope],
         }
         try:
-            return self._upsert_blocked_time_event(calendar_id, event_id, body)
+            self._upsert_blocked_time_event(calendar_id, event_id, body)
         except HttpError as exc:
             if exc.resp.status == 400:
                 raise OutOfOfficeNotSupportedError(
-                    "The calendar refused an Out of office event.",
-                    reason_code=_google_error_reason_code(exc),
+                    "The calendar refused an Out of office event."
                 ) from exc
             raise
 
@@ -650,12 +627,12 @@ class GoogleCalendarAdapter(CalendarAdapter):
         start_time: datetime.datetime,
         end_time: datetime.datetime,
         timezone: str,
-    ) -> str:
+    ) -> None:
         """Create or update a blocked time's busy event, titled "Busy". Declines nothing."""
         body = self._blocked_time_body(
             event_id, BLOCKED_TIME_BUSY_TITLE, start_time, end_time, timezone
         )
-        return self._upsert_blocked_time_event(calendar_id, event_id, body)
+        self._upsert_blocked_time_event(calendar_id, event_id, body)
 
     def delete_blocked_time_event(self, calendar_id: str, event_id: str) -> None:
         """Delete a blocked time's event without emailing anyone.
@@ -689,8 +666,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
 
     def _upsert_blocked_time_event(
         self, calendar_id: str, event_id: str, body: dict[str, Any]
-    ) -> str:
-        """Insert a blocked time's event, or update it when it exists, and return its id.
+    ) -> None:
+        """Insert a blocked time's event, or update it when it exists.
 
         The body carries its own id, so an insert for an event that is already there
         gets a 409 from Google. That event is then updated with the same body, which
@@ -698,17 +675,14 @@ class GoogleCalendarAdapter(CalendarAdapter):
         """
         write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
         try:
-            written = self.client.events().insert(calendarId=calendar_id, body=body).execute()
+            self.client.events().insert(calendarId=calendar_id, body=body).execute()
         except HttpError as exc:
             if exc.resp.status != 409:
                 raise
             write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
-            written = (
-                self.client.events()
-                .update(calendarId=calendar_id, eventId=event_id, body=body)
-                .execute()
-            )
-        return written["id"]
+            self.client.events().update(
+                calendarId=calendar_id, eventId=event_id, body=body
+            ).execute()
 
     def get_calendar_resources(self) -> Iterable[CalendarResourceData]:
         """List all Google Workspace resource calendars via the Admin SDK Directory API.

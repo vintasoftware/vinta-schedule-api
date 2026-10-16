@@ -847,9 +847,9 @@ class AvailabilityService:
         """Create a single blocked time (optionally recurring).
 
         With ``decline_options`` the options are saved on the row, and a single block on
-        a calendar whose provider takes blocked times is queued to be written there after
-        the transaction commits (``push_blocked_time_to_provider_task``). Without them
-        the block is created exactly as before and nothing is queued.
+        a Google calendar is queued to be written there after the transaction commits
+        (``push_blocked_time_to_provider_task``). Without them the block is created
+        exactly as before and nothing is queued.
         """
         [blocked_time] = self._host.bulk_create_manual_blocked_times(
             calendar=calendar,
@@ -943,14 +943,13 @@ class AvailabilityService:
                     **event_fields,
                     decline_scope=BlockedTimeDeclineScope(blocked_time.decline_scope),
                 )
-            except OutOfOfficeNotSupportedError as exc:
-                # Only the block id and the provider's error code: the provider's error
-                # message can echo the event's details.
+            except OutOfOfficeNotSupportedError:
+                # Only the block id: the provider's error message can echo the event's
+                # details.
                 logger.warning(
-                    "Provider refused an Out of office event for blocked time %s (%s); "
+                    "Provider refused an Out of office event for blocked time %s; "
                     "writing a busy event instead.",
                     blocked_time.id,
-                    exc.reason_code,
                 )
                 write_adapter.write_busy_event(**event_fields)
         else:

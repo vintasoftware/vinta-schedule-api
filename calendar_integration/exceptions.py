@@ -155,16 +155,7 @@ class TooManyBlockCancelsError(CalendarIntegrationError):
 
 
 class OutOfOfficeNotSupportedError(CalendarAdapterError):
-    """The provider calendar refused an Out of office event.
-
-    ``reason_code`` is the provider's short machine-readable error code (Google's
-    ``error.errors[0].reason``), or ``"unknown"``. It never holds the provider's error
-    message, so it is safe to log.
-    """
-
-    def __init__(self, message: str | None = None, reason_code: str = "unknown") -> None:
-        super().__init__(message)
-        self.reason_code = reason_code
+    """The provider calendar refused an Out of office event."""
 
 
 class InvalidCredentialsError(CalendarAdapterError):

@@ -4,7 +4,6 @@ import pytest
 from dependency_injector import providers
 
 from calendar_integration.containers import CalendarContainer
-from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from di_core.containers import AppContainer
@@ -57,11 +56,3 @@ def test_calendar_service_receives_upstream_providers() -> None:
 
     assert service.audit_service is audit
     assert service.entitlement_service is entitlement
-
-
-def test_block_conflict_service_receives_its_own_calendar_services() -> None:
-    service = AppContainer().block_conflict_service()
-
-    assert isinstance(service.calendar_service, CalendarService)
-    assert isinstance(service.appointment_type_service, AppointmentTypeService)
-    assert isinstance(service.appointment_type_service.calendar_service, CalendarService)

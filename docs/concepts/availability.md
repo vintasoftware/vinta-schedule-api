@@ -76,24 +76,21 @@ a recurring block with decline options is refused. With them:
   deleting the block deletes the Google event (nobody is emailed about
   that delete).
 - When Google refuses the Out of office event (any 400), a busy event is
-  written instead and a warning is logged with the block id and Google's
-  error code only. A push that keeps failing marks the block `failed`;
-  the block still blocks time here. The "Retry provider push" action in
-  the Django admin queues failed blocks again.
+  written instead and a warning is logged with the block id only. A push
+  that keeps failing marks the block `failed`; the block still blocks time
+  here.
 - `NEW_AND_EXISTING` also cancels the events the blocked calendar holds in
   the period, each on its own: a single event is deleted (Google emails
   every guest), and an occurrence of a recurring series is cancelled
   without touching the rest of the series. A block that would cancel more
   than 25 events is refused, and nothing is written; block a shorter
-  period instead. The mutation returns `cancelledEventCount`,
-  `failedEventCount` and `conflictEventCount`.
-- Events on other calendars that the owner attends are counted as
-  conflicts. Vinta Schedule never cancels them. But when the block is
-  written to Google as an Out of office event with `NEW_AND_EXISTING`,
-  Google declines the owner's invitations to them. The events themselves
-  stay in place for everyone else.
-- `blockedTimeImpact` previews those counts for a period without writing
-  anything.
+  period instead. The mutation returns `cancelledEventCount` and
+  `failedEventCount`.
+- Events on other calendars that the owner attends are never cancelled by
+  Vinta Schedule. But when the block is written to Google as an Out of
+  office event with `NEW_AND_EXISTING`, Google declines the owner's
+  invitations to them. The events themselves stay in place for everyone
+  else.
 
 ## Computing availability — `only_calendars_available_in_ranges`
 

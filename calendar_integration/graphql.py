@@ -671,31 +671,13 @@ class BlockedTimeDeclineScopeEnum(enum.Enum):
 
     NEW: invitations made after the block.
     NEW_AND_EXISTING: those, plus the events the blocked calendar already holds in the
-    blocked period, which are cancelled when the block is created. Events on other
-    calendars that the calendar's owner attends are never cancelled by Vinta Schedule.
-    But when the block is written to Google as an Out of office event, Google declines
-    the owner's invitations to them. Those events stay in place for everyone else.
+    blocked period, which are cancelled when the block is created. When the block is
+    written to Google as an Out of office event, Google also declines the owner's
+    invitations to other events in the period.
     """
 
     NEW = BlockedTimeDeclineScope.NEW.value
     NEW_AND_EXISTING = BlockedTimeDeclineScope.NEW_AND_EXISTING.value
-
-
-@strawberry.type
-class BlockedTimeImpactGraphQLType:
-    """What a block over a period would do to existing events. Counts only."""
-
-    cancel_event_count: int = strawberry.field(
-        description="Events on the blocked calendar a NEW_AND_EXISTING block would cancel."
-    )
-    conflict_event_count: int = strawberry.field(
-        description=(
-            "Overlapping events held on other calendars where the calendar's owner "
-            "attends. Vinta Schedule never cancels them. But when a NEW_AND_EXISTING "
-            "block is written to Google as an Out of office event, Google declines the "
-            "owner's invitations to them. The events stay in place for everyone else."
-        )
-    )
 
 
 @strawberry_django.type(BlockedTime)
