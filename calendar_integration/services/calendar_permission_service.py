@@ -73,6 +73,25 @@ def _resolve_token_membership_user_id(user: User, organization_id: int) -> int |
     return None
 
 
+def _external_attendee_diff_key(
+    attendee: EventExternalAttendeeData, position: int
+) -> tuple[str, str | int]:
+    """Key an external attendee for the before/after permission diff.
+
+    An attendee with a stored id is keyed by it. ``update_event`` fills that id in
+    with the attendee the update will link, so the key names the stored row, not
+    the email the caller typed: re-sending the event's attendee email with another
+    patient's identifiers swaps the patient and must count as a change. One with
+    no id is keyed by its email, lowercased. One with neither is not stored yet:
+    its key is unique to its position, so it always counts as added.
+    """
+    if attendee.external_attendee_id is not None:
+        return ("id", attendee.external_attendee_id)
+    if attendee.email:
+        return ("email", attendee.email.lower())
+    return ("new", position)
+
+
 DEFAULT_CALENDAR_OWNER_PERMISSIONS = [
     EventManagementPermissions.CREATE,
     EventManagementPermissions.UPDATE_ATTENDEES,
@@ -237,10 +256,12 @@ class CalendarPermissionService:
         new_attendance_dict = {a.user_id: a for a in new_attendances if a.user_id is not None}
 
         old_external_attendance_dict = {
-            a.email.lower(): a for a in old_external_attendances if a.email is not None
+            _external_attendee_diff_key(a, position): a
+            for position, a in enumerate(old_external_attendances)
         }
         new_external_attendance_dict = {
-            a.email.lower(): a for a in new_external_attendances if a.email is not None
+            _external_attendee_diff_key(a, position): a
+            for position, a in enumerate(new_external_attendances)
         }
 
         # Check for changes in internal attendances
@@ -258,20 +279,19 @@ class CalendarPermissionService:
                     return EventManagementPermissions.UPDATE_SELF_RSVP
                 return EventManagementPermissions.UPDATE_ATTENDEES
 
-        for user_email in new_external_attendance_dict.keys():
-            old_external_attendance = old_external_attendance_dict.get(user_email)
+        for attendee_key in new_external_attendance_dict.keys():
+            old_external_attendance = old_external_attendance_dict.get(attendee_key)
             if not old_external_attendance:
                 # New external attendance added
                 return EventManagementPermissions.UPDATE_ATTENDEES
 
-        for user_email in old_external_attendance_dict.keys():
-            new_external_attendance = new_external_attendance_dict.get(user_email)
+        for attendee_key in old_external_attendance_dict.keys():
+            new_external_attendance = new_external_attendance_dict.get(attendee_key)
             if not new_external_attendance:
-                # External attendance removed
-                if (
-                    self.token.external_attendee
-                    and user_email == self.token.external_attendee.email
-                ):
+                # External attendance removed. The old side is the stored event, so
+                # every attendee on it is keyed by its id.
+                token_attendee = self.token.external_attendee
+                if token_attendee and attendee_key == ("id", token_attendee.pk):
                     return EventManagementPermissions.UPDATE_SELF_RSVP
                 return EventManagementPermissions.UPDATE_ATTENDEES
 

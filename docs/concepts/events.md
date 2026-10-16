@@ -24,6 +24,17 @@ IANA `timezone`. Around that core, it carries:
 - **`ExternalAttendee` / `EventExternalAttendance`** is for
   non-account participants identified by email — typically the patient
   on a clinic appointment or a referring physician copied on a consult.
+  A client that keeps no personal data here sends the attendee with no
+  email and no name, only a `(system, identifier)` pair naming the person
+  in its own system. Such an attendee is shared: every event that names the
+  same pair links to one `ExternalAttendee` row, through its own
+  `EventExternalAttendance`, and the row is created only by the first of
+  them. A later event links the shared row as it is: one that sends a
+  different email or name, an identifier the row does not hold, or (by id)
+  a different identifier set is refused rather than silently ignored. An
+  attendee with no email is never sent to Google or
+  Outlook. Every input that accepts an external attendee refuses one with
+  neither an email nor an identifier.
 
 Both attend the same event; they're separate models because the system
 knows much more about internal users (permissions, notification
@@ -132,9 +143,12 @@ event would, so existence is never leaked to a caller outside that scope.
 
 Identifier writes on this mutation share `scheduleEvent`'s validation and reject (with
 the whole update rolled back) on: an invalid `system` URL; a blank/whitespace-only or
-over-255-character `identifier`; a `(system, identifier)` pair already claimed by
-another record of the same type in the organization; or two pairs in one payload that
-normalize to the same `system`. (Two of the six identifier domain errors — an
+over-255-character `identifier`; an event's `(system, identifier)` pair already
+claimed by another event in the organization; one external attendee's pairs held by
+two different stored attendees; or two pairs in one payload that normalize to the same
+`system`. An external attendee sent with a pair already held by a stored attendee is
+not an error: the event is linked to that attendee. An attendee with no email is
+matched by its pairs, never by email, so several of them can be sent in one payload. (Two of the six identifier domain errors — an
 out-of-allowlist target and a cross-organization target — can never be reached from a
 caller-supplied body on either mutation, since the target and organization are always
 resolved server-side.)

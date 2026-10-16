@@ -805,7 +805,7 @@ class BookingCodeRescheduleEventViewSet(BookingCodeViewMixin, GenericViewSet):
         ]
         # Include the ExternalAttendee id so that serialize_event_data_input can
         # correlate the status correctly and produce a CalendarEventData matching
-        # the old event's external_attendees by email, ensuring
+        # the old event's external_attendees by id, ensuring
         # _check_attendances_update_necessary_permissions sees no change.
         preserved_external_attendances = [
             EventExternalAttendanceInputData(
