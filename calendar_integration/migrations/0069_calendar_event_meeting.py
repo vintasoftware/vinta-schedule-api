@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('calendar_integration', '0067_webhook_subscription_opening_account'),
+        ('calendar_integration', '0068_calendar_external_id_nullable'),
     ]
 
     operations = [
