@@ -910,6 +910,9 @@ class CalendarEventService:
         not collide with the event they came from or fail once a room is disabled.
         A recurring event is checked over its first occurrence only.
 
+        The rooms stay locked until the caller's transaction commits, so call it
+        inside the transaction that writes the allocations.
+
         :raises RoomNotFoundError: an id is not an active room of the organization.
         :raises RoomUnavailableError: a room is taken during the requested time.
         """
@@ -920,13 +923,19 @@ class CalendarEventService:
         requested = set(room_ids)
         if not requested:
             return
-        found = (
+        # Lock the rooms until the caller's transaction commits, so two bookings of the
+        # same room run one after the other and the second one sees the first one's
+        # allocation. Ordered by id so bookings of overlapping rooms lock in the same
+        # order and cannot deadlock.
+        found = list(
             Calendar.objects.filter_by_organization(context.organization.id)
             .live_of_type(CalendarType.RESOURCE)
             .filter(id__in=requested)
-            .count()
+            .order_by("id")
+            .select_for_update()
+            .values_list("id", flat=True)
         )
-        if found != len(requested):
+        if len(found) != len(requested):
             raise RoomNotFoundError()
 
         booked = slot_engine.fetch_room_booking_spans(
