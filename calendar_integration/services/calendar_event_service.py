@@ -948,6 +948,28 @@ class CalendarEventService:
         ):
             raise RoomUnavailableError()
 
+    def validate_room_changes(
+        self,
+        event: CalendarEvent,
+        room_ids: Iterable[int],
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+    ) -> None:
+        """Check the rooms an update gives ``event`` for ``[start_time, end_time)``.
+
+        Only rooms in ``room_ids`` that ``event`` does not hold yet go through
+        ``validate_requested_rooms``. A room it already holds is kept as it is, even if
+        it was disabled since. The rooms it holds are not checked at a new time, so a
+        caller that moves the event must check them itself.
+
+        :raises RoomNotFoundError: an added id is not an active room of the organization.
+        :raises RoomUnavailableError: an added room is taken during the requested time.
+        """
+        current_room_ids = {
+            ra.calendar_fk_id for ra in event.resource_allocations.all() if ra.calendar_fk_id
+        }
+        self.validate_requested_rooms(set(room_ids) - current_room_ids, start_time, end_time)
+
     @transaction.atomic()
     def update_event(
         self, calendar_id: int, event_id: int, event_data: CalendarEventInputData

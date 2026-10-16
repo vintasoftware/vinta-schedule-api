@@ -3803,18 +3803,15 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
 
         # --- resource allocations ---------------------------------------------------
         # update_event always replaces the full set, so an omitted field re-sends the
-        # event's current rooms. Only rooms the event does not hold yet are checked
-        # below: one it already holds may have been disabled since, and is kept.
-        current_room_ids = [
-            ra.calendar_fk_id
-            for ra in existing_event.resource_allocations.all()
-            if ra.calendar_fk_id
-        ]
+        # event's current rooms.
         if input.resource_calendar_ids is strawberry.UNSET:
-            room_ids = current_room_ids
+            room_ids = [
+                ra.calendar_fk_id
+                for ra in existing_event.resource_allocations.all()
+                if ra.calendar_fk_id
+            ]
         else:
             room_ids = list(dict.fromkeys(input.resource_calendar_ids or []))
-        added_room_ids = set(room_ids) - set(current_room_ids)
         resource_allocations = [
             ResourceAllocationInputData(resource_id=room_id) for room_id in room_ids
         ]
@@ -3841,8 +3838,8 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         )
 
         try:
-            calendar_service.validate_requested_rooms(
-                added_room_ids, existing_event.start_time, existing_event.end_time
+            calendar_service.validate_room_changes(
+                existing_event, room_ids, existing_event.start_time, existing_event.end_time
             )
             event = calendar_service.update_event(
                 existing_event.calendar_fk_id, input.event_id, event_data

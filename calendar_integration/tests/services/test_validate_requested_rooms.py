@@ -1,5 +1,6 @@
 """``CalendarService.validate_requested_rooms``: the check a caller's requested rooms go
-through before they are booked.
+through before they are booked, and ``validate_room_changes``, which sends it only the
+rooms an event does not hold yet.
 
 A requested id must be an active room (resource calendar) of the organization, and the
 room must be free for the whole requested time: no event of its own calendar, no blocked
@@ -161,3 +162,27 @@ def test_a_booking_that_only_touches_the_requested_time_leaves_the_room_free(
 
 def test_no_requested_rooms_is_valid(service):
     assert service.validate_requested_rooms([], START, END) is None
+
+
+def test_room_changes_skip_rooms_the_event_already_holds(
+    service, organization, room, host_calendar
+):
+    """A held room is kept even when it is disabled and taken by another event since."""
+    event = _event_holding(room, host_calendar, START, END)
+    _event_holding(room, host_calendar, START, END)
+    Calendar.objects.filter_by_organization(organization.id).filter(id=room.id).update(
+        visibility=CalendarVisibility.INACTIVE
+    )
+
+    assert service.validate_room_changes(event, [room.id], START, END) is None
+
+
+def test_room_changes_check_the_rooms_the_event_does_not_hold_yet(
+    service, organization, room, host_calendar
+):
+    event = _event_holding(room, host_calendar, START, END)
+    other_room = _calendar(organization, "Room 2", CalendarType.RESOURCE)
+    _event_holding(other_room, host_calendar, START, END)
+
+    with pytest.raises(RoomUnavailableError):
+        service.validate_room_changes(event, [room.id, other_room.id], START, END)

@@ -1633,6 +1633,19 @@ class CalendarService(BaseCalendarService):
         """
         self._get_event_service().validate_requested_rooms(room_ids, start_time, end_time)
 
+    def validate_room_changes(
+        self,
+        event: CalendarEvent,
+        room_ids: Iterable[int],
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+    ) -> None:
+        """Check the rooms an update gives ``event`` that it does not hold yet.
+
+        See ``CalendarEventService.validate_room_changes``.
+        """
+        self._get_event_service().validate_room_changes(event, room_ids, start_time, end_time)
+
     def update_event(
         self, calendar_id: int, event_id: int, event_data: CalendarEventInputData
     ) -> CalendarEvent:
