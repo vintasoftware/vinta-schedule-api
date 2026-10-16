@@ -1119,11 +1119,12 @@ class ScheduleEventExternalAttendeeInput:
             "Omitted = leave untouched; an explicit list (including [] or null) replaces "
             "the full set. When the attendee is sent without its id and an attendee in "
             "the organization already holds one of these pairs, the event is linked to "
-            "that attendee and its stored email, name and identifiers are left as they "
-            "are. Rejected with a GraphQL error, and no partial write, when: an invalid "
-            "system URL is given; an identifier is blank/whitespace or over 255 "
-            "characters; the pairs belong to two different attendees; or two pairs in "
-            "this payload normalize to the same system. See ExternalClientIdentifierInput."
+            "that attendee as stored. Rejected with a GraphQL error, and no partial "
+            "write, when: an invalid system URL is given; an identifier is "
+            "blank/whitespace or over 255 characters; the pairs belong to two different "
+            "attendees, or only some of them to one; a different email or name is sent "
+            "for an attendee linked as stored; or two pairs in this payload normalize to "
+            "the same system. See ExternalClientIdentifierInput."
         ),
     )
 

@@ -379,7 +379,8 @@ class ExternalClientIdentifierInput:
     - ``identifier`` is blank or whitespace-only.
     - ``identifier`` is over 255 characters.
     - an event's pair is already claimed by another event in the organization.
-    - one attendee's pairs belong to two different stored attendees.
+    - one attendee's pairs belong to two different stored attendees, or only some of
+      them to a stored attendee.
     - two pairs in the same payload normalize to the same ``system`` (e.g. differing
       only by case or a trailing slash).
     """
@@ -405,8 +406,9 @@ class ExternalAttendeeInput:
 
     It needs an email, at least one external client identifier, or both. With
     identifiers it is linked to the attendee that already holds one of them, and one
-    is created only when none does; that attendee's stored email and name are left as
-    they are. An attendee with no email is never sent to Google or Outlook.
+    is created only when none does. That attendee is linked as stored: a different
+    email or name, or an identifier it does not hold, fails the booking. An attendee
+    with no email is never sent to Google or Outlook.
     """
 
     email: str = ""

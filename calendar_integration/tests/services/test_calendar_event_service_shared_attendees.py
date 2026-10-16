@@ -6,8 +6,8 @@ real event sub-service and cover:
 
 - repeated bookings reuse one attendee, each event with its own attendance;
 - two bookings racing to create the same new attendee end on one row;
-- the shared row's email, name and identifiers are never rewritten by one event, even
-  one that names it by id;
+- linking the shared row with a different email or name, or an identifier it does not
+  hold, is refused, and so is changing it by id; sending it again unchanged is not;
 - an attendee sent again unchanged needs no attendee permission, and swapping the
   patient behind an unchanged email does;
 - removing the attendee from one event, or deleting one event, leaves the others alone,
@@ -24,7 +24,11 @@ import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 
 from calendar_integration.constants import CalendarProvider, EventManagementPermissions
-from calendar_integration.exceptions import ExternalAttendeeIdentifierConflictError
+from calendar_integration.exceptions import (
+    ExternalAttendeeIdentifierConflictError,
+    ExternalAttendeePartialIdentifierMatchError,
+    SharedExternalAttendeeEditError,
+)
 from calendar_integration.factories import create_external_client_identifier
 from calendar_integration.models import (
     Calendar,
@@ -205,8 +209,7 @@ def _attendees(organization) -> list[ExternalAttendee]:
 def test_repeated_bookings_for_one_patient_reuse_one_attendee(
     event_service, mock_google_adapter, calendar, calendar_management_token, organization
 ):
-    """The second booking's email and name do not rewrite the shared row, and the same
-    patient sent twice in one booking makes one attendance."""
+    """The same patient sent twice in one booking makes one attendance."""
     first = _book(
         event_service,
         calendar,
@@ -215,13 +218,7 @@ def test_repeated_bookings_for_one_patient_reuse_one_attendee(
         _patient("patient-1"),
         _patient("patient-1"),
     )
-    second = _book(
-        event_service,
-        calendar,
-        mock_google_adapter,
-        23,
-        _patient("patient-1", email="someone@example.com", name="Someone"),
-    )
+    second = _book(event_service, calendar, mock_google_adapter, 23, _patient("patient-1"))
 
     [attendee] = _attendees(organization)
     assert (attendee.email, attendee.name) == ("", "")
@@ -229,6 +226,48 @@ def test_repeated_bookings_for_one_patient_reuse_one_attendee(
     assert [a.external_attendee_fk_id for a in first.external_attendances.all()] == [attendee.pk]
     assert [a.external_attendee_fk_id for a in second.external_attendances.all()] == [attendee.pk]
     assert EventExternalAttendance.objects.filter_by_organization(organization.id).count() == 2
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("attendee", "error"),
+    [
+        (_patient("patient-1", email="someone@example.com"), SharedExternalAttendeeEditError),
+        (_patient("patient-1", name="Someone"), SharedExternalAttendeeEditError),
+        (
+            ExternalAttendeeInputData(
+                email="",
+                external_client_identifiers=[
+                    ExternalClientIdentifierData(system=PATIENT_SYSTEM, identifier="patient-1"),
+                    ExternalClientIdentifierData(
+                        system="https://other.example.com", identifier="unknown"
+                    ),
+                ],
+            ),
+            ExternalAttendeePartialIdentifierMatchError,
+        ),
+    ],
+    ids=["other-email", "other-name", "unknown-pair"],
+)
+def test_linking_a_patient_with_details_it_lacks_is_refused(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    organization,
+    attendee,
+    error,
+):
+    """The stored row is linked as it is, so what it lacks is refused, not dropped."""
+    _book(event_service, calendar, mock_google_adapter, 22, _patient("patient-1"))
+
+    with pytest.raises(error):
+        _book(event_service, calendar, mock_google_adapter, 23, attendee)
+
+    [stored] = _attendees(organization)
+    assert (stored.email, stored.name) == ("", "")
+    assert _stored_identifiers(stored) == {PATIENT_SYSTEM: "patient-1"}
+    assert CalendarEvent.objects.filter_by_organization(organization.id).count() == 1
 
 
 @pytest.mark.django_db
@@ -307,7 +346,7 @@ def _grant_event_token(event, user, organization, permissions) -> None:
 
 
 @pytest.mark.django_db
-def test_shared_attendee_is_not_rewritten_through_its_id(
+def test_changing_a_shared_attendee_through_its_id_is_refused(
     event_service,
     mock_google_adapter,
     calendar,
@@ -316,8 +355,8 @@ def test_shared_attendee_is_not_rewritten_through_its_id(
     social_account,
     django_capture_on_commit_callbacks,
 ):
-    """An event that names a shared attendee by id keeps it, but cannot change the
-    email, name or identifiers the other events see."""
+    """An event that names a shared attendee by id may send it again unchanged, but
+    changing the email, name or identifiers the other events see is refused."""
     first = _book(
         event_service,
         calendar,
@@ -338,8 +377,19 @@ def test_shared_attendee_is_not_rewritten_through_its_id(
             ExternalClientIdentifierData(system=PATIENT_SYSTEM, identifier="patient-2")
         ],
     )
-    with django_capture_on_commit_callbacks(execute=True):
+    with pytest.raises(SharedExternalAttendeeEditError):
         event_service.update_event(calendar.id, second.id, _event_input(23, edit))
+
+    unchanged = ExternalAttendeeInputData(
+        id=attendee.pk,
+        email="PAT@example.com",
+        name="Pat",
+        external_client_identifiers=[
+            ExternalClientIdentifierData(system=PATIENT_SYSTEM, identifier="patient-1")
+        ],
+    )
+    with django_capture_on_commit_callbacks(execute=True):
+        event_service.update_event(calendar.id, second.id, _event_input(23, unchanged))
 
     attendee.refresh_from_db()
     assert (attendee.email, attendee.name) == ("pat@example.com", "Pat")

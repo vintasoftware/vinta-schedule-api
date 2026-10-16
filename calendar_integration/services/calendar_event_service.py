@@ -49,7 +49,9 @@ from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
     EventManagementError,
     ExternalAttendeeIdentifierConflictError,
+    ExternalAttendeePartialIdentifierMatchError,
     NoAvailableTimeWindowsError,
+    SharedExternalAttendeeEditError,
 )
 from calendar_integration.models import (
     Calendar,
@@ -500,9 +502,9 @@ class CalendarEventService:
         An attendee carrying identifiers is shared: every event that names the same
         ``(system, identifier)`` links to one row, which is what
         ``extclientid_uniq_system_ident`` allows. When a row already holds one of the
-        pairs it is returned unchanged. This event's email, name and identifiers are
-        not written to it, because other events use it too. A row is created, with
-        its identifiers, only when no attendee holds any of them.
+        pairs it is linked as it is, because other events use it too; asking it to
+        change is refused (see ``_check_links_as_stored``). A row is created, with its
+        identifiers, only when no attendee holds any of them.
 
         An attendee with no identifiers always gets a new row.
         """
@@ -516,6 +518,7 @@ class CalendarEventService:
             identifier_service, identifiers, holders
         )
         if existing is not None:
+            self._check_links_as_stored(identifier_service, existing, attendee_data)
             return existing
         try:
             # Two bookings for the same new attendee can both get here. The second
@@ -529,11 +532,62 @@ class CalendarEventService:
             existing = self._find_external_attendee_by_identifiers(identifier_service, identifiers)
             if existing is None:
                 raise
+            self._check_links_as_stored(identifier_service, existing, attendee_data)
             attendee = existing
         if holders is not None:
             # A later entry with the same pairs links this row.
             holders[_identifiers_key(identifiers)] = attendee
         return attendee
+
+    @staticmethod
+    def _changes_details(
+        stored: ExternalAttendee, attendee_data: ExternalAttendeeInputData
+    ) -> bool:
+        """Whether ``attendee_data`` gives an email or name other than ``stored``'s.
+
+        A blank email or name gives none.
+        """
+        email = attendee_data.email.strip()
+        return bool(email and email.lower() != stored.email.lower()) or bool(
+            attendee_data.name and attendee_data.name != stored.name
+        )
+
+    def _check_links_as_stored(
+        self,
+        identifier_service: ExternalClientIdentifierService,
+        stored: ExternalAttendee,
+        attendee_data: ExternalAttendeeInputData,
+    ) -> None:
+        """Refuse linking ``stored``, found by identifiers, when that would drop part of
+        ``attendee_data``: a different email or name, or an identifier ``stored``
+        does not hold. Fewer identifiers than ``stored`` holds are fine.
+        """
+        if self._changes_details(stored, attendee_data):
+            raise SharedExternalAttendeeEditError()
+        supplied = identifier_service.normalized_pairs(
+            attendee_data.external_client_identifiers or []
+        )
+        if not supplied.items() <= identifier_service.stored_pairs(stored).items():
+            raise ExternalAttendeePartialIdentifierMatchError()
+
+    def _check_keeps_shared_attendee(
+        self, stored: ExternalAttendee, attendee_data: ExternalAttendeeInputData
+    ) -> None:
+        """Refuse an entry naming shared ``stored`` by id that would change it.
+
+        An explicit identifier list must equal the stored set; omitted, it asks for
+        no change.
+        """
+        identifier_service = self._context.external_client_identifier_service
+        identifiers = attendee_data.external_client_identifiers
+        changes_identifiers = (
+            identifier_service is not None
+            and identifiers is not None
+            and identifier_service.normalized_pairs(identifiers)
+            != identifier_service.stored_pairs(stored)
+        )
+        if changes_identifiers or self._changes_details(stored, attendee_data):
+            raise SharedExternalAttendeeEditError()
 
     def _with_resolved_external_attendee_ids(
         self,
@@ -1312,8 +1366,8 @@ class CalendarEventService:
                 list[ExternalClientIdentifierData] | None
             ] = []
             # Attendees this event holds that another event holds too, read only when an
-            # entry would rewrite one. This event may keep or drop them, but not rewrite
-            # them: the row is the other events' too.
+            # entry would rewrite one. This event may keep or drop them, but not change
+            # them: the row is the other events' too, so a real change is refused.
             shared_external_attendee_ids: set[int] | None = None
             for external_attendance_data in event_data.external_attendances:
                 attendee_data = external_attendance_data.external_attendee
@@ -1338,6 +1392,7 @@ class CalendarEventService:
                                 .values_list("external_attendee_fk_id", flat=True)
                             )
                         if attendee_data.id in shared_external_attendee_ids:
+                            self._check_keeps_shared_attendee(stored, attendee_data)
                             continue
                     attendance_to_update.external_attendee.email = attendee_data.email
                     attendance_to_update.external_attendee.name = attendee_data.name

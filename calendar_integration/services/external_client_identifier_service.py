@@ -230,6 +230,16 @@ class ExternalClientIdentifierService:
             .values_list("identified_key", flat=True)
         )
 
+    def normalized_pairs(self, identifiers: list[ExternalClientIdentifierData]) -> dict[str, str]:
+        """``{system: identifier}`` for ``identifiers``, normalized and validated exactly
+        as ``replace_for_target`` would store them."""
+        return self._normalize_and_validate(identifiers)
+
+    def stored_pairs(self, target: Model) -> dict[str, str]:
+        """``{system: identifier}`` stored for ``target``."""
+        [pairs] = self.get_for_targets([target]).values()
+        return {pair.system: pair.identifier for pair in pairs}
+
     def get_for_targets(
         self, targets: Sequence[Model]
     ) -> dict[tuple[int, int], list[ExternalClientIdentifierData]]:
