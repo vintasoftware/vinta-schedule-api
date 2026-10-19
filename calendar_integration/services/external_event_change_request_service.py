@@ -679,7 +679,7 @@ class ExternalEventChangeRequestService:
         event: CalendarEvent,
         kind: str,
         write_adapter: CalendarAdapter,
-    ) -> str | None:
+    ) -> tuple[str, EventMeeting] | None:
         """Re-converge the external provider to the retained (approved) local state.
 
         The shared provider-write body used by both ``reject`` and the
@@ -702,8 +702,8 @@ class ExternalEventChangeRequestService:
           needed.
 
         - **DELETE**: re-create the event on the provider via ``write_adapter.create_event``.
-          Re-creation yields a brand-new provider ``external_id`` (external-id churn). The
-          local ``external_id`` rebind is deferred to the caller's atomic block; the caller
+          Re-creation yields a brand-new provider ``external_id`` (external-id churn) and a
+          new meeting link. The local ``external_id`` / meeting rebind is deferred to the caller's atomic block; the caller
           compensates (deletes the just-created provider event) if that local commit fails,
           so a successful create is never orphaned by a DB rollback.
 
@@ -714,8 +714,8 @@ class ExternalEventChangeRequestService:
             write_adapter: An authenticated provider write adapter for the event's calendar.
 
         Returns:
-            For ``DELETE``: the new provider ``external_id`` the caller must rebind the
-            local event to. For ``UPDATE``: ``None``.
+            For ``DELETE``: the new provider ``external_id`` and the ``EventMeeting`` the
+            caller must rebind the local event to. For ``UPDATE``: ``None``.
         """
         meeting = EventMeeting.of(event)
 
@@ -742,15 +742,14 @@ class ExternalEventChangeRequestService:
         created = write_adapter.create_event(
             self._build_adapter_input(event, new_meeting.adapter_request(previous=None))
         )
-        new_meeting.with_provider_link(created).save_to(event)
-        return created.external_id
+        return created.external_id, new_meeting.with_provider_link(created)
 
     def _undo_on_provider(
         self,
         request: ExternalEventChangeRequest,
         *,
         write_adapter: CalendarAdapter,
-    ) -> str | None:
+    ) -> tuple[str, EventMeeting] | None:
         """Re-converge the external provider to the retained (approved) local state.
 
         Thin wrapper around ``_undo_on_provider_for_event`` that extracts ``event`` and
@@ -799,13 +798,15 @@ class ExternalEventChangeRequestService:
            side effect that cannot be rolled back. (Under the outer ``sync_events``
            transaction these all sit inside a single outer transaction; this step is
            "outside" the atomic block *this method* opens, not necessarily outside every
-           surrounding transaction.) For DELETE, returns the new provider external id.
+           surrounding transaction.) For DELETE, returns the new provider external id and
+           meeting.
         2. Open a SINGLE ``transaction.atomic()`` to perform ALL DB writes atomically:
            - If ``prepare_fn`` is supplied (auto-undo path): call it to create the
              change-request row and supersede any prior PENDING request for the event.
              This ensures no AUTO_UNDONE row or STALE supersede is persisted unless the
              provider call already succeeded.
-           - For DELETE: rebind the local event's ``external_id`` to the new provider id.
+           - For DELETE: rebind the local event's ``external_id`` and meeting to the new
+             provider event.
            - Flip ``request.status`` (or the newly-created request) to ``final_status``
              + set resolved fields.
         3. If the local commit fails AFTER a successful provider create (DELETE kind):
@@ -841,16 +842,18 @@ class ExternalEventChangeRequestService:
         """
         # Perform the provider re-convergence OUTSIDE any atomic block this method opens:
         # it is a non-transactional side effect that a DB rollback cannot undo. For DELETE
-        # this returns the new provider external id we must rebind locally. If this raises,
-        # nothing is committed — no AUTO_UNDONE row, no STALE supersede, no DB mutation.
+        # this returns the new provider external id and meeting we must rebind locally. If
+        # this raises, nothing is committed — no AUTO_UNDONE row, no STALE supersede, no DB
+        # mutation.
         #
         # Note: under the outer ``sync_events`` transaction all of this sits inside a
         # single outer transaction; "outside" here means outside the savepoint this method
         # opens, so a failure in the next block can roll back the DB writes without leaving
         # a partially-committed state that a later savepoint release would expose.
-        new_external_id = self._undo_on_provider_for_event(
+        recreated = self._undo_on_provider_for_event(
             event=event, kind=kind, write_adapter=write_adapter
         )
+        new_external_id = recreated[0] if recreated is not None else None
 
         try:
             with transaction.atomic():
@@ -867,11 +870,12 @@ class ExternalEventChangeRequestService:
                     # and the reject path always passes a non-None request.
                     raise RuntimeError("_resolve_with_undo: request is None after prepare_fn")
 
-                if kind == ExternalEventChangeKind.DELETE and new_external_id is not None:
+                if kind == ExternalEventChangeKind.DELETE and recreated is not None:
                     # Rebind the local event to the re-created provider event's new id,
                     # and to its new meeting link.
-                    event.external_id = new_external_id
-                    event.save(update_fields=["external_id", "meeting_url"])
+                    event.external_id, new_meeting = recreated
+                    new_meeting.save_to(event)
+                    event.save(update_fields=["external_id", "meeting_kind", "meeting_url"])
 
                 resolved_at = timezone.now()
                 request.status = final_status
