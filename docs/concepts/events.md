@@ -36,6 +36,15 @@ IANA `timezone`. Around that core, it carries:
   Outlook. Every input that accepts an external attendee refuses one with
   neither an email nor an identifier.
 
+  The pair names the person across the whole organization, on purpose: the
+  same patient can have visits with different owners, and the pair is how
+  the client says it is the same person. So the match is organization-wide
+  even for an owner-scoped public API token, and an event booked by one
+  owner can link a patient first booked by another. The token then sees
+  that attendee's stored email and name. Patients are never created or
+  managed here, so a client that books patients this way should send only
+  the pair, with no email or name.
+
 Both attend the same event; they're separate models because the system
 knows much more about internal users (permissions, notification
 preferences, calendar ownerships) than it does about external ones.
@@ -139,7 +148,9 @@ current time/timezone/recurrence-rule fields unchanged.
 
 Owner-scoped tokens may only update events on calendars their owner owns; a
 cross-owner `eventId` returns the same `"Event not found."` error a genuinely missing
-event would, so existence is never leaked to a caller outside that scope.
+event would, so existence is never leaked to a caller outside that scope. External
+attendees matched by a `(system, identifier)` pair are the one exception: the match is
+organization-wide (see [Attendees vs. external attendees](#attendees-vs-external-attendees)).
 
 Identifier writes on this mutation share `scheduleEvent`'s validation and reject (with
 the whole update rolled back) on: an invalid `system` URL; a blank/whitespace-only or
