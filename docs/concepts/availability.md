@@ -65,6 +65,9 @@ list of `(start, end)` ranges, it returns the calendars that have:
 - No overlapping `CalendarEvent` (including expanded recurring
   occurrences).
 - No overlapping `BlockedTime` (also recurrence-expanded).
+- For rooms (resource calendars), no overlapping event on another calendar
+  that holds the room through a `ResourceAllocation`. Such an event writes
+  nothing on the room's own calendar, so the two checks above miss it.
 - For `manage_available_windows=True` calendars, *some* `AvailableTime`
   fully covering the range.
 
