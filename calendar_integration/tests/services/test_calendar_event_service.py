@@ -2630,6 +2630,7 @@ def test_transfer_event_refuses_a_generated_meeting_the_target_cannot_create(
     mock_google_adapter.create_event.return_value = dataclasses.replace(
         _adapter_output("original_event"), meeting_url=MEET_URL
     )
+    mock_google_adapter.get_event.return_value = _adapter_output("original_event")
     original = event_service.create_event(
         calendar.id, _meeting_input(EventMeeting.request(kind=MeetingKind.GENERATED))
     )
@@ -2640,6 +2641,16 @@ def test_transfer_event_refuses_a_generated_meeting_the_target_cannot_create(
         provider=CalendarProvider.GOOGLE,
         organization=calendar.organization,
     )
+    target_token = CalendarManagementToken.objects.create(
+        calendar=target_calendar,
+        membership_user_id=social_account.user.id,
+        token_hash="evt_meeting_no_meet_target_token_hash",
+        organization=calendar.organization,
+    )
+    for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
+        target_token.permissions.get_or_create(
+            permission=permission_str, organization_id=calendar.organization_id
+        )
     # The target's provider cannot create links, as with Outlook.
     mock_google_adapter.supports_generated_meetings = False
 
@@ -2647,7 +2658,8 @@ def test_transfer_event_refuses_a_generated_meeting_the_target_cannot_create(
         event_service.transfer_event(original, target_calendar)
 
     assert str(exc_info.value) == TRANSFER_MEETING_NOT_SUPPORTED_MESSAGE
-    mock_google_adapter.get_event.assert_not_called()
+    # The target create refuses before its provider write: only the original was created.
+    assert mock_google_adapter.create_event.call_count == 1
     mock_google_adapter.delete_event.assert_not_called()
     assert list(
         CalendarEvent.objects.filter_by_organization(calendar.organization_id).values_list(

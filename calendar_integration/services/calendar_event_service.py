@@ -45,7 +45,7 @@ from vinta_billing.exceptions import OverLimitError
 from vinta_billing.services.subscription_service import resolve_billing_period
 
 from audit_integration.constants import AuditAction, AuditActorType
-from calendar_integration.constants import CalendarType, MeetingKind
+from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
     EventManagementError,
     ExternalAttendeeIdentifierConflictError,
@@ -94,6 +94,7 @@ from calendar_integration.services.calendar_service_utils import (
     serialize_event_internal_attendee as _serialize_event_internal_attendee_util,
 )
 from calendar_integration.services.dataclasses import (
+    AdapterMeeting,
     CalendarEventAdapterInputData,
     CalendarEventData,
     CalendarEventInputData,
@@ -312,23 +313,21 @@ class CalendarEventService:
             **meeting_url_audit_fields(event.meeting_url),
         }
 
-    def _check_calendar_generates_meetings(self, calendar: Calendar) -> None:
-        """Refuse a GENERATED meeting on a calendar whose provider cannot create the link.
+    def _require_meeting_support(self, calendar: Calendar, request: AdapterMeeting) -> None:
+        """Refuse a write that asks ``calendar``'s provider to create a conference it cannot.
 
         Only a provider calendar is written to its provider, and only some providers
         create meeting links. Anywhere else the link would never arrive.
         """
-        if not self._calendar_generates_meetings(calendar):
-            raise MeetingNotSupportedError()
-
-    def _calendar_generates_meetings(self, calendar: Calendar) -> bool:
-        """Whether ``calendar``'s provider creates meeting links for its events."""
+        if request.conference != "create":
+            return
         write_adapter = (
             self._host._get_write_adapter_for_calendar(calendar)
             if calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE]
             else None
         )
-        return write_adapter is not None and write_adapter.supports_generated_meetings
+        if write_adapter is None or not write_adapter.supports_generated_meetings:
+            raise MeetingNotSupportedError()
 
     @staticmethod
     def _event_attendee_membership_ids(event: CalendarEvent) -> set[int]:
@@ -939,8 +938,8 @@ class CalendarEventService:
         input_attendances = event_data.attendances or []
         input_external_attendances = event_data.external_attendances or []
         meeting = event_data.meeting or EventMeeting()
-        if meeting.kind == MeetingKind.GENERATED:
-            self._check_calendar_generates_meetings(calendar)
+        meeting_request = meeting.adapter_request(previous=None)
+        self._require_meeting_support(calendar, meeting_request)
 
         # ``None``, not "": the column is unique, and NULL is what lets any number
         # of provider-less events coexist. See ``CalendarEvent.external_id``.
@@ -992,7 +991,7 @@ class CalendarEventService:
                     ],
                     recurrence_rule=event_data.recurrence_rule,
                     is_recurring_instance=event_data.is_recurring_exception,
-                    meeting=meeting.adapter_request(previous=None),
+                    meeting=meeting_request,
                 )
             )
             external_id = created_event.external_id or None
@@ -1216,8 +1215,8 @@ class CalendarEventService:
         # stored one, and only a change of kind touches the provider's conference.
         stored_meeting = EventMeeting.of(event)
         meeting = stored_meeting.after(event_data.meeting)
-        if meeting.kind == MeetingKind.GENERATED and stored_meeting.kind != MeetingKind.GENERATED:
-            self._check_calendar_generates_meetings(event.calendar)
+        meeting_request = meeting.adapter_request(previous=stored_meeting)
+        self._require_meeting_support(event.calendar, meeting_request)
 
         original_payload: dict[str, Any] = {}
         if event.calendar.calendar_type in [
@@ -1303,7 +1302,7 @@ class CalendarEventService:
                     # Google replaces the whole event on update, so a rule left out
                     # here turns the series into a single event at the provider.
                     recurrence_rule=event_data.recurrence_rule,
-                    meeting=meeting.adapter_request(previous=stored_meeting),
+                    meeting=meeting_request,
                 ),
             )
             original_payload = updated_event.original_payload or {}
@@ -2748,13 +2747,6 @@ class CalendarEventService:
             raise EventManagementError(
                 "Cannot transfer an event that was never written to a calendar provider."
             )
-        # Checked before anything is fetched or created, so a refused move leaves the
-        # event and its link as they were.
-        if event.meeting_kind == MeetingKind.GENERATED and not self._calendar_generates_meetings(
-            new_calendar
-        ):
-            raise MeetingNotSupportedError(TRANSFER_MEETING_NOT_SUPPORTED_MESSAGE)
-
         event_data = context.calendar_adapter.get_event(
             event.calendar.provider_calendar_id, event.external_id
         )
@@ -2810,9 +2802,15 @@ class CalendarEventService:
         # the old one are re-billed under the new identity. That is the known
         # identity-churn defect recorded as a known precondition, not something
         # this check could fix by charging a unit.)
-        new_event = self._host.create_event(
-            new_calendar.id, new_event_data, _check_postpaid_allowance=False
-        )
+        #
+        # The create runs before the delete, so a target calendar that cannot generate
+        # the event's meeting refuses the move before anything is written.
+        try:
+            new_event = self._host.create_event(
+                new_calendar.id, new_event_data, _check_postpaid_allowance=False
+            )
+        except MeetingNotSupportedError as e:
+            raise MeetingNotSupportedError(TRANSFER_MEETING_NOT_SUPPORTED_MESSAGE) from e
 
         # Delete the old event
         self._host.delete_event(event.calendar.id, event.id)
