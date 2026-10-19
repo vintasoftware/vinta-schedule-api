@@ -38,19 +38,12 @@ def _retry_or_give_up(task: Task, exc: Exception, action: str) -> None:
 
 @contextmanager
 def _bound_to_organization(
-    sync_service: BlockedTimeProviderSyncService, organization_id: int
-) -> Iterator[bool]:
-    """Bind the organization context and ``sync_service`` to ``organization_id``.
-
-    Yields False, binding nothing, when the organization no longer exists.
-    """
-    organization = Organization.objects.filter(id=organization_id).first()
-    if organization is None:
-        yield False
-        return
+    sync_service: BlockedTimeProviderSyncService, organization: Organization
+) -> Iterator[None]:
+    """Bind the organization context and ``sync_service`` to ``organization``."""
     with organization_context(organization):
         sync_service.initialize(organization)
-        yield True
+        yield
 
 
 # Services are injected as defaults rather than inside ``Annotated``; see the note
@@ -78,9 +71,10 @@ def push_blocked_time_to_provider_task(
     Only the block id and the error class are logged: the block's title and message
     can hold patient details.
     """
-    with _bound_to_organization(sync_service, organization_id) as bound:
-        if not bound:
-            return
+    organization = Organization.objects.filter(id=organization_id).first()
+    if organization is None:
+        return
+    with _bound_to_organization(sync_service, organization):
         try:
             sync_service.push(blocked_time_id)
         except PROVIDER_CALL_ERRORS as exc:
@@ -107,9 +101,10 @@ def delete_blocked_time_from_provider_task(
 
     Only the calendar id, the provider event id and the error class are logged.
     """
-    with _bound_to_organization(sync_service, organization_id) as bound:
-        if not bound:
-            return
+    organization = Organization.objects.filter(id=organization_id).first()
+    if organization is None:
+        return
+    with _bound_to_organization(sync_service, organization):
         try:
             sync_service.delete(calendar_id, provider_event_external_id)
         except PROVIDER_CALL_ERRORS as exc:

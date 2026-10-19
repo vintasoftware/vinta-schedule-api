@@ -65,8 +65,10 @@ from calendar_integration.mutations import (
     ExternalEventChangeRequestMutations,
     event_times_to_utc,
 )
+from calendar_integration.services.block_conflict_service import MAX_BLOCK_CANCELS
 from calendar_integration.services.calendar_service import _UNCHANGED
 from calendar_integration.services.dataclasses import (
+    BLOCK_DECLINE_MESSAGE_MAX_LENGTH,
     BlockDeclineOptions,
     CalendarEventInputData,
     CalendarPoolInputData,
@@ -883,7 +885,8 @@ class CreateBlockedTimeInput:
             "the block is written to Google as an Out of office event (titled 'Out of "
             "office'; the reason is not sent) when the calendar is a Google calendar, and "
             "NEW_AND_EXISTING cancels the events the calendar holds in the period, at most "
-            "25. Cannot be used with rruleString. Omitted, the block is created as before."
+            f"{MAX_BLOCK_CANCELS}. Cannot be used with rruleString. Omitted, the block is "
+            "created as before."
         ),
     )
     decline_message: str = strawberry.field(
@@ -891,7 +894,7 @@ class CreateBlockedTimeInput:
         description=(
             "A message kept with the block for later notifications. It is not sent to "
             "Google, which declines with its default reply. Needs declineScope; cannot be "
-            "used with rruleString."
+            f"used with rruleString. At most {BLOCK_DECLINE_MESSAGE_MAX_LENGTH} characters."
         ),
     )
 
