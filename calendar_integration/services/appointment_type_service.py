@@ -29,6 +29,7 @@ from calendar_integration.exceptions import (
     CalendarPoolInUseError,
     CalendarPoolValidationError,
     CalendarServiceOrganizationNotSetError,
+    CalendarServiceStateError,
 )
 from calendar_integration.models import (
     AppointmentType,
@@ -206,11 +207,11 @@ class AppointmentTypeService:
         For a caller that cancels or deletes events through this service: those writes go
         through ``self.calendar_service``, so it runs under the caller's own permissions.
 
-        :raises CalendarServiceOrganizationNotSetError: When the service was built without
-            a calendar service.
+        :raises CalendarServiceStateError: When the service was built without a calendar
+            service.
         """
         if self.calendar_service is None:
-            raise CalendarServiceOrganizationNotSetError(
+            raise CalendarServiceStateError(
                 "AppointmentTypeService needs a calendar service to act for a caller."
             )
         self.calendar_service.initialize_without_provider(

@@ -54,7 +54,7 @@ def mark_changed(blocked_time: BlockedTime) -> None:
 
 def queue_push(blocked_time: BlockedTime) -> None:
     """Queue ``push_blocked_time_to_provider_task`` for after the transaction commits."""
-    # Imported here: the task module imports CalendarService, which imports this module.
+    # Imported here: the tasks package imports CalendarService, which imports this module.
     from calendar_integration.tasks.blocked_time_push_tasks import (
         push_blocked_time_to_provider_task,
     )
@@ -77,7 +77,7 @@ def queue_delete(blocked_time: BlockedTime) -> None:
     provider_event_external_id = blocked_time.provider_event_external_id
     if not provider_event_external_id:
         return
-    # Imported here: the task module imports CalendarService, which imports this module.
+    # Imported here: the tasks package imports CalendarService, which imports this module.
     from calendar_integration.tasks.blocked_time_push_tasks import (
         delete_blocked_time_from_provider_task,
     )
