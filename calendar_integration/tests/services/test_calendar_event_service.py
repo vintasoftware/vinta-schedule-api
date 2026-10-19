@@ -11,6 +11,7 @@ facade forwards to it.
 
 import dataclasses
 import datetime
+import re
 from unittest import mock
 from unittest.mock import Mock, patch
 
@@ -18,6 +19,7 @@ from django.core.exceptions import PermissionDenied
 
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
+from vinta_audit_logs.diff import compute_diff
 
 from calendar_integration.constants import CalendarProvider, CalendarType, MeetingKind
 from calendar_integration.exceptions import MeetingNotSupportedError
@@ -2743,15 +2745,52 @@ def test_expanded_occurrence_keeps_the_series_meeting(calendar):
     assert (occurrence.meeting_kind, occurrence.meeting_url) == (MeetingKind.CUSTOM, CUSTOM_URL)
 
 
-def test_event_audit_snapshot_records_the_meeting():
+def _audit_snapshot(meeting_kind: str | None, meeting_url: str) -> dict:
     event = CalendarEvent(
         title="Visit",
         description="",
         timezone="UTC",
-        meeting_kind=MeetingKind.CUSTOM,
-        meeting_url=CUSTOM_URL,
+        meeting_kind=meeting_kind,
+        meeting_url=meeting_url,
+    )
+    return CalendarEventService._event_audit_scalar_snapshot(event)
+
+
+def test_event_audit_snapshot_records_the_meeting_host_and_hash_never_the_link():
+    passcode_url = "https://zoom.us/j/123?pwd=secret"
+
+    snapshot = _audit_snapshot(MeetingKind.CUSTOM, passcode_url)
+
+    assert set(snapshot) == {
+        "title",
+        "description",
+        "start_time_tz_unaware",
+        "end_time_tz_unaware",
+        "timezone",
+        "meeting_kind",
+        "meeting_host",
+        "meeting_url_hash",
+    }
+    assert (snapshot["meeting_kind"], snapshot["meeting_host"]) == (MeetingKind.CUSTOM, "zoom.us")
+    assert re.fullmatch(r"[0-9a-f]{64}", snapshot["meeting_url_hash"])
+    assert "secret" not in str(snapshot)
+
+
+def test_event_audit_diff_shows_a_link_swapped_on_the_same_host():
+    before = _audit_snapshot(MeetingKind.CUSTOM, "https://zoom.us/j/123")
+    after = _audit_snapshot(MeetingKind.CUSTOM, "https://zoom.us/j/456")
+
+    assert list(compute_diff(before, after)) == ["meeting_url_hash"]
+    assert (
+        compute_diff(before, _audit_snapshot(MeetingKind.CUSTOM, "https://zoom.us/j/123")) is None
     )
 
-    snapshot = CalendarEventService._event_audit_scalar_snapshot(event)
 
-    assert (snapshot["meeting_kind"], snapshot["meeting_url"]) == (MeetingKind.CUSTOM, CUSTOM_URL)
+def test_event_audit_snapshot_without_a_meeting_has_no_host_or_hash():
+    snapshot = _audit_snapshot(None, "")
+
+    assert (snapshot["meeting_kind"], snapshot["meeting_host"], snapshot["meeting_url_hash"]) == (
+        None,
+        None,
+        None,
+    )

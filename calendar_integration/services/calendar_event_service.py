@@ -54,6 +54,7 @@ from calendar_integration.exceptions import (
     NoAvailableTimeWindowsError,
     SharedExternalAttendeeEditError,
 )
+from calendar_integration.meeting_urls import meeting_url_audit_fields
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
@@ -289,7 +290,8 @@ class CalendarEventService:
 
         Datetimes are rendered to ISO strings so the resulting diff is JSON-safe for
         the audit Celery payload. Only the event's direct fields are captured — never
-        attendees or resources.
+        attendees or resources. The meeting link is captured as its host and a keyed
+        hash (see ``meeting_url_audit_fields``), never as the link.
         """
 
         def _iso(value: datetime.datetime | None) -> str | None:
@@ -302,7 +304,7 @@ class CalendarEventService:
             "end_time_tz_unaware": _iso(event.end_time_tz_unaware),
             "timezone": event.timezone,
             "meeting_kind": event.meeting_kind,
-            "meeting_url": event.meeting_url,
+            **meeting_url_audit_fields(event.meeting_url),
         }
 
     def _check_calendar_generates_meetings(self, calendar: Calendar) -> None:
