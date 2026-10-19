@@ -79,48 +79,34 @@ class CalendarAdapter(Protocol):
         """
         ...
 
-    def delete_event(self, calendar_id: str, event_id: str, send_updates: str | None = None):
+    def delete_event(self, calendar_id: str, event_id: str, notify_attendees: bool = False):
         """
         Delete an event from the calendar.
         :param event_id: Unique identifier of the event to delete.
-        :param send_updates: Who the provider emails about the delete (Google's
-            ``sendUpdates``, e.g. ``"all"``). None keeps the provider's default.
+        :param notify_attendees: Ask the provider to email every guest about the delete.
+            False keeps the provider's default.
         :return: Response from the calendar client.
         """
         ...
 
-    def write_out_of_office_event(
+    def write_blocked_time_event(
         self,
         calendar_id: str,
         event_id: str,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
         timezone: str,
-        decline_scope: BlockedTimeDeclineScope,
+        out_of_office: BlockedTimeDeclineScope | None,
     ) -> None:
         """
-        Create or update a blocked time's Out of office event, which declines conflicting
-        invitations with the provider's default reply. The title is a fixed, neutral one;
-        the block's reason and decline message are never sent.
+        Create or update a blocked time's provider event. The title is a fixed, neutral
+        one; the block's reason and decline message are never sent.
         :param event_id: The id of the provider event. When an event with this id exists it
             is updated, so a repeated write never creates a second event.
-        :param decline_scope: Which invitations to decline.
+        :param out_of_office: Write an Out of office event that declines conflicting
+            invitations in this scope, with the provider's default reply. None writes a
+            plain event that shows the time as busy.
         :raises OutOfOfficeNotSupportedError: When the calendar refuses Out of office events.
-        """
-        ...
-
-    def write_busy_event(
-        self,
-        calendar_id: str,
-        event_id: str,
-        start_time: datetime.datetime,
-        end_time: datetime.datetime,
-        timezone: str,
-    ) -> None:
-        """
-        Create or update a blocked time's plain event that shows the time as busy. The
-        title is a fixed, neutral one.
-        :param event_id: The id of the provider event (see ``write_out_of_office_event``).
         """
         ...
 

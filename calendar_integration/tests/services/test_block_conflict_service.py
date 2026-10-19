@@ -27,6 +27,7 @@ from calendar_integration.models import (
     EventRecurrenceException,
     RecurrenceRule,
 )
+from calendar_integration.services.appointment_type_service import AppointmentTypeService
 from calendar_integration.services.block_conflict_service import (
     BlockConflictEvent,
     BlockConflictService,
@@ -149,7 +150,8 @@ def owner_token_services(organization, owner, calendar):
 
 
 def test_initialize_binds_every_calendar_service_to_the_caller(organization):
-    calendar_service, appointment_type_service = Mock(), Mock()
+    calendar_service, inner_calendar_service = Mock(), Mock()
+    appointment_type_service = AppointmentTypeService(calendar_service=inner_calendar_service)
     service = BlockConflictService(
         calendar_service=calendar_service, appointment_type_service=appointment_type_service
     )
@@ -159,10 +161,10 @@ def test_initialize_binds_every_calendar_service_to_the_caller(organization):
     calendar_service.initialize_without_provider.assert_called_once_with(
         user_or_token="token", organization=organization
     )
-    appointment_type_service.calendar_service.initialize_without_provider.assert_called_once_with(
+    inner_calendar_service.initialize_without_provider.assert_called_once_with(
         user_or_token="token", organization=organization
     )
-    appointment_type_service.initialize.assert_called_once_with(organization=organization)
+    assert appointment_type_service.organization == organization
 
 
 def _cancel(calendar, services):
@@ -219,14 +221,14 @@ def test_cancel_sends_appointment_type_events_through_their_service(
 
     assert result.cancelled_event_count == 1
     appointment_type_service.cancel_appointment_type_event.assert_called_once_with(
-        event_id=visit.id, send_updates="all"
+        event_id=visit.id, notify_attendees=True
     )
     write_adapter.delete_event.assert_not_called()
 
 
 @pytest.mark.django_db
 def test_one_failed_cancel_leaves_the_rest(calendar, owner_token_services, write_adapter):
-    def delete_event(calendar_id, event_id, send_updates=None):
+    def delete_event(calendar_id, event_id, notify_attendees=False):
         if event_id == "bad":
             raise HttpError(Mock(status=500, reason="error"), b"{}")
 

@@ -1847,6 +1847,9 @@ class BlockedTime(RecurringMixin):
     provider_push_status = models.CharField(  # noqa: DJ001
         max_length=16, choices=ProviderPushStatus.choices, null=True, blank=True
     )
+    # Moves on with every edit that must be written to the provider again. A push marks
+    # the block written only when this still holds the value it read.
+    provider_push_version = models.PositiveIntegerField(default=0)
 
     # Bundle calendar fields
     bundle_calendar = OrganizationSafeForeignKey(

@@ -619,7 +619,7 @@ def test_create_and_delete_event_on_google_room_address_the_room_by_resource_ema
 
     assert mock_google_adapter.create_event.call_args.args[0].calendar_external_id == ROOM_EMAIL
     mock_google_adapter.delete_event.assert_called_once_with(
-        ROOM_EMAIL, "room_event_1", send_updates=None
+        ROOM_EMAIL, "room_event_1", notify_attendees=False
     )
 
 

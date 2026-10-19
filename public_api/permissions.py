@@ -133,4 +133,4 @@ class OrganizationResourceAccess(BasePermission):
         resource_name = self.FIELD_TO_RESOURCE_MAPPING.get(info.field_name, info.field_name)
 
         # check system_user has access to queried resources
-        return system_user.available_resources.filter(resource_name=resource_name).exists()
+        return system_user.has_resource(resource_name)

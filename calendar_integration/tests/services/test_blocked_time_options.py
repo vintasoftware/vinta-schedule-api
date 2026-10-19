@@ -3,7 +3,7 @@
 import datetime
 import logging
 import uuid
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
@@ -21,6 +21,9 @@ from calendar_integration.exceptions import (
 )
 from calendar_integration.factories import create_calendar_ownership
 from calendar_integration.models import BlockedTime, Calendar
+from calendar_integration.services.blocked_time_provider_sync_service import (
+    BlockedTimeProviderSyncService,
+)
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import BlockDeclineOptions
 from calendar_integration.tests.blocked_time_factories import make_pending_block
@@ -60,6 +63,13 @@ def service(organization: Organization) -> CalendarService:
     calendar_service = CalendarService()
     calendar_service.initialize_without_provider(organization=organization)
     return calendar_service
+
+
+@pytest.fixture
+def sync_service(organization: Organization) -> BlockedTimeProviderSyncService:
+    sync_service = BlockedTimeProviderSyncService(calendar_service=CalendarService())
+    sync_service.initialize(organization)
+    return sync_service
 
 
 def _create_block(service: CalendarService, calendar: Calendar, **options) -> BlockedTime:
@@ -132,7 +142,7 @@ def test_create_with_options_that_cannot_be_pushed_queues_nothing(
 
 
 # ---------------------------------------------------------------------------
-# push_blocked_time_to_provider
+# BlockedTimeProviderSyncService.push
 # ---------------------------------------------------------------------------
 
 
@@ -142,32 +152,31 @@ END_UTC = datetime.datetime(2026, 10, 9, 15, 0, tzinfo=datetime.UTC)
 
 @pytest.mark.django_db
 def test_push_on_the_primary_calendar_writes_out_of_office(
-    service, google_calendar, owner, write_adapter
+    sync_service, google_calendar, owner, write_adapter
 ):
     create_calendar_ownership(calendar=google_calendar, user=owner, is_default=True)
     block = make_pending_block(
         google_calendar, decline_scope=BlockedTimeDeclineScope.NEW_AND_EXISTING
     )
 
-    service.push_blocked_time_to_provider(block.id)
+    sync_service.push(block.id)
 
     block.refresh_from_db()
-    write_adapter.write_out_of_office_event.assert_called_once_with(
+    write_adapter.write_blocked_time_event.assert_called_once_with(
         calendar_id="provider@example.com",
         event_id=block.provider_event_external_id,
         start_time=START_UTC,
         end_time=END_UTC,
         timezone="America/Sao_Paulo",
-        decline_scope="new_and_existing",
+        out_of_office=BlockedTimeDeclineScope.NEW_AND_EXISTING,
     )
-    write_adapter.write_busy_event.assert_not_called()
     assert block.provider_push_status == ProviderPushStatus.PUSHED
     assert len(block.provider_event_external_id) == 32
 
 
 @pytest.mark.django_db
 def test_push_of_a_block_deleted_after_it_was_read_writes_nothing(
-    service, google_calendar, write_adapter
+    sync_service, google_calendar, write_adapter
 ):
     block = make_pending_block(google_calendar)
 
@@ -179,47 +188,79 @@ def test_push_of_a_block_deleted_after_it_was_read_writes_nothing(
         return uuid.UUID(int=1)
 
     with patch(
-        "calendar_integration.services.availability_service.uuid.uuid4", delete_then_make_id
+        "calendar_integration.services.blocked_time_provider_sync_service.uuid.uuid4",
+        delete_then_make_id,
     ):
-        service.push_blocked_time_to_provider(block.id)
+        sync_service.push(block.id)
 
-    write_adapter.write_out_of_office_event.assert_not_called()
-    write_adapter.write_busy_event.assert_not_called()
+    write_adapter.write_blocked_time_event.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_push_of_a_block_changed_after_it_was_read_writes_nothing(
+    service, sync_service, google_calendar, write_adapter
+):
+    """The edit queued its own push, which writes the new times."""
+    block = make_pending_block(google_calendar)
+
+    def update_then_make_id():
+        # Runs after the push read the block and before it saves the event id.
+        with patch(PUSH_TASK_DELAY):
+            service.update_blocked_time(
+                calendar=google_calendar,
+                blocked_time_id=block.id,
+                end_time=datetime.datetime(2026, 10, 9, 13, 0),
+            )
+        return uuid.UUID(int=1)
+
+    with patch(
+        "calendar_integration.services.blocked_time_provider_sync_service.uuid.uuid4",
+        update_then_make_id,
+    ):
+        sync_service.push(block.id)
+
+    write_adapter.write_blocked_time_event.assert_not_called()
+    block.refresh_from_db()
+    assert (block.provider_event_external_id, block.provider_push_status) == (
+        None,
+        ProviderPushStatus.PENDING,
+    )
 
 
 @pytest.mark.django_db
 def test_push_on_another_calendar_writes_a_busy_event(
-    service, google_calendar, owner, write_adapter
+    sync_service, google_calendar, owner, write_adapter
 ):
     create_calendar_ownership(calendar=google_calendar, user=owner, is_default=False)
     block = make_pending_block(google_calendar)
 
-    service.push_blocked_time_to_provider(block.id)
+    sync_service.push(block.id)
 
     block.refresh_from_db()
-    write_adapter.write_out_of_office_event.assert_not_called()
-    write_adapter.write_busy_event.assert_called_once_with(
+    write_adapter.write_blocked_time_event.assert_called_once_with(
         calendar_id="provider@example.com",
         event_id=block.provider_event_external_id,
         start_time=START_UTC,
         end_time=END_UTC,
         timezone="America/Sao_Paulo",
+        out_of_office=None,
     )
     assert block.provider_push_status == ProviderPushStatus.PUSHED
 
 
 @pytest.mark.django_db
 def test_push_falls_back_to_busy_logging_only_the_block_id(
-    service, google_calendar, owner, write_adapter, caplog
+    sync_service, google_calendar, owner, write_adapter, caplog
 ):
     create_calendar_ownership(calendar=google_calendar, user=owner, is_default=True)
-    write_adapter.write_out_of_office_event.side_effect = OutOfOfficeNotSupportedError(
-        "Google said: Dr. Smith's calendar cannot hold this"
-    )
+    write_adapter.write_blocked_time_event.side_effect = [
+        OutOfOfficeNotSupportedError("Google said: Dr. Smith's calendar cannot hold this"),
+        None,
+    ]
     block = make_pending_block(google_calendar, reason="Patient follow-up")
 
     with caplog.at_level(logging.WARNING, logger="calendar_integration.services"):
-        service.push_blocked_time_to_provider(block.id)
+        sync_service.push(block.id)
 
     [record] = [r for r in caplog.records if "Out of office" in r.getMessage()]
     message = record.getMessage()
@@ -228,29 +269,38 @@ def test_push_falls_back_to_busy_logging_only_the_block_id(
     for secret in ("Dr. Smith", "Patient follow-up", "Back on Monday."):
         assert secret not in caplog.text
     block.refresh_from_db()
-    write_adapter.write_busy_event.assert_called_once_with(
-        calendar_id="provider@example.com",
-        event_id=block.provider_event_external_id,
-        start_time=START_UTC,
-        end_time=END_UTC,
-        timezone="America/Sao_Paulo",
-    )
+    event_fields = {
+        "calendar_id": "provider@example.com",
+        "event_id": block.provider_event_external_id,
+        "start_time": START_UTC,
+        "end_time": END_UTC,
+        "timezone": "America/Sao_Paulo",
+    }
+    assert write_adapter.write_blocked_time_event.call_args_list == [
+        call(**event_fields, out_of_office=BlockedTimeDeclineScope.NEW),
+        call(**event_fields, out_of_office=None),
+    ]
     assert block.provider_push_status == ProviderPushStatus.PUSHED
 
 
 @pytest.mark.django_db
-def test_push_leaves_a_block_changed_meanwhile_pending(service, google_calendar, write_adapter):
+def test_push_leaves_a_block_changed_meanwhile_pending(
+    service, sync_service, google_calendar, write_adapter
+):
     """An update during the write queued its own push, which writes the new times."""
     block = make_pending_block(google_calendar)
 
     def update_meanwhile(**_fields):
-        BlockedTime.objects.filter_by_organization(google_calendar.organization).filter(
-            id=block.id
-        ).update(end_time_tz_unaware=datetime.datetime(2026, 10, 9, 13, 0))
+        with patch(PUSH_TASK_DELAY):
+            service.update_blocked_time(
+                calendar=google_calendar,
+                blocked_time_id=block.id,
+                end_time=datetime.datetime(2026, 10, 9, 13, 0),
+            )
 
-    write_adapter.write_busy_event.side_effect = update_meanwhile
+    write_adapter.write_blocked_time_event.side_effect = update_meanwhile
 
-    service.push_blocked_time_to_provider(block.id)
+    sync_service.push(block.id)
 
     block.refresh_from_db()
     assert block.provider_push_status == ProviderPushStatus.PENDING
@@ -259,7 +309,7 @@ def test_push_leaves_a_block_changed_meanwhile_pending(service, google_calendar,
 @pytest.mark.django_db
 @pytest.mark.parametrize("case", ["already-pushed", "no-options"])
 def test_push_skips_blocks_it_must_not_write(
-    service, organization, google_calendar, write_adapter, case
+    sync_service, organization, google_calendar, write_adapter, case
 ):
     if case == "already-pushed":
         block = make_pending_block(google_calendar, provider_push_status=ProviderPushStatus.PUSHED)
@@ -268,10 +318,9 @@ def test_push_skips_blocks_it_must_not_write(
             google_calendar, decline_scope=None, decline_message="", provider_push_status=None
         )
 
-    service.push_blocked_time_to_provider(block.id)
+    sync_service.push(block.id)
 
-    write_adapter.write_out_of_office_event.assert_not_called()
-    write_adapter.write_busy_event.assert_not_called()
+    write_adapter.write_blocked_time_event.assert_not_called()
     block.refresh_from_db()
     assert block.provider_event_external_id is None
 
@@ -283,7 +332,7 @@ def test_push_skips_blocks_it_must_not_write(
 
 @pytest.mark.django_db
 def test_update_queues_a_push_that_rewrites_the_same_event(
-    service, google_calendar, write_adapter, django_capture_on_commit_callbacks
+    service, sync_service, google_calendar, write_adapter, django_capture_on_commit_callbacks
 ):
     block = make_pending_block(
         google_calendar,
@@ -305,14 +354,15 @@ def test_update_queues_a_push_that_rewrites_the_same_event(
     block.refresh_from_db()
     assert block.provider_push_status == ProviderPushStatus.PENDING
 
-    service.push_blocked_time_to_provider(block.id)
+    sync_service.push(block.id)
 
-    write_adapter.write_busy_event.assert_called_once_with(
+    write_adapter.write_blocked_time_event.assert_called_once_with(
         calendar_id="provider@example.com",
         event_id="0123456789abcdef",
         start_time=START_UTC,
         end_time=datetime.datetime(2026, 10, 9, 16, 0, tzinfo=datetime.UTC),
         timezone="America/Sao_Paulo",
+        out_of_office=None,
     )
     block.refresh_from_db()
     assert block.provider_push_status == ProviderPushStatus.PUSHED
@@ -372,7 +422,7 @@ def test_update_with_a_recurrence_rule_is_refused_for_a_block_with_options(
 
 
 # ---------------------------------------------------------------------------
-# delete_blocked_time / delete_blocked_time_from_provider
+# delete_blocked_time / BlockedTimeProviderSyncService.delete
 # ---------------------------------------------------------------------------
 
 
@@ -401,7 +451,7 @@ def test_delete_of_a_pushed_block_queues_the_provider_delete_after_commit(
 
 @pytest.mark.django_db
 def test_delete_from_provider_of_another_organizations_calendar_does_nothing(
-    service, write_adapter
+    sync_service, write_adapter
 ):
     other_calendar = Calendar.objects.create(
         name="Other calendar",
@@ -410,6 +460,6 @@ def test_delete_from_provider_of_another_organizations_calendar_does_nothing(
         organization=Organization.objects.create(name="Other org"),
     )
 
-    service.delete_blocked_time_from_provider(other_calendar.id, "0123456789abcdef")
+    sync_service.delete(other_calendar.id, "0123456789abcdef")
 
     write_adapter.delete_blocked_time_event.assert_not_called()

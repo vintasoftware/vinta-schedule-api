@@ -15,7 +15,7 @@ from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import DatabaseError, transaction
 
-from calendar_integration.exceptions import CalendarIntegrationError, TooManyBlockCancelsError
+from calendar_integration.exceptions import TooManyBlockCancelsError
 from calendar_integration.models import CalendarEvent
 from calendar_integration.services.calendar_service_utils import wall_clock_to_utc
 from calendar_integration.services.calendar_webhook_service import PROVIDER_CALL_ERRORS
@@ -33,9 +33,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-#: Google's ``sendUpdates`` for a cancel a block causes: every guest is emailed.
-BLOCK_CANCEL_SEND_UPDATES = "all"
 
 #: Most events one block may cancel. The cancels run inside the request that creates the
 #: block, one provider call each, so a block that would cancel more is refused.
@@ -130,23 +127,11 @@ class BlockConflictService:
     def initialize(
         self, user_or_token: User | str | SystemUser | None, organization: Organization
     ) -> None:
-        """Bind both services to the caller and the organization.
-
-        The appointment-type service cancels through its own calendar service, so that
-        one is bound to the same caller too.
-        """
+        """Bind both services to the caller and the organization."""
         self.calendar_service.initialize_without_provider(
             user_or_token=user_or_token, organization=organization
         )
-        appointment_type_service = self.appointment_type_service
-        if appointment_type_service.calendar_service is None:
-            raise CalendarIntegrationError(
-                "The appointment-type service needs a calendar service to cancel events."
-            )
-        appointment_type_service.calendar_service.initialize_without_provider(
-            user_or_token=user_or_token, organization=organization
-        )
-        appointment_type_service.initialize(organization=organization)
+        self.appointment_type_service.initialize_for_caller(user_or_token, organization)
 
     def create_block(
         self,
@@ -245,13 +230,13 @@ class BlockConflictService:
                         )
                     elif event.appointment_type_fk_id is not None:
                         appointment_type_service.cancel_appointment_type_event(
-                            event_id=event.id, send_updates=BLOCK_CANCEL_SEND_UPDATES
+                            event_id=event.id, notify_attendees=True
                         )
                     else:
                         calendar_service.delete_event(
                             calendar_id=event.calendar_fk_id,  # type: ignore[arg-type]
                             event_id=event.id,
-                            send_updates=BLOCK_CANCEL_SEND_UPDATES,
+                            notify_attendees=True,
                         )
             except _CANCEL_ERRORS as exc:
                 failed += 1

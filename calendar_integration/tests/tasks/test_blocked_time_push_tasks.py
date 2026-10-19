@@ -36,7 +36,7 @@ def _run_as_retry(block: BlockedTime, retries: int) -> None:
 
 @pytest.mark.django_db
 def test_provider_error_schedules_a_retry_with_a_growing_delay(google_calendar, write_adapter):
-    write_adapter.write_busy_event.side_effect = _unavailable()
+    write_adapter.write_blocked_time_event.side_effect = _unavailable()
     block = make_pending_block(google_calendar)
 
     with (
@@ -52,7 +52,7 @@ def test_provider_error_schedules_a_retry_with_a_growing_delay(google_calendar, 
 
 @pytest.mark.django_db
 def test_failed_after_the_last_retry_keeps_the_block(google_calendar, write_adapter):
-    write_adapter.write_busy_event.side_effect = _unavailable()
+    write_adapter.write_blocked_time_event.side_effect = _unavailable()
     block = make_pending_block(google_calendar)
 
     with patch.object(push_blocked_time_to_provider_task, "retry") as retry:
@@ -66,12 +66,12 @@ def test_failed_after_the_last_retry_keeps_the_block(google_calendar, write_adap
 
 @pytest.mark.django_db
 def test_eager_run_gives_up_at_once(google_calendar, write_adapter):
-    write_adapter.write_busy_event.side_effect = _unavailable()
+    write_adapter.write_blocked_time_event.side_effect = _unavailable()
     block = make_pending_block(google_calendar)
 
     push_blocked_time_to_provider_task.apply(args=(block.id, google_calendar.organization_id))
 
-    write_adapter.write_busy_event.assert_called_once()
+    write_adapter.write_blocked_time_event.assert_called_once()
     block.refresh_from_db()
     assert block.provider_push_status == ProviderPushStatus.FAILED
 

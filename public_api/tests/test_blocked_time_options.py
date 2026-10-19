@@ -199,7 +199,7 @@ class TestCreateBlockedTimeOptions:
         )
         assert remaining == {kept.id, elsewhere.id}
         assert {c.args[1] for c in adapter.delete_event.call_args_list} == {"first", "second"}
-        assert {c.kwargs["send_updates"] for c in adapter.delete_event.call_args_list} == {"all"}
+        assert {c.kwargs["notify_attendees"] for c in adapter.delete_event.call_args_list} == {True}
 
     def test_new_and_existing_needs_the_calendar_event_resource(self, organization, adapter):
         _owner, membership, calendar = _owner_with_calendar(organization)

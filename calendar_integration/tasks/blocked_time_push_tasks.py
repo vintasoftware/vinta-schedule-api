@@ -1,9 +1,13 @@
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from celery import Task
 from dependency_injector.wiring import Provide, inject
 
-from calendar_integration.services.calendar_service import CalendarService
+from calendar_integration.services.blocked_time_provider_sync_service import (
+    BlockedTimeProviderSyncService,
+)
 from calendar_integration.services.calendar_webhook_service import PROVIDER_CALL_ERRORS
 from common.organization_context import organization_context
 from organizations.models import Organization
@@ -32,6 +36,23 @@ def _retry_or_give_up(task: Task, exc: Exception, action: str) -> None:
     raise task.retry(countdown=PUSH_RETRY_BASE_DELAY * 2**task.request.retries) from exc
 
 
+@contextmanager
+def _bound_to_organization(
+    sync_service: BlockedTimeProviderSyncService, organization_id: int
+) -> Iterator[bool]:
+    """Bind the organization context and ``sync_service`` to ``organization_id``.
+
+    Yields False, binding nothing, when the organization no longer exists.
+    """
+    organization = Organization.objects.filter(id=organization_id).first()
+    if organization is None:
+        yield False
+        return
+    with organization_context(organization):
+        sync_service.initialize(organization)
+        yield True
+
+
 # Services are injected as defaults rather than inside ``Annotated``; see the note
 # above the tasks in ``calendar_sync_tasks``.
 @app.task(bind=True, max_retries=PUSH_MAX_RETRIES)
@@ -40,7 +61,7 @@ def push_blocked_time_to_provider_task(
     self: Task,
     blocked_time_id: int,
     organization_id: int,
-    calendar_service: CalendarService = Provide["calendar_service"],
+    sync_service: BlockedTimeProviderSyncService = Provide["blocked_time_provider_sync_service"],
 ) -> None:
     """Write a blocked time to its Google calendar as an Out of office or busy event.
 
@@ -57,17 +78,14 @@ def push_blocked_time_to_provider_task(
     Only the block id and the error class are logged: the block's title and message
     can hold patient details.
     """
-    organization = Organization.objects.filter(id=organization_id).first()
-    if organization is None:
-        return
-
-    with organization_context(organization):
-        calendar_service.initialize_without_provider(organization=organization)
+    with _bound_to_organization(sync_service, organization_id) as bound:
+        if not bound:
+            return
         try:
-            calendar_service.push_blocked_time_to_provider(blocked_time_id)
+            sync_service.push(blocked_time_id)
         except PROVIDER_CALL_ERRORS as exc:
             _retry_or_give_up(self, exc, f"writing blocked time {blocked_time_id} to its provider")
-            calendar_service.mark_blocked_time_push_failed(blocked_time_id)
+            sync_service.mark_failed(blocked_time_id)
 
 
 @app.task(bind=True, max_retries=PUSH_MAX_RETRIES)
@@ -77,7 +95,7 @@ def delete_blocked_time_from_provider_task(
     calendar_id: int,
     provider_event_external_id: str,
     organization_id: int,
-    calendar_service: CalendarService = Provide["calendar_service"],
+    sync_service: BlockedTimeProviderSyncService = Provide["blocked_time_provider_sync_service"],
 ) -> None:
     """Delete the Google event a deleted blocked time was written to.
 
@@ -90,16 +108,11 @@ def delete_blocked_time_from_provider_task(
 
     Only the calendar id, the provider event id and the error class are logged.
     """
-    organization = Organization.objects.filter(id=organization_id).first()
-    if organization is None:
-        return
-
-    with organization_context(organization):
-        calendar_service.initialize_without_provider(organization=organization)
+    with _bound_to_organization(sync_service, organization_id) as bound:
+        if not bound:
+            return
         try:
-            calendar_service.delete_blocked_time_from_provider(
-                calendar_id, provider_event_external_id
-            )
+            sync_service.delete(calendar_id, provider_event_external_id)
         except PROVIDER_CALL_ERRORS as exc:
             _retry_or_give_up(
                 self,

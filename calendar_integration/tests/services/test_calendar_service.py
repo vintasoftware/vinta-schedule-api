@@ -2852,7 +2852,7 @@ def test_delete_recurring_event_series_deletes_all(
 
     # Adapter should have been called once for deleting series
     mock_google_adapter.delete_event.assert_called_once_with(
-        calendar.external_id, parent_event.external_id, send_updates=None
+        calendar.external_id, parent_event.external_id, notify_attendees=False
     )
     # Parent, rule, modified instance, and exception gone
     assert (
@@ -3104,7 +3104,7 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
 
     # Adapter should be called for deletion (treated as direct deletion)
     mock_google_adapter.delete_event.assert_called_once_with(
-        calendar.external_id, modified_instance.external_id, send_updates=None
+        calendar.external_id, modified_instance.external_id, notify_attendees=False
     )
     # Instance removed
     assert not CalendarEvent.original_manager.filter(id=modified_instance.id).exists()
@@ -3839,7 +3839,7 @@ def test_delete_event(
         .exists()
     )
     mock_google_adapter.delete_event.assert_called_once_with(
-        calendar_event.calendar.external_id, calendar_event.external_id, send_updates=None
+        calendar_event.calendar.external_id, calendar_event.external_id, notify_attendees=False
     )
 
 
@@ -9083,7 +9083,7 @@ def test_delete_event_uses_write_adapter_for_non_owned_calendar(
 
     # Verify that the owner's adapter was used
     mock_owner_adapter.delete_event.assert_called_once_with(
-        owned_calendar.external_id, event.external_id, send_updates=None
+        owned_calendar.external_id, event.external_id, notify_attendees=False
     )
 
 
@@ -11128,7 +11128,10 @@ def test_sync_skips_the_event_a_block_was_written_to(
 def test_sync_of_a_deleted_block_event_keeps_the_block(
     social_account, social_token, mock_google_adapter, calendar, patch_get_calendar
 ):
-    """When the block's Google event is deleted there, the block stays and forgets the event."""
+    """When the block's Google event is deleted there, the block stays and forgets the event.
+
+    Its ``provider_push_version`` moves on, so a push already running does not mark it
+    written."""
     block = _pushed_block(calendar, "vsblockevent1")
     mock_google_adapter.get_events.return_value = {
         "events": [_google_event("vsblockevent1", status="cancelled")],
@@ -11140,7 +11143,7 @@ def test_sync_of_a_deleted_block_event_keeps_the_block(
     _run_full_sync(service, calendar)
 
     block.refresh_from_db()
-    assert block.provider_event_external_id is None
+    assert (block.provider_event_external_id, block.provider_push_version) == (None, 1)
     assert block.reason == "Out of office"
     assert list(
         BlockedTime.original_manager.filter(calendar_fk=calendar).values_list("id", flat=True)

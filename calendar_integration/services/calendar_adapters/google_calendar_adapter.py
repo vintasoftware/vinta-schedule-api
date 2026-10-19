@@ -18,16 +18,14 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from pyrate_limiter import Duration, Rate
 
-from calendar_integration.constants import (
-    BLOCKED_TIME_BUSY_TITLE,
-    BLOCKED_TIME_OUT_OF_OFFICE_TITLE,
-    BlockedTimeDeclineScope,
-    CalendarProvider,
-)
+from calendar_integration.constants import BlockedTimeDeclineScope, CalendarProvider
 from calendar_integration.exceptions import (
     OutOfOfficeNotSupportedError,
     WebhookIgnoredError,
     WebhookProcessingFailedError,
+)
+from calendar_integration.services.calendar_adapters.google_blocked_time_events import (
+    blocked_time_event_body,
 )
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
@@ -572,106 +570,44 @@ class GoogleCalendarAdapter(CalendarAdapter):
             status=updated_event.get("status", "confirmed"),
         )
 
-    def delete_event(self, calendar_id: str, event_id: str, send_updates: str | None = None):
-        """Delete an event. ``send_updates`` is Google's ``sendUpdates``, sent only when set."""
+    def delete_event(self, calendar_id: str, event_id: str, notify_attendees: bool = False):
+        """Delete an event. With ``notify_attendees`` Google emails every guest."""
         write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
         kwargs: dict[str, Any] = {"calendarId": calendar_id, "eventId": event_id}
-        if send_updates is not None:
-            kwargs["sendUpdates"] = send_updates
+        if notify_attendees:
+            kwargs["sendUpdates"] = "all"
         self.client.events().delete(**kwargs).execute()
 
-    #: Google's ``autoDeclineMode`` for each decline scope of a blocked time.
-    AUTO_DECLINE_MODES: dict[str, str] = {  # noqa: RUF012
-        BlockedTimeDeclineScope.NEW: "declineOnlyNewConflictingInvitations",
-        BlockedTimeDeclineScope.NEW_AND_EXISTING: "declineAllConflictingInvitations",
-    }
-
-    def write_out_of_office_event(
+    def write_blocked_time_event(
         self,
         calendar_id: str,
         event_id: str,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
         timezone: str,
-        decline_scope: BlockedTimeDeclineScope,
+        out_of_office: BlockedTimeDeclineScope | None,
     ) -> None:
-        """Create or update a blocked time's Out of office event, titled "Out of office".
+        """Create or update a blocked time's event (see ``blocked_time_event_body``).
 
-        The event declines conflicting invitations per ``decline_scope`` with Google's
-        default reply. No message of the block's is sent.
-
-        Google accepts Out of office events only on a user's primary calendar. A 400
-        from Google is raised as ``OutOfOfficeNotSupportedError`` so the caller can
-        write a busy event instead.
+        Google accepts Out of office events only on a user's primary calendar, so a 400
+        for one is raised as ``OutOfOfficeNotSupportedError``.
         """
-        body = self._blocked_time_body(
-            event_id, BLOCKED_TIME_OUT_OF_OFFICE_TITLE, start_time, end_time, timezone
-        )
-        body["eventType"] = "outOfOffice"
-        body["outOfOfficeProperties"] = {
-            "autoDeclineMode": self.AUTO_DECLINE_MODES[decline_scope],
-        }
+        body = blocked_time_event_body(event_id, start_time, end_time, timezone, out_of_office)
         try:
-            self._upsert_blocked_time_event(calendar_id, event_id, body)
+            self._upsert_event(calendar_id, event_id, body)
         except HttpError as exc:
-            if exc.resp.status == 400:
+            if out_of_office is not None and exc.resp.status == 400:
                 raise OutOfOfficeNotSupportedError(
                     "The calendar refused an Out of office event."
                 ) from exc
             raise
 
-    def write_busy_event(
-        self,
-        calendar_id: str,
-        event_id: str,
-        start_time: datetime.datetime,
-        end_time: datetime.datetime,
-        timezone: str,
-    ) -> None:
-        """Create or update a blocked time's busy event, titled "Busy". Declines nothing."""
-        body = self._blocked_time_body(
-            event_id, BLOCKED_TIME_BUSY_TITLE, start_time, end_time, timezone
-        )
-        self._upsert_blocked_time_event(calendar_id, event_id, body)
+    def _upsert_event(self, calendar_id: str, event_id: str, body: dict[str, Any]) -> None:
+        """Insert an event whose body carries its own id, or update it when it exists.
 
-    def delete_blocked_time_event(self, calendar_id: str, event_id: str) -> None:
-        """Delete a blocked time's event without emailing anyone.
-
-        An event Google no longer has (404 or 410) counts as deleted.
-        """
-        write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
-        try:
-            self.client.events().delete(calendarId=calendar_id, eventId=event_id).execute()
-        except HttpError as exc:
-            if exc.resp.status in (404, 410):
-                return
-            raise
-
-    @staticmethod
-    def _blocked_time_body(
-        event_id: str,
-        title: str,
-        start_time: datetime.datetime,
-        end_time: datetime.datetime,
-        timezone: str,
-    ) -> dict[str, Any]:
-        """The event fields a blocked time's Out of office and busy events share."""
-        return {
-            "id": event_id,
-            "summary": title,
-            "transparency": "opaque",
-            "start": {"dateTime": start_time.isoformat(), "timeZone": timezone},
-            "end": {"dateTime": end_time.isoformat(), "timeZone": timezone},
-        }
-
-    def _upsert_blocked_time_event(
-        self, calendar_id: str, event_id: str, body: dict[str, Any]
-    ) -> None:
-        """Insert a blocked time's event, or update it when it exists.
-
-        The body carries its own id, so an insert for an event that is already there
-        gets a 409 from Google. That event is then updated with the same body, which
-        covers both a changed block and a retry of a write that was not recorded.
+        An insert for an event that is already there gets a 409. That event is then
+        updated with the same body, which covers both a changed event and a retry of a
+        write that was not recorded.
         """
         write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
         try:
@@ -683,6 +619,17 @@ class GoogleCalendarAdapter(CalendarAdapter):
             self.client.events().update(
                 calendarId=calendar_id, eventId=event_id, body=body
             ).execute()
+
+    def delete_blocked_time_event(self, calendar_id: str, event_id: str) -> None:
+        """Delete a blocked time's event without emailing anyone.
+
+        An event Google no longer has (404 or 410) counts as deleted.
+        """
+        try:
+            self.delete_event(calendar_id, event_id)
+        except HttpError as exc:
+            if exc.resp.status not in (404, 410):
+                raise
 
     def get_calendar_resources(self) -> Iterable[CalendarResourceData]:
         """List all Google Workspace resource calendars via the Admin SDK Directory API.

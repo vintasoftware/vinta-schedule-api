@@ -7,7 +7,7 @@ import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from googleapiclient.errors import HttpError
 
-from calendar_integration.constants import CalendarProvider
+from calendar_integration.constants import BlockedTimeDeclineScope, CalendarProvider
 from calendar_integration.exceptions import OutOfOfficeNotSupportedError
 from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
     _SA_SCOPES,
@@ -1418,31 +1418,36 @@ class TestBlockedTimeEvents:
             **extra,
         }
 
-    def _write_out_of_office(self, adapter, decline_scope="new"):
-        adapter.write_out_of_office_event(
+    def _write_out_of_office(self, adapter, decline_scope=BlockedTimeDeclineScope.NEW):
+        adapter.write_blocked_time_event(
             calendar_id="provider@example.com",
             event_id="abc123",
             start_time=self.START,
             end_time=self.END,
             timezone="America/Sao_Paulo",
-            decline_scope=decline_scope,
+            out_of_office=decline_scope,
         )
 
     def _write_busy(self, adapter):
-        adapter.write_busy_event(
+        adapter.write_blocked_time_event(
             calendar_id="provider@example.com",
             event_id="abc123",
             start_time=self.START,
             end_time=self.END,
             timezone="America/Sao_Paulo",
+            out_of_office=None,
         )
 
     @pytest.mark.parametrize(
         ("decline_scope", "auto_decline_mode"),
         [
-            pytest.param("new", "declineOnlyNewConflictingInvitations", id="new"),
             pytest.param(
-                "new_and_existing", "declineAllConflictingInvitations", id="new-and-existing"
+                BlockedTimeDeclineScope.NEW, "declineOnlyNewConflictingInvitations", id="new"
+            ),
+            pytest.param(
+                BlockedTimeDeclineScope.NEW_AND_EXISTING,
+                "declineAllConflictingInvitations",
+                id="new-and-existing",
             ),
         ],
     )
@@ -1482,6 +1487,14 @@ class TestBlockedTimeEvents:
         with pytest.raises(OutOfOfficeNotSupportedError):
             self._write_out_of_office(adapter)
 
+    def test_busy_refused_raises_the_provider_error(self, adapter, mock_rate_limiters):
+        adapter.client.events.return_value.insert.return_value.execute.side_effect = _http_error(
+            400
+        )
+
+        with pytest.raises(HttpError):
+            self._write_busy(adapter)
+
     @pytest.mark.parametrize("kind", ["out-of-office", "busy"])
     def test_existing_event_id_is_updated_with_the_same_body(
         self, adapter, mock_rate_limiters, kind
@@ -1519,8 +1532,8 @@ class TestBlockedTimeEvents:
 
         adapter.delete_blocked_time_event("provider@example.com", "abc123")
 
-    def test_delete_sends_send_updates_when_given(self, adapter, mock_rate_limiters):
-        adapter.delete_event("calendar_123", "event_123", send_updates="all")
+    def test_delete_notifying_attendees_sends_updates_to_all(self, adapter, mock_rate_limiters):
+        adapter.delete_event("calendar_123", "event_123", notify_attendees=True)
 
         adapter.client.events.return_value.delete.assert_called_once_with(
             calendarId="calendar_123", eventId="event_123", sendUpdates="all"

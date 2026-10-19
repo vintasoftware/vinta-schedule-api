@@ -350,6 +350,18 @@ def get_block_conflict_service(
     return block_conflict_service
 
 
+def _get_org(info: strawberry.Info) -> Organization:
+    """Resolve the organization from the request context.
+
+    Raises:
+        GraphQLError: If organization is not found in request context
+    """
+    org = info.context.request.public_api_organization
+    if not org:
+        raise GraphQLError("Organization not found in request context")
+    return org
+
+
 def _get_org_and_init_calendar_service(
     info: strawberry.Info,
 ) -> tuple["CalendarService", Organization]:
@@ -361,9 +373,7 @@ def _get_org_and_init_calendar_service(
     Raises:
         GraphQLError: If organization is not found in request context
     """
-    org = info.context.request.public_api_organization
-    if not org:
-        raise GraphQLError("Organization not found in request context")
+    org = _get_org(info)
 
     deps = get_calendar_mutation_dependencies()
     request: PublicApiHttpRequest = info.context.request
@@ -393,9 +403,7 @@ def _get_org_and_init_appointment_type_service(
     Raises:
         GraphQLError: If organization is not found in request context
     """
-    org = info.context.request.public_api_organization
-    if not org:
-        raise GraphQLError("Organization not found in request context")
+    org = _get_org(info)
 
     deps = get_calendar_mutation_dependencies()
     request: PublicApiHttpRequest = info.context.request
@@ -406,16 +414,6 @@ def _get_org_and_init_appointment_type_service(
     deps.appointment_type_service.initialize(organization=org)
 
     return deps.appointment_type_service, org
-
-
-def _token_may_cancel_events(request: PublicApiHttpRequest) -> bool:
-    """Whether the request's token holds the resource ``cancelEvent`` requires."""
-    system_user = request.public_api_system_user
-    return system_user is not None and (
-        system_user.available_resources.filter(
-            resource_name=PublicAPIResources.CALENDAR_EVENT
-        ).exists()
-    )
 
 
 def _assert_can_write_calendar_pools(
@@ -889,12 +887,12 @@ class CreateBlockedTimeInput:
             "25. Cannot be used with rruleString. Omitted, the block is created as before."
         ),
     )
-    decline_message: str | None = strawberry.field(
+    decline_message: str = strawberry.field(
         default="",
         description=(
             "A message kept with the block for later notifications. It is not sent to "
             "Google, which declines with its default reply. Needs declineScope; cannot be "
-            "used with rruleString. null is read as empty."
+            "used with rruleString."
         ),
     )
 
@@ -3080,9 +3078,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         ``rruleString``.
         """
         request: PublicApiHttpRequest = info.context.request
-        org = request.public_api_organization
-        if not org:
-            raise GraphQLError("Organization not found in request context")
+        org = _get_org(info)
 
         try:
             # Owner-scope guard: a scoped token may only write to its owner's calendars.
@@ -3103,14 +3099,17 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
             try:
                 decline_options = BlockDeclineOptions(
                     scope=BlockedTimeDeclineScope(input.decline_scope.value),
-                    message=input.decline_message or "",
+                    message=input.decline_message,
                 )
             except InvalidBlockDeclineOptionsError as e:
                 return CreateBlockedTimeResult(success=False, error_message=str(e))
         if (
             decline_options is not None
             and decline_options.cancels_existing
-            and not _token_may_cancel_events(request)
+            and not (
+                request.public_api_system_user is not None
+                and request.public_api_system_user.has_resource(PublicAPIResources.CALENDAR_EVENT)
+            )
         ):
             return CreateBlockedTimeResult(
                 success=False,
@@ -4449,9 +4448,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         except CalendarPoolInUseError as e:
             system_user = request.public_api_system_user
             can_see_appointment_type_names = system_user is not None and (
-                system_user.available_resources.filter(
-                    resource_name=PublicAPIResources.APPOINTMENT_TYPE
-                ).exists()
+                system_user.has_resource(PublicAPIResources.APPOINTMENT_TYPE)
             )
             if can_see_appointment_type_names:
                 return DeleteCalendarPoolResult(

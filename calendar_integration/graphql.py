@@ -169,9 +169,7 @@ def _has_calendar_pool_resource(info: strawberry.Info) -> bool:
         cache = {}
         request._calendar_pool_resource_access_cache = cache
     if system_user.id not in cache:
-        cache[system_user.id] = system_user.available_resources.filter(
-            resource_name=PublicAPIResources.CALENDAR_POOL
-        ).exists()
+        cache[system_user.id] = system_user.has_resource(PublicAPIResources.CALENDAR_POOL)
     return cache[system_user.id]
 
 

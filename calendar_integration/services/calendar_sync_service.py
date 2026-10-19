@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 
 from allauth.socialaccount.models import SocialAccount
 from vinta_billing.exceptions import OverLimitError
@@ -1052,14 +1052,13 @@ class CalendarSyncService:
         if not incoming_external_ids:
             return {}
         return {
-            block.provider_event_external_id: block
+            cast("str", block.provider_event_external_id): block
             for block in BlockedTime.objects.filter_by_organization(calendar.organization_id)
             .filter(
                 calendar_fk_id=calendar.id,
                 provider_event_external_id__in=incoming_external_ids,
             )
             .only("id", "provider_event_external_id")
-            if block.provider_event_external_id
         }
 
     @staticmethod
@@ -1571,7 +1570,11 @@ class CalendarSyncService:
             BlockedTime.objects.filter_by_organization(context.organization).filter(
                 calendar_fk_id=calendar_id,
                 id__in=changes.blocked_times_to_unlink_from_provider,
-            ).update(provider_event_external_id=None)
+            ).update(
+                provider_event_external_id=None,
+                # A push still running must not mark the unlinked block written.
+                provider_push_version=F("provider_push_version") + 1,
+            )
 
         # After all changes are applied, link orphaned recurring instances to their parents
         self._link_orphaned_recurring_instances(calendar_id)

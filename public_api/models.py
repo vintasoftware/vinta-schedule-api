@@ -161,6 +161,10 @@ class SystemUser(
         # Skips exactly one class in the MRO -- the mixin -- and nothing below it.
         return super(SingleOrganizationModelMixin, self).save(*args, **kwargs)
 
+    def has_resource(self, resource_name: str) -> bool:
+        """Whether this token was granted ``resource_name`` (a ``PublicAPIResources`` value)."""
+        return self.available_resources.filter(resource_name=resource_name).exists()
+
     def can_book_any_appointment_type(self, organization_id: int) -> bool:
         """Whether this token may book any appointment type of the given organization.
 
@@ -180,9 +184,7 @@ class SystemUser(
         return (
             self.organization_id == organization_id
             and self.organization is not None
-            and self.available_resources.filter(
-                resource_name=PublicAPIResources.APPOINTMENT_TYPE
-            ).exists()
+            and self.has_resource(PublicAPIResources.APPOINTMENT_TYPE)
             and system_user_scope(self, self.organization) in ("org_wide", "scoped_admin")
         )
 
