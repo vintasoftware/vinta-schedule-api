@@ -306,7 +306,7 @@ class CalendarEventAdapterInputData:
 
     # The event's meeting. Every write carries it, because a provider that replaces the
     # whole event on update would otherwise drop a custom link from the location.
-    meeting: AdapterMeeting = dataclass_field(default_factory=AdapterMeeting)
+    meeting: AdapterMeeting = dataclass_field(kw_only=True)
 
 
 @dataclass

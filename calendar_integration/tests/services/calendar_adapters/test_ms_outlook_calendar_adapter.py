@@ -112,6 +112,7 @@ def sample_event_input_data() -> CalendarEventAdapterInputData:
                 status="pending",
             )
         ],
+        meeting=AdapterMeeting(),
     )
 
 
@@ -127,6 +128,7 @@ def sample_recurring_event_input_data() -> CalendarEventAdapterInputData:
         timezone="UTC",
         attendees=[],
         recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=10;BYDAY=MO",
+        meeting=AdapterMeeting(),
     )
 
 
@@ -485,6 +487,7 @@ def test_update_event(mock_client_class, mock_settings, mock_credentials, mock_m
         timezone="UTC",
         attendees=[EventAttendeeData(email="test@example.com", name="Test", status="accepted")],
         original_payload={},
+        meeting=AdapterMeeting(),
     )
 
     result = adapter.update_event("test_calendar_id", "test_event_id", event_data)

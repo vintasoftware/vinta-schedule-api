@@ -498,6 +498,7 @@ class TestEventOperations:
             attendees=[
                 EventAttendeeData(email="test@example.com", name="Test User", status="accepted")
             ],
+            meeting=AdapterMeeting(),
         )
 
         mock_created_event = {
@@ -556,6 +557,7 @@ class TestEventOperations:
             timezone="UTC",
             attendees=[],
             recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=10;BYDAY=MO",
+            meeting=AdapterMeeting(),
         )
 
         mock_created_event = {
