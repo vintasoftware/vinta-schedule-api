@@ -28,14 +28,6 @@ class BlockedTimeDeclineScope(TextChoices):
     NEW_AND_EXISTING = "new_and_existing", "New and existing appointments"
 
 
-class ProviderPushStatus(TextChoices):
-    """Where a blocked time stands in being written to its calendar provider."""
-
-    PENDING = "pending", "Pending"
-    PUSHED = "pushed", "Pushed"
-    FAILED = "failed", "Failed"
-
-
 #: Title of the Out of office event a blocked time is written to its provider as. A
 #: fixed, neutral title: the block's own ``reason`` can hold patient details and is
 #: never sent to the provider.

@@ -16,7 +16,7 @@ from vinta_schedule_api.celery import app
 
 logger = logging.getLogger(__name__)
 
-#: How many times a failed push is retried before the block is marked ``failed``.
+#: How many times a failed push is retried before the task gives up.
 PUSH_MAX_RETRIES = 5
 #: Seconds before the first retry; each later retry waits twice as long.
 PUSH_RETRY_BASE_DELAY = 60
@@ -70,8 +70,8 @@ def push_blocked_time_to_provider_task(
     the block's reason and decline message are never sent.
 
     A provider error is retried with a growing delay; after the last retry (or at once,
-    when the task runs eagerly) the block is marked ``failed`` and stays in place, still
-    blocking time in Vinta Schedule. Idempotent: the service skips a block already
+    when the task runs eagerly) the task gives up. The block stays in place, still
+    blocking time in Vinta Schedule, and is written again on its next edit. Idempotent: the service skips a block already
     written, and the provider event id is fixed before the first write, so a repeat
     updates the same event.
 
@@ -85,7 +85,6 @@ def push_blocked_time_to_provider_task(
             sync_service.push(blocked_time_id)
         except PROVIDER_CALL_ERRORS as exc:
             _retry_or_give_up(self, exc, f"writing blocked time {blocked_time_id} to its provider")
-            sync_service.mark_failed(blocked_time_id)
 
 
 @app.task(bind=True, max_retries=PUSH_MAX_RETRIES)

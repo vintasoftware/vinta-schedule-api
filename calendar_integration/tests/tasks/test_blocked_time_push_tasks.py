@@ -7,7 +7,6 @@ import pytest
 from celery.exceptions import Retry
 from googleapiclient.errors import HttpError
 
-from calendar_integration.constants import ProviderPushStatus
 from calendar_integration.models import BlockedTime
 from calendar_integration.tasks import (
     delete_blocked_time_from_provider_task,
@@ -47,11 +46,11 @@ def test_provider_error_schedules_a_retry_with_a_growing_delay(google_calendar, 
 
     retry.assert_called_once_with(countdown=PUSH_RETRY_BASE_DELAY * 4)
     block.refresh_from_db()
-    assert block.provider_push_status == ProviderPushStatus.PENDING
+    assert block.needs_provider_push
 
 
 @pytest.mark.django_db
-def test_failed_after_the_last_retry_keeps_the_block(google_calendar, write_adapter):
+def test_giving_up_after_the_last_retry_keeps_the_block_unwritten(google_calendar, write_adapter):
     write_adapter.write_blocked_time_event.side_effect = _unavailable()
     block = make_pending_block(google_calendar)
 
@@ -60,8 +59,7 @@ def test_failed_after_the_last_retry_keeps_the_block(google_calendar, write_adap
 
     retry.assert_not_called()
     block.refresh_from_db()
-    assert block.provider_push_status == ProviderPushStatus.FAILED
-    assert block.reason == "Conference"
+    assert (block.reason, block.needs_provider_push) == ("Conference", True)
 
 
 @pytest.mark.django_db
@@ -73,7 +71,7 @@ def test_eager_run_gives_up_at_once(google_calendar, write_adapter):
 
     write_adapter.write_blocked_time_event.assert_called_once()
     block.refresh_from_db()
-    assert block.provider_push_status == ProviderPushStatus.FAILED
+    assert block.needs_provider_push
 
 
 # ---------------------------------------------------------------------------

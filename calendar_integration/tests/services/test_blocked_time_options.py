@@ -13,7 +13,6 @@ import pytest
 from calendar_integration.constants import (
     BlockedTimeDeclineScope,
     CalendarProvider,
-    ProviderPushStatus,
 )
 from calendar_integration.exceptions import (
     BlockDeclineOptionsWithRecurrenceError,
@@ -116,8 +115,8 @@ def test_create_with_options_on_google_stores_them_and_queues_the_push_after_com
         block.reason,
         block.decline_scope,
         block.decline_message,
-        block.provider_push_status,
-    ) == ("Conference", "new_and_existing", "Back on Monday.", "pending")
+        block.needs_provider_push,
+    ) == ("Conference", "new_and_existing", "Back on Monday.", True)
     delay.assert_called_once_with(block.id, google_calendar.organization_id)
 
 
@@ -142,7 +141,7 @@ def test_create_with_options_that_cannot_be_pushed_queues_nothing(
         )
 
     block.refresh_from_db()
-    assert (block.decline_scope, block.provider_push_status) == ("new", None)
+    assert (block.decline_scope, block.is_written_to_provider) == ("new", False)
     delay.assert_not_called()
 
 
@@ -175,7 +174,7 @@ def test_push_on_the_primary_calendar_writes_out_of_office(
         timezone="America/Sao_Paulo",
         out_of_office=BlockedTimeDeclineScope.NEW_AND_EXISTING,
     )
-    assert block.provider_push_status == ProviderPushStatus.PUSHED
+    assert block.provider_pushed_version == 0
     assert len(block.provider_event_external_id) == 32
 
 
@@ -226,10 +225,7 @@ def test_push_of_a_block_changed_after_it_was_read_writes_nothing(
 
     write_adapter.write_blocked_time_event.assert_not_called()
     block.refresh_from_db()
-    assert (block.provider_event_external_id, block.provider_push_status) == (
-        None,
-        ProviderPushStatus.PENDING,
-    )
+    assert (block.provider_event_external_id, block.needs_provider_push) == (None, True)
 
 
 @pytest.mark.django_db
@@ -250,7 +246,7 @@ def test_push_on_another_calendar_writes_a_busy_event(
         timezone="America/Sao_Paulo",
         out_of_office=None,
     )
-    assert block.provider_push_status == ProviderPushStatus.PUSHED
+    assert block.provider_pushed_version == 0
 
 
 @pytest.mark.django_db
@@ -285,7 +281,7 @@ def test_push_falls_back_to_busy_logging_only_the_block_id(
         call(**event_fields, out_of_office=BlockedTimeDeclineScope.NEW),
         call(**event_fields, out_of_office=None),
     ]
-    assert block.provider_push_status == ProviderPushStatus.PUSHED
+    assert block.provider_pushed_version == 0
 
 
 @pytest.mark.django_db
@@ -308,7 +304,7 @@ def test_push_leaves_a_block_changed_meanwhile_pending(
     sync_service.push(block.id)
 
     block.refresh_from_db()
-    assert block.provider_push_status == ProviderPushStatus.PENDING
+    assert block.needs_provider_push
 
 
 @pytest.mark.django_db
@@ -317,11 +313,9 @@ def test_push_skips_blocks_it_must_not_write(
     sync_service, organization, google_calendar, write_adapter, case
 ):
     if case == "already-pushed":
-        block = make_pending_block(google_calendar, provider_push_status=ProviderPushStatus.PUSHED)
+        block = make_pending_block(google_calendar, provider_pushed_version=0)
     else:
-        block = make_pending_block(
-            google_calendar, decline_scope=None, decline_message="", provider_push_status=None
-        )
+        block = make_pending_block(google_calendar, decline_scope=None, decline_message="")
 
     sync_service.push(block.id)
 
@@ -341,7 +335,7 @@ def test_update_queues_a_push_that_rewrites_the_same_event(
 ):
     block = make_pending_block(
         google_calendar,
-        provider_push_status=ProviderPushStatus.PUSHED,
+        provider_pushed_version=0,
         provider_event_external_id="0123456789abcdef",
     )
 
@@ -357,7 +351,7 @@ def test_update_queues_a_push_that_rewrites_the_same_event(
             callback()
     delay.assert_called_once_with(block.id, google_calendar.organization_id)
     block.refresh_from_db()
-    assert block.provider_push_status == ProviderPushStatus.PENDING
+    assert block.needs_provider_push
 
     sync_service.push(block.id)
 
@@ -370,7 +364,7 @@ def test_update_queues_a_push_that_rewrites_the_same_event(
         out_of_office=None,
     )
     block.refresh_from_db()
-    assert block.provider_push_status == ProviderPushStatus.PUSHED
+    assert (block.provider_push_version, block.provider_pushed_version) == (1, 1)
 
 
 @pytest.mark.django_db
@@ -379,7 +373,7 @@ def test_update_locks_the_block_row(service, google_calendar):
     update's full save cannot erase that id."""
     block = make_pending_block(
         google_calendar,
-        provider_push_status=ProviderPushStatus.PUSHED,
+        provider_pushed_version=0,
         provider_event_external_id="0123456789abcdef",
     )
 
@@ -403,7 +397,7 @@ def test_update_locks_the_block_row(service, google_calendar):
 def test_update_with_a_recurrence_rule_is_refused_for_a_block_with_options(
     service, google_calendar, django_capture_on_commit_callbacks
 ):
-    block = make_pending_block(google_calendar, provider_push_status=ProviderPushStatus.PUSHED)
+    block = make_pending_block(google_calendar, provider_pushed_version=0)
 
     with (
         patch(PUSH_TASK_DELAY) as delay,
@@ -419,10 +413,10 @@ def test_update_with_a_recurrence_rule_is_refused_for_a_block_with_options(
 
     delay.assert_not_called()
     block.refresh_from_db()
-    assert (block.reason, block.recurrence_rule_fk_id, block.provider_push_status) == (
+    assert (block.reason, block.recurrence_rule_fk_id, block.provider_push_version) == (
         "Conference",
         None,
-        ProviderPushStatus.PUSHED,
+        0,
     )
 
 
@@ -437,7 +431,7 @@ def test_delete_of_a_pushed_block_queues_the_provider_delete_after_commit(
 ):
     block = make_pending_block(
         google_calendar,
-        provider_push_status=ProviderPushStatus.PUSHED,
+        provider_pushed_version=0,
         provider_event_external_id="0123456789abcdef",
     )
 

@@ -2,7 +2,7 @@
 
 import datetime
 
-from calendar_integration.constants import BlockedTimeDeclineScope, ProviderPushStatus
+from calendar_integration.constants import BlockedTimeDeclineScope
 from calendar_integration.models import BlockedTime, Calendar
 
 
@@ -18,7 +18,6 @@ def make_pending_block(calendar: Calendar, **fields) -> BlockedTime:
         "external_id": "manual-2026-10-09T10:00:00-0",
         "decline_scope": BlockedTimeDeclineScope.NEW,
         "decline_message": "Back on Monday.",
-        "provider_push_status": ProviderPushStatus.PENDING,
     }
     values.update(fields)
     return BlockedTime.objects.create(**values)

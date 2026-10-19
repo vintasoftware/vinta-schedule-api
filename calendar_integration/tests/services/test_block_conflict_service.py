@@ -13,7 +13,6 @@ from calendar_integration.constants import (
     BlockedTimeDeclineScope,
     CalendarProvider,
     CalendarType,
-    ProviderPushStatus,
 )
 from calendar_integration.exceptions import (
     BlockDeclineOptionsWithRecurrenceError,
@@ -283,10 +282,10 @@ def _create_block(calendar, services, decline_options, timezone="UTC", rrule_str
     "fields",
     [
         {"decline_message": "Back on Monday."},
-        {"provider_push_status": ProviderPushStatus.PENDING},
+        {"provider_pushed_version": 0},
         {"provider_event_external_id": "0123456789abcdef"},
     ],
-    ids=["message", "push-status", "provider-event"],
+    ids=["message", "pushed-version", "provider-event"],
 )
 def test_the_database_refuses_block_options_without_a_decline_scope(calendar, fields):
     with pytest.raises(IntegrityError), transaction.atomic():

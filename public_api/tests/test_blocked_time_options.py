@@ -173,7 +173,7 @@ class TestCreateBlockedTimeOptions:
         block = BlockedTime.objects.filter_by_organization(organization).get(
             id=int(result["blockedTime"]["id"])
         )
-        assert (block.decline_scope, block.provider_push_status) == (None, None)
+        assert (block.decline_scope, block.provider_pushed_version) == (None, None)
         delay.assert_not_called()
         adapter.delete_event.assert_not_called()
         assert (

@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import logging
 import uuid
+from functools import partial
 from typing import TYPE_CHECKING
 
 from django.db.models.functions import Now
 
-from calendar_integration.constants import BlockedTimeDeclineScope, ProviderPushStatus
+from calendar_integration.constants import BlockedTimeDeclineScope
 from calendar_integration.exceptions import CalendarIntegrationError, OutOfOfficeNotSupportedError
 from calendar_integration.models import BlockedTime, Calendar
 
@@ -55,18 +56,15 @@ class BlockedTimeProviderSyncService:
         repeated run updates the same event instead of creating a second one.
 
         Does nothing for a block that is missing, that is not to be written, or whose
-        latest version was already written. A block changed while this runs keeps its
-        newer ``provider_push_version``, stays pending, and is written by the push its
-        change queued.
+        latest version was already written (``BlockedTime.needs_provider_push``). A block
+        changed while this runs has a newer ``provider_push_version``, so this push does
+        not mark it written; the push its change queued writes it.
 
         :raises: The adapter's errors, for the caller to retry.
         """
         scoped = BlockedTime.objects.filter_by_organization(self._organization_id())
         blocked_time = scoped.select_related("calendar").filter(id=blocked_time_id).first()
-        if blocked_time is None or blocked_time.provider_push_status not in (
-            ProviderPushStatus.PENDING,
-            ProviderPushStatus.FAILED,
-        ):
+        if blocked_time is None or not blocked_time.needs_provider_push:
             return
         calendar = blocked_time.calendar
         write_adapter = self._write_adapter(calendar)
@@ -83,20 +81,21 @@ class BlockedTimeProviderSyncService:
                 # Deleted, or changed and queued again, since it was read.
                 return
 
-        event_fields = {
-            "calendar_id": calendar.provider_calendar_id,
-            "event_id": blocked_time.provider_event_external_id,
-            "start_time": blocked_time.start_time,
-            "end_time": blocked_time.end_time,
-            "timezone": blocked_time.timezone,
-        }
+        write = partial(
+            write_adapter.write_blocked_time_event,
+            calendar_id=calendar.provider_calendar_id,
+            event_id=blocked_time.provider_event_external_id,
+            start_time=blocked_time.start_time,
+            end_time=blocked_time.end_time,
+            timezone=blocked_time.timezone,
+        )
         out_of_office = (
             BlockedTimeDeclineScope(blocked_time.decline_scope)
             if calendar.ownerships.filter(is_default=True).exists()
             else None
         )
         try:
-            write_adapter.write_blocked_time_event(**event_fields, out_of_office=out_of_office)
+            write(out_of_office=out_of_office)
         except OutOfOfficeNotSupportedError:
             # Only the block id: the provider's error message can echo the event's details.
             logger.warning(
@@ -104,10 +103,10 @@ class BlockedTimeProviderSyncService:
                 "writing a busy event instead.",
                 blocked_time.id,
             )
-            write_adapter.write_blocked_time_event(**event_fields, out_of_office=None)
+            write(out_of_office=None)
 
         scoped.filter(id=blocked_time.id, provider_push_version=version).update(
-            provider_push_status=ProviderPushStatus.PUSHED
+            provider_pushed_version=version
         )
 
     def delete(self, calendar_id: int, provider_event_external_id: str) -> None:
@@ -127,17 +126,6 @@ class BlockedTimeProviderSyncService:
             return
         self._write_adapter(calendar).delete_blocked_time_event(
             calendar.provider_calendar_id, provider_event_external_id
-        )
-
-    def mark_failed(self, blocked_time_id: int) -> None:
-        """Record that writing a blocked time to its provider gave up.
-
-        The block itself stays and keeps blocking time in Vinta Schedule.
-        """
-        BlockedTime.objects.filter_by_organization(self._organization_id()).filter(
-            id=blocked_time_id
-        ).exclude(provider_push_status=ProviderPushStatus.PUSHED).update(
-            provider_push_status=ProviderPushStatus.FAILED
         )
 
     def _organization_id(self) -> int:

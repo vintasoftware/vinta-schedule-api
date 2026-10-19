@@ -27,7 +27,6 @@ from calendar_integration.constants import (
     ExternalEventChangeKind,
     ExternalEventChangeRequestStatus,
     IncomingWebhookProcessingStatus,
-    ProviderPushStatus,
     QuotaPeriod,
     RecurrenceFrequency,
     RecurrenceWeekday,
@@ -1832,8 +1831,8 @@ class BlockedTime(RecurringMixin):
     external_id = models.CharField(max_length=255, blank=True)
 
     # Block options. A null ``decline_scope`` is a block made without them: it is
-    # never written to the calendar provider and cancels nothing. The three nullable
-    # string columns use NULL for "not set", which the partial index below relies on.
+    # never written to the calendar provider and cancels nothing. The nullable columns
+    # use NULL for "not set", which the partial index below relies on.
     decline_scope = models.CharField(  # noqa: DJ001
         max_length=32, choices=BlockedTimeDeclineScope.choices, null=True, blank=True
     )
@@ -1844,12 +1843,11 @@ class BlockedTime(RecurringMixin):
     provider_event_external_id = models.CharField(  # noqa: DJ001
         max_length=1024, null=True, blank=True
     )
-    provider_push_status = models.CharField(  # noqa: DJ001
-        max_length=16, choices=ProviderPushStatus.choices, null=True, blank=True
-    )
-    # Moves on with every edit that must be written to the provider again. A push marks
-    # the block written only when this still holds the value it read.
+    # Moves on with every edit that must be written to the provider again.
     provider_push_version = models.PositiveIntegerField(default=0)
+    # The ``provider_push_version`` last written to the provider; null until the first
+    # write. A block that differs from it still needs a push (``needs_provider_push``).
+    provider_pushed_version = models.PositiveIntegerField(null=True, blank=True)
 
     # Bundle calendar fields
     bundle_calendar = OrganizationSafeForeignKey(
@@ -1927,7 +1925,7 @@ class BlockedTime(RecurringMixin):
                     models.Q(decline_scope__isnull=False)
                     | models.Q(
                         decline_message="",
-                        provider_push_status__isnull=True,
+                        provider_pushed_version__isnull=True,
                         provider_event_external_id__isnull=True,
                     )
                 ),
@@ -1937,6 +1935,23 @@ class BlockedTime(RecurringMixin):
 
     def __str__(self):
         return f"Blocked from {self.start_time} to {self.end_time} ({self.reason})"
+
+    @property
+    def is_written_to_provider(self) -> bool:
+        """Whether this block is kept as an event on its provider calendar.
+
+        Only a block with decline options on a Google calendar is. Reads ``calendar``
+        only for a block with options.
+        """
+        return self.decline_scope is not None and self.calendar.provider == CalendarProvider.GOOGLE
+
+    @property
+    def needs_provider_push(self) -> bool:
+        """Whether this block's latest version is not on its provider calendar yet."""
+        return (
+            self.is_written_to_provider
+            and self.provider_pushed_version != self.provider_push_version
+        )
 
     @property
     def is_bundle_representation(self) -> bool:

@@ -21,7 +21,6 @@ from calendar_integration.constants import (
     CalendarType,
     CalendarVisibility,
     EventManagementPermissions,
-    ProviderPushStatus,
     RecurrenceFrequency,
 )
 from calendar_integration.exceptions import (
@@ -11068,7 +11067,7 @@ def _pushed_block(calendar: Calendar, provider_event_id: str) -> BlockedTime:
         external_id="manual-2025-06-22T14:00:00-0",
         decline_scope=BlockedTimeDeclineScope.NEW,
         provider_event_external_id=provider_event_id,
-        provider_push_status=ProviderPushStatus.PUSHED,
+        provider_pushed_version=0,
     )
 
 

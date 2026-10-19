@@ -77,8 +77,8 @@ a recurring block with decline options is refused. With them:
   that delete).
 - When Google refuses the Out of office event (any 400), a busy event is
   written instead and a warning is logged with the block id only. A push
-  that keeps failing marks the block `failed`; the block still blocks time
-  here.
+  that keeps failing gives up after its last retry; the block still blocks
+  time here, and is written to Google again on its next edit.
 - `NEW_AND_EXISTING` also cancels the events the blocked calendar holds in
   the period, each on its own: a single event is deleted (Google emails
   every guest), and an occurrence of a recurring series is cancelled
