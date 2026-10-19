@@ -121,6 +121,12 @@ from public_api.models import SystemUser
 from users.models import User
 
 
+#: Why a move is refused when the event's generated meeting cannot follow it.
+TRANSFER_MEETING_NOT_SUPPORTED_MESSAGE = (
+    "The target calendar cannot generate a meeting link. Remove the event's meeting or "
+    "replace it with a custom link, then transfer it."
+)
+
 # The stored attendee holding a payload's identifiers, or None, keyed by those pairs.
 # ``update_event`` looks each one up for the permission check and again for the write;
 # this lets the second lookup reuse the first.
@@ -313,13 +319,17 @@ class CalendarEventService:
         Only a provider calendar is written to its provider, and only some providers
         create meeting links. Anywhere else the link would never arrive.
         """
+        if not self._calendar_generates_meetings(calendar):
+            raise MeetingNotSupportedError()
+
+    def _calendar_generates_meetings(self, calendar: Calendar) -> bool:
+        """Whether ``calendar``'s provider creates meeting links for its events."""
         write_adapter = (
             self._host._get_write_adapter_for_calendar(calendar)
             if calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE]
             else None
         )
-        if write_adapter is None or not write_adapter.supports_generated_meetings:
-            raise MeetingNotSupportedError()
+        return write_adapter is not None and write_adapter.supports_generated_meetings
 
     @staticmethod
     def _event_attendee_membership_ids(event: CalendarEvent) -> set[int]:
@@ -2739,6 +2749,12 @@ class CalendarEventService:
             raise EventManagementError(
                 "Cannot transfer an event that was never written to a calendar provider."
             )
+        # Checked before anything is fetched or created, so a refused move leaves the
+        # event and its link as they were.
+        if event.meeting_kind == MeetingKind.GENERATED and not self._calendar_generates_meetings(
+            new_calendar
+        ):
+            raise MeetingNotSupportedError(TRANSFER_MEETING_NOT_SUPPORTED_MESSAGE)
 
         event_data = context.calendar_adapter.get_event(
             event.calendar.provider_calendar_id, event.external_id

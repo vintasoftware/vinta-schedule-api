@@ -34,7 +34,10 @@ from calendar_integration.models import (
     ExternalAttendee,
     RecurrenceRule,
 )
-from calendar_integration.services.calendar_event_service import CalendarEventService
+from calendar_integration.services.calendar_event_service import (
+    TRANSFER_MEETING_NOT_SUPPORTED_MESSAGE,
+    CalendarEventService,
+)
 from calendar_integration.services.calendar_permission_service import (
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
 )
@@ -2641,6 +2644,39 @@ def test_transfer_event_moves_the_meeting(
     assert _sent_meeting(mock_google_adapter.create_event) == sent
     new_event.refresh_from_db()
     assert (new_event.meeting_kind, new_event.meeting_url) == saved
+
+
+@pytest.mark.django_db
+def test_transfer_event_refuses_a_generated_meeting_the_target_cannot_create(
+    event_service, mock_google_adapter, calendar, calendar_management_token, social_account
+):
+    mock_google_adapter.create_event.return_value = dataclasses.replace(
+        _adapter_output("original_event"), meeting_url=MEET_URL
+    )
+    original = event_service.create_event(
+        calendar.id, _meeting_input(EventMeetingInputData(kind=MeetingKind.GENERATED))
+    )
+    _grant_event_owner_token(original, social_account.user, calendar.organization)
+    target_calendar = Calendar.objects.create(
+        name="Target Calendar",
+        external_id="evt_meeting_no_meet_target_cal",
+        provider=CalendarProvider.GOOGLE,
+        organization=calendar.organization,
+    )
+    # The target's provider cannot create links, as with Outlook.
+    mock_google_adapter.supports_generated_meetings = False
+
+    with pytest.raises(MeetingNotSupportedError) as exc_info:
+        event_service.transfer_event(original, target_calendar)
+
+    assert str(exc_info.value) == TRANSFER_MEETING_NOT_SUPPORTED_MESSAGE
+    mock_google_adapter.get_event.assert_not_called()
+    mock_google_adapter.delete_event.assert_not_called()
+    assert list(
+        CalendarEvent.objects.filter_by_organization(calendar.organization_id).values_list(
+            "id", "calendar_fk_id", "meeting_kind", "meeting_url"
+        )
+    ) == [(original.id, calendar.id, MeetingKind.GENERATED, MEET_URL)]
 
 
 @pytest.mark.django_db

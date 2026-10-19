@@ -83,8 +83,11 @@ class InvalidMeetingError(EventManagementError):
 class MeetingNotSupportedError(EventManagementError):
     """The calendar cannot create the meeting asked for."""
 
-    def __init__(self) -> None:
-        super().__init__("This calendar cannot generate a meeting link. Use a custom link instead.")
+    def __init__(
+        self,
+        message: str = "This calendar cannot generate a meeting link. Use a custom link instead.",
+    ) -> None:
+        super().__init__(message)
 
 
 class InvalidTimezoneError(EventManagementError):
