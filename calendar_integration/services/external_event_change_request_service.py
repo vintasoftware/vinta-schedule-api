@@ -851,7 +851,7 @@ class ExternalEventChangeRequestService:
         recreated = self._undo_on_provider_for_event(
             event=event, kind=kind, write_adapter=write_adapter
         )
-        new_external_id = recreated[0] if recreated is not None else None
+        new_external_id, new_meeting = recreated or (None, None)
 
         try:
             with transaction.atomic():
@@ -868,10 +868,14 @@ class ExternalEventChangeRequestService:
                     # and the reject path always passes a non-None request.
                     raise RuntimeError("_resolve_with_undo: request is None after prepare_fn")
 
-                if kind == ExternalEventChangeKind.DELETE and recreated is not None:
+                if (
+                    kind == ExternalEventChangeKind.DELETE
+                    and new_external_id is not None
+                    and new_meeting is not None
+                ):
                     # Rebind the local event to the re-created provider event's new id,
                     # and to its new meeting link.
-                    event.external_id, new_meeting = recreated
+                    event.external_id = new_external_id
                     new_meeting.save_to(event)
                     event.save(update_fields=["external_id", "meeting_kind", "meeting_url"])
 
