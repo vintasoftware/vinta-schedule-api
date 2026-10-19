@@ -1,6 +1,6 @@
-"""The meeting value types: ``EventMeetingInputData`` (what a caller asks for) and
-``EventMeeting`` (what an event holds, and what each provider write does with it), plus
-the database constraint that keeps the stored pair consistent."""
+"""The meeting value type ``EventMeeting``: what a caller asks for (``request``, which
+validates it), what an event holds, and what each provider write does with it, plus the
+database constraint that keeps the stored pair consistent."""
 
 import datetime
 
@@ -16,7 +16,6 @@ from calendar_integration.services.dataclasses import (
     MEETING_URL_REQUIRED_MESSAGE,
     AdapterMeeting,
     EventMeeting,
-    EventMeetingInputData,
 )
 from organizations.models import Organization
 
@@ -46,21 +45,21 @@ GENERATED = EventMeeting(kind=MeetingKind.GENERATED, url=MEET_URL)
     ],
     ids=["custom-no-url", "custom-http", "custom-too-long", "generated-url", "removal-url"],
 )
-def test_a_meeting_input_that_does_not_fit_its_kind_cannot_be_built(kind, url, message):
+def test_a_meeting_request_that_does_not_fit_its_kind_is_refused(kind, url, message):
     with pytest.raises(InvalidMeetingError, match=message):
-        EventMeetingInputData(kind=kind, url=url)
+        EventMeeting.request(kind=kind, url=url)
 
 
 @pytest.mark.parametrize(
     ("current", "requested", "expected"),
     [
         (CUSTOM, None, CUSTOM),
-        (GENERATED, EventMeetingInputData(kind=MeetingKind.GENERATED), GENERATED),
-        (CUSTOM, EventMeetingInputData(kind=MeetingKind.GENERATED), GENERATED_PENDING),
-        (GENERATED, EventMeetingInputData(kind=None), NO_MEETING),
+        (GENERATED, EventMeeting.request(kind=MeetingKind.GENERATED), GENERATED),
+        (CUSTOM, EventMeeting.request(kind=MeetingKind.GENERATED), GENERATED_PENDING),
+        (GENERATED, EventMeeting.request(kind=None), NO_MEETING),
         (
             GENERATED,
-            EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
+            EventMeeting.request(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
             CUSTOM,
         ),
     ],

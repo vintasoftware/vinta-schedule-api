@@ -140,27 +140,6 @@ MEETING_URL_NOT_ALLOWED_MESSAGE = "A generated meeting takes no url."
 
 
 @dataclass(frozen=True)
-class EventMeetingInputData:
-    """The video meeting a create or update asks for.
-
-    ``kind=None`` removes the event's meeting. ``url`` is the client's link for a CUSTOM
-    meeting, an https link of at most 2048 characters, and is empty otherwise.
-
-    :raises InvalidMeetingError: on construction, for any other combination.
-    """
-
-    kind: MeetingKind | None
-    url: str = ""
-
-    def __post_init__(self) -> None:
-        if self.kind == MeetingKind.CUSTOM:
-            if not is_meeting_url(self.url):
-                raise InvalidMeetingError(MEETING_URL_REQUIRED_MESSAGE)
-        elif self.url:
-            raise InvalidMeetingError(MEETING_URL_NOT_ALLOWED_MESSAGE)
-
-
-@dataclass(frozen=True)
 class AdapterMeeting:
     """What a provider write does with the event's meeting.
 
@@ -191,13 +170,22 @@ class EventMeeting:
         return cls(kind=kind, url=event.meeting_url)
 
     @classmethod
-    def requested(cls, meeting: EventMeetingInputData | None) -> "EventMeeting":
-        """The meeting a new event asking for ``meeting`` starts with."""
-        if meeting is None:
-            return cls()
-        return cls(kind=meeting.kind, url=meeting.url)
+    def request(cls, kind: MeetingKind | None, url: str = "") -> "EventMeeting":
+        """The meeting a create or update asks for.
 
-    def after(self, meeting: EventMeetingInputData | None) -> "EventMeeting":
+        ``kind=None`` removes the event's meeting. ``url`` is the client's link for a
+        CUSTOM meeting, an https link of at most 2048 characters, and is empty otherwise.
+
+        :raises InvalidMeetingError: for any other combination.
+        """
+        if kind == MeetingKind.CUSTOM:
+            if not is_meeting_url(url):
+                raise InvalidMeetingError(MEETING_URL_REQUIRED_MESSAGE)
+        elif url:
+            raise InvalidMeetingError(MEETING_URL_NOT_ALLOWED_MESSAGE)
+        return cls(kind=kind, url=url)
+
+    def after(self, meeting: "EventMeeting | None") -> "EventMeeting":
         """This meeting once an update asking for ``meeting`` is applied.
 
         An omitted meeting keeps this one, and so does asking for GENERATED when this one
@@ -205,18 +193,13 @@ class EventMeeting:
         """
         if meeting is None or meeting.kind == self.kind == MeetingKind.GENERATED:
             return self
-        return EventMeeting.requested(meeting)
+        return meeting
 
     def for_new_provider_event(self) -> "EventMeeting":
         """The meeting of a new provider event made from this one: the same custom link,
         or a GENERATED meeting with no link yet, since a link belongs to its own provider
         event."""
         return self if self.kind == MeetingKind.CUSTOM else EventMeeting(kind=self.kind)
-
-    def as_input(self) -> EventMeetingInputData | None:
-        """The input that asks a new event for ``for_new_provider_event()``."""
-        new = self.for_new_provider_event()
-        return EventMeetingInputData(kind=new.kind, url=new.url) if new.kind else None
 
     def adapter_request(self, *, previous: "EventMeeting | None") -> AdapterMeeting:
         """The provider write that holds this meeting.
@@ -287,7 +270,9 @@ class CalendarEventInputData:
     # ``ExternalClientIdentifierService.replace_for_target``.
     external_client_identifiers: list[ExternalClientIdentifierData] | None = None
     # None = omitted: leave the meeting untouched (update) / no meeting (create).
-    meeting: EventMeetingInputData | None = None
+    # ``EventMeeting()`` removes the meeting. Build a requested one with
+    # ``EventMeeting.request``, which validates it.
+    meeting: EventMeeting | None = None
 
 
 @dataclass
@@ -599,7 +584,7 @@ class AppointmentTypeEventInputData:
     # Identifiers stamped on the created event. None and [] both write none.
     external_client_identifiers: list[ExternalClientIdentifierData] | None = None
     # The event's video meeting. None = no meeting.
-    meeting: EventMeetingInputData | None = None
+    meeting: EventMeeting | None = None
 
 
 @dataclass

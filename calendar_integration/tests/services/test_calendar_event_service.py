@@ -48,7 +48,7 @@ from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
-    EventMeetingInputData,
+    EventMeeting,
     ExternalAttendeeInputData,
 )
 from organizations.models import Organization, OrganizationMembership
@@ -2433,7 +2433,7 @@ MEET_URL = "https://meet.google.com/abc-defg-hij"
 CUSTOM_URL = "https://zoom.us/j/123"
 
 
-def _meeting_input(meeting: EventMeetingInputData | None) -> CalendarEventInputData:
+def _meeting_input(meeting: EventMeeting | None) -> CalendarEventInputData:
     return CalendarEventInputData(
         title=None,
         description=None,
@@ -2452,7 +2452,7 @@ def _sent_meeting(adapter_method: Mock) -> AdapterMeeting:
 def create_with_meeting(event_service, mock_google_adapter, calendar, social_account):
     """Create an event with a meeting and grant its owner token, so it can be updated."""
 
-    def _create(meeting: EventMeetingInputData, meeting_url: str = "") -> CalendarEvent:
+    def _create(meeting: EventMeeting, meeting_url: str = "") -> CalendarEvent:
         mock_google_adapter.create_event.return_value = dataclasses.replace(
             _adapter_output("meeting_event"), meeting_url=meeting_url
         )
@@ -2468,13 +2468,13 @@ def create_with_meeting(event_service, mock_google_adapter, calendar, social_acc
     ("meeting", "provider_url", "sent", "saved"),
     [
         (
-            EventMeetingInputData(kind=MeetingKind.GENERATED),
+            EventMeeting.request(kind=MeetingKind.GENERATED),
             MEET_URL,
             AdapterMeeting(conference="create"),
             (MeetingKind.GENERATED, MEET_URL),
         ),
         (
-            EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
+            EventMeeting.request(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
             "",
             AdapterMeeting(location=CUSTOM_URL),
             (MeetingKind.CUSTOM, CUSTOM_URL),
@@ -2509,7 +2509,7 @@ def test_create_event_with_a_meeting(
     [
         # Google replaces the whole event on update, so the location is sent again.
         (
-            EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
+            EventMeeting.request(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
             "",
             None,
             "",
@@ -2517,17 +2517,17 @@ def test_create_event_with_a_meeting(
             (MeetingKind.CUSTOM, CUSTOM_URL),
         ),
         (
-            EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
+            EventMeeting.request(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
             "",
-            EventMeetingInputData(kind=MeetingKind.GENERATED),
+            EventMeeting.request(kind=MeetingKind.GENERATED),
             MEET_URL,
             AdapterMeeting(conference="create"),
             (MeetingKind.GENERATED, MEET_URL),
         ),
         (
-            EventMeetingInputData(kind=MeetingKind.GENERATED),
+            EventMeeting.request(kind=MeetingKind.GENERATED),
             MEET_URL,
-            EventMeetingInputData(kind=None),
+            EventMeeting.request(kind=None),
             "",
             AdapterMeeting(conference="remove"),
             (None, ""),
@@ -2565,12 +2565,12 @@ def test_update_event_meeting(
     ("meeting", "sent", "saved"),
     [
         (
-            EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
+            EventMeeting.request(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
             AdapterMeeting(location=CUSTOM_URL),
             (MeetingKind.CUSTOM, CUSTOM_URL),
         ),
         (
-            EventMeetingInputData(kind=MeetingKind.GENERATED),
+            EventMeeting.request(kind=MeetingKind.GENERATED),
             AdapterMeeting(conference="create"),
             (MeetingKind.GENERATED, "https://meet.google.com/moved"),
         ),
@@ -2631,7 +2631,7 @@ def test_transfer_event_refuses_a_generated_meeting_the_target_cannot_create(
         _adapter_output("original_event"), meeting_url=MEET_URL
     )
     original = event_service.create_event(
-        calendar.id, _meeting_input(EventMeetingInputData(kind=MeetingKind.GENERATED))
+        calendar.id, _meeting_input(EventMeeting.request(kind=MeetingKind.GENERATED))
     )
     _grant_event_owner_token(original, social_account.user, calendar.organization)
     target_calendar = Calendar.objects.create(
@@ -2664,7 +2664,7 @@ def test_create_event_refuses_a_generated_meeting_the_provider_cannot_create(
 
     with pytest.raises(MeetingNotSupportedError):
         event_service.create_event(
-            calendar.id, _meeting_input(EventMeetingInputData(kind=MeetingKind.GENERATED))
+            calendar.id, _meeting_input(EventMeeting.request(kind=MeetingKind.GENERATED))
         )
 
     mock_google_adapter.create_event.assert_not_called()
@@ -2687,7 +2687,7 @@ def test_rescheduled_occurrence_of_a_generated_series_gets_its_own_meet(
         end_time=datetime.datetime(2025, 6, 23, 11, 0, tzinfo=datetime.UTC),
         timezone="UTC",
         recurrence_rule="FREQ=WEEKLY;COUNT=4",
-        meeting=EventMeetingInputData(kind=MeetingKind.GENERATED),
+        meeting=EventMeeting.request(kind=MeetingKind.GENERATED),
     )
     _grant_event_owner_token(master, social_account.user, calendar.organization)
 

@@ -60,7 +60,7 @@ from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
-    EventMeetingInputData,
+    EventMeeting,
     ExternalAttendeeInputData,
     ExternalClientIdentifierData,
     ResourceAllocationInputData,
@@ -421,14 +421,12 @@ class MeetingInput:
     kind: MeetingKindEnum
     url: str | None = None
 
-    def to_data(self) -> EventMeetingInputData:
+    def to_data(self) -> EventMeeting:
         """The service payload for this meeting.
 
         :raises InvalidMeetingError: the url does not fit the kind.
         """
-        return EventMeetingInputData(
-            kind=MeetingKind(self.kind.value), url=(self.url or "").strip()
-        )
+        return EventMeeting.request(kind=MeetingKind(self.kind.value), url=(self.url or "").strip())
 
 
 @strawberry.input

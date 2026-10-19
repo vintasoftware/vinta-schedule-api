@@ -104,7 +104,6 @@ from calendar_integration.services.dataclasses import (
     EventExternalAttendeeData,
     EventInternalAttendeeData,
     EventMeeting,
-    EventMeetingInputData,
     ExternalAttendeeInputData,
     ExternalClientIdentifierData,
     ResourceAllocationInputData,
@@ -939,7 +938,7 @@ class CalendarEventService:
         # defaulted to ``[]`` / were required strings.
         input_attendances = event_data.attendances or []
         input_external_attendances = event_data.external_attendances or []
-        meeting = EventMeeting.requested(event_data.meeting)
+        meeting = event_data.meeting or EventMeeting()
         if meeting.kind == MeetingKind.GENERATED:
             self._check_calendar_generates_meetings(calendar)
 
@@ -1764,7 +1763,7 @@ class CalendarEventService:
         attendances: list[EventAttendanceInputData] | None = None,
         external_attendances: list[EventExternalAttendanceInputData] | None = None,
         resource_allocations: list[ResourceAllocationInputData] | None = None,
-        meeting: EventMeetingInputData | None = None,
+        meeting: EventMeeting | None = None,
     ) -> CalendarEvent:
         """
         Create a recurring event with the specified recurrence rule.
@@ -1967,7 +1966,7 @@ class CalendarEventService:
                     ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
                     for r in parent_event.resource_allocations.all()
                 ],
-                meeting=EventMeeting.of(parent_event).as_input(),
+                meeting=EventMeeting.of(parent_event).for_new_provider_event(),
             )
             return new_recurring_event
 
@@ -1986,7 +1985,7 @@ class CalendarEventService:
                 timezone=modification_data.get("timezone") or parent_event.timezone,
                 parent_event_id=parent_event.id,
                 is_recurring_exception=True,
-                meeting=EventMeeting.of(parent_event).as_input(),
+                meeting=EventMeeting.of(parent_event).for_new_provider_event(),
             )
             return self.create_event(parent_event.calendar.id, modified_event_data)
 
@@ -2794,7 +2793,7 @@ class CalendarEventService:
             ],
             # A generated meeting asks the new calendar's provider for a new link: the
             # old event, and the conference that belongs to it, is deleted below.
-            meeting=EventMeeting.of(event).as_input(),
+            meeting=EventMeeting.of(event).for_new_provider_event(),
         )
         # Route create/delete through the host so the facade's public methods (the
         # original ``self.create_event`` / ``self.delete_event`` call targets) run —
@@ -2927,7 +2926,7 @@ class CalendarEventService:
                         ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
                         for r in parent.resource_allocations.all()
                     ],
-                    meeting=EventMeeting.of(parent).as_input(),
+                    meeting=EventMeeting.of(parent).for_new_provider_event(),
                 ),
             )
 

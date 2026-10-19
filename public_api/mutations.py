@@ -78,7 +78,7 @@ from calendar_integration.services.dataclasses import (
     CalendarPoolInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
-    EventMeetingInputData,
+    EventMeeting,
     ExternalAttendeeInputData,
     ExternalClientIdentifierData,
     ResourceAllocationInputData,
@@ -3927,11 +3927,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
             meeting = None
         else:
             try:
-                meeting = (
-                    input.meeting.to_data()
-                    if input.meeting is not None
-                    else EventMeetingInputData(kind=None)
-                )
+                meeting = input.meeting.to_data() if input.meeting is not None else EventMeeting()
             except InvalidMeetingError as exc:
                 raise GraphQLError(str(exc)) from exc
 
