@@ -52,6 +52,7 @@ from calendar_integration.managers import (
     CalendarSyncManager,
     ExternalEventChangeRequestManager,
 )
+from calendar_integration.meeting_urls import MEETING_URL_MAX_LENGTH
 from common.fields import (
     NaiveDateTimeField,
     OrganizationMembershipForeignKey,
@@ -1563,14 +1564,12 @@ class CalendarEvent(RecurringMixin):
     # on string fields" rule.
     external_id = models.CharField(max_length=255, unique=True, blank=True, null=True)
 
-    # Video meeting. ``meeting_kind`` is NULL for an event with no meeting. For a
+    # Video meeting. ``meeting_kind`` is "" for an event with no meeting. For a
     # GENERATED meeting, ``meeting_url`` is the link the provider created, and stays
     # empty until the provider has created it. For a CUSTOM meeting it is the link the
     # client supplied.
-    meeting_kind = models.CharField(  # noqa: DJ001
-        max_length=16, choices=MeetingKind, null=True, blank=True
-    )
-    meeting_url = models.URLField(max_length=2048, blank=True, default="")
+    meeting_kind = models.CharField(max_length=16, choices=MeetingKind, blank=True, default="")
+    meeting_url = models.URLField(max_length=MEETING_URL_MAX_LENGTH, blank=True, default="")
 
     # Bundle calendar fields
     bundle_calendar = OrganizationSafeForeignKey(
@@ -1684,17 +1683,12 @@ class CalendarEvent(RecurringMixin):
     class Meta(RecurringMixin.Meta):
         constraints = (
             # No meeting has no link, and a CUSTOM meeting always has one. A GENERATED
-            # meeting may have none while the provider is still creating it. The
-            # ``isnull=False`` keeps the kind comparisons from turning NULL, which a
-            # CHECK would let through.
+            # meeting may have none while the provider is still creating it.
             models.CheckConstraint(
                 condition=(
-                    models.Q(meeting_kind__isnull=True, meeting_url="")
-                    | models.Q(meeting_kind__isnull=False)
-                    & (
-                        models.Q(meeting_kind=MeetingKind.GENERATED)
-                        | (models.Q(meeting_kind=MeetingKind.CUSTOM) & ~models.Q(meeting_url=""))
-                    )
+                    models.Q(meeting_kind="", meeting_url="")
+                    | models.Q(meeting_kind=MeetingKind.GENERATED)
+                    | (models.Q(meeting_kind=MeetingKind.CUSTOM) & ~models.Q(meeting_url=""))
                 ),
                 name="calendarevent_meeting_consistent",
             ),

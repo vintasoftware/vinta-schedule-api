@@ -41,7 +41,6 @@ from calendar_integration.services.calendar_sync_service import CalendarSyncServ
 from calendar_integration.services.dataclasses import (
     CalendarEventAdapterOutputData,
     CalendarResourceData,
-    EventMeeting,
 )
 from organizations.models import Organization
 from users.models import Profile, User
@@ -468,63 +467,3 @@ def test_execute_calendar_sync_saves_the_meet_link_google_created(
 
     event.refresh_from_db()
     assert (event.meeting_kind, event.meeting_url) == (MeetingKind.GENERATED, MEET_URL)
-
-
-GENERATED = MeetingKind.GENERATED
-ZOOM_URL = "https://zoom.us/j/1"
-
-
-@pytest.mark.parametrize(
-    ("stored", "provider_url", "provider_pending", "outside_edits_allowed", "expected"),
-    [
-        # The provider finishing the platform's own request: every policy.
-        ((GENERATED, ""), MEET_URL, False, False, (GENERATED, MEET_URL)),
-        ((GENERATED, ""), "", True, False, (GENERATED, "")),
-        ((GENERATED, ""), "", False, False, (None, "")),
-        ((GENERATED, ""), "javascript:alert(1)", False, False, (None, "")),
-        ((GENERATED, ""), "https://meet.google.com/" + "a" * 2048, False, False, (None, "")),
-        # Outside edits: only when the policy allows them.
-        ((GENERATED, MEET_URL), "", False, True, (None, "")),
-        ((GENERATED, MEET_URL), "", False, False, (GENERATED, MEET_URL)),
-        ((None, ""), MEET_URL, False, True, (GENERATED, MEET_URL)),
-        ((None, ""), MEET_URL, False, False, (None, "")),
-        ((None, ""), "javascript:alert(1)", False, True, (None, "")),
-        ((None, ""), "", False, True, (None, "")),
-        ((MeetingKind.CUSTOM, ZOOM_URL), MEET_URL, False, True, (MeetingKind.CUSTOM, ZOOM_URL)),
-    ],
-    ids=[
-        "requested-link-arrives",
-        "requested-link-still-pending",
-        "requested-link-failed",
-        "requested-link-not-https",
-        "requested-link-too-long",
-        "removed-at-provider-allowed",
-        "removed-at-provider-not-allowed",
-        "added-at-provider-allowed",
-        "added-at-provider-not-allowed",
-        "added-link-not-https",
-        "no-meeting",
-        "custom-is-the-clients",
-    ],
-)
-def test_provider_meeting(
-    stored: tuple[MeetingKind | None, str],
-    provider_url: str,
-    provider_pending: bool,
-    outside_edits_allowed: bool,
-    expected: tuple[MeetingKind | None, str],
-) -> None:
-    synced = _adapter_event(
-        "ext",
-        "Visit",
-        datetime.datetime(2025, 8, 1, 9, 0, tzinfo=datetime.UTC),
-        datetime.datetime(2025, 8, 1, 10, 0, tzinfo=datetime.UTC),
-    )
-    synced.meeting_url = provider_url
-    synced.meeting_pending = provider_pending
-
-    meeting = CalendarSyncService._provider_meeting(
-        EventMeeting(*stored), synced, outside_edits_allowed=outside_edits_allowed
-    )
-
-    assert meeting == EventMeeting(*expected)

@@ -52,9 +52,7 @@ from calendar_integration.constants import (
     CalendarType,
     CalendarVisibility,
     ExternalEventChangeKind,
-    MeetingKind,
 )
-from calendar_integration.meeting_urls import is_meeting_url
 from calendar_integration.models import (
     BlockedTime,
     Calendar,
@@ -1035,6 +1033,9 @@ class CalendarSyncService:
             if pushed_block:
                 self._process_pushed_blocked_time(event, pushed_block, changes)
             elif existing_event:
+                # A link the platform asked for is filled in by every sync, whether or
+                # not this one updates events.
+                self._sync_meeting(event, existing_event, changes)
                 self._process_existing_event(event, existing_event, changes, update_events)
             elif existing_blocked_time:
                 self._process_existing_blocked_time(event, existing_blocked_time, changes)
@@ -1091,30 +1092,12 @@ class CalendarSyncService:
         # provider response, so it always carries one. Only provider-less local rows
         # hold NULL, and those match nothing coming back from a provider.
         existing_external_id = cast("str", existing_event.external_id)
-        # Checked before ``update_events``: a link the platform asked for is filled in
-        # by every sync.
-        if event.status != "cancelled":
-            stored_meeting = EventMeeting.of(existing_event)
-            meeting = self._provider_meeting(
-                stored_meeting,
-                event,
-                outside_edits_allowed=self._update_policy() == ExternalEventUpdatePolicy.ALLOW,
-            )
-            if meeting != stored_meeting:
-                meeting.save_to(existing_event)
-                changes.meetings_to_update.append(existing_event)
         if not update_events:
             return
 
         if event.status == "cancelled":
-            # Determine the organization's inbound-update policy for deletions.
             context = cast("InitializedOrAuthenticatedCalendarService", self._context)
-            organization = context.organization
-            policy = (
-                organization.external_event_update_policy
-                if organization is not None
-                else ExternalEventUpdatePolicy.ALLOW
-            )
+            policy = self._update_policy()
 
             if policy == ExternalEventUpdatePolicy.CHANGE_REQUEST:
                 # Under CHANGE_REQUEST: divert the deletion into a delete-kind
@@ -1201,14 +1184,8 @@ class CalendarSyncService:
             changes.matched_event_ids.add(existing_external_id)
             return
 
-        # Determine the organization's inbound-update policy.
         context = cast("InitializedOrAuthenticatedCalendarService", self._context)
-        organization = context.organization
-        policy = (
-            organization.external_event_update_policy
-            if organization is not None
-            else ExternalEventUpdatePolicy.ALLOW
-        )
+        policy = self._update_policy()
 
         # Under CHANGE_REQUEST: divert the edit into a change request and do NOT
         # mutate the local event.  The external id is still added to
@@ -1317,6 +1294,28 @@ class CalendarSyncService:
         # Process attendees
         self._process_event_attendees(event, existing_event, changes)
 
+    def _sync_meeting(
+        self,
+        event: CalendarEventAdapterOutputData,
+        existing_event: CalendarEvent,
+        changes: EventsSyncChanges,
+    ) -> None:
+        """Copy the provider's conference link onto ``existing_event``'s meeting.
+
+        Edits made at the provider are applied only under the ALLOW policy. See
+        ``EventMeeting.reconciled``.
+        """
+        if event.status == "cancelled":
+            return
+        stored_meeting = EventMeeting.of(existing_event)
+        meeting = stored_meeting.reconciled(
+            event,
+            outside_edits_allowed=self._update_policy() == ExternalEventUpdatePolicy.ALLOW,
+        )
+        if meeting != stored_meeting:
+            meeting.save_to(existing_event)
+            changes.meetings_to_update.append(existing_event)
+
     def _update_policy(self) -> str:
         """The organization's policy for edits made at the provider."""
         organization = cast("InitializedOrAuthenticatedCalendarService", self._context).organization
@@ -1325,34 +1324,6 @@ class CalendarSyncService:
             if organization is not None
             else ExternalEventUpdatePolicy.ALLOW
         )
-
-    @staticmethod
-    def _provider_meeting(
-        stored: EventMeeting,
-        event: CalendarEventAdapterOutputData,
-        *,
-        outside_edits_allowed: bool,
-    ) -> EventMeeting:
-        """The ``stored`` meeting once the provider's conference link is copied onto it.
-
-        A GENERATED meeting the platform asked for, still without a link, gets the link
-        once the provider has created it, and is removed when the provider gave up on it.
-        That is the provider finishing the platform's own request, so it happens under
-        every update policy.
-
-        Any other conference change at the provider -- one added, removed or replaced --
-        is an outside edit, applied only when ``outside_edits_allowed``. A CUSTOM link
-        belongs to the client and is left as it is. A link that is not a valid meeting url
-        counts as no link.
-        """
-        if stored.kind == MeetingKind.CUSTOM:
-            return stored
-        provider_url = event.meeting_url if is_meeting_url(event.meeting_url) else ""
-        if stored.awaiting_link and not provider_url and event.meeting_pending:
-            return stored
-        if not (stored.awaiting_link or outside_edits_allowed):
-            return stored
-        return EventMeeting(kind=MeetingKind.GENERATED if provider_url else None, url=provider_url)
 
     def _process_existing_blocked_time(
         self,

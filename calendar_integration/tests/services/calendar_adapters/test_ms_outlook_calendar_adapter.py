@@ -2560,7 +2560,7 @@ def test_create_event_writes_a_custom_link_to_the_location(
     ("meeting_fields", "location"),
     [
         ({"meeting": AdapterMeeting(location=ZOOM_URL)}, ZOOM_URL),
-        ({"meeting": AdapterMeeting(conference="remove")}, ""),
+        ({"meeting": AdapterMeeting(location="")}, ""),
         ({}, None),
     ],
     ids=["custom-link", "meeting-removed", "meeting-untouched"],

@@ -15,6 +15,7 @@ from calendar_integration.services.dataclasses import (
     MEETING_URL_NOT_ALLOWED_MESSAGE,
     MEETING_URL_REQUIRED_MESSAGE,
     AdapterMeeting,
+    CalendarEventAdapterOutputData,
     EventMeeting,
 )
 from organizations.models import Organization
@@ -86,9 +87,10 @@ def test_awaiting_link_is_a_generated_meeting_without_its_link(meeting, expected
         (NO_MEETING, None, AdapterMeeting()),
         (GENERATED, GENERATED, AdapterMeeting()),
         (CUSTOM, CUSTOM, AdapterMeeting(location=CUSTOM_URL)),
-        (GENERATED_PENDING, CUSTOM, AdapterMeeting(conference="create")),
+        (GENERATED_PENDING, CUSTOM, AdapterMeeting(location="", conference="create")),
         (CUSTOM, GENERATED, AdapterMeeting(location=CUSTOM_URL, conference="remove")),
         (NO_MEETING, GENERATED, AdapterMeeting(conference="remove")),
+        (NO_MEETING, CUSTOM, AdapterMeeting(location="", conference="remove")),
     ],
     ids=[
         "new-custom",
@@ -99,6 +101,7 @@ def test_awaiting_link_is_a_generated_meeting_without_its_link(meeting, expected
         "custom-to-generated",
         "generated-to-custom",
         "generated-removed",
+        "custom-removed",
     ],
 )
 def test_adapter_request_touches_the_conference_only_when_the_kind_changes(
@@ -113,15 +116,73 @@ def test_resend_never_touches_the_conference(meeting):
     assert meeting.resend().conference == "keep"
 
 
+def _provider_event(meeting_url: str, meeting_pending: bool) -> CalendarEventAdapterOutputData:
+    return CalendarEventAdapterOutputData(
+        calendar_external_id="cal",
+        title="Visit",
+        description="",
+        start_time=datetime.datetime(2025, 8, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 8, 1, 10, 0, tzinfo=datetime.UTC),
+        timezone="UTC",
+        attendees=[],
+        external_id="ext",
+        meeting_url=meeting_url,
+        meeting_pending=meeting_pending,
+    )
+
+
+@pytest.mark.parametrize(
+    ("stored", "provider_url", "provider_pending", "outside_edits_allowed", "expected"),
+    [
+        # The provider finishing the platform's own request: every policy.
+        (GENERATED_PENDING, MEET_URL, False, False, GENERATED),
+        (GENERATED_PENDING, "", True, False, GENERATED_PENDING),
+        (GENERATED_PENDING, "", False, False, NO_MEETING),
+        (GENERATED_PENDING, "javascript:alert(1)", False, False, NO_MEETING),
+        (GENERATED_PENDING, "https://meet.google.com/" + "a" * 2048, False, False, NO_MEETING),
+        # Outside edits: only when the policy allows them.
+        (GENERATED, "", False, True, NO_MEETING),
+        (GENERATED, "", False, False, GENERATED),
+        (NO_MEETING, MEET_URL, False, True, GENERATED),
+        (NO_MEETING, MEET_URL, False, False, NO_MEETING),
+        (NO_MEETING, "javascript:alert(1)", False, True, NO_MEETING),
+        (NO_MEETING, "", False, True, NO_MEETING),
+        (CUSTOM, MEET_URL, False, True, CUSTOM),
+    ],
+    ids=[
+        "requested-link-arrives",
+        "requested-link-still-pending",
+        "requested-link-failed",
+        "requested-link-not-https",
+        "requested-link-too-long",
+        "removed-at-provider-allowed",
+        "removed-at-provider-not-allowed",
+        "added-at-provider-allowed",
+        "added-at-provider-not-allowed",
+        "added-link-not-https",
+        "no-meeting",
+        "custom-is-the-clients",
+    ],
+)
+def test_reconciled_copies_the_provider_conference_link(
+    stored, provider_url, provider_pending, outside_edits_allowed, expected
+):
+    provider_event = _provider_event(provider_url, provider_pending)
+
+    meeting = stored.reconciled(provider_event, outside_edits_allowed=outside_edits_allowed)
+
+    assert meeting == expected
+
+
 @pytest.mark.django_db
 @pytest.mark.parametrize(
     ("kind", "url", "allowed"),
     [
-        (None, "", True),
+        ("", "", True),
         (MeetingKind.CUSTOM, CUSTOM_URL, True),
         (MeetingKind.GENERATED, "", True),
         (MeetingKind.GENERATED, MEET_URL, True),
-        (None, CUSTOM_URL, False),
+        ("", CUSTOM_URL, False),
         (MeetingKind.CUSTOM, "", False),
     ],
     ids=["none", "custom", "generated-pending", "generated", "url-without-kind", "custom-no-url"],

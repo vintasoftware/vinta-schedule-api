@@ -384,17 +384,6 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
             "range": recurrence_range,
         }
 
-    @staticmethod
-    def _update_location(event_data: CalendarEventAdapterInputData) -> str | None:
-        """The location an update writes: a custom meeting link, or "" to clear one.
-
-        Outlook updates are partial, so ``None`` leaves the location as it is.
-        """
-        meeting = event_data.meeting
-        if meeting.location:
-            return meeting.location
-        return "" if meeting.conference == "remove" else None
-
     def _convert_calendar_event_input_to_ms_format(
         self, event_data: CalendarEventAdapterInputData
     ) -> dict:
@@ -733,7 +722,8 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
                 start_time=event_data.start_time,
                 end_time=event_data.end_time,
                 attendees=attendees,
-                location=self._update_location(event_data),
+                # Outlook updates are partial, so ``None`` leaves the location as it is.
+                location=event_data.meeting.location,
             )
 
             return self._convert_ms_event_to_calendar_event_data(ms_event, calendar_id)

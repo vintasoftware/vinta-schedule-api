@@ -143,8 +143,9 @@ MEETING_URL_NOT_ALLOWED_MESSAGE = "A generated meeting takes no url."
 class AdapterMeeting:
     """What a provider write does with the event's meeting.
 
-    ``location`` is the CUSTOM link to write to the event's location, or ``None`` for
-    none. ``conference`` says what happens to the provider's own conference: "keep" it
+    ``location`` is what the write does with the event's location: the CUSTOM link to
+    write, "" to clear the link a CUSTOM meeting left there, or ``None`` to leave it as
+    it is. ``conference`` says what happens to the provider's own conference: "keep" it
     as it is, "create" a new one (a GENERATED meeting), or "remove" it.
     """
 
@@ -207,7 +208,11 @@ class EventMeeting:
         ``previous`` is the meeting the provider event has now, or ``None`` for a new
         provider event. The conference is touched only when the kind changes.
         """
-        location = self.url if self.kind == MeetingKind.CUSTOM else None
+        location: str | None = None
+        if self.kind == MeetingKind.CUSTOM:
+            location = self.url
+        elif previous is not None and previous.kind == MeetingKind.CUSTOM:
+            location = ""
         if previous is None:
             changes_conference = self.kind == MeetingKind.GENERATED
         else:
@@ -230,15 +235,36 @@ class EventMeeting:
         yet."""
         return self.kind == MeetingKind.GENERATED and not self.url
 
-    def with_provider_link(self, output: "CalendarEventAdapterOutputData") -> "EventMeeting":
-        """This meeting after a write that created a conference, holding the link the
-        provider returned."""
-        if self.awaiting_link:
-            return EventMeeting(kind=self.kind, url=output.meeting_url)
-        return self
+    def reconciled(
+        self,
+        output: "CalendarEventAdapterOutputData",
+        *,
+        outside_edits_allowed: bool = False,
+    ) -> "EventMeeting":
+        """This meeting once the conference link of the provider event ``output`` is
+        copied onto it, after a provider write or a sync.
+
+        A GENERATED meeting the platform asked for, still without a link, gets the link
+        once the provider has created it, and is removed when the provider gave up on it.
+        That is the provider finishing the platform's own request, so it always happens.
+
+        Any other conference change at the provider -- one added, removed or replaced --
+        is an outside edit, applied only when ``outside_edits_allowed``. A CUSTOM link
+        belongs to the client and is left as it is. A link that is not a valid meeting url
+        counts as no link.
+        """
+        if self.kind == MeetingKind.CUSTOM:
+            return self
+        provider_url = output.meeting_url if is_meeting_url(output.meeting_url) else ""
+        if self.awaiting_link and not provider_url and output.meeting_pending:
+            return self
+        if not (self.awaiting_link or outside_edits_allowed):
+            return self
+        return EventMeeting(kind=MeetingKind.GENERATED if provider_url else None, url=provider_url)
 
     def save_to(self, event: "CalendarEvent") -> None:
-        event.meeting_kind = self.kind
+        """Write this meeting onto ``event``'s fields, where "" is no meeting."""
+        event.meeting_kind = self.kind or ""
         event.meeting_url = self.url
 
 

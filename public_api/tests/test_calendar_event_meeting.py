@@ -209,7 +209,7 @@ def test_schedule_event_with_a_bad_meeting_is_refused(
             {"meetingKind": "CUSTOM", "meetingUrl": CUSTOM_URL},
             (MeetingKind.CUSTOM, CUSTOM_URL),
         ),
-        ({"meeting": None}, {"meetingKind": None, "meetingUrl": None}, (None, "")),
+        ({"meeting": None}, {"meetingKind": None, "meetingUrl": None}, ("", "")),
         (
             {"meeting": {"kind": "CUSTOM", "url": "https://zoom.us/j/456"}},
             {"meetingKind": "CUSTOM", "meetingUrl": "https://zoom.us/j/456"},

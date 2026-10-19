@@ -2521,7 +2521,7 @@ def test_create_event_with_a_meeting(
             "",
             EventMeeting.request(kind=MeetingKind.GENERATED),
             MEET_URL,
-            AdapterMeeting(conference="create"),
+            AdapterMeeting(location="", conference="create"),
             (MeetingKind.GENERATED, MEET_URL),
         ),
         (
@@ -2530,7 +2530,7 @@ def test_create_event_with_a_meeting(
             EventMeeting.request(kind=None),
             "",
             AdapterMeeting(conference="remove"),
-            (None, ""),
+            ("", ""),
         ),
     ],
     ids=["omitted-resends-the-custom-link", "custom-to-generated-saves-the-link", "removed"],
@@ -2588,7 +2588,9 @@ def test_transfer_event_moves_the_meeting(
     saved,
 ):
     mock_google_adapter.create_event.side_effect = [
-        _adapter_output("original_event"),
+        dataclasses.replace(
+            _adapter_output("original_event"), meeting_url="https://meet.google.com/original"
+        ),
         dataclasses.replace(
             _adapter_output("transferred_event"), meeting_url="https://meet.google.com/moved"
         ),
@@ -2738,7 +2740,7 @@ def test_expanded_occurrence_keeps_the_series_meeting(calendar):
     assert (occurrence.meeting_kind, occurrence.meeting_url) == (MeetingKind.CUSTOM, CUSTOM_URL)
 
 
-def _audit_snapshot(meeting_kind: str | None, meeting_url: str) -> dict:
+def _audit_snapshot(meeting_kind: str, meeting_url: str) -> dict:
     event = CalendarEvent(
         title="Visit",
         description="",
@@ -2780,7 +2782,7 @@ def test_event_audit_diff_shows_a_link_swapped_on_the_same_host():
 
 
 def test_event_audit_snapshot_without_a_meeting_has_no_host_or_hash():
-    snapshot = _audit_snapshot(None, "")
+    snapshot = _audit_snapshot("", "")
 
     assert (snapshot["meeting_kind"], snapshot["meeting_host"], snapshot["meeting_url_hash"]) == (
         None,
