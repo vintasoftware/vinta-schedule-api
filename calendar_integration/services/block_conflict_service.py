@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import logging
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
@@ -166,18 +167,8 @@ class BlockConflictService:
         :raises TooManyBlockCancelsError: When the block would cancel more than
             ``MAX_BLOCK_CANCELS`` events.
         """
-        if decline_options is not None:
-            blocked_time_push.check_recurrence(decline_options.scope, rrule_string)
-        events_to_cancel: list[BlockConflictEvent] | None = None
-        if decline_options is not None and decline_options.cancels_existing:
-            events_to_cancel = self.find_events_to_cancel(
-                calendar,
-                wall_clock_to_utc(start_time, timezone),
-                wall_clock_to_utc(end_time, timezone),
-            )
-            if len(events_to_cancel) > MAX_BLOCK_CANCELS:
-                raise TooManyBlockCancelsError(len(events_to_cancel), MAX_BLOCK_CANCELS)
-        blocked_time = self.calendar_service.create_blocked_time(
+        create = partial(
+            self.calendar_service.create_blocked_time,
             calendar=calendar,
             start_time=start_time,
             end_time=end_time,
@@ -185,10 +176,21 @@ class BlockConflictService:
             reason=reason,
             rrule_string=rrule_string,
         )
-        if decline_options is not None:
-            blocked_time_push.apply_decline_options(blocked_time, decline_options)
-        if events_to_cancel is None:
-            return blocked_time, BlockCancelResult()
+        if decline_options is None:
+            return create(), BlockCancelResult()
+
+        blocked_time_push.check_recurrence(decline_options.scope, rrule_string)
+        events_to_cancel: list[BlockConflictEvent] = []
+        if decline_options.cancels_existing:
+            events_to_cancel = self.find_events_to_cancel(
+                calendar,
+                wall_clock_to_utc(start_time, timezone),
+                wall_clock_to_utc(end_time, timezone),
+            )
+            if len(events_to_cancel) > MAX_BLOCK_CANCELS:
+                raise TooManyBlockCancelsError(len(events_to_cancel), MAX_BLOCK_CANCELS)
+        blocked_time = create()
+        blocked_time_push.apply_decline_options(blocked_time, decline_options)
         return blocked_time, self.cancel_block_conflicts(events_to_cancel)
 
     @staticmethod

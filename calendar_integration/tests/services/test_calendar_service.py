@@ -11130,7 +11130,7 @@ def test_sync_of_a_deleted_block_event_keeps_the_block(
     """When the block's Google event is deleted there, the block stays and forgets the event.
 
     Its ``provider_push_version`` moves on, so a push already running does not mark it
-    written."""
+    written, and it does not need a push until its next edit."""
     block = _pushed_block(calendar, "vsblockevent1")
     mock_google_adapter.get_events.return_value = {
         "events": [_google_event("vsblockevent1", status="cancelled")],
@@ -11142,7 +11142,12 @@ def test_sync_of_a_deleted_block_event_keeps_the_block(
     _run_full_sync(service, calendar)
 
     block.refresh_from_db()
-    assert (block.provider_event_external_id, block.provider_push_version) == (None, 1)
+    assert (
+        block.provider_event_external_id,
+        block.provider_push_version,
+        block.provider_pushed_version,
+        block.needs_provider_push,
+    ) == (None, 1, 1, False)
     assert block.reason == "Out of office"
     assert list(
         BlockedTime.original_manager.filter(calendar_fk=calendar).values_list("id", flat=True)

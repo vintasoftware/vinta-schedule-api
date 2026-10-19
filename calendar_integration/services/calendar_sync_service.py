@@ -1572,8 +1572,10 @@ class CalendarSyncService:
                 id__in=changes.blocked_times_to_unlink_from_provider,
             ).update(
                 provider_event_external_id=None,
-                # A push still running must not mark the unlinked block written.
+                # A new version, already marked written: a push still running does not
+                # mark the block written, and nothing is pushed until its next edit.
                 provider_push_version=F("provider_push_version") + 1,
+                provider_pushed_version=F("provider_push_version") + 1,
             )
 
         # After all changes are applied, link orphaned recurring instances to their parents

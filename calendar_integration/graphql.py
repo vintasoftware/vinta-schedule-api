@@ -1,6 +1,5 @@
 import datetime
 import enum
-from typing import cast
 
 import strawberry
 import strawberry_django
@@ -663,19 +662,19 @@ class BlockedTimeRecurringExceptionGraphQLType:
         return _scoped_blocked_time_or_none(modified, _owner_scoped_calendar_ids(info))  # type: ignore[return-value,arg-type]
 
 
-@strawberry.enum(name="BlockedTimeDeclineScope")
-class BlockedTimeDeclineScopeEnum(enum.Enum):
-    """Which appointments a blocked time turns away.
-
-    NEW: invitations made after the block.
-    NEW_AND_EXISTING: those, plus the events the blocked calendar already holds in the
-    blocked period, which are cancelled when the block is created. When the block is
-    written to Google as an Out of office event, Google also declines the owner's
-    invitations to other events in the period.
-    """
-
-    NEW = BlockedTimeDeclineScope.NEW.value
-    NEW_AND_EXISTING = BlockedTimeDeclineScope.NEW_AND_EXISTING.value
+# The domain enum itself is the GraphQL enum: the API takes and returns its members.
+strawberry.enum(
+    BlockedTimeDeclineScope,
+    name="BlockedTimeDeclineScope",
+    description=(
+        "Which appointments a blocked time turns away.\n\n"
+        "NEW: invitations made after the block.\n"
+        "NEW_AND_EXISTING: those, plus the events the blocked calendar already holds in the "
+        "blocked period, which are cancelled when the block is created. When the block is "
+        "written to Google as an Out of office event, Google also declines the owner's "
+        "invitations to other events in the period."
+    ),
+)
 
 
 @strawberry_django.type(BlockedTime)
@@ -687,11 +686,9 @@ class BlockedTimeGraphQLType:
     created: datetime.datetime
     modified: datetime.datetime
 
-    @strawberry.field
-    def decline_scope(self) -> BlockedTimeDeclineScopeEnum | None:
-        """Which appointments the block turns away. ``null`` for a block made without options."""
-        scope = cast("BlockedTime", self).decline_scope
-        return BlockedTimeDeclineScopeEnum(scope) if scope else None
+    decline_scope: BlockedTimeDeclineScope | None = strawberry_django.field(
+        description="Which appointments the block turns away. null for a block made without options."
+    )
 
     user: UserGraphQLType = strawberry_django.field()
     recurrence_rule: RecurrenceRuleGraphQLType = strawberry_django.field()

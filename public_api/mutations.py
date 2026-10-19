@@ -35,7 +35,6 @@ from calendar_integration.graphql import (
     AppointmentTypeScopedBlockedTimeGraphQLType,
     AppointmentTypeScopedQuotaRuleGraphQLType,
     AvailableTimeGraphQLType,
-    BlockedTimeDeclineScopeEnum,
     BlockedTimeGraphQLType,
     BookingPolicyResult,
     CalendarBundleGraphQLType,
@@ -877,7 +876,7 @@ class CreateBlockedTimeInput:
     timezone: str
     reason: str = ""
     rrule_string: str | None = None
-    decline_scope: BlockedTimeDeclineScopeEnum | None = strawberry.field(
+    decline_scope: BlockedTimeDeclineScope | None = strawberry.field(
         default=None,
         description=(
             "Which appointments the block turns away. When set, the options are saved, "
@@ -3098,7 +3097,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         if input.decline_scope is not None:
             try:
                 decline_options = BlockDeclineOptions(
-                    scope=BlockedTimeDeclineScope(input.decline_scope.value),
+                    scope=input.decline_scope,
                     message=input.decline_message,
                 )
             except InvalidBlockDeclineOptionsError as e:
