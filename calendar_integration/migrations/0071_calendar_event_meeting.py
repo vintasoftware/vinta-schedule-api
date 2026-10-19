@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('calendar_integration', '0068_calendar_external_id_nullable'),
+        ('calendar_integration', '0070_external_attendee_email_blank'),
     ]
 
     operations = [

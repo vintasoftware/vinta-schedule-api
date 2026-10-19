@@ -43,6 +43,7 @@ from calendar_integration.services.calendar_permission_service import (
 )
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
+    AdapterMeeting,
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
     EventExternalAttendanceInputData,
@@ -588,6 +589,6 @@ def test_attendee_without_email_is_left_out_of_the_change_request_undo_payload(
 
     adapter_input = ExternalEventChangeRequestService(
         audit_service=Mock(), notification_service=Mock()
-    )._build_adapter_input(event)
+    )._build_adapter_input(event, AdapterMeeting())
 
     assert [(a.email, a.name) for a in adapter_input.attendees] == [("guest@example.com", "Guest")]
