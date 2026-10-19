@@ -70,6 +70,15 @@ def test_after_applies_an_update(current, requested, expected):
 
 
 @pytest.mark.parametrize(
+    ("meeting", "expected"),
+    [(GENERATED_PENDING, True), (GENERATED, False), (CUSTOM, False), (NO_MEETING, False)],
+    ids=["generated-pending", "generated", "custom", "none"],
+)
+def test_awaiting_link_is_a_generated_meeting_without_its_link(meeting, expected):
+    assert meeting.awaiting_link is expected
+
+
+@pytest.mark.parametrize(
     ("meeting", "previous", "expected"),
     [
         (CUSTOM, None, AdapterMeeting(location=CUSTOM_URL)),

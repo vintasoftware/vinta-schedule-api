@@ -41,6 +41,7 @@ from calendar_integration.services.calendar_sync_service import CalendarSyncServ
 from calendar_integration.services.dataclasses import (
     CalendarEventAdapterOutputData,
     CalendarResourceData,
+    EventMeeting,
 )
 from organizations.models import Organization
 from users.models import Profile, User
@@ -506,14 +507,13 @@ ZOOM_URL = "https://zoom.us/j/1"
         "custom-is-the-clients",
     ],
 )
-def test_refresh_provider_meeting(
-    stored: tuple[str | None, str],
+def test_provider_meeting(
+    stored: tuple[MeetingKind | None, str],
     provider_url: str,
     provider_pending: bool,
     outside_edits_allowed: bool,
-    expected: tuple[str | None, str],
+    expected: tuple[MeetingKind | None, str],
 ) -> None:
-    event = CalendarEvent(meeting_kind=stored[0], meeting_url=stored[1])
     synced = _adapter_event(
         "ext",
         "Visit",
@@ -523,11 +523,8 @@ def test_refresh_provider_meeting(
     synced.meeting_url = provider_url
     synced.meeting_pending = provider_pending
 
-    changed = CalendarSyncService._refresh_provider_meeting(
-        synced, event, outside_edits_allowed=outside_edits_allowed
+    meeting = CalendarSyncService._provider_meeting(
+        EventMeeting(*stored), synced, outside_edits_allowed=outside_edits_allowed
     )
 
-    assert (changed, (event.meeting_kind, event.meeting_url)) == (
-        expected != stored,
-        expected,
-    )
+    assert meeting == EventMeeting(*expected)

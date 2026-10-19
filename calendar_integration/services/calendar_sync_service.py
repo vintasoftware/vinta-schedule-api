@@ -71,7 +71,7 @@ from calendar_integration.models import (
 from calendar_integration.services.calendar_service_utils import (
     convert_naive_utc_datetime_to_timezone as _convert_naive_utc_datetime_to_timezone,
 )
-from calendar_integration.services.dataclasses import EventsSyncChanges
+from calendar_integration.services.dataclasses import EventMeeting, EventsSyncChanges
 from calendar_integration.services.protocols.base_calendar_service import BaseCalendarService
 from calendar_integration.services.protocols.initializer_or_authenticated_calendar_service import (
     InitializedOrAuthenticatedCalendarService,
@@ -1093,12 +1093,16 @@ class CalendarSyncService:
         existing_external_id = cast("str", existing_event.external_id)
         # Checked before ``update_events``: a link the platform asked for is filled in
         # by every sync.
-        if event.status != "cancelled" and self._refresh_provider_meeting(
-            event,
-            existing_event,
-            outside_edits_allowed=self._update_policy() == ExternalEventUpdatePolicy.ALLOW,
-        ):
-            changes.meetings_to_update.append(existing_event)
+        if event.status != "cancelled":
+            stored_meeting = EventMeeting.of(existing_event)
+            meeting = self._provider_meeting(
+                stored_meeting,
+                event,
+                outside_edits_allowed=self._update_policy() == ExternalEventUpdatePolicy.ALLOW,
+            )
+            if meeting != stored_meeting:
+                meeting.save_to(existing_event)
+                changes.meetings_to_update.append(existing_event)
         if not update_events:
             return
 
@@ -1323,13 +1327,13 @@ class CalendarSyncService:
         )
 
     @staticmethod
-    def _refresh_provider_meeting(
+    def _provider_meeting(
+        stored: EventMeeting,
         event: CalendarEventAdapterOutputData,
-        existing_event: CalendarEvent,
         *,
         outside_edits_allowed: bool,
-    ) -> bool:
-        """Copy the provider's conference link onto the event. Returns whether it changed.
+    ) -> EventMeeting:
+        """The ``stored`` meeting once the provider's conference link is copied onto it.
 
         A GENERATED meeting the platform asked for, still without a link, gets the link
         once the provider has created it, and is removed when the provider gave up on it.
@@ -1341,22 +1345,14 @@ class CalendarSyncService:
         belongs to the client and is left as it is. A link that is not a valid meeting url
         counts as no link.
         """
-        if existing_event.meeting_kind == MeetingKind.CUSTOM:
-            return False
+        if stored.kind == MeetingKind.CUSTOM:
+            return stored
         provider_url = event.meeting_url if is_meeting_url(event.meeting_url) else ""
-        awaiting_link = (
-            existing_event.meeting_kind == MeetingKind.GENERATED and not existing_event.meeting_url
-        )
-        if awaiting_link and not provider_url and event.meeting_pending:
-            return False
-        if not (awaiting_link or outside_edits_allowed):
-            return False
-        kind: MeetingKind | None = MeetingKind.GENERATED if provider_url else None
-        if existing_event.meeting_kind == kind and existing_event.meeting_url == provider_url:
-            return False
-        existing_event.meeting_kind = kind
-        existing_event.meeting_url = provider_url
-        return True
+        if stored.awaiting_link and not provider_url and event.meeting_pending:
+            return stored
+        if not (stored.awaiting_link or outside_edits_allowed):
+            return stored
+        return EventMeeting(kind=MeetingKind.GENERATED if provider_url else None, url=provider_url)
 
     def _process_existing_blocked_time(
         self,

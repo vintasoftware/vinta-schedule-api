@@ -219,10 +219,16 @@ class EventMeeting:
         )
         return AdapterMeeting(location=location, conference=conference)
 
+    @property
+    def awaiting_link(self) -> bool:
+        """Whether this is a GENERATED meeting the provider has not created a link for
+        yet."""
+        return self.kind == MeetingKind.GENERATED and not self.url
+
     def with_provider_link(self, output: "CalendarEventAdapterOutputData") -> "EventMeeting":
         """This meeting after a write that created a conference, holding the link the
         provider returned."""
-        if self.kind == MeetingKind.GENERATED and not self.url:
+        if self.awaiting_link:
             return EventMeeting(kind=self.kind, url=output.meeting_url)
         return self
 
