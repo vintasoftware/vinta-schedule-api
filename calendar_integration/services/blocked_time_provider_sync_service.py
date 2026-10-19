@@ -2,8 +2,9 @@
 
 A block made with decline options on a Google calendar is written there as an Out of
 office or busy event, kept in step when the block is edited, and deleted with it. The
-writes run in Celery tasks queued after the transaction that changed the block commits
-(``calendar_integration.tasks.blocked_time_push_tasks``).
+writes run in Celery tasks (``calendar_integration.tasks.blocked_time_push_tasks``)
+queued by ``calendar_integration.blocked_time_push`` after the transaction that changed
+the block commits.
 """
 
 from __future__ import annotations
@@ -12,25 +13,15 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
-from django.db import transaction
 from django.db.models.functions import Now
 
-from calendar_integration.constants import (
-    BlockedTimeDeclineScope,
-    CalendarProvider,
-    ProviderPushStatus,
-)
-from calendar_integration.exceptions import (
-    BlockDeclineOptionsWithRecurrenceError,
-    CalendarIntegrationError,
-    OutOfOfficeNotSupportedError,
-)
+from calendar_integration.constants import BlockedTimeDeclineScope, ProviderPushStatus
+from calendar_integration.exceptions import CalendarIntegrationError, OutOfOfficeNotSupportedError
 from calendar_integration.models import BlockedTime, Calendar
 
 
 if TYPE_CHECKING:
     from calendar_integration.services.calendar_service import CalendarService
-    from calendar_integration.services.dataclasses import BlockDeclineOptions
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
     from organizations.models import Organization
 
@@ -39,11 +30,9 @@ logger = logging.getLogger(__name__)
 
 
 class BlockedTimeProviderSyncService:
-    """Keeps a blocked time's provider event in step with the block.
+    """Writes and deletes a blocked time's provider event, from the tasks.
 
-    The static methods run inside the request that changes a block: they save the
-    options and queue the provider write. The instance methods run in the tasks and
-    reach the provider through the injected ``CalendarService``; call ``initialize``
+    Reaches the provider through the injected ``CalendarService``; call ``initialize``
     first.
     """
 
@@ -53,92 +42,6 @@ class BlockedTimeProviderSyncService:
     def initialize(self, organization: Organization) -> None:
         """Bind the calendar service to ``organization``, with no caller."""
         self.calendar_service.initialize_without_provider(organization=organization)
-
-    @staticmethod
-    def check_recurrence(decline_scope: str | None, rrule_string: str | None) -> None:
-        """Refuse decline options on a recurring block.
-
-        A recurring block is never written to the provider and cancels nothing, so its
-        options would have no effect.
-
-        :raises BlockDeclineOptionsWithRecurrenceError: When the block has a
-            ``decline_scope`` and ``rrule_string`` is set.
-        """
-        if decline_scope is not None and rrule_string:
-            raise BlockDeclineOptionsWithRecurrenceError()
-
-    @classmethod
-    def apply_decline_options(
-        cls, blocked_time: BlockedTime, decline_options: BlockDeclineOptions
-    ) -> None:
-        """Save ``decline_options`` on a new block and queue its provider write.
-
-        Only a block on a Google calendar is written to its provider; on any other
-        calendar the options are saved and nothing is queued.
-        """
-        blocked_time.decline_scope = decline_options.scope
-        blocked_time.decline_message = decline_options.message
-        update_fields = ["decline_scope", "decline_message", "modified"]
-        pushable = blocked_time.calendar.provider == CalendarProvider.GOOGLE
-        if pushable:
-            blocked_time.provider_push_status = ProviderPushStatus.PENDING
-            update_fields.append("provider_push_status")
-        blocked_time.save(update_fields=update_fields)
-        if pushable:
-            cls.queue_push(blocked_time)
-
-    @classmethod
-    def mark_changed(cls, blocked_time: BlockedTime) -> None:
-        """Mark an edited block to be written again, before it is saved.
-
-        Does nothing for a block that is not written to its provider. Otherwise the block
-        is set pending, its ``provider_push_version`` moves on so a push already running
-        does not mark the edit written, and a new push is queued for after the commit.
-        """
-        if blocked_time.provider_push_status is None:
-            return
-        blocked_time.provider_push_status = ProviderPushStatus.PENDING
-        blocked_time.provider_push_version += 1
-        cls.queue_push(blocked_time)
-
-    @staticmethod
-    def queue_push(blocked_time: BlockedTime) -> None:
-        """Queue ``push_blocked_time_to_provider_task`` for after the transaction commits."""
-        # Imported here: the task module imports this one.
-        from calendar_integration.tasks.blocked_time_push_tasks import (
-            push_blocked_time_to_provider_task,
-        )
-
-        blocked_time_id = blocked_time.id
-        organization_id = blocked_time.organization_id
-        transaction.on_commit(
-            lambda: push_blocked_time_to_provider_task.delay(  # type: ignore[attr-defined]
-                blocked_time_id, organization_id
-            )
-        )
-
-    @staticmethod
-    def queue_delete(blocked_time: BlockedTime) -> None:
-        """Queue the delete of a block's provider event for after the transaction commits.
-
-        Does nothing for a block that has no provider event. Call it before the block is
-        deleted: the task gets the calendar and the event id as arguments.
-        """
-        provider_event_external_id = blocked_time.provider_event_external_id
-        if not provider_event_external_id:
-            return
-        # Imported here: the task module imports this one.
-        from calendar_integration.tasks.blocked_time_push_tasks import (
-            delete_blocked_time_from_provider_task,
-        )
-
-        calendar_id = blocked_time.calendar_fk_id
-        organization_id = blocked_time.organization_id
-        transaction.on_commit(
-            lambda: delete_blocked_time_from_provider_task.delay(  # type: ignore[attr-defined]
-                calendar_id, provider_event_external_id, organization_id
-            )
-        )
 
     def push(self, blocked_time_id: int) -> None:
         """Write a blocked time to its provider calendar, creating or updating its event.

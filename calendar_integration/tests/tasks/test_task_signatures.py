@@ -86,13 +86,13 @@ from calendar_integration.tasks.calendar_sync_tasks import resync_organization_c
             push_blocked_time_to_provider_task,
             (1, 1),
             {},
-            id="push_blocked_time_to_provider-BlockedTimeProviderSyncService.queue_push",
+            id="push_blocked_time_to_provider-blocked_time_push.queue_push",
         ),
         pytest.param(
             delete_blocked_time_from_provider_task,
             (1, "0123456789abcdef", 1),
             {},
-            id="delete_blocked_time_from_provider-BlockedTimeProviderSyncService.queue_delete",
+            id="delete_blocked_time_from_provider-blocked_time_push.queue_delete",
         ),
     ],
 )

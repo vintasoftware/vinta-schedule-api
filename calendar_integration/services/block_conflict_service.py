@@ -15,6 +15,7 @@ from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import DatabaseError, transaction
 
+from calendar_integration import blocked_time_push
 from calendar_integration.exceptions import TooManyBlockCancelsError
 from calendar_integration.models import CalendarEvent
 from calendar_integration.services.calendar_service_utils import wall_clock_to_utc
@@ -133,6 +134,7 @@ class BlockConflictService:
         )
         self.appointment_type_service.initialize_for_caller(user_or_token, organization)
 
+    @transaction.atomic()
     def create_block(
         self,
         *,
@@ -144,7 +146,11 @@ class BlockConflictService:
         rrule_string: str | None = None,
         decline_options: BlockDeclineOptions | None = None,
     ) -> tuple[BlockedTime, BlockCancelResult]:
-        """Create a blocked time and, for a NEW_AND_EXISTING block, cancel what it overlaps.
+        """Create a blocked time with its decline options, and cancel what it overlaps.
+
+        With ``decline_options`` the options are saved on the block, which is then
+        written to its provider calendar when that is a Google one
+        (``blocked_time_push.apply_decline_options``).
 
         ``start_time`` / ``end_time`` are wall-clock times in ``timezone``. A
         NEW_AND_EXISTING block checks how many events it would cancel before anything is
@@ -156,10 +162,12 @@ class BlockConflictService:
 
         :raises ValueError: When ``timezone`` is not an IANA zone.
         :raises BlockDeclineOptionsWithRecurrenceError: When ``decline_options`` is given
-            with ``rrule_string`` (raised by ``create_blocked_time``, before any cancel).
+            with ``rrule_string``. Nothing is written.
         :raises TooManyBlockCancelsError: When the block would cancel more than
             ``MAX_BLOCK_CANCELS`` events.
         """
+        if decline_options is not None:
+            blocked_time_push.check_recurrence(decline_options.scope, rrule_string)
         events_to_cancel: list[BlockConflictEvent] | None = None
         if decline_options is not None and decline_options.cancels_existing:
             events_to_cancel = self.find_events_to_cancel(
@@ -176,8 +184,9 @@ class BlockConflictService:
             timezone=timezone,
             reason=reason,
             rrule_string=rrule_string,
-            decline_options=decline_options,
         )
+        if decline_options is not None:
+            blocked_time_push.apply_decline_options(blocked_time, decline_options)
         if events_to_cancel is None:
             return blocked_time, BlockCancelResult()
         return blocked_time, self.cancel_block_conflicts(events_to_cancel)

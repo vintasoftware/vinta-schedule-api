@@ -121,7 +121,6 @@ from calendar_integration.services.calendar_webhook_service import (
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     AvailableTimeWindow,
-    BlockDeclineOptions,
     BookableSlotProposal,
     CalendarEventAdapterOutputData,
     CalendarEventData,
@@ -2170,12 +2169,8 @@ class CalendarService(BaseCalendarService):
         timezone: str,
         reason: str = "",
         rrule_string: str | None = None,
-        decline_options: BlockDeclineOptions | None = None,
     ) -> BlockedTime:
-        """Create a single blocked time (optionally recurring).
-
-        See ``AvailabilityService.create_blocked_time`` for what ``decline_options`` adds.
-        """
+        """Create a single blocked time (optionally recurring)."""
         return self._get_availability_service().create_blocked_time(
             calendar=calendar,
             start_time=start_time,
@@ -2183,7 +2178,6 @@ class CalendarService(BaseCalendarService):
             timezone=timezone,
             reason=reason,
             rrule_string=rrule_string,
-            decline_options=decline_options,
         )
 
     def update_blocked_time(

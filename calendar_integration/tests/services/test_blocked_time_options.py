@@ -3,7 +3,7 @@
 import datetime
 import logging
 import uuid
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
@@ -21,6 +21,7 @@ from calendar_integration.exceptions import (
 )
 from calendar_integration.factories import create_calendar_ownership
 from calendar_integration.models import BlockedTime, Calendar
+from calendar_integration.services.block_conflict_service import BlockConflictService
 from calendar_integration.services.blocked_time_provider_sync_service import (
     BlockedTimeProviderSyncService,
 )
@@ -72,19 +73,24 @@ def sync_service(organization: Organization) -> BlockedTimeProviderSyncService:
     return sync_service
 
 
-def _create_block(service: CalendarService, calendar: Calendar, **options) -> BlockedTime:
-    return service.create_blocked_time(
+def _create_block(
+    service: CalendarService, calendar: Calendar, decline_options: BlockDeclineOptions
+) -> BlockedTime:
+    blocked_time, _cancel_result = BlockConflictService(
+        calendar_service=service, appointment_type_service=Mock()
+    ).create_block(
         calendar=calendar,
         start_time=datetime.datetime(2026, 10, 9, 10, 0),
         end_time=datetime.datetime(2026, 10, 9, 12, 0),
         timezone="America/Sao_Paulo",
         reason="Conference",
-        **options,
+        decline_options=decline_options,
     )
+    return blocked_time
 
 
 # ---------------------------------------------------------------------------
-# create_blocked_time
+# BlockConflictService.create_block with options
 # ---------------------------------------------------------------------------
 
 
@@ -117,14 +123,14 @@ def test_create_with_options_on_google_stores_them_and_queues_the_push_after_com
 
 @pytest.mark.django_db
 @pytest.mark.parametrize(
-    ("calendar_fixture", "fields"),
+    "calendar_fixture",
     [
-        pytest.param("internal_calendar", {}, id="internal-calendar"),
-        pytest.param("outlook_calendar", {}, id="outlook"),
+        pytest.param("internal_calendar", id="internal-calendar"),
+        pytest.param("outlook_calendar", id="outlook"),
     ],
 )
 def test_create_with_options_that_cannot_be_pushed_queues_nothing(
-    service, request, django_capture_on_commit_callbacks, calendar_fixture, fields
+    service, request, django_capture_on_commit_callbacks, calendar_fixture
 ):
     calendar = request.getfixturevalue(calendar_fixture)
 
@@ -133,7 +139,6 @@ def test_create_with_options_that_cannot_be_pushed_queues_nothing(
             service,
             calendar,
             decline_options=BlockDeclineOptions(scope=BlockedTimeDeclineScope.NEW),
-            **fields,
         )
 
     block.refresh_from_db()

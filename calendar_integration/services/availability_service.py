@@ -52,6 +52,7 @@ from vinta_audit_logs.diff import compute_diff
 from vinta_billing.exceptions import OverLimitError
 
 from audit_integration.constants import AuditAction
+from calendar_integration import blocked_time_push
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import (
     AvailableTime,
@@ -66,9 +67,6 @@ from calendar_integration.models import (
     RecurringMixin,
 )
 from calendar_integration.recurrence_utils import persist_truncated_rule
-from calendar_integration.services.blocked_time_provider_sync_service import (
-    BlockedTimeProviderSyncService,
-)
 from calendar_integration.services.calendar_service_utils import (
     convert_naive_utc_datetime_to_timezone,
     resolve_acting_single_use_token,
@@ -78,7 +76,6 @@ from calendar_integration.services.calendar_service_utils import (
 )
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
-    BlockDeclineOptions,
     BlockedTimeData,
     UnavailableTimeWindow,
 )
@@ -826,26 +823,13 @@ class AvailabilityService:
         timezone: str,
         reason: str = "",
         rrule_string: str | None = None,
-        decline_options: BlockDeclineOptions | None = None,
     ) -> BlockedTime:
-        """Create a single blocked time (optionally recurring).
-
-        With ``decline_options`` the options are saved on the block, which is then
-        written to its provider calendar when that is a Google one (see
-        ``BlockedTimeProviderSyncService.apply_decline_options``). Without them the block
-        is created exactly as before.
-
-        :raises BlockDeclineOptionsWithRecurrenceError: When ``decline_options`` is given
-            with ``rrule_string``. Nothing is created.
-        """
-        if decline_options is not None:
-            BlockedTimeProviderSyncService.check_recurrence(decline_options.scope, rrule_string)
-        [blocked_time] = self._host.bulk_create_manual_blocked_times(
+        """Create a single blocked time (optionally recurring)."""
+        result = self._host.bulk_create_manual_blocked_times(
             calendar=calendar,
             blocked_times=[(start_time, end_time, timezone, reason, rrule_string)],
         )
-        if decline_options is not None:
-            BlockedTimeProviderSyncService.apply_decline_options(blocked_time, decline_options)
+        blocked_time = next(iter(result))
         self._audit_availability_write(AuditAction.CREATE, blocked_time)
         return blocked_time
 
@@ -875,7 +859,7 @@ class AvailabilityService:
             block with decline options. Nothing is changed.
 
         A block written to its provider is written there again after the transaction
-        commits (``BlockedTimeProviderSyncService.mark_changed``).
+        commits (``blocked_time_push.mark_changed``).
         """
         context = cast("BaseCalendarService", self._context)
         if not is_initialized_or_authenticated_calendar_service(context):
@@ -892,7 +876,7 @@ class AvailabilityService:
         except BlockedTime.DoesNotExist as e:
             raise ValueError(f"Blocked time {blocked_time_id} not found in this calendar.") from e
 
-        BlockedTimeProviderSyncService.check_recurrence(blocked_time.decline_scope, rrule_string)
+        blocked_time_push.check_recurrence(blocked_time.decline_scope, rrule_string)
 
         # Capture the cheap, comparable scalar BEFORE mutation so we can emit a
         # field-level diff. Only ``reason`` is diffed here: ``start_time`` /
@@ -915,7 +899,7 @@ class AvailabilityService:
                 rrule_string
             )
 
-        BlockedTimeProviderSyncService.mark_changed(blocked_time)
+        blocked_time_push.mark_changed(blocked_time)
         blocked_time.save()
 
         after_scalars = {"reason": blocked_time.reason}
@@ -964,7 +948,7 @@ class AvailabilityService:
         # only fires on transaction commit, so ordering relative to the delete below
         # is irrelevant to persistence.
         self._audit_availability_write(AuditAction.DELETE, blocked_time)
-        BlockedTimeProviderSyncService.queue_delete(blocked_time)
+        blocked_time_push.queue_delete(blocked_time)
         blocked_time.delete()
 
     def get_blocked_times_expanded(
