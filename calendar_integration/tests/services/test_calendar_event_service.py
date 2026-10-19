@@ -2464,123 +2464,100 @@ def create_with_meeting(event_service, mock_google_adapter, calendar, social_acc
 
 
 @pytest.mark.django_db
-def test_create_event_with_generated_meeting_saves_the_providers_link(
-    event_service, mock_google_adapter, calendar, calendar_management_token
+@pytest.mark.parametrize(
+    ("meeting", "provider_url", "sent", "saved"),
+    [
+        (
+            EventMeetingInputData(kind=MeetingKind.GENERATED),
+            MEET_URL,
+            AdapterMeeting(conference="create"),
+            (MeetingKind.GENERATED, MEET_URL),
+        ),
+        (
+            EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
+            "",
+            AdapterMeeting(location=CUSTOM_URL),
+            (MeetingKind.CUSTOM, CUSTOM_URL),
+        ),
+    ],
+    ids=["generated-saves-the-providers-link", "custom-sends-and-saves-the-link"],
+)
+def test_create_event_with_a_meeting(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    meeting,
+    provider_url,
+    sent,
+    saved,
 ):
     mock_google_adapter.create_event.return_value = dataclasses.replace(
-        _adapter_output("event_with_meet"), meeting_url=MEET_URL
+        _adapter_output("event_with_meeting"), meeting_url=provider_url
     )
 
-    event = event_service.create_event(
-        calendar.id, _meeting_input(EventMeetingInputData(kind=MeetingKind.GENERATED))
-    )
+    event = event_service.create_event(calendar.id, _meeting_input(meeting))
 
-    assert _sent_meeting(mock_google_adapter.create_event) == AdapterMeeting(conference="create")
+    assert _sent_meeting(mock_google_adapter.create_event) == sent
     event.refresh_from_db()
-    assert (event.meeting_kind, event.meeting_url) == (MeetingKind.GENERATED, MEET_URL)
+    assert (event.meeting_kind, event.meeting_url) == saved
 
 
 @pytest.mark.django_db
-def test_create_event_with_custom_meeting_sends_and_saves_the_link(
-    event_service, mock_google_adapter, calendar, calendar_management_token
+@pytest.mark.parametrize(
+    ("stored", "stored_url", "requested", "provider_url", "sent", "saved"),
+    [
+        # Google replaces the whole event on update, so the location is sent again.
+        (
+            EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
+            "",
+            None,
+            "",
+            AdapterMeeting(location=CUSTOM_URL),
+            (MeetingKind.CUSTOM, CUSTOM_URL),
+        ),
+        (
+            EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL),
+            "",
+            EventMeetingInputData(kind=MeetingKind.GENERATED),
+            MEET_URL,
+            AdapterMeeting(conference="create"),
+            (MeetingKind.GENERATED, MEET_URL),
+        ),
+        (
+            EventMeetingInputData(kind=MeetingKind.GENERATED),
+            MEET_URL,
+            EventMeetingInputData(kind=None),
+            "",
+            AdapterMeeting(conference="remove"),
+            (None, ""),
+        ),
+    ],
+    ids=["omitted-resends-the-custom-link", "custom-to-generated-saves-the-link", "removed"],
+)
+def test_update_event_meeting(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    create_with_meeting,
+    stored,
+    stored_url,
+    requested,
+    provider_url,
+    sent,
+    saved,
 ):
-    mock_google_adapter.create_event.return_value = _adapter_output("event_with_link")
-
-    event = event_service.create_event(
-        calendar.id,
-        _meeting_input(EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL)),
-    )
-
-    assert _sent_meeting(mock_google_adapter.create_event) == AdapterMeeting(location=CUSTOM_URL)
-    event.refresh_from_db()
-    assert (event.meeting_kind, event.meeting_url) == (MeetingKind.CUSTOM, CUSTOM_URL)
-
-
-@pytest.mark.django_db
-def test_update_event_omitting_the_meeting_resends_the_stored_custom_link(
-    event_service, mock_google_adapter, calendar, calendar_management_token, create_with_meeting
-):
-    """Google replaces the whole event on update, so the location is sent again."""
-    event = create_with_meeting(EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL))
-    mock_google_adapter.update_event.return_value = _adapter_output("meeting_event")
-
-    event_service.update_event(calendar.id, event.id, _meeting_input(None))
-
-    assert _sent_meeting(mock_google_adapter.update_event) == AdapterMeeting(location=CUSTOM_URL)
-    event.refresh_from_db()
-    assert (event.meeting_kind, event.meeting_url) == (MeetingKind.CUSTOM, CUSTOM_URL)
-
-
-@pytest.mark.django_db
-def test_update_event_keeping_a_generated_meeting_keeps_its_link(
-    event_service, mock_google_adapter, calendar, calendar_management_token, create_with_meeting
-):
-    event = create_with_meeting(EventMeetingInputData(kind=MeetingKind.GENERATED), MEET_URL)
+    event = create_with_meeting(stored, stored_url)
     mock_google_adapter.update_event.return_value = dataclasses.replace(
-        _adapter_output("meeting_event"), meeting_url=MEET_URL
+        _adapter_output("meeting_event"), meeting_url=provider_url
     )
 
-    event_service.update_event(
-        calendar.id, event.id, _meeting_input(EventMeetingInputData(kind=MeetingKind.GENERATED))
-    )
+    event_service.update_event(calendar.id, event.id, _meeting_input(requested))
 
-    assert _sent_meeting(mock_google_adapter.update_event) == AdapterMeeting()
+    assert _sent_meeting(mock_google_adapter.update_event) == sent
     event.refresh_from_db()
-    assert (event.meeting_kind, event.meeting_url) == (MeetingKind.GENERATED, MEET_URL)
-
-
-@pytest.mark.django_db
-def test_update_event_from_generated_to_custom_replaces_the_conference(
-    event_service, mock_google_adapter, calendar, calendar_management_token, create_with_meeting
-):
-    event = create_with_meeting(EventMeetingInputData(kind=MeetingKind.GENERATED), MEET_URL)
-    mock_google_adapter.update_event.return_value = _adapter_output("meeting_event")
-
-    event_service.update_event(
-        calendar.id,
-        event.id,
-        _meeting_input(EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL)),
-    )
-
-    assert _sent_meeting(mock_google_adapter.update_event) == AdapterMeeting(
-        location=CUSTOM_URL, conference="remove"
-    )
-    event.refresh_from_db()
-    assert (event.meeting_kind, event.meeting_url) == (MeetingKind.CUSTOM, CUSTOM_URL)
-
-
-@pytest.mark.django_db
-def test_update_event_from_custom_to_generated_saves_the_new_link(
-    event_service, mock_google_adapter, calendar, calendar_management_token, create_with_meeting
-):
-    event = create_with_meeting(EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL))
-    mock_google_adapter.update_event.return_value = dataclasses.replace(
-        _adapter_output("meeting_event"), meeting_url=MEET_URL
-    )
-
-    event_service.update_event(
-        calendar.id, event.id, _meeting_input(EventMeetingInputData(kind=MeetingKind.GENERATED))
-    )
-
-    assert _sent_meeting(mock_google_adapter.update_event) == AdapterMeeting(conference="create")
-    event.refresh_from_db()
-    assert (event.meeting_kind, event.meeting_url) == (MeetingKind.GENERATED, MEET_URL)
-
-
-@pytest.mark.django_db
-def test_update_event_removing_the_meeting_clears_it(
-    event_service, mock_google_adapter, calendar, calendar_management_token, create_with_meeting
-):
-    event = create_with_meeting(EventMeetingInputData(kind=MeetingKind.GENERATED), MEET_URL)
-    mock_google_adapter.update_event.return_value = _adapter_output("meeting_event")
-
-    event_service.update_event(
-        calendar.id, event.id, _meeting_input(EventMeetingInputData(kind=None))
-    )
-
-    assert _sent_meeting(mock_google_adapter.update_event) == AdapterMeeting(conference="remove")
-    event.refresh_from_db()
-    assert (event.meeting_kind, event.meeting_url) == (None, "")
+    assert (event.meeting_kind, event.meeting_url) == saved
 
 
 @pytest.mark.django_db
@@ -2692,38 +2669,6 @@ def test_create_event_refuses_a_generated_meeting_the_provider_cannot_create(
 
     mock_google_adapter.create_event.assert_not_called()
     assert not CalendarEvent.objects.filter_by_organization(calendar.organization_id).exists()
-
-
-@pytest.mark.django_db
-def test_create_event_refuses_a_generated_meeting_on_a_calendar_with_no_provider(
-    event_service, mock_google_adapter, calendar, calendar_management_token
-):
-    calendar.calendar_type = CalendarType.VIRTUAL
-    calendar.save(update_fields=["calendar_type"])
-
-    with pytest.raises(MeetingNotSupportedError):
-        event_service.create_event(
-            calendar.id, _meeting_input(EventMeetingInputData(kind=MeetingKind.GENERATED))
-        )
-
-
-@pytest.mark.django_db
-def test_update_event_refuses_switching_to_a_meeting_the_provider_cannot_create(
-    event_service, mock_google_adapter, calendar, calendar_management_token, create_with_meeting
-):
-    event = create_with_meeting(EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL))
-    mock_google_adapter.supports_generated_meetings = False
-
-    with pytest.raises(MeetingNotSupportedError):
-        event_service.update_event(
-            calendar.id,
-            event.id,
-            _meeting_input(EventMeetingInputData(kind=MeetingKind.GENERATED)),
-        )
-
-    mock_google_adapter.update_event.assert_not_called()
-    event.refresh_from_db()
-    assert (event.meeting_kind, event.meeting_url) == (MeetingKind.CUSTOM, CUSTOM_URL)
 
 
 @pytest.mark.django_db

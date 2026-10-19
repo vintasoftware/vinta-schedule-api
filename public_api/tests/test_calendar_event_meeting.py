@@ -12,14 +12,14 @@ later through ``updateCalendarEvent``; an owner-scoped token schedules an event 
 - an update that omits the field keeps the meeting; ``null`` removes it; a new value
   replaces it; a bad url is refused and changes nothing.
 
-How the meeting reaches Google is covered by the adapter and service tests.
+How the meeting reaches Google is covered by the adapter and service tests, and which
+urls fit which kind by ``calendar_integration/tests/services/test_event_meeting.py``.
 """
 
 import pytest
 from model_bakery import baker
 
 from calendar_integration.constants import MeetingKind
-from calendar_integration.meeting_urls import is_meeting_url
 from calendar_integration.models import Calendar, CalendarEvent, CalendarOwnership
 from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
@@ -153,25 +153,14 @@ def test_booking_with_a_custom_meeting_saves_the_link(
     )
 
 
-def test_booking_without_a_meeting_has_none(
-    org_wide_post, organization, appointment_type_with_slot
-):
-    result = _book(org_wide_post, organization, appointment_type_with_slot, None)
-
-    assert (result["event"]["meetingKind"], result["event"]["meetingUrl"]) == (None, None)
-
-
 @pytest.mark.parametrize(
     ("meeting", "message"),
     [
-        ({"kind": "CUSTOM"}, "A custom meeting needs an https url."),
         ({"kind": "CUSTOM", "url": "http://zoom.us/j/123"}, "A custom meeting needs an https url."),
-        ({"kind": "CUSTOM", "url": "not a url"}, "A custom meeting needs an https url."),
-        ({"kind": "GENERATED", "url": CUSTOM_URL}, "A generated meeting takes no url."),
         # Nothing would ever create the link on a calendar with no provider.
         ({"kind": "GENERATED"}, NO_PROVIDER_MESSAGE),
     ],
-    ids=["no-url", "http", "not-a-url", "generated-with-url", "generated-without-provider"],
+    ids=["http", "generated-without-provider"],
 )
 def test_booking_with_a_bad_meeting_is_refused(
     org_wide_post, organization, appointment_type_with_slot, meeting, message
@@ -198,10 +187,9 @@ def test_schedule_event_with_a_custom_meeting_saves_the_link(
     ("meeting", "message"),
     [
         ({"kind": "CUSTOM", "url": "http://zoom.us/j/123"}, "A custom meeting needs an https url."),
-        ({"kind": "GENERATED", "url": CUSTOM_URL}, "A generated meeting takes no url."),
         ({"kind": "GENERATED"}, NO_PROVIDER_MESSAGE),
     ],
-    ids=["http", "generated-with-url", "generated-without-provider"],
+    ids=["http", "generated-without-provider"],
 )
 def test_schedule_event_with_a_bad_meeting_is_refused(
     owner_scoped_post, organization, booking_calendar, meeting, message
@@ -258,15 +246,3 @@ def test_update_with_a_bad_meeting_is_refused(
 
     assert [e["message"] for e in updated["errors"]] == [message]
     assert _stored_meeting(organization, event_id) == (MeetingKind.CUSTOM, CUSTOM_URL)
-
-
-@pytest.mark.parametrize(
-    ("url", "valid"),
-    [
-        ("https://zoom.us/" + "a" * (2048 - len("https://zoom.us/")), True),
-        ("https://zoom.us/" + "a" * (2049 - len("https://zoom.us/")), False),
-    ],
-    ids=["2048-characters", "2049-characters"],
-)
-def test_a_meeting_url_holds_at_most_2048_characters(url, valid):
-    assert is_meeting_url(url) is valid

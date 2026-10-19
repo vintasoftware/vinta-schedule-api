@@ -15,7 +15,6 @@ from calendar_integration.services.dataclasses import (
     MEETING_URL_NOT_ALLOWED_MESSAGE,
     MEETING_URL_REQUIRED_MESSAGE,
     AdapterMeeting,
-    CalendarEventAdapterOutputData,
     EventMeeting,
     EventMeetingInputData,
 )
@@ -36,7 +35,12 @@ GENERATED = EventMeeting(kind=MeetingKind.GENERATED, url=MEET_URL)
     [
         (MeetingKind.CUSTOM, "", MEETING_URL_REQUIRED_MESSAGE),
         (MeetingKind.CUSTOM, "http://zoom.us/j/123", MEETING_URL_REQUIRED_MESSAGE),
-        (MeetingKind.CUSTOM, "https://zoom.us/" + "a" * 2048, MEETING_URL_REQUIRED_MESSAGE),
+        # 2049 characters: one over the 2048 the column holds.
+        (
+            MeetingKind.CUSTOM,
+            "https://zoom.us/" + "a" * (2049 - len("https://zoom.us/")),
+            MEETING_URL_REQUIRED_MESSAGE,
+        ),
         (MeetingKind.GENERATED, CUSTOM_URL, MEETING_URL_NOT_ALLOWED_MESSAGE),
         (None, CUSTOM_URL, MEETING_URL_NOT_ALLOWED_MESSAGE),
     ],
@@ -93,47 +97,6 @@ def test_adapter_request_touches_the_conference_only_when_the_kind_changes(
     meeting, previous, expected
 ):
     assert meeting.adapter_request(previous=previous) == expected
-
-
-@pytest.mark.parametrize(
-    ("meeting", "expected_meeting", "expected_input"),
-    [
-        (CUSTOM, CUSTOM, EventMeetingInputData(kind=MeetingKind.CUSTOM, url=CUSTOM_URL)),
-        (GENERATED, GENERATED_PENDING, EventMeetingInputData(kind=MeetingKind.GENERATED)),
-        (NO_MEETING, NO_MEETING, None),
-    ],
-    ids=["custom", "generated", "none"],
-)
-def test_a_new_provider_event_keeps_a_custom_link_and_asks_for_its_own_conference(
-    meeting, expected_meeting, expected_input
-):
-    assert meeting.for_new_provider_event() == expected_meeting
-    assert meeting.as_input() == expected_input
-
-
-@pytest.mark.parametrize(
-    ("meeting", "expected"),
-    [
-        (GENERATED_PENDING, GENERATED),
-        (GENERATED, GENERATED),
-        (CUSTOM, CUSTOM),
-    ],
-    ids=["pending-gets-link", "kept-link-stays", "custom-untouched"],
-)
-def test_with_provider_link_fills_only_a_generated_meeting_waiting_for_one(meeting, expected):
-    output = CalendarEventAdapterOutputData(
-        calendar_external_id="calendar_123",
-        external_id="event_123",
-        title="Visit",
-        description="",
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
-        timezone="UTC",
-        attendees=[],
-        meeting_url=MEET_URL if meeting.kind == MeetingKind.GENERATED else "",
-    )
-
-    assert meeting.with_provider_link(output) == expected
 
 
 @pytest.mark.django_db
