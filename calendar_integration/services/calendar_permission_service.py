@@ -388,10 +388,7 @@ class CalendarPermissionService:
 
         # The meeting link is a detail of the event: who may change the description may
         # change where the visit is joined.
-        if (old_event.meeting_kind, old_event.meeting_url) != (
-            new_event.meeting_kind,
-            new_event.meeting_url,
-        ):
+        if old_event.meeting != new_event.meeting:
             required_permissions.add(EventManagementPermissions.UPDATE_DETAILS)
 
         # Check for schedule changes

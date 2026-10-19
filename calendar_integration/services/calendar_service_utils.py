@@ -254,8 +254,7 @@ def serialize_event(event: CalendarEvent) -> CalendarEventData:
         timezone=event.timezone,
         title=event.title,
         description=event.description,
-        meeting_kind=event.meeting_kind,
-        meeting_url=event.meeting_url,
+        meeting=EventMeeting.of(event),
         calendar_settings=CalendarSettingsData(
             manage_available_windows=event.calendar_fk.manage_available_windows,  # type: ignore[attr-defined]
             accepts_public_scheduling=event.calendar_fk.accepts_public_scheduling,  # type: ignore[attr-defined]
@@ -413,7 +412,6 @@ def serialize_event_data_input(
             event=event, external_attendee__id__in=new_external_attendances_attendee_ids
         )
     }
-    meeting = EventMeeting.of(event).after(event_data.meeting)
     return CalendarEventData(
         id=event.id,
         calendar_id=event.calendar_fk_id,  # type: ignore[arg-type]
@@ -426,8 +424,7 @@ def serialize_event_data_input(
         description=(
             event_data.description if event_data.description is not None else event.description
         ),
-        meeting_kind=meeting.kind,
-        meeting_url=meeting.url,
+        meeting=EventMeeting.of(event).after(event_data.meeting),
         calendar_settings=CalendarSettingsData(
             manage_available_windows=event.calendar_fk.manage_available_windows,  # type: ignore[attr-defined]
             accepts_public_scheduling=event.calendar_fk.accepts_public_scheduling,  # type: ignore[attr-defined]

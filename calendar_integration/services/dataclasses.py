@@ -458,8 +458,7 @@ class CalendarEventData:
     external_client_identifiers: list[ExternalClientIdentifierData] = dataclass_field(
         default_factory=list
     )
-    meeting_kind: str | None = None
-    meeting_url: str = ""
+    meeting: EventMeeting = dataclass_field(default_factory=EventMeeting)
 
 
 @dataclass

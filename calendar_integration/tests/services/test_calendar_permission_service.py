@@ -7,7 +7,11 @@ from django.utils import timezone
 
 import pytest
 
-from calendar_integration.constants import CalendarManagementTokenKind, EventManagementPermissions
+from calendar_integration.constants import (
+    CalendarManagementTokenKind,
+    EventManagementPermissions,
+    MeetingKind,
+)
 from calendar_integration.exceptions import (
     InvalidParameterCombinationError,
     InvalidTokenError,
@@ -34,6 +38,7 @@ from calendar_integration.services.dataclasses import (
     CalendarSettingsData,
     EventExternalAttendeeData,
     EventInternalAttendeeData,
+    EventMeeting,
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization, OrganizationMembership
@@ -682,10 +687,22 @@ class TestCalendarPermissionServiceCanPerformUpdate:
     @pytest.mark.parametrize(
         ("old_meeting", "new_meeting", "allowed"),
         [
-            ((None, ""), ("custom", "https://zoom.us/j/1"), False),
-            (("custom", "https://zoom.us/j/1"), ("custom", "https://zoom.us/j/2"), False),
-            (("generated", "https://meet.google.com/a"), (None, ""), False),
-            (("custom", "https://zoom.us/j/1"), ("custom", "https://zoom.us/j/1"), True),
+            (EventMeeting(), EventMeeting(MeetingKind.CUSTOM, "https://zoom.us/j/1"), False),
+            (
+                EventMeeting(MeetingKind.CUSTOM, "https://zoom.us/j/1"),
+                EventMeeting(MeetingKind.CUSTOM, "https://zoom.us/j/2"),
+                False,
+            ),
+            (
+                EventMeeting(MeetingKind.GENERATED, "https://meet.google.com/a"),
+                EventMeeting(),
+                False,
+            ),
+            (
+                EventMeeting(MeetingKind.CUSTOM, "https://zoom.us/j/1"),
+                EventMeeting(MeetingKind.CUSTOM, "https://zoom.us/j/1"),
+                True,
+            ),
         ],
         ids=["meeting-added", "link-changed", "meeting-removed", "meeting-unchanged"],
     )
@@ -703,11 +720,8 @@ class TestCalendarPermissionServiceCanPerformUpdate:
         token.permissions.filter(permission=EventManagementPermissions.UPDATE_DETAILS).delete()
         token_b64 = base64.b64encode(f"{token.id}:{token_str}".encode()).decode()
         permission_service.initialize_with_token(token_b64, organization.id)
-        old_event = self.create_event_data(event)
-        old_event.meeting_kind, old_event.meeting_url = old_meeting
-        new_event = dataclasses.replace(
-            old_event, meeting_kind=new_meeting[0], meeting_url=new_meeting[1]
-        )
+        old_event = dataclasses.replace(self.create_event_data(event), meeting=old_meeting)
+        new_event = dataclasses.replace(old_event, meeting=new_meeting)
 
         assert permission_service.can_perform_update(old_event, new_event) is allowed
 
