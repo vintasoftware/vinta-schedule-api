@@ -219,6 +219,11 @@ class EventMeeting:
         )
         return AdapterMeeting(location=location, conference=conference)
 
+    def resend(self) -> AdapterMeeting:
+        """The provider write that resends this meeting as stored, to a provider event
+        that already holds it."""
+        return self.adapter_request(previous=self)
+
     @property
     def awaiting_link(self) -> bool:
         """Whether this is a GENERATED meeting the provider has not created a link for

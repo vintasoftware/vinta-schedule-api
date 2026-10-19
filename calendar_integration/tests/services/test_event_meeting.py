@@ -107,6 +107,12 @@ def test_adapter_request_touches_the_conference_only_when_the_kind_changes(
     assert meeting.adapter_request(previous=previous) == expected
 
 
+@pytest.mark.parametrize("meeting", [NO_MEETING, CUSTOM, GENERATED_PENDING, GENERATED])
+def test_resend_never_touches_the_conference(meeting):
+    assert meeting.resend() == meeting.adapter_request(previous=meeting)
+    assert meeting.resend().conference == "keep"
+
+
 @pytest.mark.django_db
 @pytest.mark.parametrize(
     ("kind", "url", "allowed"),

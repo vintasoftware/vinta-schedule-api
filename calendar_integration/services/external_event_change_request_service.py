@@ -720,9 +720,7 @@ class ExternalEventChangeRequestService:
         meeting = EventMeeting.of(event)
 
         if kind == ExternalEventChangeKind.UPDATE:
-            adapter_input = self._build_adapter_input(
-                event, meeting.adapter_request(previous=meeting)
-            )
+            adapter_input = self._build_adapter_input(event, meeting.resend())
             # Push the local (retained) values back so the provider re-converges to the
             # approved state. The external id is preserved.
             write_adapter.update_event(

@@ -1886,7 +1886,7 @@ class CalendarEventService:
                 resources=resources,
                 external_id=event.external_id,
                 recurrence_rule=None,
-                meeting=meeting.adapter_request(previous=meeting),
+                meeting=meeting.resend(),
             ),
         )
 
@@ -2205,7 +2205,7 @@ class CalendarEventService:
                         resources=resources,
                         recurrence_rule=None,
                         is_recurring_instance=True,
-                        meeting=series_meeting.adapter_request(previous=series_meeting),
+                        meeting=series_meeting.resend(),
                     ),
                 )
                 if context.calendar_adapter:
