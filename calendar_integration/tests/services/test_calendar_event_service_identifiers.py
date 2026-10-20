@@ -23,6 +23,7 @@ production wiring does), and covers:
 import datetime
 from unittest.mock import Mock, patch
 
+from django.contrib.contenttypes.models import ContentType
 from django.db import IntegrityError
 
 import pytest
@@ -31,7 +32,12 @@ from model_bakery import baker
 
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.factories import create_external_client_identifier
-from calendar_integration.models import Calendar, CalendarEvent, CalendarManagementToken
+from calendar_integration.models import (
+    Calendar,
+    CalendarEvent,
+    CalendarManagementToken,
+    ExternalAttendee,
+)
 from calendar_integration.services.calendar_event_service import CalendarEventService
 from calendar_integration.services.calendar_permission_service import (
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
@@ -549,6 +555,12 @@ def test_update_event_on_commit_dispatch_reuses_prefetched_identifiers(
     # the event holds, once, to tell whether the id-less attendee sent here is one
     # of them. It keys attendees by stored id, so without that read it could not
     # tell a re-sent attendee from a swapped one.
+    #
+    # Deleting the removed attendee cascades through its identifiers' generic
+    # relation, which needs the attendee's content type. ``ContentType`` caches it
+    # per process, so warm it here: otherwise the count depends on whether an
+    # earlier test in this worker already loaded it.
+    ContentType.objects.get_for_model(ExternalAttendee)
     with django_assert_num_queries(87):
         with django_capture_on_commit_callbacks(execute=True):
             event_service.update_event(calendar.id, created.id, updated_input)
