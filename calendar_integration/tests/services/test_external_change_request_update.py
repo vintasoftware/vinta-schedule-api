@@ -35,7 +35,9 @@ from calendar_integration.constants import (
     CalendarSyncStatus,
     ExternalEventChangeKind,
     ExternalEventChangeRequestStatus,
+    MeetingKind,
 )
+from calendar_integration.meeting_urls import meeting_url_audit_fields
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
@@ -659,6 +661,73 @@ def test_change_request_creation_records_audit_entry(
     # The local event is still unchanged.
     existing.refresh_from_db()
     assert existing.title == "Original Title"
+
+
+@pytest.mark.django_db
+def test_meeting_changed_at_the_provider_is_applied_and_records_audit_entry(
+    context_cr: CalendarServiceContext,
+    calendar_cr: Calendar,
+    organization_change_request: Organization,
+    fake_adapter: MagicMock,
+    change_request_service_with_audit: ExternalEventChangeRequestService,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    """A Meet replaced at the provider is applied even under CHANGE_REQUEST, and a
+    SYSTEM-actor audit entry records the old and new link."""
+    existing = _make_existing_event(calendar_cr, external_id="evt_audit_meet")
+    existing.meeting_kind = MeetingKind.GENERATED
+    existing.meeting_url = "https://meet.google.com/abc-defg-hij"
+    existing.save(update_fields=["meeting_kind", "meeting_url"])
+
+    inbound = _inbound_event(
+        "evt_audit_meet",
+        title=existing.title,
+        description=existing.description,
+        start_time=datetime.datetime(2025, 9, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
+    )
+    inbound.meeting_url = "https://meet.google.com/xyz-wvut-srq"
+    fake_adapter.get_events.return_value = {
+        "events": [inbound],
+        "next_sync_token": "tok-audit-meet",
+    }
+
+    calendar_sync = _make_calendar_sync(calendar_cr, organization_change_request)
+    service = CalendarSyncService(
+        context=context_cr,
+        calendar_cache={},
+        host=FakeHost(),
+        external_event_change_request_service=change_request_service_with_audit,
+    )
+
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
+        with django_capture_on_commit_callbacks(execute=True):
+            service._execute_calendar_sync(calendar_sync, sync_token="tok-prev")
+
+    existing.refresh_from_db()
+    assert (existing.meeting_kind, existing.meeting_url) == (
+        MeetingKind.GENERATED,
+        "https://meet.google.com/xyz-wvut-srq",
+    )
+
+    payloads = [call.args[0] for call in mock_task.delay.call_args_list]
+    meeting_payloads = [
+        p for p in payloads if p["action_key"] == AuditAction.EXTERNAL_MEETING_CHANGE_APPLIED
+    ]
+    assert len(meeting_payloads) == 1
+    payload = meeting_payloads[0]
+    assert payload["scope"]["scope_key"] == str(organization_change_request.id)
+    assert payload["actor"]["identity_type"] == "system"
+    assert payload["subject"]["subject_type"] == "calendar_integration.calendarevent"
+    # The link is recorded as its host and a keyed hash, never as the link.
+    old_fields = meeting_url_audit_fields("https://meet.google.com/abc-defg-hij")
+    new_fields = meeting_url_audit_fields("https://meet.google.com/xyz-wvut-srq")
+    assert payload["diff"] == {
+        "meeting_url_hash": {
+            "old": old_fields["meeting_url_hash"],
+            "new": new_fields["meeting_url_hash"],
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -48,3 +48,7 @@ class AuditAction(models.TextChoices):
         "calendar.event.external_change_auto_undone",
         "External change auto-undone",
     )
+    EXTERNAL_MEETING_CHANGE_APPLIED = (
+        "calendar.event.external_meeting_change_applied",
+        "External meeting change applied",
+    )

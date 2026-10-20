@@ -48,6 +48,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide
+from vinta_audit_logs.diff import compute_diff
 from vinta_audit_logs.types import IdentitySnapshot
 from vintasend.constants import NotificationTypes
 from vintasend.services.notification_service import NotificationContextDict
@@ -1145,4 +1146,23 @@ class ExternalEventChangeRequestService:
             organization_id=event.organization_id,
             kind=kind,
             prepare_fn=_prepare,
+        )
+
+    def record_applied_meeting_change(
+        self,
+        *,
+        event: CalendarEvent,
+        previous: EventMeeting,
+        current: EventMeeting,
+    ) -> None:
+        """Audit a meeting change that sync applied from the provider. See
+        ``CalendarSyncService._sync_meeting`` for why sync applies it."""
+        if self.audit_service is None:
+            return
+        self.audit_service.record(
+            action=AuditAction.EXTERNAL_MEETING_CHANGE_APPLIED,
+            actor=self.audit_service.system_actor(),
+            subject=self.audit_service.subject_from_instance(event),
+            diff=compute_diff(previous.audit_fields(), current.audit_fields()),
+            scope=self.audit_service.scope_from_organization_id(event.organization_id),
         )

@@ -10,7 +10,7 @@ from calendar_integration.constants import (
     MeetingKind,
 )
 from calendar_integration.exceptions import InvalidBlockDeclineOptionsError, InvalidMeetingError
-from calendar_integration.meeting_urls import is_meeting_url
+from calendar_integration.meeting_urls import is_meeting_url, meeting_url_audit_fields
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -171,6 +171,14 @@ class EventMeeting:
         return cls(kind=kind, url=event.meeting_url)
 
     @classmethod
+    def from_provider(cls, output: "CalendarEventAdapterOutputData") -> "EventMeeting":
+        """The meeting the provider event ``output`` holds: its conference link as a
+        GENERATED meeting, or no meeting. A link that is not a valid meeting url counts as
+        no link."""
+        url = output.meeting_url if is_meeting_url(output.meeting_url) else ""
+        return cls(kind=MeetingKind.GENERATED if url else None, url=url)
+
+    @classmethod
     def request(cls, kind: MeetingKind | None, url: str = "") -> "EventMeeting":
         """The meeting a create or update asks for.
 
@@ -235,32 +243,26 @@ class EventMeeting:
         yet."""
         return self.kind == MeetingKind.GENERATED and not self.url
 
-    def reconciled(
-        self,
-        output: "CalendarEventAdapterOutputData",
-        *,
-        outside_edits_allowed: bool = False,
-    ) -> "EventMeeting":
+    def reconciled(self, output: "CalendarEventAdapterOutputData") -> "EventMeeting":
         """This meeting once the conference link of the provider event ``output`` is
         copied onto it, after a provider write or a sync.
 
-        A GENERATED meeting the platform asked for, still without a link, gets the link
-        once the provider has created it, and is removed when the provider gave up on it.
-        That is the provider finishing the platform's own request, so it always happens.
-
-        Any other conference change at the provider -- one added, removed or replaced --
-        is an outside edit, applied only when ``outside_edits_allowed``. A CUSTOM link
-        belongs to the client and is left as it is. A link that is not a valid meeting url
-        counts as no link.
+        The provider's meeting wins (see ``from_provider``): a link it created, or one
+        added, removed or replaced at the provider. Two cases keep this meeting instead.
+        A CUSTOM link belongs to the client. A GENERATED meeting still waiting for its
+        link stays as it is while the provider is creating it.
         """
         if self.kind == MeetingKind.CUSTOM:
             return self
-        provider_url = output.meeting_url if is_meeting_url(output.meeting_url) else ""
-        if self.awaiting_link and not provider_url and output.meeting_pending:
+        provider_meeting = EventMeeting.from_provider(output)
+        if self.awaiting_link and provider_meeting.kind is None and output.meeting_pending:
             return self
-        if not (self.awaiting_link or outside_edits_allowed):
-            return self
-        return EventMeeting(kind=MeetingKind.GENERATED if provider_url else None, url=provider_url)
+        return provider_meeting
+
+    def audit_fields(self) -> dict[str, str | None]:
+        """What the audit trail records of this meeting: its kind, and the link as its
+        host and a keyed hash (see ``meeting_url_audit_fields``), never the link."""
+        return {"meeting_kind": self.kind, **meeting_url_audit_fields(self.url)}
 
     def save_to(self, event: "CalendarEvent") -> None:
         """Write this meeting onto ``event``'s fields, where "" is no meeting."""

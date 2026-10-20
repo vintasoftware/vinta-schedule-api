@@ -132,22 +132,20 @@ def _provider_event(meeting_url: str, meeting_pending: bool) -> CalendarEventAda
 
 
 @pytest.mark.parametrize(
-    ("stored", "provider_url", "provider_pending", "outside_edits_allowed", "expected"),
+    ("stored", "provider_url", "provider_pending", "expected"),
     [
-        # The provider finishing the platform's own request: every policy.
-        (GENERATED_PENDING, MEET_URL, False, False, GENERATED),
-        (GENERATED_PENDING, "", True, False, GENERATED_PENDING),
-        (GENERATED_PENDING, "", False, False, NO_MEETING),
-        (GENERATED_PENDING, "javascript:alert(1)", False, False, NO_MEETING),
-        (GENERATED_PENDING, "https://meet.google.com/" + "a" * 2048, False, False, NO_MEETING),
-        # Outside edits: only when the policy allows them.
-        (GENERATED, "", False, True, NO_MEETING),
-        (GENERATED, "", False, False, GENERATED),
-        (NO_MEETING, MEET_URL, False, True, GENERATED),
-        (NO_MEETING, MEET_URL, False, False, NO_MEETING),
-        (NO_MEETING, "javascript:alert(1)", False, True, NO_MEETING),
-        (NO_MEETING, "", False, True, NO_MEETING),
-        (CUSTOM, MEET_URL, False, True, CUSTOM),
+        # The provider finishing the platform's own request.
+        (GENERATED_PENDING, MEET_URL, False, GENERATED),
+        (GENERATED_PENDING, "", True, GENERATED_PENDING),
+        (GENERATED_PENDING, "", False, NO_MEETING),
+        (GENERATED_PENDING, "javascript:alert(1)", False, NO_MEETING),
+        (GENERATED_PENDING, "https://meet.google.com/" + "a" * 2048, False, NO_MEETING),
+        # Edits made at the provider.
+        (GENERATED, "", False, NO_MEETING),
+        (NO_MEETING, MEET_URL, False, GENERATED),
+        (NO_MEETING, "javascript:alert(1)", False, NO_MEETING),
+        (NO_MEETING, "", False, NO_MEETING),
+        (CUSTOM, MEET_URL, False, CUSTOM),
     ],
     ids=[
         "requested-link-arrives",
@@ -155,21 +153,19 @@ def _provider_event(meeting_url: str, meeting_pending: bool) -> CalendarEventAda
         "requested-link-failed",
         "requested-link-not-https",
         "requested-link-too-long",
-        "removed-at-provider-allowed",
-        "removed-at-provider-not-allowed",
-        "added-at-provider-allowed",
-        "added-at-provider-not-allowed",
+        "removed-at-provider",
+        "added-at-provider",
         "added-link-not-https",
         "no-meeting",
         "custom-is-the-clients",
     ],
 )
 def test_reconciled_copies_the_provider_conference_link(
-    stored, provider_url, provider_pending, outside_edits_allowed, expected
+    stored, provider_url, provider_pending, expected
 ):
     provider_event = _provider_event(provider_url, provider_pending)
 
-    meeting = stored.reconciled(provider_event, outside_edits_allowed=outside_edits_allowed)
+    meeting = stored.reconciled(provider_event)
 
     assert meeting == expected
 

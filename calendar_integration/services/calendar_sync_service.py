@@ -1104,12 +1104,7 @@ class CalendarSyncService:
                 # change request and do NOT delete the local event.  The external id
                 # is still added to ``matched_event_ids`` so the full-sync deletion
                 # pass does not treat the event as vanished.
-                if self._external_event_change_request_service is None:
-                    raise ImproperlyConfigured(
-                        "ExternalEventChangeRequestService must be injected when an "
-                        "organization's external_event_update_policy is CHANGE_REQUEST "
-                        "(check calendar_integration/containers.py wiring)."
-                    )
+                change_requests = self._change_request_service()
                 retained_values = {
                     "title": existing_event.title,
                     "description": existing_event.description,
@@ -1129,7 +1124,7 @@ class CalendarSyncService:
                     raise ImproperlyConfigured(
                         "CalendarEvent.calendar must be set when processing an existing event"
                     )
-                self._external_event_change_request_service.create_or_supersede_delete_request(
+                change_requests.create_or_supersede_delete_request(
                     event=existing_event,
                     retained_values=retained_values,
                     payload=event.original_payload or {},
@@ -1143,12 +1138,7 @@ class CalendarSyncService:
                 # (re-create the event externally and rebind the local external_id).
                 # Do NOT delete the local event; add the external id to matched_event_ids
                 # so the full-sync deletion pass does not treat the event as vanished.
-                if self._external_event_change_request_service is None:
-                    raise ImproperlyConfigured(
-                        "ExternalEventChangeRequestService must be injected when an "
-                        "organization's external_event_update_policy is FORBIDDEN "
-                        "(check calendar_integration/containers.py wiring)."
-                    )
+                change_requests = self._change_request_service()
                 if context.calendar_adapter is None:
                     raise ImproperlyConfigured(
                         "An authenticated CalendarAdapter must be present to auto-undo "
@@ -1167,7 +1157,7 @@ class CalendarSyncService:
                 }
                 # The None-guard above guarantees calendar_adapter is non-None here.
                 provider = context.calendar_adapter.provider
-                self._external_event_change_request_service.auto_undo_inbound_change(
+                change_requests.auto_undo_inbound_change(
                     event=existing_event,
                     kind=ExternalEventChangeKind.DELETE,
                     proposed_values={},
@@ -1193,11 +1183,7 @@ class CalendarSyncService:
         # event as vanished (the sync token still advances normally at the sync
         # level — this method only controls the diff-engine behavior).
         if policy == ExternalEventUpdatePolicy.CHANGE_REQUEST:
-            if self._external_event_change_request_service is None:
-                raise ImproperlyConfigured(
-                    "ExternalEventChangeRequestService must be injected when an organization's "
-                    "external_event_update_policy is CHANGE_REQUEST (check calendar_integration/containers.py wiring)."
-                )
+            change_requests = self._change_request_service()
             proposed_values = {
                 "title": event.title,
                 "description": event.description,
@@ -1226,7 +1212,7 @@ class CalendarSyncService:
                 raise ImproperlyConfigured(
                     "CalendarEvent.calendar must be set when processing an existing event"
                 )
-            self._external_event_change_request_service.create_or_supersede_update_request(
+            change_requests.create_or_supersede_update_request(
                 event=existing_event,
                 proposed_values=proposed_values,
                 retained_values=retained_values,
@@ -1241,11 +1227,7 @@ class CalendarSyncService:
             # the retained (local) values back via update_event.  Do NOT mutate the local
             # event and do NOT add it to events_to_update; add external id to
             # matched_event_ids so the full-sync deletion pass does not treat it as vanished.
-            if self._external_event_change_request_service is None:
-                raise ImproperlyConfigured(
-                    "ExternalEventChangeRequestService must be injected when an organization's "
-                    "external_event_update_policy is FORBIDDEN (check calendar_integration/containers.py wiring)."
-                )
+            change_requests = self._change_request_service()
             if context.calendar_adapter is None:
                 raise ImproperlyConfigured(
                     "An authenticated CalendarAdapter must be present to auto-undo "
@@ -1270,7 +1252,7 @@ class CalendarSyncService:
             }
             # The None-guard above guarantees calendar_adapter is non-None here.
             provider = context.calendar_adapter.provider
-            self._external_event_change_request_service.auto_undo_inbound_change(
+            change_requests.auto_undo_inbound_change(
                 event=existing_event,
                 kind=ExternalEventChangeKind.UPDATE,
                 proposed_values=proposed_values,
@@ -1302,19 +1284,39 @@ class CalendarSyncService:
     ) -> None:
         """Copy the provider's conference link onto ``existing_event``'s meeting.
 
-        Edits made at the provider are applied only under the ALLOW policy. See
-        ``EventMeeting.reconciled``.
+        Unlike title and times, a meeting added, removed or replaced at the provider is
+        applied under every policy. A Meet link cannot be restored once it is gone, and
+        undoing the change would mean a new conference with yet another link, so
+        following the provider is the only way both sides keep one working link. Under
+        CHANGE_REQUEST and FORBIDDEN the applied change is recorded in the audit trail.
+        See ``EventMeeting.reconciled``.
         """
         if event.status == "cancelled":
             return
         stored_meeting = EventMeeting.of(existing_event)
-        meeting = stored_meeting.reconciled(
-            event,
-            outside_edits_allowed=self._update_policy() == ExternalEventUpdatePolicy.ALLOW,
+        meeting = stored_meeting.reconciled(event)
+        if meeting == stored_meeting:
+            return
+        meeting.save_to(existing_event)
+        changes.meetings_to_update.append(existing_event)
+        # A link filling in a GENERATED meeting is the provider finishing the platform's
+        # own request, not an edit made at the provider.
+        if stored_meeting.awaiting_link or self._update_policy() == ExternalEventUpdatePolicy.ALLOW:
+            return
+        self._change_request_service().record_applied_meeting_change(
+            event=existing_event, previous=stored_meeting, current=meeting
         )
-        if meeting != stored_meeting:
-            meeting.save_to(existing_event)
-            changes.meetings_to_update.append(existing_event)
+
+    def _change_request_service(self) -> ExternalEventChangeRequestService:
+        """The injected change-request service, which every policy but ALLOW needs."""
+        if self._external_event_change_request_service is None:
+            policy = ExternalEventUpdatePolicy(self._update_policy()).name
+            raise ImproperlyConfigured(
+                "ExternalEventChangeRequestService must be injected when an organization's "
+                f"external_event_update_policy is {policy} "
+                "(check calendar_integration/containers.py wiring)."
+            )
+        return self._external_event_change_request_service
 
     def _update_policy(self) -> str:
         """The organization's policy for edits made at the provider."""
@@ -1378,6 +1380,7 @@ class CalendarSyncService:
                     recurrence_id=event.start_time,
                     is_recurring_exception=True,
                 )
+                EventMeeting.from_provider(event).save_to(calendar_event)
                 changes.events_to_create.append(calendar_event)
             except CalendarEvent.DoesNotExist:
                 # Parent doesn't exist in our system, so this is an instance of an externally-created
@@ -1425,6 +1428,7 @@ class CalendarSyncService:
                 organization_id=calendar.organization_id,
                 recurrence_rule_fk=recurrence_rule,
             )
+            EventMeeting.from_provider(event).save_to(calendar_event)
             changes.events_to_create.append(calendar_event)
             changes.recurrence_rules_to_create.append(recurrence_rule)
         else:
