@@ -1273,6 +1273,9 @@ class UpdateCalendarEventInput:
     - ``meeting``: omit to keep the event's video meeting. ``null`` removes it; a value
       replaces it. Keeping the same kind keeps a generated link; changing to GENERATED
       asks the calendar provider for a new one.
+    - ``resource_calendar_ids``: omit to keep the event's rooms untouched. A supplied
+      list (including ``[]`` or ``null``) replaces the full set; ``[]``/``null`` clears
+      it. Every id must be an active room (resource calendar) of the organization.
 
     Rejected with a GraphQL error, and no partial write, when: an invalid ``system``
     URL is given; an ``identifier`` is blank/whitespace or over 255 characters; a
@@ -1307,6 +1310,14 @@ class UpdateCalendarEventInput:
         description=(
             "The event's video meeting. Omitted = leave untouched; null removes it; a "
             "value replaces it."
+        ),
+    )
+    resource_calendar_ids: list[int] | None = strawberry.field(  # type: ignore[assignment]
+        default=strawberry.UNSET,
+        description=(
+            "Rooms (resource calendars) booked for this event. Omitted = leave untouched; "
+            "an explicit list (including [] or null) replaces the full set. Every id must "
+            "be an active room of the organization."
         ),
     )
 
@@ -3915,11 +3926,19 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
             else None
         )
 
-        # --- resource allocations: always preserved, not part of this mutation -----
+        # --- resource allocations ---------------------------------------------------
+        # update_event always replaces the full set, so an omitted field re-sends the
+        # event's current rooms.
+        if input.resource_calendar_ids is strawberry.UNSET:
+            room_ids = [
+                ra.calendar_fk_id
+                for ra in existing_event.resource_allocations.all()
+                if ra.calendar_fk_id
+            ]
+        else:
+            room_ids = list(dict.fromkeys(input.resource_calendar_ids or []))
         resource_allocations = [
-            ResourceAllocationInputData(resource_id=ra.calendar_fk_id)  # type: ignore[arg-type]
-            for ra in existing_event.resource_allocations.all()
-            if ra.calendar_fk_id
+            ResourceAllocationInputData(resource_id=room_id) for room_id in room_ids
         ]
 
         # --- meeting: tri-state -----------------------------------------------------
@@ -3954,6 +3973,9 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         )
 
         try:
+            calendar_service.validate_room_changes(
+                existing_event, room_ids, existing_event.start_time, existing_event.end_time
+            )
             event = calendar_service.update_event(
                 existing_event.calendar_fk_id, input.event_id, event_data
             )

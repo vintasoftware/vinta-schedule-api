@@ -621,6 +621,8 @@ class AppointmentTypeEventInputData:
     external_client_identifiers: list[ExternalClientIdentifierData] | None = None
     # The event's video meeting. None = no meeting.
     meeting: EventMeeting | None = None
+    # Rooms booked for the event, written as its resource allocations.
+    resource_allocations: list[ResourceAllocationInputData] = dataclass_field(default_factory=list)
 
 
 @dataclass
