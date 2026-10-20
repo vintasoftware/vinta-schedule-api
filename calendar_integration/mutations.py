@@ -25,6 +25,8 @@ from calendar_integration.exceptions import (
     InvalidTokenError,
     NoAvailableTimeWindowsError,
     PermissionServiceInitializationError,
+    RoomNotFoundError,
+    RoomUnavailableError,
     TokenAlreadyUsedError,
     TokenExpiredError,
     TokenRevokedError,
@@ -444,6 +446,10 @@ class AppointmentTypeEventInput:
     #: Client-owned (system, identifier) pairs stamped on the created event. A pair
     #: already claimed by another event in the organization fails the booking.
     external_client_identifiers: list[ExternalClientIdentifierInput] | None = None
+    #: Rooms (resource calendars of the organization) booked for the event. Each one
+    #: becomes a resource allocation; an id that is not an active room of the
+    #: organization fails the booking.
+    resource_calendar_ids: list[int] = strawberry.field(default_factory=list)
 
 
 @strawberry.type
@@ -881,6 +887,10 @@ class AppointmentTypeMutations:
                 EventExternalAttendanceInputData(external_attendee=a) for a in external_attendees
             ],
             external_client_identifiers=_identifier_data(input.external_client_identifiers),
+            resource_allocations=[
+                ResourceAllocationInputData(resource_id=calendar_id)
+                for calendar_id in dict.fromkeys(input.resource_calendar_ids)
+            ],
         )
         try:
             event = deps.appointment_type_service.create_appointment_type_event(
@@ -908,7 +918,12 @@ class AppointmentTypeMutations:
                     or "The requested time slot is not available under the current booking policy."
                 ),
             )
-        except (AppointmentTypeError, ExternalClientIdentifierError) as e:
+        except (
+            AppointmentTypeError,
+            ExternalClientIdentifierError,
+            RoomNotFoundError,
+            RoomUnavailableError,
+        ) as e:
             return AppointmentTypeEventResult(success=False, error_message=str(e))
         except IntegrityError as e:
             # The event's (system, identifier) pair is already claimed by another

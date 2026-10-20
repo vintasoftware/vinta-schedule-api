@@ -469,6 +469,8 @@ class AppointmentTypeEventInputData:
     )
     # Identifiers stamped on the created event. None and [] both write none.
     external_client_identifiers: list[ExternalClientIdentifierData] | None = None
+    # Rooms booked for the event, written as its resource allocations.
+    resource_allocations: list[ResourceAllocationInputData] = dataclass_field(default_factory=list)
 
 
 @dataclass
