@@ -3402,6 +3402,11 @@ class AppointmentTypeService:
             data.start_time,
             data.end_time,
         )
+        # Rooms the caller asked for must be active rooms of the organization and free
+        # for the whole booking.
+        self.calendar_service.validate_requested_rooms(
+            [r.resource_id for r in data.resource_allocations], data.start_time, data.end_time
+        )
 
         # --- Booking policy enforcement ---
         # Runs inside the @transaction.atomic() so any violation rolls back the
@@ -3443,6 +3448,7 @@ class AppointmentTypeService:
             attendances=merged_attendances,
             external_attendances=list(data.external_attendances),
             appointment_type_authorized=True,
+            resource_allocations=list(data.resource_allocations),
         )
         event = self.calendar_service.create_event(
             calendar_id=primary_calendar_id, event_data=event_input
@@ -3810,8 +3816,7 @@ class AppointmentTypeService:
         own provider calendar, rather than only observing a local BlockedTime.
 
         Resource calendars typically have no owners, so they contribute nothing
-        here — deciding whether to attach them via `resource_allocations` is out
-        of scope for this PR.
+        here. Rooms reach the event through `data.resource_allocations` instead.
         """
         user_ids: set[int] = {a.user_id for a in explicit}
         merged = list(explicit)

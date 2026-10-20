@@ -85,6 +85,18 @@ class NoAvailableTimeWindowsError(EventManagementError):
     default_message = "No available time windows for the event."
 
 
+class RoomNotFoundError(EventManagementError):
+    """A requested room is missing, disabled, not a room, or in another organization."""
+
+    default_message = "Room not found."
+
+
+class RoomUnavailableError(EventManagementError):
+    """A requested room is already taken during the requested time."""
+
+    default_message = "Room is not available at the requested time."
+
+
 class InvalidEventTypeError(EventManagementError):
     default_message = "Event must be a bundle primary event"
 

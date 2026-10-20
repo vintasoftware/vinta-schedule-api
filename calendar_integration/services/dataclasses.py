@@ -449,6 +449,8 @@ class AppointmentTypeEventInputData:
     external_attendances: list[EventExternalAttendanceInputData] = dataclass_field(
         default_factory=list
     )
+    # Rooms booked for the event, written as its resource allocations.
+    resource_allocations: list[ResourceAllocationInputData] = dataclass_field(default_factory=list)
 
 
 @dataclass
