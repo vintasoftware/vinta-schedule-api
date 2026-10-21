@@ -29,6 +29,7 @@ from calendar_integration.exceptions import (
     CalendarPoolInUseError,
     CalendarPoolValidationError,
     CalendarServiceOrganizationNotSetError,
+    CalendarServiceStateError,
 )
 from calendar_integration.models import (
     AppointmentType,
@@ -197,6 +198,26 @@ class AppointmentTypeService:
         self.organization = organization
         if self.booking_policy_service is not None:
             self.booking_policy_service.initialize(organization)
+
+    def initialize_for_caller(
+        self, user_or_token: "User | str | SystemUser | None", organization: Organization
+    ) -> None:
+        """Bind this service and its calendar service to the caller and the organization.
+
+        For a caller that cancels or deletes events through this service: those writes go
+        through ``self.calendar_service``, so it runs under the caller's own permissions.
+
+        :raises CalendarServiceStateError: When the service was built without a calendar
+            service.
+        """
+        if self.calendar_service is None:
+            raise CalendarServiceStateError(
+                "AppointmentTypeService needs a calendar service to act for a caller."
+            )
+        self.calendar_service.initialize_without_provider(
+            user_or_token=user_or_token, organization=organization
+        )
+        self.initialize(organization=organization)
 
     def _assert_initialized(self) -> None:
         if self.organization is None:
@@ -3461,8 +3482,13 @@ class AppointmentTypeService:
 
         return event
 
-    def cancel_appointment_type_event(self, event_id: int, delete_series: bool = False) -> None:
+    def cancel_appointment_type_event(
+        self, event_id: int, delete_series: bool = False, notify_attendees: bool = False
+    ) -> None:
         """Cancel an appointment-type event by deleting the primary event and its linked non-primary BlockedTimes.
+
+        ``notify_attendees`` is passed to ``CalendarService.delete_event``: whether the
+        provider emails every guest about the delete.
 
         The primary event is deleted via ``CalendarService.delete_event`` which also cascades
         the ``CalendarEventAppointmentTypeSelection`` rows (FK on_delete=CASCADE).  Non-primary
@@ -3525,6 +3551,7 @@ class AppointmentTypeService:
             calendar_id=primary_calendar_id,
             event_id=event_id,
             delete_series=delete_series,
+            notify_attendees=notify_attendees,
         )
 
     def reschedule_appointment_type_event(

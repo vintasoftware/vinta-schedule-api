@@ -15,10 +15,18 @@ from google.auth.transport.requests import Request
 from google.oauth2 import service_account as google_service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from pyrate_limiter import Duration, Rate
 
-from calendar_integration.constants import CalendarProvider
-from calendar_integration.exceptions import WebhookIgnoredError, WebhookProcessingFailedError
+from calendar_integration.constants import BlockedTimeDeclineScope, CalendarProvider
+from calendar_integration.exceptions import (
+    OutOfOfficeNotSupportedError,
+    WebhookIgnoredError,
+    WebhookProcessingFailedError,
+)
+from calendar_integration.services.calendar_adapters.google_blocked_time_events import (
+    blocked_time_event_body,
+)
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
@@ -562,9 +570,66 @@ class GoogleCalendarAdapter(CalendarAdapter):
             status=updated_event.get("status", "confirmed"),
         )
 
-    def delete_event(self, calendar_id: str, event_id: str):
+    def delete_event(self, calendar_id: str, event_id: str, notify_attendees: bool = False):
+        """Delete an event. With ``notify_attendees`` Google emails every guest."""
         write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
-        self.client.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+        kwargs: dict[str, Any] = {"calendarId": calendar_id, "eventId": event_id}
+        if notify_attendees:
+            kwargs["sendUpdates"] = "all"
+        self.client.events().delete(**kwargs).execute()
+
+    def write_blocked_time_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        timezone: str,
+        out_of_office: BlockedTimeDeclineScope | None,
+    ) -> None:
+        """Create or update a blocked time's event (see ``blocked_time_event_body``).
+
+        Google accepts Out of office events only on a user's primary calendar, so a 400
+        for one is raised as ``OutOfOfficeNotSupportedError``.
+        """
+        body = blocked_time_event_body(event_id, start_time, end_time, timezone, out_of_office)
+        try:
+            self._upsert_event(calendar_id, event_id, body)
+        except HttpError as exc:
+            if out_of_office is not None and exc.resp.status == 400:
+                raise OutOfOfficeNotSupportedError(
+                    "The calendar refused an Out of office event."
+                ) from exc
+            raise
+
+    def _upsert_event(self, calendar_id: str, event_id: str, body: dict[str, Any]) -> None:
+        """Insert an event whose body carries its own id, or update it when it exists.
+
+        An insert for an event that is already there gets a 409. That event is then
+        updated with the same body, which covers both a changed event and a retry of a
+        write that was not recorded.
+        """
+        write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
+        try:
+            self.client.events().insert(calendarId=calendar_id, body=body).execute()
+        except HttpError as exc:
+            if exc.resp.status != 409:
+                raise
+            write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
+            self.client.events().update(
+                calendarId=calendar_id, eventId=event_id, body=body
+            ).execute()
+
+    def delete_blocked_time_event(self, calendar_id: str, event_id: str) -> None:
+        """Delete a blocked time's event without emailing anyone.
+
+        An event Google no longer has (404 or 410) counts as deleted.
+        """
+        try:
+            self.delete_event(calendar_id, event_id)
+        except HttpError as exc:
+            if exc.resp.status not in (404, 410):
+                raise
 
     def get_calendar_resources(self) -> Iterable[CalendarResourceData]:
         """List all Google Workspace resource calendars via the Admin SDK Directory API.

@@ -4,6 +4,7 @@ import enum
 import strawberry
 import strawberry_django
 
+from calendar_integration.constants import BlockedTimeDeclineScope
 from calendar_integration.models import (
     AppointmentType,
     AppointmentTypeSlot,
@@ -167,9 +168,7 @@ def _has_calendar_pool_resource(info: strawberry.Info) -> bool:
         cache = {}
         request._calendar_pool_resource_access_cache = cache
     if system_user.id not in cache:
-        cache[system_user.id] = system_user.available_resources.filter(
-            resource_name=PublicAPIResources.CALENDAR_POOL
-        ).exists()
+        cache[system_user.id] = system_user.has_resource(PublicAPIResources.CALENDAR_POOL)
     return cache[system_user.id]
 
 
@@ -663,6 +662,21 @@ class BlockedTimeRecurringExceptionGraphQLType:
         return _scoped_blocked_time_or_none(modified, _owner_scoped_calendar_ids(info))  # type: ignore[return-value,arg-type]
 
 
+# The domain enum itself is the GraphQL enum: the API takes and returns its members.
+strawberry.enum(
+    BlockedTimeDeclineScope,
+    name="BlockedTimeDeclineScope",
+    description=(
+        "Which appointments a blocked time turns away.\n\n"
+        "NEW: invitations made after the block.\n"
+        "NEW_AND_EXISTING: those, plus the events the blocked calendar already holds in the "
+        "blocked period, which are cancelled when the block is created. When the block is "
+        "written to Google as an Out of office event, Google also declines the owner's "
+        "invitations to other events in the period."
+    ),
+)
+
+
 @strawberry_django.type(BlockedTime)
 class BlockedTimeGraphQLType:
     id: strawberry.auto  # noqa: A003
@@ -671,6 +685,10 @@ class BlockedTimeGraphQLType:
     external_id: strawberry.auto
     created: datetime.datetime
     modified: datetime.datetime
+
+    decline_scope: BlockedTimeDeclineScope | None = strawberry_django.field(
+        description="Which appointments the block turns away. null for a block made without options."
+    )
 
     user: UserGraphQLType = strawberry_django.field()
     recurrence_rule: RecurrenceRuleGraphQLType = strawberry_django.field()

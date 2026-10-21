@@ -52,6 +52,7 @@ from vinta_audit_logs.diff import compute_diff
 from vinta_billing.exceptions import OverLimitError
 
 from audit_integration.constants import AuditAction
+from calendar_integration import blocked_time_push
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import (
     AvailableTime,
@@ -854,6 +855,11 @@ class AvailabilityService:
         :param rrule_string: New recurrence rule string, or None to leave unchanged.
         :return: The updated BlockedTime instance.
         :raises ValueError: If blocked_time_id is not found in this calendar.
+        :raises BlockDeclineOptionsWithRecurrenceError: When ``rrule_string`` is set for a
+            block with decline options. Nothing is changed.
+
+        A block written to its provider is written there again after the transaction
+        commits (``blocked_time_push.mark_changed``).
         """
         context = cast("BaseCalendarService", self._context)
         if not is_initialized_or_authenticated_calendar_service(context):
@@ -864,9 +870,13 @@ class AvailabilityService:
         )
 
         try:
-            blocked_time = scoped.get(id=blocked_time_id)
+            # Locked so a push or a sync cannot write the provider event id between this
+            # read and the full save below, which would erase it.
+            blocked_time = scoped.select_for_update(of=("self",)).get(id=blocked_time_id)
         except BlockedTime.DoesNotExist as e:
             raise ValueError(f"Blocked time {blocked_time_id} not found in this calendar.") from e
+
+        blocked_time_push.check_recurrence(blocked_time.decline_scope, rrule_string)
 
         # Capture the cheap, comparable scalar BEFORE mutation so we can emit a
         # field-level diff. Only ``reason`` is diffed here: ``start_time`` /
@@ -889,6 +899,7 @@ class AvailabilityService:
                 rrule_string
             )
 
+        blocked_time_push.mark_changed(blocked_time)
         blocked_time.save()
 
         after_scalars = {"reason": blocked_time.reason}
@@ -915,6 +926,9 @@ class AvailabilityService:
         :param calendar: The calendar the blocked time belongs to.
         :param blocked_time_id: The id of the blocked time to delete.
         :raises ValueError: If blocked_time_id is not found in this calendar.
+
+        A block written to its provider has its provider event deleted after the
+        transaction commits (``delete_blocked_time_from_provider_task``).
         """
         context = cast("BaseCalendarService", self._context)
         if not is_initialized_or_authenticated_calendar_service(context):
@@ -934,6 +948,7 @@ class AvailabilityService:
         # only fires on transaction commit, so ordering relative to the delete below
         # is irrelevant to persistence.
         self._audit_availability_write(AuditAction.DELETE, blocked_time)
+        blocked_time_push.queue_delete(blocked_time)
         blocked_time.delete()
 
     def get_blocked_times_expanded(

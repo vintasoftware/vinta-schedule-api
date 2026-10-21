@@ -57,6 +57,41 @@ Healthcare examples:
 `BlockedTime` is also recurring (e.g. "the standing OR cleaning slot
 8:00–8:30 every weekday" can be one recurring `BlockedTime`).
 
+### Decline options
+
+`createBlockedTime` takes an optional `declineScope` (`NEW` or
+`NEW_AND_EXISTING`) and `declineMessage`. A block created without them
+behaves as described above. They cannot be combined with `rruleString`:
+a recurring block with decline options is refused. With them:
+
+- A block on a Google calendar is written to Google after it is saved: an
+  **Out of office** event that declines conflicting invitations on the
+  owner's primary calendar, and a plain busy event on any other Google
+  calendar. The event is titled "Out of office" or "Busy" and declines
+  with Google's default reply; the block's reason and `declineMessage` are
+  never sent to Google. The message is kept with the block for later
+  notifications. Calendar
+  sync recognizes that event and does not import it as a second block.
+- Updating the block writes the change to the same Google event, and
+  deleting the block deletes the Google event (nobody is emailed about
+  that delete).
+- When Google refuses the Out of office event (any 400), a busy event is
+  written instead and a warning is logged with the block id only. A push
+  that keeps failing gives up after its last retry; the block still blocks
+  time here, and is written to Google again on its next edit.
+- `NEW_AND_EXISTING` also cancels the events the blocked calendar holds in
+  the period, each on its own: a single event is deleted (Google emails
+  every guest), and an occurrence of a recurring series is cancelled
+  without touching the rest of the series. A block that would cancel more
+  than 25 events is refused, and nothing is written; block a shorter
+  period instead. The mutation returns `cancelledEventCount` and
+  `failedEventCount`.
+- Events on other calendars that the owner attends are never cancelled by
+  Vinta Schedule. But when the block is written to Google as an Out of
+  office event with `NEW_AND_EXISTING`, Google declines the owner's
+  invitations to them. The events themselves stay in place for everyone
+  else.
+
 ## Computing availability — `only_calendars_available_in_ranges`
 
 The canonical "is this calendar free for these windows?" check. Given a

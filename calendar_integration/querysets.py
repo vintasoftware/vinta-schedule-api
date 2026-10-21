@@ -813,6 +813,48 @@ class CalendarEventQuerySet(OrganizationScopedQuerySet, RecurringQuerySetMixin):
             .select_related("recurrence_rule")
         )
 
+    def overlapping_range(
+        self, start: datetime.datetime, end: datetime.datetime
+    ) -> "CalendarEventQuerySet":
+        """Rows that are, or can yield, an occurrence overlapping ``(start, end)``.
+
+        Three kinds of row, each with ``recurring_occurrences`` annotated for the range
+        (overlap semantics) so a caller expanding the recurring masters pays one query:
+
+        - one-off events whose own span overlaps the range;
+        - recurring masters that start before ``end``. The caller expands them and
+          keeps the occurrences that overlap;
+        - modified occurrences (recurrence exception rows) whose own span overlaps the
+          range, so one moved into the range is found even when its original slot is
+          outside it.
+
+        Edges are inclusive here; callers drop occurrences that only touch the range.
+        """
+        return (
+            self.filter(
+                Q(
+                    parent_recurring_object__isnull=True,
+                    recurrence_rule__isnull=True,
+                    is_recurring_exception=False,
+                    start_time__lt=end,
+                    end_time__gt=start,
+                )
+                | Q(
+                    parent_recurring_object__isnull=True,
+                    recurrence_rule__isnull=False,
+                    start_time__lt=end,
+                )
+                | Q(
+                    parent_recurring_object__isnull=False,
+                    is_recurring_exception=True,
+                    start_time__lt=end,
+                    end_time__gt=start,
+                )
+            )
+            .annotate_recurring_occurrences_on_date_range(start, end, overlap=True)
+            .select_related("recurrence_rule", "calendar")
+        )
+
 
 class CalendarSyncQuerySet(OrganizationScopedQuerySet):
     """

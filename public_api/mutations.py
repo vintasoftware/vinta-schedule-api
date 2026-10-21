@@ -18,7 +18,7 @@ from vinta_billing.services.subscription_service import SubscriptionService
 
 from audit_integration.constants import AuditAction
 from audit_integration.services import OrganizationAuditService
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import BlockedTimeDeclineScope, CalendarType
 from calendar_integration.exceptions import (
     AppointmentTypeSlotConfigNotFoundError,
     AppointmentTypeValidationError,
@@ -27,6 +27,7 @@ from calendar_integration.exceptions import (
     CalendarPoolError,
     CalendarPoolInUseError,
     DuplicateBookingPolicyError,
+    InvalidBlockDeclineOptionsError,
     NoAvailableTimeWindowsError,
 )
 from calendar_integration.graphql import (
@@ -64,8 +65,11 @@ from calendar_integration.mutations import (
     ExternalEventChangeRequestMutations,
     event_times_to_utc,
 )
+from calendar_integration.services.block_conflict_service import MAX_BLOCK_CANCELS
 from calendar_integration.services.calendar_service import _UNCHANGED
 from calendar_integration.services.dataclasses import (
+    BLOCK_DECLINE_MESSAGE_MAX_LENGTH,
+    BlockDeclineOptions,
     CalendarEventInputData,
     CalendarPoolInputData,
     EventAttendanceInputData,
@@ -137,6 +141,7 @@ if TYPE_CHECKING:
 
 if TYPE_CHECKING:
     from calendar_integration.services.appointment_type_service import AppointmentTypeService
+    from calendar_integration.services.block_conflict_service import BlockConflictService
     from calendar_integration.services.booking_policy_permission_service import (
         BookingPolicyPermissionService,
     )
@@ -334,6 +339,30 @@ def get_audit_service(
     return audit_service
 
 
+@inject
+def get_block_conflict_service(
+    block_conflict_service: Annotated[
+        "BlockConflictService | None", Provide["block_conflict_service"]
+    ] = None,
+) -> "BlockConflictService":
+    """Resolve the BlockConflictService from the DI container."""
+    if block_conflict_service is None:
+        raise GraphQLError("Missing required dependency: block_conflict_service")
+    return block_conflict_service
+
+
+def _get_org(info: strawberry.Info) -> Organization:
+    """Resolve the organization from the request context.
+
+    Raises:
+        GraphQLError: If organization is not found in request context
+    """
+    org = info.context.request.public_api_organization
+    if not org:
+        raise GraphQLError("Organization not found in request context")
+    return org
+
+
 def _get_org_and_init_calendar_service(
     info: strawberry.Info,
 ) -> tuple["CalendarService", Organization]:
@@ -345,9 +374,7 @@ def _get_org_and_init_calendar_service(
     Raises:
         GraphQLError: If organization is not found in request context
     """
-    org = info.context.request.public_api_organization
-    if not org:
-        raise GraphQLError("Organization not found in request context")
+    org = _get_org(info)
 
     deps = get_calendar_mutation_dependencies()
     request: PublicApiHttpRequest = info.context.request
@@ -377,9 +404,7 @@ def _get_org_and_init_appointment_type_service(
     Raises:
         GraphQLError: If organization is not found in request context
     """
-    org = info.context.request.public_api_organization
-    if not org:
-        raise GraphQLError("Organization not found in request context")
+    org = _get_org(info)
 
     deps = get_calendar_mutation_dependencies()
     request: PublicApiHttpRequest = info.context.request
@@ -853,15 +878,45 @@ class CreateBlockedTimeInput:
     timezone: str
     reason: str = ""
     rrule_string: str | None = None
+    decline_scope: BlockedTimeDeclineScope | None = strawberry.field(
+        default=None,
+        description=(
+            "Which appointments the block turns away. When set, the options are saved, "
+            "the block is written to Google as an Out of office event (titled 'Out of "
+            "office'; the reason is not sent) when the calendar is a Google calendar, and "
+            "NEW_AND_EXISTING cancels the events the calendar holds in the period, at most "
+            f"{MAX_BLOCK_CANCELS}. Cannot be used with rruleString. Omitted, the block is "
+            "created as before."
+        ),
+    )
+    decline_message: str = strawberry.field(
+        default="",
+        description=(
+            "A message kept with the block for later notifications. It is not sent to "
+            "Google, which declines with its default reply. Needs declineScope; cannot be "
+            f"used with rruleString. At most {BLOCK_DECLINE_MESSAGE_MAX_LENGTH} characters."
+        ),
+    )
 
 
 @strawberry.type
 class CreateBlockedTimeResult:
-    """Result of the createBlockedTime mutation."""
+    """Result of the createBlockedTime mutation.
+
+    The counts describe the cancels a NEW_AND_EXISTING block caused, and are 0 for any
+    other block.
+    """
 
     success: bool
     error_message: str | None = None
     blocked_time: BlockedTimeGraphQLType | None = None
+    cancelled_event_count: int = strawberry.field(
+        default=0, description="Events on the blocked calendar the block cancelled."
+    )
+    failed_event_count: int = strawberry.field(
+        default=0,
+        description="Events on the blocked calendar the block tried to cancel and could not.",
+    )
 
 
 @strawberry.input
@@ -3016,16 +3071,27 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         """Create a single (optionally recurring) blocked time on a calendar.
 
         The mutation:
-        1. Resolves the organization and initializes the calendar service via the system-user token.
+        1. Resolves the organization from the request.
         2. Asserts the calendar is within the token owner's scope (no-op for org-wide tokens).
         3. Fetches the calendar org-scoped to prevent cross-org access.
-        4. Delegates to CalendarService.create_blocked_time with the supplied parameters.
+        4. Binds BlockConflictService to the system-user token and delegates to its
+           create_block, which writes through CalendarService.create_blocked_time.
         5. Returns the created BlockedTime on success, or success=False + errorMessage on failure.
 
         The token's OrganizationResourceAccess must include the CREATE_BLOCKED_TIME resource.
+
+        With ``declineScope`` set, the options are saved on the block. With
+        ``NEW_AND_EXISTING``, after the block is written the events the calendar holds in
+        the period are cancelled, each on its own (see
+        ``BlockConflictService.cancel_block_conflicts``); a cancel that fails does not
+        undo the block, and the result counts what happened. That cancel needs the
+        token to hold the CALENDAR_EVENT resource too, as ``cancelEvent`` does. A block
+        that would cancel more than ``MAX_BLOCK_CANCELS`` events is refused and nothing
+        is written. ``declineScope`` / ``declineMessage`` cannot be combined with
+        ``rruleString``.
         """
-        calendar_service, org = _get_org_and_init_calendar_service(info)
         request: PublicApiHttpRequest = info.context.request
+        org = _get_org(info)
 
         try:
             # Owner-scope guard: a scoped token may only write to its owner's calendars.
@@ -3036,14 +3102,46 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         except Calendar.DoesNotExist:
             return CreateBlockedTimeResult(success=False, error_message="Calendar not found.")
 
+        if input.decline_message and input.decline_scope is None:
+            return CreateBlockedTimeResult(
+                success=False, error_message="A declineMessage needs a declineScope."
+            )
+
+        decline_options = None
+        if input.decline_scope is not None:
+            try:
+                decline_options = BlockDeclineOptions(
+                    scope=input.decline_scope,
+                    message=input.decline_message,
+                )
+            except InvalidBlockDeclineOptionsError as e:
+                return CreateBlockedTimeResult(success=False, error_message=str(e))
+        if (
+            decline_options is not None
+            and decline_options.cancels_existing
+            and not (
+                request.public_api_system_user is not None
+                and request.public_api_system_user.has_resource(PublicAPIResources.CALENDAR_EVENT)
+            )
+        ):
+            return CreateBlockedTimeResult(
+                success=False,
+                error_message="This token may not cancel events.",
+            )
+
+        block_conflict_service = get_block_conflict_service()
+        block_conflict_service.initialize(
+            user_or_token=request.public_api_system_user, organization=org
+        )
         try:
-            blocked_time = calendar_service.create_blocked_time(
+            blocked_time, cancel_result = block_conflict_service.create_block(
                 calendar=calendar,
                 start_time=input.start_time,
                 end_time=input.end_time,
                 timezone=input.timezone,
                 reason=input.reason,
                 rrule_string=input.rrule_string,
+                decline_options=decline_options,
             )
         except (CalendarIntegrationError, ValueError, DjangoValidationError, IntegrityError) as e:
             return CreateBlockedTimeResult(success=False, error_message=str(e))
@@ -3051,6 +3149,8 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         return CreateBlockedTimeResult(
             success=True,
             blocked_time=blocked_time,  # type: ignore[arg-type]
+            cancelled_event_count=cancel_result.cancelled_event_count,
+            failed_event_count=cancel_result.failed_event_count,
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
@@ -4372,9 +4472,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
         except CalendarPoolInUseError as e:
             system_user = request.public_api_system_user
             can_see_appointment_type_names = system_user is not None and (
-                system_user.available_resources.filter(
-                    resource_name=PublicAPIResources.APPOINTMENT_TYPE
-                ).exists()
+                system_user.has_resource(PublicAPIResources.APPOINTMENT_TYPE)
             )
             if can_see_appointment_type_names:
                 return DeleteCalendarPoolResult(

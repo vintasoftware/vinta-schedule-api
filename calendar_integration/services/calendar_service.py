@@ -1819,15 +1819,25 @@ class CalendarService(BaseCalendarService):
         """
         self._get_bundle_service().delete_bundle_event(bundle_event)
 
-    def delete_event(self, calendar_id: int, event_id: int, delete_series: bool = False) -> None:
+    def delete_event(
+        self,
+        calendar_id: int,
+        event_id: int,
+        delete_series: bool = False,
+        notify_attendees: bool = False,
+    ) -> None:
         """
         Delete an event from the calendar.
         :param calendar_id: Internal ID of the calendar
         :param event_id: Unique identifier of the event to delete.
         :param delete_series: If True and the event is recurring, delete the entire series
+        :param notify_attendees: Ask the provider to email every guest about the delete.
+            False keeps the provider's default.
         :return: None
         """
-        return self._get_event_service().delete_event(calendar_id, event_id, delete_series)
+        return self._get_event_service().delete_event(
+            calendar_id, event_id, delete_series, notify_attendees=notify_attendees
+        )
 
     def transfer_event(self, event: CalendarEvent, new_calendar: Calendar) -> CalendarEvent:
         """

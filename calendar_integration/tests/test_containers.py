@@ -20,6 +20,8 @@ CALENDAR_PROVIDER_NAMES = [
     "calendar_service",
     "bookable_slots_service",
     "appointment_type_service",
+    "block_conflict_service",
+    "blocked_time_provider_sync_service",
 ]
 
 

@@ -220,7 +220,11 @@ class EventServiceHost(Protocol):
     ) -> CalendarEvent: ...
 
     def delete_event(
-        self, calendar_id: int, event_id: int, delete_series: bool = False
+        self,
+        calendar_id: int,
+        event_id: int,
+        delete_series: bool = False,
+        notify_attendees: bool = False,
     ) -> None: ...
 
     def _create_bundle_event(
@@ -2423,12 +2427,20 @@ class CalendarEventService:
         return unique_events
 
     @transaction.atomic()
-    def delete_event(self, calendar_id: int, event_id: int, delete_series: bool = False) -> None:
+    def delete_event(
+        self,
+        calendar_id: int,
+        event_id: int,
+        delete_series: bool = False,
+        notify_attendees: bool = False,
+    ) -> None:
         """
         Delete an event from the calendar.
         :param calendar_id: Internal ID of the calendar
         :param event_id: Unique identifier of the event to delete.
         :param delete_series: If True and the event is recurring, delete the entire series
+        :param notify_attendees: Ask the provider to email every guest about the delete.
+            False keeps the provider's default.
         :return: None
         """
         context = cast("BaseCalendarService", self._context)
@@ -2488,7 +2500,11 @@ class CalendarEventService:
         ] and (write_adapter := self._host._get_write_adapter_for_calendar(event.calendar)):
             if event.is_recurring and delete_series:
                 # Delete the entire recurring series from external calendar
-                write_adapter.delete_event(event.calendar.provider_calendar_id, event.external_id)
+                write_adapter.delete_event(
+                    event.calendar.provider_calendar_id,
+                    event.external_id,
+                    notify_attendees=notify_attendees,
+                )
             elif event.is_recurring_instance and not delete_series:
                 # Create a cancellation exception instead of deleting
                 if event.parent_recurring_object:
@@ -2497,7 +2513,11 @@ class CalendarEventService:
                     )
             else:
                 # Delete single event or instance
-                write_adapter.delete_event(event.calendar.provider_calendar_id, event.external_id)
+                write_adapter.delete_event(
+                    event.calendar.provider_calendar_id,
+                    event.external_id,
+                    notify_attendees=notify_attendees,
+                )
 
         if event.is_recurring and delete_series:
             # Delete the entire series including all instances and exceptions

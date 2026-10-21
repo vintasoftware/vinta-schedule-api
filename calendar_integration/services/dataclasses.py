@@ -5,8 +5,10 @@ from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 
 from calendar_integration.constants import (
+    BlockedTimeDeclineScope,
     CalendarProvider,
 )
+from calendar_integration.exceptions import InvalidBlockDeclineOptionsError
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -86,6 +88,35 @@ class EventExternalAttendanceInputData:
 @dataclass
 class ResourceAllocationInputData:
     resource_id: int
+
+
+#: Longest decline message a blocked time takes. The message is kept with the block for
+#: later notifications and is never sent to the provider.
+BLOCK_DECLINE_MESSAGE_MAX_LENGTH = 1000
+
+
+@dataclass(frozen=True)
+class BlockDeclineOptions:
+    """What a blocked time turns away, and the message sent with each decline.
+
+    :raises InvalidBlockDeclineOptionsError: on construction, for a message over
+        ``BLOCK_DECLINE_MESSAGE_MAX_LENGTH`` characters.
+    """
+
+    scope: BlockedTimeDeclineScope
+    message: str = ""
+
+    def __post_init__(self) -> None:
+        if len(self.message) > BLOCK_DECLINE_MESSAGE_MAX_LENGTH:
+            raise InvalidBlockDeclineOptionsError(
+                f"The decline message must be at most {BLOCK_DECLINE_MESSAGE_MAX_LENGTH} "
+                "characters."
+            )
+
+    @property
+    def cancels_existing(self) -> bool:
+        """Whether the block also cancels the events it overlaps when it is created."""
+        return self.scope == BlockedTimeDeclineScope.NEW_AND_EXISTING
 
 
 @dataclass
@@ -194,6 +225,9 @@ class EventsSyncChanges:
     )
     events_to_delete: list[str] = dataclass_field(default_factory=list)
     blocks_to_delete: list[str] = dataclass_field(default_factory=list)
+    # Ids of blocks whose provider event was deleted at the provider. The blocks stay;
+    # only their ``provider_event_external_id`` is cleared.
+    blocked_times_to_unlink_from_provider: list[int] = dataclass_field(default_factory=list)
     matched_event_ids: set[str] = dataclass_field(default_factory=set)
     # New fields for recurring events
     recurrence_rules_to_create: list = dataclass_field(

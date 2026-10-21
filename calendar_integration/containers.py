@@ -2,6 +2,10 @@ from dependency_injector import providers
 
 from audit_integration.containers import AuditContainer
 from calendar_integration.services.appointment_type_service import AppointmentTypeService
+from calendar_integration.services.block_conflict_service import BlockConflictService
+from calendar_integration.services.blocked_time_provider_sync_service import (
+    BlockedTimeProviderSyncService,
+)
 from calendar_integration.services.bookable_slots_service import BookableSlotsService
 from calendar_integration.services.booking_policy_permission_service import (
     BookingPolicyPermissionService,
@@ -89,4 +93,15 @@ class CalendarContainer(
         audit_service=AuditContainer.audit_service,
         booking_policy_service=booking_policy_service,
         entitlement_service=BillingContainer.entitlement_service,
+    )
+
+    block_conflict_service = providers.Factory(
+        BlockConflictService,
+        calendar_service=calendar_service,
+        appointment_type_service=appointment_type_service,
+    )
+
+    blocked_time_provider_sync_service = providers.Factory(
+        BlockedTimeProviderSyncService,
+        calendar_service=calendar_service,
     )

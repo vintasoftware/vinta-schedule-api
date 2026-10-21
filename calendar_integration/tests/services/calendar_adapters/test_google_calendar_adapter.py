@@ -5,8 +5,10 @@ from django.core.exceptions import ImproperlyConfigured
 
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
+from googleapiclient.errors import HttpError
 
-from calendar_integration.constants import CalendarProvider
+from calendar_integration.constants import BlockedTimeDeclineScope, CalendarProvider
+from calendar_integration.exceptions import OutOfOfficeNotSupportedError
 from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
     _SA_SCOPES,
     GoogleCalendarAdapter,
@@ -1394,3 +1396,145 @@ class TestGoogleEventDatetimeParsing:
         events = list(adapter.get_events("cal", False, start, end)["events"])
 
         assert [e.external_id for e in events] == ["real"]
+
+
+def _http_error(status: int) -> HttpError:
+    return HttpError(Mock(status=status, reason="error"), b"{}")
+
+
+class TestBlockedTimeEvents:
+    """A blocked time is written to Google as an Out of office or a busy event."""
+
+    START = datetime.datetime(2026, 10, 9, 13, 0, tzinfo=datetime.UTC)
+    END = datetime.datetime(2026, 10, 9, 15, 0, tzinfo=datetime.UTC)
+
+    def _expected_body(self, summary="Busy", **extra):
+        return {
+            "id": "abc123",
+            "summary": summary,
+            "transparency": "opaque",
+            "start": {"dateTime": "2026-10-09T13:00:00+00:00", "timeZone": "America/Sao_Paulo"},
+            "end": {"dateTime": "2026-10-09T15:00:00+00:00", "timeZone": "America/Sao_Paulo"},
+            **extra,
+        }
+
+    def _write_out_of_office(self, adapter, decline_scope=BlockedTimeDeclineScope.NEW):
+        adapter.write_blocked_time_event(
+            calendar_id="provider@example.com",
+            event_id="abc123",
+            start_time=self.START,
+            end_time=self.END,
+            timezone="America/Sao_Paulo",
+            out_of_office=decline_scope,
+        )
+
+    def _write_busy(self, adapter):
+        adapter.write_blocked_time_event(
+            calendar_id="provider@example.com",
+            event_id="abc123",
+            start_time=self.START,
+            end_time=self.END,
+            timezone="America/Sao_Paulo",
+            out_of_office=None,
+        )
+
+    @pytest.mark.parametrize(
+        ("decline_scope", "auto_decline_mode"),
+        [
+            pytest.param(
+                BlockedTimeDeclineScope.NEW, "declineOnlyNewConflictingInvitations", id="new"
+            ),
+            pytest.param(
+                BlockedTimeDeclineScope.NEW_AND_EXISTING,
+                "declineAllConflictingInvitations",
+                id="new-and-existing",
+            ),
+        ],
+    )
+    def test_out_of_office_body_per_decline_scope(
+        self, adapter, mock_rate_limiters, decline_scope, auto_decline_mode
+    ):
+        insert = adapter.client.events.return_value.insert
+
+        self._write_out_of_office(adapter, decline_scope)
+
+        insert.assert_called_once_with(
+            calendarId="provider@example.com",
+            body=self._expected_body(
+                summary="Out of office",
+                eventType="outOfOffice",
+                # No declineMessage: Google declines with its default reply.
+                outOfOfficeProperties={"autoDeclineMode": auto_decline_mode},
+            ),
+        )
+        adapter.client.events.return_value.update.assert_not_called()
+        mock_rate_limiters[1].try_acquire.assert_called_once()
+
+    def test_busy_body(self, adapter, mock_rate_limiters):
+        insert = adapter.client.events.return_value.insert
+
+        self._write_busy(adapter)
+
+        insert.assert_called_once_with(
+            calendarId="provider@example.com", body=self._expected_body()
+        )
+
+    def test_out_of_office_refused_raises_not_supported(self, adapter, mock_rate_limiters):
+        adapter.client.events.return_value.insert.return_value.execute.side_effect = _http_error(
+            400
+        )
+
+        with pytest.raises(OutOfOfficeNotSupportedError):
+            self._write_out_of_office(adapter)
+
+    def test_busy_refused_raises_the_provider_error(self, adapter, mock_rate_limiters):
+        adapter.client.events.return_value.insert.return_value.execute.side_effect = _http_error(
+            400
+        )
+
+        with pytest.raises(HttpError):
+            self._write_busy(adapter)
+
+    @pytest.mark.parametrize("kind", ["out-of-office", "busy"])
+    def test_existing_event_id_is_updated_with_the_same_body(
+        self, adapter, mock_rate_limiters, kind
+    ):
+        """A changed block, or a retry of a write that was not recorded, updates the event."""
+        events = adapter.client.events.return_value
+        events.insert.return_value.execute.side_effect = _http_error(409)
+
+        if kind == "busy":
+            self._write_busy(adapter)
+        else:
+            self._write_out_of_office(adapter)
+
+        inserted_body = events.insert.call_args.kwargs["body"]
+        events.update.assert_called_once_with(
+            calendarId="provider@example.com", eventId="abc123", body=inserted_body
+        )
+        assert mock_rate_limiters[1].try_acquire.call_count == 2
+
+    def test_delete_blocked_time_event_sends_no_updates(self, adapter, mock_rate_limiters):
+        adapter.delete_blocked_time_event("provider@example.com", "abc123")
+
+        adapter.client.events.return_value.delete.assert_called_once_with(
+            calendarId="provider@example.com", eventId="abc123"
+        )
+        mock_rate_limiters[1].try_acquire.assert_called_once()
+
+    @pytest.mark.parametrize("status", [404, 410])
+    def test_delete_blocked_time_event_already_gone_is_done(
+        self, adapter, mock_rate_limiters, status
+    ):
+        adapter.client.events.return_value.delete.return_value.execute.side_effect = _http_error(
+            status
+        )
+
+        adapter.delete_blocked_time_event("provider@example.com", "abc123")
+
+    def test_delete_notifying_attendees_sends_updates_to_all(self, adapter, mock_rate_limiters):
+        adapter.delete_event("calendar_123", "event_123", notify_attendees=True)
+
+        adapter.client.events.return_value.delete.assert_called_once_with(
+            calendarId="calendar_123", eventId="event_123", sendUpdates="all"
+        )

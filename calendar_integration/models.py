@@ -15,6 +15,7 @@ from encrypted_fields.fields import EncryptedCharField, EncryptedTextField  # ty
 from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from calendar_integration.constants import (
+    BlockedTimeDeclineScope,
     CalendarManagementTokenKind,
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
@@ -1829,6 +1830,25 @@ class BlockedTime(RecurringMixin):
     reason = models.CharField(max_length=255, blank=True)
     external_id = models.CharField(max_length=255, blank=True)
 
+    # Block options. A null ``decline_scope`` is a block made without them: it is
+    # never written to the calendar provider and cancels nothing. The nullable columns
+    # use NULL for "not set", which the partial index below relies on.
+    decline_scope = models.CharField(  # noqa: DJ001
+        max_length=32, choices=BlockedTimeDeclineScope.choices, null=True, blank=True
+    )
+    decline_message = models.TextField(blank=True, default="")
+    # The provider event this block was written to (a Google Out of office or busy
+    # event). Sync skips an incoming event with this id, so the block is not imported
+    # back as a second ``BlockedTime``.
+    provider_event_external_id = models.CharField(  # noqa: DJ001
+        max_length=1024, null=True, blank=True
+    )
+    # Moves on with every edit that must be written to the provider again.
+    provider_push_version = models.PositiveIntegerField(default=0)
+    # The ``provider_push_version`` last written to the provider; null until the first
+    # write. A block that differs from it still needs a push (``needs_provider_push``).
+    provider_pushed_version = models.PositiveIntegerField(null=True, blank=True)
+
     # Bundle calendar fields
     bundle_calendar = OrganizationSafeForeignKey(
         Calendar,
@@ -1891,10 +1911,47 @@ class BlockedTime(RecurringMixin):
                 condition=models.Q(appointment_type_slot_fk__isnull=False),
                 name="blockedtime_appt_slot_idx",
             ),
+            models.Index(
+                fields=["calendar_fk", "provider_event_external_id"],
+                condition=models.Q(provider_event_external_id__isnull=False),
+                name="blockedtime_provider_evt_idx",
+            ),
+        )
+        constraints = (
+            # A block made without options has no decline message and is never written
+            # to its provider.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(decline_scope__isnull=False)
+                    | models.Q(
+                        decline_message="",
+                        provider_pushed_version__isnull=True,
+                        provider_event_external_id__isnull=True,
+                    )
+                ),
+                name="blockedtime_options_need_decline_scope",
+            ),
         )
 
     def __str__(self):
         return f"Blocked from {self.start_time} to {self.end_time} ({self.reason})"
+
+    @property
+    def is_written_to_provider(self) -> bool:
+        """Whether this block is kept as an event on its provider calendar.
+
+        Only a block with decline options on a Google calendar is. Reads ``calendar``
+        only for a block with options.
+        """
+        return self.decline_scope is not None and self.calendar.provider == CalendarProvider.GOOGLE
+
+    @property
+    def needs_provider_push(self) -> bool:
+        """Whether this block's latest version is not on its provider calendar yet."""
+        return (
+            self.is_written_to_provider
+            and self.provider_pushed_version != self.provider_push_version
+        )
 
     @property
     def is_bundle_representation(self) -> bool:
