@@ -64,6 +64,7 @@ from calendar_integration.services.calendar_permission_service import (
 )
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
+    AdapterMeeting,
     ApplicationCalendarData,
     AvailableTimeWindow,
     BlockedTimeData,
@@ -5825,6 +5826,7 @@ def test_google_adapter_event_creation_with_resources(mock_google_adapter):
         resources=[
             ResourceData(email="room@example.com", title="Conference Room", status="accepted")
         ],
+        meeting=AdapterMeeting(),
     )
 
     # Mock the Google adapter response
@@ -5880,6 +5882,7 @@ def test_calendar_event_input_data_with_resources():
         timezone="UTC",
         attendees=[],
         resources=[ResourceData(email="room@example.com", title="Room", external_id="room_123")],
+        meeting=AdapterMeeting(),
     )
 
     assert len(event_input.resources) == 1
@@ -5918,6 +5921,7 @@ def test_calendar_event_adapter_input_data_with_recurrence_rule():
         timezone="UTC",
         attendees=[],
         recurrence_rule="RRULE:FREQ=DAILY;COUNT=5",
+        meeting=AdapterMeeting(),
     )
 
     assert event_input.recurrence_rule == "RRULE:FREQ=DAILY;COUNT=5"

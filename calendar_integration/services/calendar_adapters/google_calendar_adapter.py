@@ -97,6 +97,7 @@ class GoogleServiceAccountCredentialsTypedDict(TypedDict):
 
 class GoogleCalendarAdapter(CalendarAdapter):
     provider = "google"
+    supports_generated_meetings = True
     account_id: str
     # admin_client is set only on service-account adapters built via from_service_account().
     # Regular OAuth adapters created by __init__ do not have this attribute.
@@ -300,6 +301,56 @@ class GoogleCalendarAdapter(CalendarAdapter):
             organization_id=None,  # Will be set later in the sync process
         )
 
+    @staticmethod
+    def _add_meeting_to_body(
+        event: dict[str, Any], event_data: CalendarEventAdapterInputData
+    ) -> dict[str, Any]:
+        """Write the event's meeting into a Google event body.
+
+        A CUSTOM link goes to ``location``, which Google shows as a clickable link. Its
+        API only lets add-ons set an arbitrary conference, so the link cannot be a
+        conference. A GENERATED meeting is a ``createRequest`` for a Google Meet
+        conference.
+
+        Returns the extra keyword arguments for ``insert`` / ``update``. Google ignores
+        ``conferenceData`` unless the call sends ``conferenceDataVersion=1``, and with
+        it, a body without ``conferenceData`` removes the event's conference. So the
+        version is sent only when this write creates or removes the conference, and
+        other writes keep the conference Google has.
+        """
+        meeting = event_data.meeting
+        if meeting.location:
+            event["location"] = meeting.location
+        if meeting.conference == "keep":
+            return {}
+        if meeting.conference == "create":
+            event["conferenceData"] = {
+                "createRequest": {
+                    "requestId": uuid.uuid4().hex,
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+        return {"conferenceDataVersion": 1}
+
+    @staticmethod
+    def _meeting_from_google_event(event: dict[str, Any]) -> tuple[str, bool]:
+        """The event's conference video link, and whether Google is still creating it.
+
+        ``hangoutLink`` is set for a Google Meet conference. Other conference types only
+        list their link in ``conferenceData.entryPoints``.
+        """
+        conference = event.get("conferenceData") or {}
+        url = event.get("hangoutLink") or next(
+            (
+                entry_point.get("uri", "")
+                for entry_point in conference.get("entryPoints", [])
+                if entry_point.get("entryPointType") == "video"
+            ),
+            "",
+        )
+        status_code = conference.get("createRequest", {}).get("status", {}).get("statusCode")
+        return url, status_code == "pending"
+
     def create_event(
         self, event_data: CalendarEventAdapterInputData
     ) -> CalendarEventAdapterOutputData:
@@ -340,12 +391,15 @@ class GoogleCalendarAdapter(CalendarAdapter):
         if event_data.recurrence_rule and not event_data.is_recurring_instance:
             event["recurrence"] = [f"RRULE:{event_data.recurrence_rule}"]
 
+        meeting_kwargs = self._add_meeting_to_body(event, event_data)
+
         write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
         created_event = (
             self.client.events()
-            .insert(calendarId=event_data.calendar_external_id, body=event)
+            .insert(calendarId=event_data.calendar_external_id, body=event, **meeting_kwargs)
             .execute()
         )
+        meeting_url, meeting_pending = self._meeting_from_google_event(created_event)
 
         # Extract recurrence rule from response if present
         recurrence_rule = None
@@ -366,6 +420,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
             original_payload=created_event,
             recurrence_rule=recurrence_rule,
             recurring_event_id=created_event.get("recurringEventId"),
+            meeting_url=meeting_url,
+            meeting_pending=meeting_pending,
             attendees=[
                 EventAttendeeData(
                     email=attendee.get("email", ""),
@@ -404,6 +460,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
                     recurrence_rule = rule[6:]  # Remove "RRULE:" prefix
                     break
 
+        meeting_url, meeting_pending = self._meeting_from_google_event(event)
         return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=event["id"],
@@ -417,6 +474,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
             original_payload=event,
             recurrence_rule=recurrence_rule,
             recurring_event_id=event.get("recurringEventId"),
+            meeting_url=meeting_url,
+            meeting_pending=meeting_pending,
             status="cancelled" if event.get("status") == "cancelled" else "confirmed",
             attendees=[
                 EventAttendeeData(
@@ -491,6 +550,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
     def get_event(self, calendar_id: str, event_id: str) -> CalendarEventAdapterOutputData:
         read_quote_limiter.try_acquire(f"google_calendar_read_{self.account_id}")
         event = self.client.events().get(calendarId=calendar_id, eventId=event_id).execute()
+        meeting_url, meeting_pending = self._meeting_from_google_event(event)
         return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=event["id"],
@@ -511,6 +571,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
                 for attendee in event.get("attendees", [])
             ],
             status=event.get("status", "confirmed"),
+            meeting_url=meeting_url,
+            meeting_pending=meeting_pending,
         )
 
     def update_event(
@@ -533,12 +595,15 @@ class GoogleCalendarAdapter(CalendarAdapter):
         if hasattr(event_data, "recurrence_rule") and event_data.recurrence_rule:
             event["recurrence"] = [f"RRULE:{event_data.recurrence_rule}"]
 
+        meeting_kwargs = self._add_meeting_to_body(event, event_data)
+
         write_quote_limiter.try_acquire(f"google_calendar_write_{self.account_id}")
         updated_event = (
             self.client.events()
-            .update(calendarId=calendar_id, eventId=event_id, body=event)
+            .update(calendarId=calendar_id, eventId=event_id, body=event, **meeting_kwargs)
             .execute()
         )
+        meeting_url, meeting_pending = self._meeting_from_google_event(updated_event)
 
         # Extract recurrence rule from response if present
         recurrence_rule = None
@@ -559,6 +624,8 @@ class GoogleCalendarAdapter(CalendarAdapter):
             original_payload=updated_event,
             recurrence_rule=recurrence_rule,
             recurring_event_id=updated_event.get("recurringEventId"),
+            meeting_url=meeting_url,
+            meeting_pending=meeting_pending,
             attendees=[
                 EventAttendeeData(
                     email=attendee.get("email", ""),

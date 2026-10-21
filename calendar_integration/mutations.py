@@ -13,7 +13,7 @@ from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 from vinta_billing.exceptions import OverLimitError
 
-from calendar_integration.constants import ExternalEventChangeRequestStatus
+from calendar_integration.constants import ExternalEventChangeRequestStatus, MeetingKind
 from calendar_integration.exceptions import (
     AppointmentTypeError,
     AppointmentTypeValidationError,
@@ -22,7 +22,9 @@ from calendar_integration.exceptions import (
     ChangeRequestNotPendingError,
     EventManagementError,
     ExternalClientIdentifierError,
+    InvalidMeetingError,
     InvalidTokenError,
+    MeetingNotSupportedError,
     NoAvailableTimeWindowsError,
     PermissionServiceInitializationError,
     RoomNotFoundError,
@@ -39,6 +41,7 @@ from calendar_integration.graphql import (
     CalendarEventGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
     CodeEventResult,
+    MeetingKindEnum,
     RejectExternalEventChangeRequestResult,
 )
 from calendar_integration.models import (
@@ -59,6 +62,7 @@ from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
+    EventMeeting,
     ExternalAttendeeInputData,
     ExternalClientIdentifierData,
     ResourceAllocationInputData,
@@ -403,6 +407,31 @@ def _identifier_data(
 
 
 @strawberry.input
+class MeetingInput:
+    """The video meeting of an event.
+
+    GENERATED asks the calendar provider to create the link (Google Meet on Google
+    Calendar) and takes no ``url``; a calendar whose provider cannot create one refuses
+    it. CUSTOM needs ``url``, an https link of at most 2048 characters, which is written
+    to the provider event's location.
+
+    On an update, sending the kind the event already has keeps its meeting: a GENERATED
+    meeting keeps its link. To get a new generated link, remove the meeting and then
+    ask for GENERATED again.
+    """
+
+    kind: MeetingKindEnum
+    url: str | None = None
+
+    def to_data(self) -> EventMeeting:
+        """The service payload for this meeting.
+
+        :raises InvalidMeetingError: the url does not fit the kind.
+        """
+        return EventMeeting.request(kind=MeetingKind(self.kind.value), url=(self.url or "").strip())
+
+
+@strawberry.input
 class ExternalAttendeeInput:
     """An external attendee booked through an appointment type.
 
@@ -446,6 +475,8 @@ class AppointmentTypeEventInput:
     #: Client-owned (system, identifier) pairs stamped on the created event. A pair
     #: already claimed by another event in the organization fails the booking.
     external_client_identifiers: list[ExternalClientIdentifierInput] | None = None
+    #: The event's video meeting. Omitted or null books it with no meeting.
+    meeting: MeetingInput | None = None
     #: Rooms (resource calendars of the organization) booked for the event. Each one
     #: becomes a resource allocation; an id that is not an active room of the
     #: organization fails the booking.
@@ -869,6 +900,10 @@ class AppointmentTypeMutations:
             return AppointmentTypeEventResult(
                 success=False, error_message=EXTERNAL_ATTENDEE_CONTACT_REQUIRED_MESSAGE
             )
+        try:
+            meeting = input.meeting.to_data() if input.meeting else None
+        except InvalidMeetingError as e:
+            return AppointmentTypeEventResult(success=False, error_message=str(e))
         data = AppointmentTypeEventInputData(
             title=input.title,
             description=input.description,
@@ -887,6 +922,7 @@ class AppointmentTypeMutations:
                 EventExternalAttendanceInputData(external_attendee=a) for a in external_attendees
             ],
             external_client_identifiers=_identifier_data(input.external_client_identifiers),
+            meeting=meeting,
             resource_allocations=[
                 ResourceAllocationInputData(resource_id=calendar_id)
                 for calendar_id in dict.fromkeys(input.resource_calendar_ids)
@@ -921,6 +957,7 @@ class AppointmentTypeMutations:
         except (
             AppointmentTypeError,
             ExternalClientIdentifierError,
+            MeetingNotSupportedError,
             RoomNotFoundError,
             RoomUnavailableError,
         ) as e:

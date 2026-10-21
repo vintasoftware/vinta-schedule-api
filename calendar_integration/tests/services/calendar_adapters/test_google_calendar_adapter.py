@@ -16,6 +16,7 @@ from calendar_integration.services.calendar_adapters.google_calendar_adapter imp
     GoogleServiceAccountCredentialsTypedDict,
 )
 from calendar_integration.services.dataclasses import (
+    AdapterMeeting,
     ApplicationCalendarData,
     CalendarEventAdapterInputData,
     CalendarEventAdapterOutputData,
@@ -497,6 +498,7 @@ class TestEventOperations:
             attendees=[
                 EventAttendeeData(email="test@example.com", name="Test User", status="accepted")
             ],
+            meeting=AdapterMeeting(),
         )
 
         mock_created_event = {
@@ -555,6 +557,7 @@ class TestEventOperations:
             timezone="UTC",
             attendees=[],
             recurrence_rule="RRULE:FREQ=WEEKLY;COUNT=10;BYDAY=MO",
+            meeting=AdapterMeeting(),
         )
 
         mock_created_event = {
@@ -1537,4 +1540,169 @@ class TestBlockedTimeEvents:
 
         adapter.client.events.return_value.delete.assert_called_once_with(
             calendarId="calendar_123", eventId="event_123", sendUpdates="all"
+        )
+
+
+class TestEventMeeting:
+    """The meeting goes to Google as a Meet ``createRequest`` or as the location."""
+
+    START = datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC)
+    END = datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC)
+
+    def _input(self, **meeting_fields) -> CalendarEventAdapterInputData:
+        return CalendarEventAdapterInputData(
+            calendar_external_id="calendar_123",
+            title="Visit",
+            description="",
+            start_time=self.START,
+            end_time=self.END,
+            timezone="UTC",
+            attendees=[],
+            **meeting_fields,
+        )
+
+    def _google_event(self, **fields) -> dict:
+        return {
+            "id": "event_123",
+            "summary": "Visit",
+            "description": "",
+            "start": {"dateTime": "2025-06-22T10:00:00Z", "timeZone": "UTC"},
+            "end": {"dateTime": "2025-06-22T11:00:00Z", "timeZone": "UTC"},
+            **fields,
+        }
+
+    def _expected_body(self, **fields) -> dict:
+        return {
+            "summary": "Visit",
+            "description": "",
+            "start": {"dateTime": self.START.isoformat(), "timeZone": "UTC"},
+            "end": {"dateTime": self.END.isoformat(), "timeZone": "UTC"},
+            **fields,
+        }
+
+    def test_create_generated_meeting_requests_a_meet_and_returns_its_link(self, adapter):
+        events = adapter.client.events.return_value
+        events.insert.return_value.execute.return_value = self._google_event(
+            hangoutLink="https://meet.google.com/abc-defg-hij"
+        )
+
+        with patch(
+            "calendar_integration.services.calendar_adapters.google_calendar_adapter.uuid.uuid4"
+        ) as mock_uuid:
+            mock_uuid.return_value.hex = "request-1"
+            result = adapter.create_event(self._input(meeting=AdapterMeeting(conference="create")))
+
+        events.insert.assert_called_once_with(
+            calendarId="calendar_123",
+            body=self._expected_body(
+                attendees=[],
+                conferenceData={
+                    "createRequest": {
+                        "requestId": "request-1",
+                        "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                    }
+                },
+            ),
+            conferenceDataVersion=1,
+        )
+        assert (result.meeting_url, result.meeting_pending) == (
+            "https://meet.google.com/abc-defg-hij",
+            False,
+        )
+
+    def test_create_generated_meeting_still_being_created_has_no_link(self, adapter):
+        adapter.client.events.return_value.insert.return_value.execute.return_value = (
+            self._google_event(
+                conferenceData={"createRequest": {"status": {"statusCode": "pending"}}}
+            )
+        )
+
+        result = adapter.create_event(self._input(meeting=AdapterMeeting(conference="create")))
+
+        assert (result.meeting_url, result.meeting_pending) == ("", True)
+
+    def test_create_custom_meeting_writes_the_link_to_the_location(self, adapter):
+        events = adapter.client.events.return_value
+        events.insert.return_value.execute.return_value = self._google_event(
+            location="https://zoom.us/j/123"
+        )
+
+        result = adapter.create_event(
+            self._input(meeting=AdapterMeeting(location="https://zoom.us/j/123"))
+        )
+
+        events.insert.assert_called_once_with(
+            calendarId="calendar_123",
+            body=self._expected_body(attendees=[], location="https://zoom.us/j/123"),
+        )
+        assert (result.meeting_url, result.meeting_pending) == ("", False)
+
+    def test_update_keeping_a_generated_meeting_leaves_the_conference_alone(self, adapter):
+        events = adapter.client.events.return_value
+        events.update.return_value.execute.return_value = self._google_event(
+            hangoutLink="https://meet.google.com/abc-defg-hij"
+        )
+
+        result = adapter.update_event(
+            "calendar_123", "event_123", self._input(meeting=AdapterMeeting())
+        )
+
+        events.update.assert_called_once_with(
+            calendarId="calendar_123", eventId="event_123", body=self._expected_body()
+        )
+        assert result.meeting_url == "https://meet.google.com/abc-defg-hij"
+
+    def test_update_removing_the_meeting_sends_the_conference_version(self, adapter):
+        events = adapter.client.events.return_value
+        events.update.return_value.execute.return_value = self._google_event()
+
+        result = adapter.update_event(
+            "calendar_123", "event_123", self._input(meeting=AdapterMeeting(conference="remove"))
+        )
+
+        events.update.assert_called_once_with(
+            calendarId="calendar_123",
+            eventId="event_123",
+            body=self._expected_body(),
+            conferenceDataVersion=1,
+        )
+        assert (result.meeting_url, result.meeting_pending) == ("", False)
+
+    def test_update_to_custom_writes_the_location_and_removes_the_conference(self, adapter):
+        events = adapter.client.events.return_value
+        events.update.return_value.execute.return_value = self._google_event(
+            location="https://zoom.us/j/123"
+        )
+
+        adapter.update_event(
+            "calendar_123",
+            "event_123",
+            self._input(
+                meeting=AdapterMeeting(location="https://zoom.us/j/123", conference="remove")
+            ),
+        )
+
+        events.update.assert_called_once_with(
+            calendarId="calendar_123",
+            eventId="event_123",
+            body=self._expected_body(location="https://zoom.us/j/123"),
+            conferenceDataVersion=1,
+        )
+
+    def test_synced_event_reads_a_non_meet_video_entry_point(self, adapter):
+        result = adapter._convert_google_calendar_event_to_event_data(
+            self._google_event(
+                conferenceData={
+                    "entryPoints": [
+                        {"entryPointType": "phone", "uri": "tel:+1-555-0100"},
+                        {"entryPointType": "video", "uri": "https://teams.example.com/j/1"},
+                    ]
+                }
+            ),
+            "calendar_123",
+        )
+
+        assert (result.meeting_url, result.meeting_pending) == (
+            "https://teams.example.com/j/1",
+            False,
         )

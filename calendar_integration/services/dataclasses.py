@@ -7,8 +7,10 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 from calendar_integration.constants import (
     BlockedTimeDeclineScope,
     CalendarProvider,
+    MeetingKind,
 )
-from calendar_integration.exceptions import InvalidBlockDeclineOptionsError
+from calendar_integration.exceptions import InvalidBlockDeclineOptionsError, InvalidMeetingError
+from calendar_integration.meeting_urls import is_meeting_url, meeting_url_audit_fields
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -133,6 +135,141 @@ class BlockDeclineOptions:
         return self.scope == BlockedTimeDeclineScope.NEW_AND_EXISTING
 
 
+MEETING_URL_REQUIRED_MESSAGE = "A custom meeting needs an https url."
+MEETING_URL_NOT_ALLOWED_MESSAGE = "A generated meeting takes no url."
+
+
+@dataclass(frozen=True)
+class AdapterMeeting:
+    """What a provider write does with the event's meeting.
+
+    ``location`` is what the write does with the event's location: the CUSTOM link to
+    write, "" to clear the link a CUSTOM meeting left there, or ``None`` to leave it as
+    it is. ``conference`` says what happens to the provider's own conference: "keep" it
+    as it is, "create" a new one (a GENERATED meeting), or "remove" it.
+    """
+
+    location: str | None = None
+    conference: Literal["keep", "create", "remove"] = "keep"
+
+
+@dataclass(frozen=True)
+class EventMeeting:
+    """An event's video meeting, as stored on ``CalendarEvent``.
+
+    ``kind`` is ``None`` for no meeting. ``url`` is the client's link for a CUSTOM
+    meeting, and for a GENERATED one the link the provider created, or "" until it has.
+    """
+
+    kind: MeetingKind | None = None
+    url: str = ""
+
+    @classmethod
+    def of(cls, event: "CalendarEvent") -> "EventMeeting":
+        """The meeting ``event`` holds."""
+        kind = MeetingKind(event.meeting_kind) if event.meeting_kind else None
+        return cls(kind=kind, url=event.meeting_url)
+
+    @classmethod
+    def from_provider(cls, output: "CalendarEventAdapterOutputData") -> "EventMeeting":
+        """The meeting the provider event ``output`` holds: its conference link as a
+        GENERATED meeting, or no meeting. A link that is not a valid meeting url counts as
+        no link."""
+        url = output.meeting_url if is_meeting_url(output.meeting_url) else ""
+        return cls(kind=MeetingKind.GENERATED if url else None, url=url)
+
+    @classmethod
+    def request(cls, kind: MeetingKind | None, url: str = "") -> "EventMeeting":
+        """The meeting a create or update asks for.
+
+        ``kind=None`` removes the event's meeting. ``url`` is the client's link for a
+        CUSTOM meeting, an https link of at most 2048 characters, and is empty otherwise.
+
+        :raises InvalidMeetingError: for any other combination.
+        """
+        if kind == MeetingKind.CUSTOM:
+            if not is_meeting_url(url):
+                raise InvalidMeetingError(MEETING_URL_REQUIRED_MESSAGE)
+        elif url:
+            raise InvalidMeetingError(MEETING_URL_NOT_ALLOWED_MESSAGE)
+        return cls(kind=kind, url=url)
+
+    def after(self, meeting: "EventMeeting | None") -> "EventMeeting":
+        """This meeting once an update asking for ``meeting`` is applied.
+
+        An omitted meeting keeps this one, and so does asking for GENERATED when this one
+        is GENERATED: it keeps its link.
+        """
+        if meeting is None or meeting.kind == self.kind == MeetingKind.GENERATED:
+            return self
+        return meeting
+
+    def for_new_provider_event(self) -> "EventMeeting":
+        """The meeting of a new provider event made from this one: the same custom link,
+        or a GENERATED meeting with no link yet, since a link belongs to its own provider
+        event."""
+        return self if self.kind == MeetingKind.CUSTOM else EventMeeting(kind=self.kind)
+
+    def adapter_request(self, *, previous: "EventMeeting | None") -> AdapterMeeting:
+        """The provider write that holds this meeting.
+
+        ``previous`` is the meeting the provider event has now, or ``None`` for a new
+        provider event. The conference is touched only when the kind changes.
+        """
+        location: str | None = None
+        if self.kind == MeetingKind.CUSTOM:
+            location = self.url
+        elif previous is not None and previous.kind == MeetingKind.CUSTOM:
+            location = ""
+        if previous is None:
+            changes_conference = self.kind == MeetingKind.GENERATED
+        else:
+            changes_conference = self.kind != previous.kind
+        if not changes_conference:
+            return AdapterMeeting(location=location)
+        conference: Literal["create", "remove"] = (
+            "create" if self.kind == MeetingKind.GENERATED else "remove"
+        )
+        return AdapterMeeting(location=location, conference=conference)
+
+    def resend(self) -> AdapterMeeting:
+        """The provider write that resends this meeting as stored, to a provider event
+        that already holds it."""
+        return self.adapter_request(previous=self)
+
+    @property
+    def awaiting_link(self) -> bool:
+        """Whether this is a GENERATED meeting the provider has not created a link for
+        yet."""
+        return self.kind == MeetingKind.GENERATED and not self.url
+
+    def reconciled(self, output: "CalendarEventAdapterOutputData") -> "EventMeeting":
+        """This meeting once the conference link of the provider event ``output`` is
+        copied onto it, after a provider write or a sync.
+
+        The provider's meeting wins (see ``from_provider``): a link it created, or one
+        added, removed or replaced at the provider. Two cases keep this meeting instead.
+        A CUSTOM link belongs to the client. A GENERATED meeting still waiting for its
+        link stays as it is while the provider is creating it.
+        """
+        if self.kind == MeetingKind.CUSTOM:
+            return self
+        provider_meeting = EventMeeting.from_provider(output)
+        if self.awaiting_link and provider_meeting.kind is None and output.meeting_pending:
+            return self
+        return provider_meeting
+
+    def audit_fields(self) -> dict[str, str | None]:
+        """What the audit trail records of this meeting: its kind, and the link as its
+        host and a keyed hash (see ``meeting_url_audit_fields``), never the link."""
+        return {"meeting_kind": self.kind, **meeting_url_audit_fields(self.url)}
+
+    def save_to(self, event: "CalendarEvent") -> None:
+        """Write this meeting onto ``event``'s fields, where "" is no meeting."""
+        event.meeting_kind = self.kind or ""
+        event.meeting_url = self.url
+
+
 @dataclass
 class CalendarEventInputData:
     """Input payload for ``CalendarEventService.create_event`` / ``update_event``.
@@ -171,6 +308,10 @@ class CalendarEventInputData:
     # None = omitted, leave untouched. [] = clear all. See
     # ``ExternalClientIdentifierService.replace_for_target``.
     external_client_identifiers: list[ExternalClientIdentifierData] | None = None
+    # None = omitted: leave the meeting untouched (update) / no meeting (create).
+    # ``EventMeeting()`` removes the meeting. Build a requested one with
+    # ``EventMeeting.request``, which validates it.
+    meeting: EventMeeting | None = None
 
 
 @dataclass
@@ -191,6 +332,10 @@ class CalendarEventAdapterInputData:
     recurrence_rule: str | None = None  # RRULE string for creating recurring events
     is_recurring_instance: bool = False  # True if this is a single instance of a recurring event
 
+    # The event's meeting. Every write carries it, because a provider that replaces the
+    # whole event on update would otherwise drop a custom link from the location.
+    meeting: AdapterMeeting = dataclass_field(kw_only=True)
+
 
 @dataclass
 class CalendarEventAdapterOutputData:
@@ -209,6 +354,10 @@ class CalendarEventAdapterOutputData:
     # Recurrence fields
     recurrence_rule: str | None = None  # RRULE string
     recurring_event_id: str | None = None  # ID of the master recurring event
+    # The video link of the provider's conference, empty when it has none.
+    meeting_url: str = ""
+    # True while the provider is still creating a requested conference.
+    meeting_pending: bool = False
 
 
 @dataclass
@@ -238,6 +387,8 @@ class EventsSyncChanges:
         default_factory=list
     )
     events_to_delete: list[str] = dataclass_field(default_factory=list)
+    # Events whose meeting the provider changed. Saved under every update policy.
+    meetings_to_update: list[CalendarEvent] = dataclass_field(default_factory=list)
     blocks_to_delete: list[str] = dataclass_field(default_factory=list)
     # Ids of blocks whose provider event was deleted at the provider. The blocks stay;
     # only their ``provider_event_external_id`` is cleared.
@@ -340,6 +491,7 @@ class CalendarEventData:
     external_client_identifiers: list[ExternalClientIdentifierData] = dataclass_field(
         default_factory=list
     )
+    meeting: EventMeeting = dataclass_field(default_factory=EventMeeting)
 
 
 @dataclass
@@ -469,6 +621,8 @@ class AppointmentTypeEventInputData:
     )
     # Identifiers stamped on the created event. None and [] both write none.
     external_client_identifiers: list[ExternalClientIdentifierData] | None = None
+    # The event's video meeting. None = no meeting.
+    meeting: EventMeeting | None = None
     # Rooms booked for the event, written as its resource allocations.
     resource_allocations: list[ResourceAllocationInputData] = dataclass_field(default_factory=list)
 

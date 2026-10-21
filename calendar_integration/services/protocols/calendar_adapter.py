@@ -16,6 +16,8 @@ from calendar_integration.services.dataclasses import (
 
 class CalendarAdapter(Protocol):
     provider: str
+    #: Whether the provider can create a meeting link for an event (GENERATED).
+    supports_generated_meetings: bool
 
     def __init__(self, credentials: dict | None = None): ...
 

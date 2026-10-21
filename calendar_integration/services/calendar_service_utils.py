@@ -36,6 +36,7 @@ from calendar_integration.services.dataclasses import (
     EventExternalAttendanceInputData,
     EventExternalAttendeeData,
     EventInternalAttendeeData,
+    EventMeeting,
     ExternalAttendeeInputData,
     ExternalClientIdentifierData,
     ResourceData,
@@ -253,6 +254,7 @@ def serialize_event(event: CalendarEvent) -> CalendarEventData:
         timezone=event.timezone,
         title=event.title,
         description=event.description,
+        meeting=EventMeeting.of(event),
         calendar_settings=CalendarSettingsData(
             manage_available_windows=event.calendar_fk.manage_available_windows,  # type: ignore[attr-defined]
             accepts_public_scheduling=event.calendar_fk.accepts_public_scheduling,  # type: ignore[attr-defined]
@@ -422,6 +424,7 @@ def serialize_event_data_input(
         description=(
             event_data.description if event_data.description is not None else event.description
         ),
+        meeting=EventMeeting.of(event).after(event_data.meeting),
         calendar_settings=CalendarSettingsData(
             manage_available_windows=event.calendar_fk.manage_available_windows,  # type: ignore[attr-defined]
             accepts_public_scheduling=event.calendar_fk.accepts_public_scheduling,  # type: ignore[attr-defined]

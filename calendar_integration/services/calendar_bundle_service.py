@@ -505,6 +505,8 @@ class CalendarBundleService:
             external_attendances=event_data.external_attendances or [],
             resource_allocations=event_data.resource_allocations,
             recurrence_rule=event_data.recurrence_rule,
+            # The primary event is the one at the provider, so it holds the meeting.
+            meeting=event_data.meeting,
         )
 
         # Policy was already enforced once at the top-level CalendarService.create_event

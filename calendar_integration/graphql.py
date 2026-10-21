@@ -1,10 +1,11 @@
 import datetime
 import enum
+from typing import cast
 
 import strawberry
 import strawberry_django
 
-from calendar_integration.constants import BlockedTimeDeclineScope
+from calendar_integration.constants import BlockedTimeDeclineScope, MeetingKind
 from calendar_integration.models import (
     AppointmentType,
     AppointmentTypeSlot,
@@ -472,6 +473,18 @@ class EventRecurrenceExceptionGraphQLType:
         return _scoped_event_or_none(self.modified_event, _owner_scoped_calendar_ids(info))  # type: ignore
 
 
+@strawberry.enum
+class MeetingKindEnum(enum.Enum):
+    """Where an event's video meeting link comes from.
+
+    GENERATED: the calendar provider creates it (Google Meet on Google Calendar).
+    CUSTOM: the client supplies it; it is written to the provider event's location.
+    """
+
+    GENERATED = MeetingKind.GENERATED.value
+    CUSTOM = MeetingKind.CUSTOM.value
+
+
 @strawberry_django.type(CalendarEvent)
 class CalendarEventGraphQLType:
     id: strawberry.auto  # noqa: A003
@@ -497,6 +510,21 @@ class CalendarEventGraphQLType:
     # attendee_memberships/external_attendees return PEOPLE (not calendars) — no
     # cross-owner calendar leak, so they stay plain field exposures.
     external_attendees: list[ExternalAttendeeGraphQLType] = strawberry_django.field()
+
+    @strawberry.field
+    def meeting_kind(self) -> MeetingKindEnum | None:
+        """Where the event's video meeting link comes from. ``null`` when it has none."""
+        kind = cast("CalendarEvent", self).meeting_kind
+        return MeetingKindEnum(kind) if kind else None
+
+    @strawberry.field
+    def meeting_url(self) -> str | None:
+        """The link to join the event's video meeting.
+
+        ``null`` when the event has no meeting, and for a GENERATED meeting until the
+        calendar provider has created the link.
+        """
+        return cast("CalendarEvent", self).meeting_url or None
 
     @strawberry_django.field(prefetch_related=["external_client_identifiers"])
     def external_client_identifiers(self) -> list["ExternalClientIdentifierGraphQLType"]:

@@ -132,6 +132,8 @@ def _is_valid_rrule_key(
 
 class MSOutlookCalendarAdapter(CalendarAdapter):
     provider = "microsoft"
+    # The client can ask for a Teams meeting, but its join link is never read back.
+    supports_generated_meetings = False
     RSVP_STATUS_MAPPING: ClassVar[dict[str, Literal["pending", "accepted", "declined"]]] = {
         "none": "pending",
         "organizer": "accepted",
@@ -432,6 +434,9 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
                 event_data.recurrence_rule
             )
 
+        if event_data.meeting.location:
+            ms_event_data["location"] = event_data.meeting.location
+
         return ms_event_data
 
     def get_account_calendars(self) -> Iterable[CalendarResourceData]:
@@ -717,6 +722,8 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
                 start_time=event_data.start_time,
                 end_time=event_data.end_time,
                 attendees=attendees,
+                # Outlook updates are partial, so ``None`` leaves the location as it is.
+                location=event_data.meeting.location,
             )
 
             return self._convert_ms_event_to_calendar_event_data(ms_event, calendar_id)

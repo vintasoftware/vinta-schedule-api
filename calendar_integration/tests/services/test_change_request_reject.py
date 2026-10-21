@@ -24,6 +24,7 @@ Test matrix:
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -35,6 +36,7 @@ from calendar_integration.constants import (
     CalendarProvider,
     ExternalEventChangeKind,
     ExternalEventChangeRequestStatus,
+    MeetingKind,
 )
 from calendar_integration.exceptions import (
     ChangeRequestIneligibleError,
@@ -51,7 +53,10 @@ from calendar_integration.models import (
     ExternalAttendee,
     RecurrenceRule,
 )
-from calendar_integration.services.dataclasses import CalendarEventAdapterOutputData
+from calendar_integration.services.dataclasses import (
+    AdapterMeeting,
+    CalendarEventAdapterOutputData,
+)
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
@@ -164,6 +169,43 @@ def _adapter_output(
         end_time=datetime.datetime(2025, 9, 1, 10, 0, tzinfo=datetime.UTC),
         timezone="UTC",
         attendees=[],
+    )
+
+
+@pytest.mark.django_db
+def test_reject_delete_recreates_the_meet_and_saves_its_new_link(
+    service: ExternalEventChangeRequestService,
+    calendar: Calendar,
+    event: CalendarEvent,
+    attendee_membership: OrganizationMembership,
+) -> None:
+    """The deleted provider event took its Meet with it, so the re-created one asks for
+    a new conference, and the event keeps the new link."""
+    create_event_attendance(event=event, user=attendee_membership.user)
+    event.meeting_kind = MeetingKind.GENERATED
+    event.meeting_url = "https://meet.google.com/old"
+    event.save(update_fields=["meeting_kind", "meeting_url"])
+    change_request = create_external_event_change_request(
+        event=event,
+        kind=ExternalEventChangeKind.DELETE,
+        status=ExternalEventChangeRequestStatus.PENDING,
+        proposed_values={},
+        retained_values={"title": "Original Title"},
+    )
+    write_adapter = MagicMock()
+    write_adapter.create_event.return_value = dataclasses.replace(
+        _adapter_output("event_external_NEW_999", calendar.provider_calendar_id),
+        meeting_url="https://meet.google.com/new",
+    )
+
+    service.reject(change_request, membership=attendee_membership, write_adapter=write_adapter)
+
+    adapter_input = write_adapter.create_event.call_args.args[0]
+    assert adapter_input.meeting == AdapterMeeting(conference="create")
+    event.refresh_from_db()
+    assert (event.external_id, event.meeting_url) == (
+        "event_external_NEW_999",
+        "https://meet.google.com/new",
     )
 
 

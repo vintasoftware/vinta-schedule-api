@@ -24,10 +24,16 @@ from unittest.mock import MagicMock
 import pytest
 from allauth.socialaccount.models import SocialAccount
 
-from calendar_integration.constants import CalendarProvider, CalendarSyncStatus, CalendarType
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarSyncStatus,
+    CalendarType,
+    MeetingKind,
+)
 from calendar_integration.models import (
     BlockedTime,
     Calendar,
+    CalendarEvent,
     CalendarSync,
 )
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
@@ -35,8 +41,9 @@ from calendar_integration.services.calendar_sync_service import CalendarSyncServ
 from calendar_integration.services.dataclasses import (
     CalendarEventAdapterOutputData,
     CalendarResourceData,
+    EventMeeting,
 )
-from organizations.models import Organization
+from organizations.models import ExternalEventUpdatePolicy, Organization
 from users.models import Profile, User
 
 
@@ -398,3 +405,184 @@ def test_execute_organization_calendar_resources_import_syncs_each_resource(
     assert call["start_datetime"] == start
     assert call["end_datetime"] == end
     assert call["should_update_events"] is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: provider meeting link
+# ---------------------------------------------------------------------------
+
+MEET_URL = "https://meet.google.com/abc-defg-hij"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("should_update_events", [True, False])
+def test_execute_calendar_sync_saves_the_meet_link_google_created(
+    context: CalendarServiceContext,
+    calendar: Calendar,
+    organization: Organization,
+    fake_adapter: MagicMock,
+    should_update_events: bool,
+) -> None:
+    """A Meet that was still being created when the event was saved gets its link.
+
+    The organization's default policy diverts inbound edits into change requests;
+    the link is saved anyway, because the provider is finishing the platform's own
+    request. A sync that does not update events saves it too.
+    """
+    event = CalendarEvent.objects.create(
+        calendar=calendar,
+        title="Visit",
+        start_time_tz_unaware=datetime.datetime(2025, 8, 1, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 8, 1, 10, 0),
+        timezone="UTC",
+        external_id="ext_meet",
+        organization_id=organization.id,
+        meeting_kind=MeetingKind.GENERATED,
+    )
+    synced = _adapter_event(
+        "ext_meet",
+        "Visit",
+        datetime.datetime(2025, 8, 1, 9, 0, tzinfo=datetime.UTC),
+        datetime.datetime(2025, 8, 1, 10, 0, tzinfo=datetime.UTC),
+    )
+    synced.meeting_url = MEET_URL
+    fake_adapter.get_events.return_value = {"events": [synced], "next_sync_token": "tok"}
+    calendar_sync = CalendarSync.objects.create(
+        calendar=calendar,
+        organization=organization,
+        start_datetime=datetime.datetime(2025, 8, 1, 0, 0, tzinfo=datetime.UTC),
+        end_datetime=datetime.datetime(2025, 8, 1, 23, 59, tzinfo=datetime.UTC),
+        should_update_events=should_update_events,
+        status=CalendarSyncStatus.IN_PROGRESS,
+    )
+
+    change_requests = MagicMock()
+    service = CalendarSyncService(
+        context=context,
+        calendar_cache={},
+        host=FakeHost(),
+        external_event_change_request_service=change_requests,
+    )
+    # Incremental, as a provider notification runs it.
+    service._execute_calendar_sync(calendar_sync, sync_token="previous-token")
+
+    event.refresh_from_db()
+    assert (event.meeting_kind, event.meeting_url) == (MeetingKind.GENERATED, MEET_URL)
+    change_requests.record_applied_meeting_change.assert_not_called()
+
+
+OTHER_MEET_URL = "https://meet.google.com/xyz-wvut-srq"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "policy",
+    [
+        ExternalEventUpdatePolicy.ALLOW,
+        ExternalEventUpdatePolicy.CHANGE_REQUEST,
+        ExternalEventUpdatePolicy.FORBIDDEN,
+    ],
+)
+@pytest.mark.parametrize(
+    ("provider_url", "expected"),
+    [
+        (OTHER_MEET_URL, EventMeeting(kind=MeetingKind.GENERATED, url=OTHER_MEET_URL)),
+        ("", EventMeeting()),
+    ],
+    ids=["replaced-at-provider", "removed-at-provider"],
+)
+def test_execute_calendar_sync_follows_a_meet_changed_at_the_provider(
+    context: CalendarServiceContext,
+    calendar: Calendar,
+    organization: Organization,
+    fake_adapter: MagicMock,
+    policy: str,
+    provider_url: str,
+    expected: EventMeeting,
+) -> None:
+    """A Meet replaced or removed at the provider is applied under every policy, since
+    the old link cannot be restored. Outside ALLOW the change is recorded."""
+    organization.external_event_update_policy = policy
+    organization.save(update_fields=["external_event_update_policy"])
+    event = CalendarEvent.objects.create(
+        calendar=calendar,
+        title="Visit",
+        start_time_tz_unaware=datetime.datetime(2025, 8, 1, 9, 0),
+        end_time_tz_unaware=datetime.datetime(2025, 8, 1, 10, 0),
+        timezone="UTC",
+        external_id="ext_meet",
+        organization_id=organization.id,
+        meeting_kind=MeetingKind.GENERATED,
+        meeting_url=MEET_URL,
+    )
+    synced = _adapter_event(
+        "ext_meet",
+        "Visit",
+        datetime.datetime(2025, 8, 1, 9, 0, tzinfo=datetime.UTC),
+        datetime.datetime(2025, 8, 1, 10, 0, tzinfo=datetime.UTC),
+    )
+    synced.meeting_url = provider_url
+    fake_adapter.get_events.return_value = {"events": [synced], "next_sync_token": "tok"}
+    calendar_sync = CalendarSync.objects.create(
+        calendar=calendar,
+        organization=organization,
+        start_datetime=datetime.datetime(2025, 8, 1, 0, 0, tzinfo=datetime.UTC),
+        end_datetime=datetime.datetime(2025, 8, 1, 23, 59, tzinfo=datetime.UTC),
+        should_update_events=False,
+        status=CalendarSyncStatus.IN_PROGRESS,
+    )
+    change_requests = MagicMock()
+    service = CalendarSyncService(
+        context=context,
+        calendar_cache={},
+        host=FakeHost(),
+        external_event_change_request_service=change_requests,
+    )
+
+    service._execute_calendar_sync(calendar_sync, sync_token="previous-token")
+
+    event.refresh_from_db()
+    assert EventMeeting.of(event) == expected
+    if policy == ExternalEventUpdatePolicy.ALLOW:
+        change_requests.record_applied_meeting_change.assert_not_called()
+    else:
+        change_requests.record_applied_meeting_change.assert_called_once_with(
+            event=event,
+            previous=EventMeeting(kind=MeetingKind.GENERATED, url=MEET_URL),
+            current=expected,
+        )
+
+
+@pytest.mark.django_db
+def test_execute_calendar_sync_imports_a_recurring_event_with_its_meet(
+    context: CalendarServiceContext,
+    calendar: Calendar,
+    organization: Organization,
+    fake_adapter: MagicMock,
+) -> None:
+    """An event imported from the provider keeps the provider's Meet, whatever the
+    organization's policy."""
+    synced = _adapter_event(
+        "ext_imported",
+        "Weekly",
+        datetime.datetime(2025, 8, 1, 9, 0, tzinfo=datetime.UTC),
+        datetime.datetime(2025, 8, 1, 10, 0, tzinfo=datetime.UTC),
+    )
+    synced.recurrence_rule = "RRULE:FREQ=WEEKLY;COUNT=5"
+    synced.meeting_url = MEET_URL
+    fake_adapter.get_events.return_value = {"events": [synced], "next_sync_token": "tok"}
+    calendar_sync = CalendarSync.objects.create(
+        calendar=calendar,
+        organization=organization,
+        start_datetime=datetime.datetime(2025, 8, 1, 0, 0, tzinfo=datetime.UTC),
+        end_datetime=datetime.datetime(2025, 8, 1, 23, 59, tzinfo=datetime.UTC),
+        should_update_events=True,
+        status=CalendarSyncStatus.IN_PROGRESS,
+    )
+
+    make_service(context, FakeHost())._execute_calendar_sync(calendar_sync)
+
+    event = CalendarEvent.objects.filter_by_organization(organization.id).get(
+        external_id="ext_imported"
+    )
+    assert EventMeeting.of(event) == EventMeeting(kind=MeetingKind.GENERATED, url=MEET_URL)

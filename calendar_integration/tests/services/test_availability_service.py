@@ -304,6 +304,8 @@ def test_get_availability_windows_in_range_event_blocks_time(
     mock_event.start_time = event_start
     mock_event.end_time = event_end
     mock_event.id = 999
+    mock_event.meeting_kind = None
+    mock_event.meeting_url = ""
 
     service = make_service(context, recurrence_manager, events=[mock_event])
     range_start = datetime.datetime(2025, 7, 4, 8, 0, tzinfo=datetime.UTC)

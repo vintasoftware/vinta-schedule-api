@@ -3449,6 +3449,7 @@ class AppointmentTypeService:
             external_attendances=list(data.external_attendances),
             appointment_type_authorized=True,
             external_client_identifiers=data.external_client_identifiers,
+            meeting=data.meeting,
             resource_allocations=list(data.resource_allocations),
         )
         event = self.calendar_service.create_event(

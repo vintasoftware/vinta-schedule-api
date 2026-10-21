@@ -50,6 +50,7 @@ from calendar_integration.exceptions import (
     EventManagementError,
     ExternalAttendeeIdentifierConflictError,
     ExternalAttendeePartialIdentifierMatchError,
+    MeetingNotSupportedError,
     NoAvailableTimeWindowsError,
     RoomNotFoundError,
     RoomUnavailableError,
@@ -95,6 +96,7 @@ from calendar_integration.services.calendar_service_utils import (
     serialize_event_internal_attendee as _serialize_event_internal_attendee_util,
 )
 from calendar_integration.services.dataclasses import (
+    AdapterMeeting,
     CalendarEventAdapterInputData,
     CalendarEventData,
     CalendarEventInputData,
@@ -104,6 +106,7 @@ from calendar_integration.services.dataclasses import (
     EventExternalAttendanceInputData,
     EventExternalAttendeeData,
     EventInternalAttendeeData,
+    EventMeeting,
     ExternalAttendeeInputData,
     ExternalClientIdentifierData,
     ResourceAllocationInputData,
@@ -119,6 +122,12 @@ from payments.seams.scopes import scope_for
 from public_api.models import SystemUser
 from users.models import User
 
+
+#: Why a move is refused when the event's generated meeting cannot follow it.
+TRANSFER_MEETING_NOT_SUPPORTED_MESSAGE = (
+    "The target calendar cannot generate a meeting link. Remove the event's meeting or "
+    "replace it with a custom link, then transfer it."
+)
 
 # The stored attendee holding a payload's identifiers, or None, keyed by those pairs.
 # ``update_event`` looks each one up for the permission check and again for the write;
@@ -289,7 +298,8 @@ class CalendarEventService:
 
         Datetimes are rendered to ISO strings so the resulting diff is JSON-safe for
         the audit Celery payload. Only the event's direct fields are captured — never
-        attendees or resources.
+        attendees or resources. The meeting link is captured as its host and a keyed
+        hash (see ``EventMeeting.audit_fields``), never as the link.
         """
 
         def _iso(value: datetime.datetime | None) -> str | None:
@@ -301,7 +311,32 @@ class CalendarEventService:
             "start_time_tz_unaware": _iso(event.start_time_tz_unaware),
             "end_time_tz_unaware": _iso(event.end_time_tz_unaware),
             "timezone": event.timezone,
+            **EventMeeting.of(event).audit_fields(),
         }
+
+    def _provider_write_adapter(self, calendar: Calendar) -> "CalendarAdapter | None":
+        """The adapter that writes ``calendar``'s events to its provider, or ``None`` when
+        its events stay local.
+
+        Only personal and resource calendars are written to a provider.
+        """
+        if calendar.calendar_type not in [CalendarType.PERSONAL, CalendarType.RESOURCE]:
+            return None
+        return self._host._get_write_adapter_for_calendar(calendar)
+
+    @staticmethod
+    def _require_meeting_support(
+        write_adapter: "CalendarAdapter | None", request: AdapterMeeting
+    ) -> None:
+        """Refuse a write that asks the provider to create a conference it cannot.
+
+        Only a provider write reaches a provider, and only some providers create meeting
+        links. Anywhere else the link would never arrive.
+        """
+        if request.conference != "create":
+            return
+        if write_adapter is None or not write_adapter.supports_generated_meetings:
+            raise MeetingNotSupportedError()
 
     @staticmethod
     def _event_attendee_membership_ids(event: CalendarEvent) -> set[int]:
@@ -911,14 +946,16 @@ class CalendarEventService:
         # defaulted to ``[]`` / were required strings.
         input_attendances = event_data.attendances or []
         input_external_attendances = event_data.external_attendances or []
+        meeting = event_data.meeting or EventMeeting()
+        meeting_request = meeting.adapter_request(previous=None)
+        write_adapter = self._provider_write_adapter(calendar)
+        self._require_meeting_support(write_adapter, meeting_request)
 
         # ``None``, not "": the column is unique, and NULL is what lets any number
         # of provider-less events coexist. See ``CalendarEvent.external_id``.
         external_id: str | None = None
         original_payload: dict = {}
-        if calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE] and (
-            write_adapter := self._host._get_write_adapter_for_calendar(calendar)
-        ):
+        if write_adapter:
             users_by_id = {
                 u.id: u for u in User.objects.filter(id__in=[a.user_id for a in input_attendances])
             }
@@ -962,10 +999,12 @@ class CalendarEventService:
                     ],
                     recurrence_rule=event_data.recurrence_rule,
                     is_recurring_instance=event_data.is_recurring_exception,
+                    meeting=meeting_request,
                 )
             )
             external_id = created_event.external_id or None
             original_payload = created_event.original_payload or {}
+            meeting = meeting.reconciled(created_event)
 
         # Handle parent event for exceptions/instances
         parent_event = None
@@ -1003,6 +1042,7 @@ class CalendarEventService:
             is_recurring_exception=event_data.is_recurring_exception,
             recurrence_id=event_data.start_time if parent_event else None,
         )
+        meeting.save_to(event)
 
         if recurrence_rule:
             event.recurrence_rule_fk = recurrence_rule  # type: ignore
@@ -1261,11 +1301,16 @@ class CalendarEventService:
                 "calendar event"
             )
 
+        # Meeting -- tri-state like the fields above. An omitted meeting keeps the
+        # stored one, and only a change of kind touches the provider's conference.
+        stored_meeting = EventMeeting.of(event)
+        meeting = stored_meeting.after(event_data.meeting)
+        meeting_request = meeting.adapter_request(previous=stored_meeting)
+        write_adapter = self._provider_write_adapter(event.calendar)
+        self._require_meeting_support(write_adapter, meeting_request)
+
         original_payload: dict[str, Any] = {}
-        if event.calendar.calendar_type in [
-            CalendarType.PERSONAL,
-            CalendarType.RESOURCE,
-        ] and (write_adapter := self._host._get_write_adapter_for_calendar(event.calendar)):
+        if write_adapter:
             # The provider adapters take a FULL event payload -- they have no notion
             # of a partial update -- so the tri-state fields are resolved against the
             # event's stored state before the remote write. Sending an omitted field
@@ -1345,9 +1390,11 @@ class CalendarEventService:
                     # Google replaces the whole event on update, so a rule left out
                     # here turns the series into a single event at the provider.
                     recurrence_rule=event_data.recurrence_rule,
+                    meeting=meeting_request,
                 ),
             )
             original_payload = updated_event.original_payload or {}
+            meeting = meeting.reconciled(updated_event)
 
         # Snapshot the event's OWN scalar fields BEFORE mutation so the audit diff
         # captures exactly what this method changes (attendees/resources are excluded).
@@ -1363,6 +1410,9 @@ class CalendarEventService:
             event.title = event_data.title
         if event_data.description is not None:
             event.description = event_data.description
+        # A new generated meeting has the link the provider returned, or none yet: the
+        # sync fills it in once the provider creates it.
+        meeting.save_to(event)
         # ``start_time`` / ``end_time`` are DB-generated fields (``GeneratedField``
         # with ``db_persist=True``) that derive from ``start_time_tz_unaware`` and
         # the IANA ``timezone``.  Assigning to the generated fields is silently
@@ -1800,6 +1850,7 @@ class CalendarEventService:
         attendances: list[EventAttendanceInputData] | None = None,
         external_attendances: list[EventExternalAttendanceInputData] | None = None,
         resource_allocations: list[ResourceAllocationInputData] | None = None,
+        meeting: EventMeeting | None = None,
     ) -> CalendarEvent:
         """
         Create a recurring event with the specified recurrence rule.
@@ -1816,6 +1867,7 @@ class CalendarEventService:
         :param attendances: List of internal attendees
         :param external_attendances: List of external attendees
         :param resource_allocations: List of resource allocations
+        :param meeting: The video meeting of the series
         :return: Created CalendarEvent with recurrence rule
         """
         if not is_initialized_or_authenticated_calendar_service(
@@ -1833,6 +1885,7 @@ class CalendarEventService:
             attendances=attendances or [],
             external_attendances=external_attendances or [],
             resource_allocations=resource_allocations or [],
+            meeting=meeting,
         )
         return self.create_event(calendar_id, event_data)
 
@@ -1896,15 +1949,14 @@ class CalendarEventService:
         recurrence, so an Outlook series is not ended by this call.
         """
         calendar = event.calendar
-        if calendar.calendar_type not in [CalendarType.PERSONAL, CalendarType.RESOURCE]:
-            return
         if not event.external_id:
             return
-        write_adapter = self._host._get_write_adapter_for_calendar(calendar)
+        write_adapter = self._provider_write_adapter(calendar)
         if write_adapter is None:
             return
 
         attendees, resources = self._adapter_people_for_event(event)
+        meeting = EventMeeting.of(event)
 
         write_adapter.update_event(
             calendar.provider_calendar_id,
@@ -1920,6 +1972,7 @@ class CalendarEventService:
                 resources=resources,
                 external_id=event.external_id,
                 recurrence_rule=None,
+                meeting=meeting.resend(),
             ),
         )
 
@@ -1998,6 +2051,7 @@ class CalendarEventService:
                     ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
                     for r in parent_event.resource_allocations.all()
                 ],
+                meeting=EventMeeting.of(parent_event).for_new_provider_event(),
             )
             return new_recurring_event
 
@@ -2016,6 +2070,7 @@ class CalendarEventService:
                 timezone=modification_data.get("timezone") or parent_event.timezone,
                 parent_event_id=parent_event.id,
                 is_recurring_exception=True,
+                meeting=EventMeeting.of(parent_event).for_new_provider_event(),
             )
             return self.create_event(parent_event.calendar.id, modified_event_data)
 
@@ -2214,13 +2269,12 @@ class CalendarEventService:
 
             # Sync the updated times to the external provider when an adapter is available,
             # reusing the existing external_id so no orphan is left behind.
-            if (
-                master.calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE]
-                and existing_modified.external_id
-                and (write_adapter := self._host._get_write_adapter_for_calendar(master.calendar))
+            if existing_modified.external_id and (
+                write_adapter := self._provider_write_adapter(master.calendar)
             ):
                 # The occurrence keeps the series' attendees and resources at the provider.
                 attendees, resources = self._adapter_people_for_event(master)
+                series_meeting = EventMeeting.of(master)
                 updated_external = write_adapter.update_event(
                     master.calendar.provider_calendar_id,
                     existing_modified.external_id,
@@ -2235,6 +2289,7 @@ class CalendarEventService:
                         resources=resources,
                         recurrence_rule=None,
                         is_recurring_instance=True,
+                        meeting=series_meeting.resend(),
                     ),
                 )
                 if context.calendar_adapter:
@@ -2253,9 +2308,10 @@ class CalendarEventService:
         # of provider-less events coexist. See ``CalendarEvent.external_id``.
         external_id: str | None = None
         original_payload: dict[str, Any] = {}
-        if master.calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE] and (
-            write_adapter := self._host._get_write_adapter_for_calendar(master.calendar)
-        ):
+        # The occurrence becomes its own provider event, so it keeps the series' custom
+        # link, and a generated meeting gets a conference of its own.
+        meeting = EventMeeting.of(master).for_new_provider_event()
+        if write_adapter := self._provider_write_adapter(master.calendar):
             # The occurrence keeps the series' attendees and resources at the provider.
             attendees, resources = self._adapter_people_for_event(master)
             created_external = write_adapter.create_event(
@@ -2270,10 +2326,12 @@ class CalendarEventService:
                     resources=resources,
                     recurrence_rule=None,
                     is_recurring_instance=True,
+                    meeting=meeting.adapter_request(previous=None),
                 )
             )
             external_id = created_external.external_id or None
             original_payload = created_external.original_payload or {}
+            meeting = meeting.reconciled(created_external)
 
         # Build the modified-occurrence event directly (mirroring create_event's field
         # construction for the parent_event/is_recurring_exception path) so we never
@@ -2297,6 +2355,7 @@ class CalendarEventService:
             # from create_event's recurrence_id=event_data.start_time path.
             recurrence_id=recurrence_id,
         )
+        meeting.save_to(modified_event)
         modified_event.save()
 
         # Link via the master's exception primitive (upserts on (org, exception_date) →
@@ -2685,10 +2744,7 @@ class CalendarEventService:
             self._host._delete_bundle_event(event)
             return
 
-        if event.calendar.calendar_type in [
-            CalendarType.PERSONAL,
-            CalendarType.RESOURCE,
-        ] and (write_adapter := self._host._get_write_adapter_for_calendar(event.calendar)):
+        if write_adapter := self._provider_write_adapter(event.calendar):
             if event.is_recurring and delete_series:
                 # Delete the entire recurring series from external calendar
                 write_adapter.delete_event(
@@ -2769,7 +2825,6 @@ class CalendarEventService:
             raise EventManagementError(
                 "Cannot transfer an event that was never written to a calendar provider."
             )
-
         event_data = context.calendar_adapter.get_event(
             event.calendar.provider_calendar_id, event.external_id
         )
@@ -2806,6 +2861,9 @@ class CalendarEventService:
                 for r in event.resource_allocations.all()
                 if r.calendar_fk_id
             ],
+            # A generated meeting asks the new calendar's provider for a new link: the
+            # old event, and the conference that belongs to it, is deleted below.
+            meeting=EventMeeting.of(event).for_new_provider_event(),
         )
         # Route create/delete through the host so the facade's public methods (the
         # original ``self.create_event`` / ``self.delete_event`` call targets) run —
@@ -2822,9 +2880,15 @@ class CalendarEventService:
         # the old one are re-billed under the new identity. That is the known
         # identity-churn defect recorded as a known precondition, not something
         # this check could fix by charging a unit.)
-        new_event = self._host.create_event(
-            new_calendar.id, new_event_data, _check_postpaid_allowance=False
-        )
+        #
+        # The create runs before the delete, so a target calendar that cannot generate
+        # the event's meeting refuses the move before anything is written.
+        try:
+            new_event = self._host.create_event(
+                new_calendar.id, new_event_data, _check_postpaid_allowance=False
+            )
+        except MeetingNotSupportedError as e:
+            raise MeetingNotSupportedError(TRANSFER_MEETING_NOT_SUPPORTED_MESSAGE) from e
 
         # Delete the old event
         self._host.delete_event(event.calendar.id, event.id)
@@ -2938,6 +3002,7 @@ class CalendarEventService:
                         ResourceAllocationInputData(resource_id=r.calendar_fk_id)  # type: ignore
                         for r in parent.resource_allocations.all()
                     ],
+                    meeting=EventMeeting.of(parent).for_new_provider_event(),
                 ),
             )
 

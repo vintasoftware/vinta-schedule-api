@@ -76,6 +76,20 @@ class EventManagementError(CalendarIntegrationError):
     pass
 
 
+class InvalidMeetingError(EventManagementError):
+    """A requested meeting is not one an event can hold."""
+
+
+class MeetingNotSupportedError(EventManagementError):
+    """The calendar cannot create the meeting asked for."""
+
+    def __init__(
+        self,
+        message: str = "This calendar cannot generate a meeting link. Use a custom link instead.",
+    ) -> None:
+        super().__init__(message)
+
+
 class InvalidTimezoneError(EventManagementError):
     def __init__(self, iana_tz: str):
         super().__init__(f"Invalid IANA timezone: {iana_tz}")
