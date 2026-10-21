@@ -31,11 +31,12 @@ constructor:
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q, prefetch_related_objects
 from django.utils import timezone
 
@@ -47,9 +48,12 @@ from audit_integration.constants import AuditAction, AuditActorType
 from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
     EventManagementError,
+    ExternalAttendeeIdentifierConflictError,
+    ExternalAttendeePartialIdentifierMatchError,
     NoAvailableTimeWindowsError,
     RoomNotFoundError,
     RoomUnavailableError,
+    SharedExternalAttendeeEditError,
 )
 from calendar_integration.models import (
     Calendar,
@@ -116,6 +120,18 @@ from public_api.models import SystemUser
 from users.models import User
 
 
+# The stored attendee holding a payload's identifiers, or None, keyed by those pairs.
+# ``update_event`` looks each one up for the permission check and again for the write;
+# this lets the second lookup reuse the first.
+ExternalAttendeeHolders = dict[tuple[tuple[str, str], ...], ExternalAttendee | None]
+
+
+def _identifiers_key(
+    identifiers: list[ExternalClientIdentifierData],
+) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((i.system, i.identifier) for i in identifiers))
+
+
 def _resolve_token_audit_actor(
     token: CalendarManagementToken | None,
 ) -> User | CalendarManagementToken | None:
@@ -148,6 +164,9 @@ if TYPE_CHECKING:
     from calendar_integration.querysets import CalendarEventQuerySet
     from calendar_integration.services.calendar_service_context import CalendarServiceContext
     from calendar_integration.services.dataclasses import AvailableTimeWindow
+    from calendar_integration.services.external_client_identifier_service import (
+        ExternalClientIdentifierService,
+    )
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
     from calendar_integration.services.recurrence_manager import RecurrenceManager
 
@@ -445,6 +464,194 @@ class CalendarEventService:
     ) -> CalendarEventData:
         return _serialize_event_data_input_util(
             event, event_data, self._context.bound_organization, current_event=current_event
+        )
+
+    def _find_external_attendee_by_identifiers(
+        self,
+        identifier_service: ExternalClientIdentifierService,
+        identifiers: list[ExternalClientIdentifierData],
+        holders: ExternalAttendeeHolders | None = None,
+    ) -> ExternalAttendee | None:
+        """Return the stored attendee holding any of ``identifiers``, or ``None``.
+
+        Raises ``ExternalAttendeeIdentifierConflictError`` when the pairs belong to
+        more than one stored attendee. With ``holders``, a pair set looked up before
+        is answered from it, and a new answer is added to it.
+        """
+        key = _identifiers_key(identifiers)
+        if holders is not None and key in holders:
+            return holders[key]
+        attendee_ids = identifier_service.find_target_ids(ExternalAttendee, identifiers)
+        if len(attendee_ids) > 1:
+            raise ExternalAttendeeIdentifierConflictError()
+        attendee = (
+            ExternalAttendee.objects.filter_by_organization(
+                self._context.bound_organization.id
+            ).get(pk=attendee_ids.pop())
+            if attendee_ids
+            else None
+        )
+        if holders is not None:
+            holders[key] = attendee
+        return attendee
+
+    def _resolve_external_attendee(
+        self,
+        attendee_data: ExternalAttendeeInputData,
+        holders: ExternalAttendeeHolders | None = None,
+    ) -> ExternalAttendee:
+        """Return the ``ExternalAttendee`` row an event should link for ``attendee_data``.
+
+        An attendee carrying identifiers is shared: every event that names the same
+        ``(system, identifier)`` links to one row, which is what
+        ``extclientid_uniq_system_ident`` allows. When a row already holds one of the
+        pairs it is linked as it is, because other events use it too; asking it to
+        change is refused (see ``_check_links_as_stored``). A row is created, with its
+        identifiers, only when no attendee holds any of them.
+
+        An attendee with no identifiers always gets a new row.
+        """
+        identifier_service = self._context.external_client_identifier_service
+        identifiers = attendee_data.external_client_identifiers
+        if identifier_service is None or not identifiers:
+            # Nothing to share the row by, and no identifiers to write on a new one.
+            return self._create_external_attendee(attendee_data)
+
+        existing = self._find_external_attendee_by_identifiers(
+            identifier_service, identifiers, holders
+        )
+        if existing is not None:
+            self._check_links_as_stored(identifier_service, existing, attendee_data)
+            return existing
+        try:
+            # Two bookings for the same new attendee can both get here. The second
+            # identifier insert fails on ``extclientid_uniq_system_ident``; the savepoint
+            # lets that be rolled back so the attendee the first booking created can be
+            # read and linked instead.
+            with transaction.atomic():
+                attendee = self._create_external_attendee(attendee_data)
+                identifier_service.replace_for_target(attendee, identifiers)
+        except IntegrityError:
+            existing = self._find_external_attendee_by_identifiers(identifier_service, identifiers)
+            if existing is None:
+                raise
+            self._check_links_as_stored(identifier_service, existing, attendee_data)
+            attendee = existing
+        if holders is not None:
+            # A later entry with the same pairs links this row.
+            holders[_identifiers_key(identifiers)] = attendee
+        return attendee
+
+    @staticmethod
+    def _changes_details(
+        stored: ExternalAttendee, attendee_data: ExternalAttendeeInputData
+    ) -> bool:
+        """Whether ``attendee_data`` gives an email or name other than ``stored``'s.
+
+        A blank email or name gives none.
+        """
+        email = attendee_data.email.strip()
+        return bool(email and email.lower() != stored.email.lower()) or bool(
+            attendee_data.name and attendee_data.name != stored.name
+        )
+
+    def _check_links_as_stored(
+        self,
+        identifier_service: ExternalClientIdentifierService,
+        stored: ExternalAttendee,
+        attendee_data: ExternalAttendeeInputData,
+    ) -> None:
+        """Refuse linking ``stored``, found by identifiers, when that would drop part of
+        ``attendee_data``: a different email or name, or an identifier ``stored``
+        does not hold. Fewer identifiers than ``stored`` holds are fine.
+        """
+        if self._changes_details(stored, attendee_data):
+            raise SharedExternalAttendeeEditError()
+        supplied = identifier_service.normalized_pairs(
+            attendee_data.external_client_identifiers or []
+        )
+        if not supplied.items() <= identifier_service.stored_pairs(stored).items():
+            raise ExternalAttendeePartialIdentifierMatchError()
+
+    def _check_keeps_shared_attendee(
+        self, stored: ExternalAttendee, attendee_data: ExternalAttendeeInputData
+    ) -> None:
+        """Refuse an entry naming shared ``stored`` by id that would change it.
+
+        An explicit identifier list must equal the stored set; omitted, it asks for
+        no change.
+        """
+        identifier_service = self._context.external_client_identifier_service
+        identifiers = attendee_data.external_client_identifiers
+        changes_identifiers = (
+            identifier_service is not None
+            and identifiers is not None
+            and identifier_service.normalized_pairs(identifiers)
+            != identifier_service.stored_pairs(stored)
+        )
+        if changes_identifiers or self._changes_details(stored, attendee_data):
+            raise SharedExternalAttendeeEditError()
+
+    def _with_resolved_external_attendee_ids(
+        self,
+        event: CalendarEvent,
+        event_data: CalendarEventInputData,
+        holders: ExternalAttendeeHolders,
+    ) -> CalendarEventInputData:
+        """``event_data`` with the stored id filled in on each external attendee that
+        came without one, naming the attendee the update will link.
+
+        Only the permission check reads it. It keys attendees by stored id, so it
+        must see the same attendee the update links:
+
+        - one with identifiers is the attendee holding them, which
+          ``_resolve_external_attendee`` links whether or not ``event`` holds it yet;
+        - one without identifiers is the attendee ``event`` holds with that email,
+          so re-sending it unchanged is not an attendee change.
+
+        Any other entry keeps no id and counts as added.
+        """
+        if not event_data.external_attendances:
+            return event_data
+        identifier_service = self._context.external_client_identifier_service
+        held_ids_by_email: dict[str, int] | None = None
+        entries = []
+        for entry in event_data.external_attendances:
+            attendee = entry.external_attendee
+            if attendee.id is not None:
+                entries.append(entry)
+                continue
+            resolved_id: int | None = None
+            if attendee.external_client_identifiers:
+                if identifier_service is not None:
+                    holder = self._find_external_attendee_by_identifiers(
+                        identifier_service, attendee.external_client_identifiers, holders
+                    )
+                    resolved_id = holder.pk if holder is not None else None
+            elif attendee.email:
+                if held_ids_by_email is None:
+                    held_ids_by_email = {
+                        email.lower(): attendee_id
+                        for attendee_id, email in event.external_attendances.values_list(
+                            "external_attendee__id", "external_attendee__email"
+                        )
+                        if email
+                    }
+                resolved_id = held_ids_by_email.get(attendee.email.lower())
+            if resolved_id is not None:
+                entry = EventExternalAttendanceInputData(
+                    external_attendee=dataclasses.replace(attendee, id=resolved_id)
+                )
+            entries.append(entry)
+        return dataclasses.replace(event_data, external_attendances=entries)
+
+    def _create_external_attendee(
+        self, attendee_data: ExternalAttendeeInputData
+    ) -> ExternalAttendee:
+        return ExternalAttendee.objects.create(
+            organization=self._context.organization,
+            email=attendee_data.email,
+            name=attendee_data.name,
         )
 
     def convert_naive_utc_datetime_to_timezone(
@@ -813,17 +1020,13 @@ class CalendarEventService:
             identifier_service.replace_for_target(event, event_data.external_client_identifiers)
 
         external_attendances_to_create = []
+        linked_external_attendee_ids: set[int] = set()
         for attendance_data in input_external_attendances:
-            external_attendee = ExternalAttendee.objects.create(
-                organization=context.organization,
-                email=attendance_data.external_attendee.email,
-                name=attendance_data.external_attendee.name,
-            )
-            if identifier_service is not None:
-                identifier_service.replace_for_target(
-                    external_attendee,
-                    attendance_data.external_attendee.external_client_identifiers,
-                )
+            external_attendee = self._resolve_external_attendee(attendance_data.external_attendee)
+            # Two entries naming the same shared attendee become one attendance.
+            if external_attendee.pk in linked_external_attendee_ids:
+                continue
+            linked_external_attendee_ids.add(external_attendee.pk)
             external_attendances_to_create.append(
                 EventExternalAttendance(
                     organization=context.organization,
@@ -1028,6 +1231,7 @@ class CalendarEventService:
             is_public_token_write = True
 
         serialized_old_event = self._serialize_event(event)
+        external_attendee_holders: ExternalAttendeeHolders = {}
         if not is_public_token_write and not context.calendar_permission_service.can_perform_update(
             old_event=serialized_old_event,
             # ``serialized_old_event`` doubles as the fall-back for the tri-state
@@ -1036,7 +1240,11 @@ class CalendarEventService:
             # event's CURRENT value for it -- and reusing the snapshot we already
             # built costs no extra query.
             new_event=self._serialize_event_data_input(
-                event, event_data, current_event=serialized_old_event
+                event,
+                self._with_resolved_external_attendee_ids(
+                    event, event_data, external_attendee_holders
+                ),
+                current_event=serialized_old_event,
             ),
             # A plain FK id column -- no extra query. Lets can_perform_update
             # check the NEW span against the appointment type's duration pin for a
@@ -1237,38 +1445,43 @@ class CalendarEventService:
                 a.external_attendee_fk_id: a for a in event.external_attendances.all()
             }
 
-            maintained_external_attendees_ids = []
+            maintained_external_attendees_ids: list[int | None] = []
             external_attendees_to_update = []
             # Identifiers to apply to ``external_attendees_to_update``, index-aligned.
             external_attendees_to_update_identifiers: list[
                 list[ExternalClientIdentifierData] | None
             ] = []
-            external_attendees_to_create = []
-            # Identifiers to apply to ``external_attendees_to_create``, index-aligned.
-            # Must be applied AFTER ``bulk_create`` below assigns each attendee its
-            # pk -- these rows include attendees the incoming payload omitted an id
-            # for, which the branch below treats as brand new (see the ``else``
-            # branch's comment) even when they represent an update the caller
-            # couldn't address by id; any identifiers they carry must land on the NEW
-            # row, not be silently dropped.
-            external_attendees_to_create_identifiers: list[
-                list[ExternalClientIdentifierData] | None
-            ] = []
+            # Attendees this event holds that another event holds too, read only when an
+            # entry would rewrite one. This event may keep or drop them, but not change
+            # them: the row is the other events' too, so a real change is refused.
+            shared_external_attendee_ids: set[int] | None = None
             for external_attendance_data in event_data.external_attendances:
-                if (
-                    external_attendance_data.external_attendee.id
-                    and external_attendance_data.external_attendee.id
-                    in existing_external_attendances.keys()
-                ):
-                    attendance_to_update = existing_external_attendances[
-                        external_attendance_data.external_attendee.id
-                    ]
-                    attendance_to_update.external_attendee.email = (
-                        external_attendance_data.external_attendee.email
-                    )
-                    attendance_to_update.external_attendee.name = (
-                        external_attendance_data.external_attendee.name
-                    )
+                attendee_data = external_attendance_data.external_attendee
+                if attendee_data.id and attendee_data.id in existing_external_attendances:
+                    maintained_external_attendees_ids.append(attendee_data.id)
+                    attendance_to_update = existing_external_attendances[attendee_data.id]
+                    stored = attendance_to_update.external_attendee
+                    rewrites_row = (stored.email, stored.name) != (
+                        attendee_data.email,
+                        attendee_data.name,
+                    ) or attendee_data.external_client_identifiers is not None
+                    if rewrites_row:
+                        if shared_external_attendee_ids is None:
+                            shared_external_attendee_ids = set(
+                                EventExternalAttendance.objects.filter_by_organization(
+                                    context.organization.id
+                                )
+                                .filter(
+                                    external_attendee__id__in=existing_external_attendances.keys()
+                                )
+                                .exclude(event=event)
+                                .values_list("external_attendee_fk_id", flat=True)
+                            )
+                        if attendee_data.id in shared_external_attendee_ids:
+                            self._check_keeps_shared_attendee(stored, attendee_data)
+                            continue
+                    attendance_to_update.external_attendee.email = attendee_data.email
+                    attendance_to_update.external_attendee.name = attendee_data.name
                     serialized_update = self._serialize_event_external_attendee(
                         attendance_to_update
                     )
@@ -1276,37 +1489,24 @@ class CalendarEventService:
                         serialized_external_attendances_to_update.append(serialized_update)
                     external_attendees_to_update.append(attendance_to_update.external_attendee)
                     external_attendees_to_update_identifiers.append(
-                        external_attendance_data.external_attendee.external_client_identifiers
+                        attendee_data.external_client_identifiers
                     )
-                else:
-                    # No id, or an id absent from ``existing_external_attendances`` --
-                    # either a genuinely new attendee, or one whose id the caller
-                    # omitted. The latter is NOT reused: this always creates a fresh
-                    # row, and the old row (if any) is removed below via
-                    # ``external_attendees_to_delete`` (its id is absent from
-                    # ``maintained_external_attendees_ids``). Any identifiers on the
-                    # old row cascade-delete with it -- so identifiers supplied here
-                    # must be applied to THIS new row, not skipped.
-                    external_attendee = ExternalAttendee(
-                        organization=context.organization,
-                        email=external_attendance_data.external_attendee.email,
-                        name=external_attendance_data.external_attendee.name,
-                    )
-                    external_attendees_to_create.append(external_attendee)
-                    external_attendees_to_create_identifiers.append(
-                        external_attendance_data.external_attendee.external_client_identifiers
-                    )
+                    continue
+
+                # No id this event knows: link the attendee holding these identifiers,
+                # or a new one (see ``_resolve_external_attendee``). An attendee this
+                # event already holds keeps its attendance; any other gets a new one.
+                # Its id joins the maintained ids either way, so it is not removed below.
+                external_attendee = self._resolve_external_attendee(
+                    attendee_data, external_attendee_holders
+                )
+                if (
+                    external_attendee.pk not in existing_external_attendances
+                    and external_attendee.pk not in maintained_external_attendees_ids
+                ):
                     external_attendance_instance = EventExternalAttendance(
                         organization=context.organization,
                         event=event,
-                        # ``external_attendee_fk``, not ``external_attendee``: the
-                        # attendee is not saved yet, and assigning it through the
-                        # organization-safe relation copies its *primary key* (still
-                        # ``None``) onto this row, leaving ``external_attendee_fk``
-                        # empty. Assigning the concrete field caches the instance
-                        # instead, so the key is resolved at ``bulk_create`` time --
-                        # and the row's organization, passed explicitly above, is left
-                        # alone.
                         external_attendee_fk=external_attendee,
                     )
                     external_attendances_to_create.append(external_attendance_instance)
@@ -1315,12 +1515,8 @@ class CalendarEventService:
                     )
                     if serialized_create is not None:
                         serialized_external_attendances_to_create.append(serialized_create)
-                if external_attendance_data.external_attendee:
-                    maintained_external_attendees_ids.append(
-                        external_attendance_data.external_attendee.id
-                    )
+                maintained_external_attendees_ids.append(external_attendee.pk)
             ExternalAttendee.objects.bulk_update(external_attendees_to_update, ["email", "name"])
-            ExternalAttendee.objects.bulk_create(external_attendees_to_create)
             EventExternalAttendance.objects.bulk_create(external_attendances_to_create)
 
             external_attendees_to_delete = set(existing_external_attendances.keys()) - set(
@@ -1383,13 +1579,6 @@ class CalendarEventService:
                 for external_attendee, identifiers in zip(
                     external_attendees_to_update,
                     external_attendees_to_update_identifiers,
-                    strict=True,
-                ):
-                    if identifiers is not None:
-                        identifier_service.replace_for_target(external_attendee, identifiers)
-                for external_attendee, identifiers in zip(
-                    external_attendees_to_create,
-                    external_attendees_to_create_identifiers,
                     strict=True,
                 ):
                     if identifiers is not None:
@@ -1674,6 +1863,8 @@ class CalendarEventService:
                 status=_adapter_rsvp_status(ea.status),
             )
             for ea in event.external_attendances.select_related("external_attendee")
+            # An attendee known only by a client identifier has no address to invite.
+            if ea.external_attendee.email
         ]
         resources = [
             ResourceData(

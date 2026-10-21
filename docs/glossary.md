@@ -129,10 +129,12 @@ occurrence; `is_cancelled=False` substitutes a modified row.
 
 ### External Attendee
 
-A non-user participant on an event, identified by email + name.
-Typically the patient on a clinic appointment, or a referring
+A non-user participant on an event, identified by email + name, or only by
+a client `(system, identifier)` pair when the client keeps no personal data
+here. Typically the patient on a clinic appointment, or a referring
 physician outside the organization. Modelled by `ExternalAttendee` /
-`EventExternalAttendance`.
+`EventExternalAttendance`; one identifier-only attendee is shared by every
+event that names its pair.
 → [concepts/events.md](concepts/events.md#attendees-vs-external-attendees)
 
 ### Managed Availability Windows (`manage_available_windows`)

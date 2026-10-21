@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import URLValidator
+from django.db.models import Q
 
 from calendar_integration.exceptions import (
     CalendarServiceOrganizationNotSetError,
@@ -199,6 +200,45 @@ class ExternalClientIdentifierService:
             )
 
         return old_state, new_state
+
+    def find_target_ids(
+        self,
+        model: type[Model],
+        identifiers: list[ExternalClientIdentifierData],
+    ) -> set[int]:
+        """Return the ids of ``model`` records in this organization holding any of ``identifiers``.
+
+        Each pair is normalized and validated exactly as ``replace_for_target`` would,
+        so a lookup and the write that may follow it agree on what the pair is.
+        ``extclientid_uniq_system_ident`` lets one pair point at one record at most,
+        so the result has one id per matched pair, and several ids only when the
+        pairs belong to different records.
+        """
+        self._assert_initialized()
+        normalized = self._normalize_and_validate(identifiers)
+        if not normalized:
+            return set()
+        content_type = ContentType.objects.get_for_model(model)
+        any_pair = Q()
+        for system, identifier in normalized.items():
+            any_pair |= Q(system=system, identifier=identifier)
+        return set(
+            ExternalClientIdentifier.objects.filter_by_organization(
+                self.organization.id  # type: ignore[union-attr]
+            )
+            .filter(any_pair, content_type=content_type)
+            .values_list("identified_key", flat=True)
+        )
+
+    def normalized_pairs(self, identifiers: list[ExternalClientIdentifierData]) -> dict[str, str]:
+        """``{system: identifier}`` for ``identifiers``, normalized and validated exactly
+        as ``replace_for_target`` would store them."""
+        return self._normalize_and_validate(identifiers)
+
+    def stored_pairs(self, target: Model) -> dict[str, str]:
+        """``{system: identifier}`` stored for ``target``."""
+        [pairs] = self.get_for_targets([target]).values()
+        return {pair.system: pair.identifier for pair in pairs}
 
     def get_for_targets(
         self, targets: Sequence[Model]

@@ -169,6 +169,9 @@ class ExternalEventChangeRequestService:
                 # Row with a NULL external_attendee — no identity to report, skip,
                 # matching the orphan-internal-attendance handling above.
                 continue
+            if not ext_serialized.email:
+                # Known only by a client identifier: no address to send the provider.
+                continue
             attendees.append(
                 EventAttendeeData(
                     email=ext_serialized.email,

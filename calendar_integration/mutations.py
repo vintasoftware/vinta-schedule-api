@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 import strawberry
 from allauth.socialaccount.models import SocialAccount
@@ -21,6 +21,7 @@ from calendar_integration.exceptions import (
     ChangeRequestIneligibleError,
     ChangeRequestNotPendingError,
     EventManagementError,
+    ExternalClientIdentifierError,
     InvalidTokenError,
     NoAvailableTimeWindowsError,
     PermissionServiceInitializationError,
@@ -50,6 +51,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_service_utils import wall_clock_to_utc
 from calendar_integration.services.dataclasses import (
+    EXTERNAL_ATTENDEE_CONTACT_REQUIRED_MESSAGE,
     AppointmentTypeEventInputData,
     AppointmentTypeInputData,
     AppointmentTypeSlotInputData,
@@ -58,6 +60,7 @@ from calendar_integration.services.dataclasses import (
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
+    ExternalClientIdentifierData,
     ResourceAllocationInputData,
 )
 from calendar_integration.services.external_event_change_request_service import (
@@ -363,10 +366,57 @@ class AppointmentTypeSlotSelectionInput:
 
 
 @strawberry.input
+class ExternalClientIdentifierInput:
+    """One ``(system, identifier)`` client-owned reference pair.
+
+    ``system`` is normalized (case + trailing slash) before storage and matching --
+    see ``calendar_integration.external_client_identifiers.normalize_system``.
+
+    On an event, a pair already claimed by another event in the organization is
+    rejected. On an external attendee sent without its id, a pair already held by an
+    attendee links the event to that attendee instead.
+
+    Rejected with a GraphQL error (no partial write) when:
+    - ``system`` is not a valid URL.
+    - ``identifier`` is blank or whitespace-only.
+    - ``identifier`` is over 255 characters.
+    - an event's pair is already claimed by another event in the organization.
+    - one attendee's pairs belong to two different stored attendees, or only some of
+      them to a stored attendee.
+    - two pairs in the same payload normalize to the same ``system`` (e.g. differing
+      only by case or a trailing slash).
+    """
+
+    system: str
+    identifier: str
+
+
+def _identifier_data(
+    identifiers: list[ExternalClientIdentifierInput] | None,
+) -> list[ExternalClientIdentifierData] | None:
+    if identifiers is None:
+        return None
+    return [
+        ExternalClientIdentifierData(system=item.system, identifier=item.identifier)
+        for item in identifiers
+    ]
+
+
+@strawberry.input
 class ExternalAttendeeInput:
-    email: str
+    """An external attendee booked through an appointment type.
+
+    It needs an email, at least one external client identifier, or both. With
+    identifiers it is linked to the attendee that already holds one of them, and one
+    is created only when none does. That attendee is linked as stored: a different
+    email or name, or an identifier it does not hold, fails the booking. An attendee
+    with no email is never sent to Google or Outlook.
+    """
+
+    email: str = ""
     name: str = ""
     id: int | None = None  # noqa: A003
+    external_client_identifiers: list[ExternalClientIdentifierInput] | None = None
 
 
 @strawberry.input
@@ -393,6 +443,9 @@ class AppointmentTypeEventInput:
     external_attendances: list[EventExternalAttendanceInput] = strawberry.field(
         default_factory=list
     )
+    #: Client-owned (system, identifier) pairs stamped on the created event. A pair
+    #: already claimed by another event in the organization fails the booking.
+    external_client_identifiers: list[ExternalClientIdentifierInput] | None = None
     #: Rooms (resource calendars of the organization) booked for the event. Each one
     #: becomes a resource allocation; an id that is not an active room of the
     #: organization fails the booking.
@@ -801,6 +854,21 @@ class AppointmentTypeMutations:
         )
         deps.appointment_type_service.initialize(organization=organization)
         start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
+        external_attendees = [
+            ExternalAttendeeInputData(
+                email=e.external_attendee.email,
+                name=e.external_attendee.name,
+                id=e.external_attendee.id,
+                external_client_identifiers=_identifier_data(
+                    e.external_attendee.external_client_identifiers
+                ),
+            )
+            for e in input.external_attendances
+        ]
+        if not all(a.has_contact() for a in external_attendees):
+            return AppointmentTypeEventResult(
+                success=False, error_message=EXTERNAL_ATTENDEE_CONTACT_REQUIRED_MESSAGE
+            )
         data = AppointmentTypeEventInputData(
             title=input.title,
             description=input.description,
@@ -816,15 +884,9 @@ class AppointmentTypeMutations:
             ],
             attendances=[EventAttendanceInputData(user_id=a.user_id) for a in input.attendances],
             external_attendances=[
-                EventExternalAttendanceInputData(
-                    external_attendee=ExternalAttendeeInputData(
-                        email=e.external_attendee.email,
-                        name=e.external_attendee.name,
-                        id=e.external_attendee.id,
-                    )
-                )
-                for e in input.external_attendances
+                EventExternalAttendanceInputData(external_attendee=a) for a in external_attendees
             ],
+            external_client_identifiers=_identifier_data(input.external_client_identifiers),
             resource_allocations=[
                 ResourceAllocationInputData(resource_id=calendar_id)
                 for calendar_id in dict.fromkeys(input.resource_calendar_ids)
@@ -856,8 +918,25 @@ class AppointmentTypeMutations:
                     or "The requested time slot is not available under the current booking policy."
                 ),
             )
-        except (AppointmentTypeError, RoomNotFoundError, RoomUnavailableError) as e:
+        except (
+            AppointmentTypeError,
+            ExternalClientIdentifierError,
+            RoomNotFoundError,
+            RoomUnavailableError,
+        ) as e:
             return AppointmentTypeEventResult(success=False, error_message=str(e))
+        except IntegrityError as e:
+            # The event's (system, identifier) pair is already claimed by another
+            # event. Any other constraint is a real failure and is raised as one.
+            # The service runs in its own atomic block, so the request transaction
+            # is still usable. str() of the error is not returned: it names the
+            # constraint and internal ids.
+            if "extclientid_uniq_system_ident" not in str(e):
+                raise
+            return AppointmentTypeEventResult(
+                success=False,
+                error_message="That (system, identifier) pair is already in use by another record.",
+            )
         return AppointmentTypeEventResult(success=True, event=event)  # type: ignore[arg-type]
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
@@ -1710,7 +1789,7 @@ class AppointmentTypeMutations:
 
         # Preserve external attendances — include the ExternalAttendee id so that
         # serialize_event_data_input can correlate the status correctly and produce
-        # a CalendarEventData matching the old event's external_attendees by email,
+        # a CalendarEventData matching the old event's external_attendees by id,
         # ensuring _check_attendances_update_necessary_permissions sees no change.
         preserved_external_attendances = [
             EventExternalAttendanceInputData(
