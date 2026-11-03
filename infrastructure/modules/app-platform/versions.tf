@@ -11,6 +11,11 @@ terraform {
       # here so the caller is required to pass it in.
       configuration_aliases = [aws.dns]
     }
+    # Writes the DNS records instead of Route 53 when dns_provider = "cloudflare".
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"

@@ -22,16 +22,17 @@ inputs = {
   environment  = local.env.locals.environment
   aws_region   = local.env.locals.aws_region
 
-  dns_role_arn      = local.env.locals.dns_role_arn
-  route53_zone_name = local.env.locals.route53_zone_name
+  dns_role_arn  = local.env.locals.dns_role_arn
+  dns_provider  = local.env.locals.dns_provider
+  dns_zone_name = local.env.locals.dns_zone_name
 
   ####################################
   # Domains
   ####################################
 
-  api_domain    = "api.schedule-staging.vintasoftware.com"
-  media_domain  = "media.schedule-staging.vintasoftware.com"
-  static_domain = "static.schedule-staging.vintasoftware.com"
+  api_domain    = "api.schedule-staging.vinta.studio"
+  media_domain  = "media.schedule-staging.vinta.studio"
+  static_domain = "static.schedule-staging.vinta.studio"
 
   ####################################
   # Network
@@ -61,21 +62,21 @@ inputs = {
 
   django_settings_module = "vinta_schedule_api.settings.staging"
 
-  allowed_hosts     = ["api.schedule-staging.vintasoftware.com"]
-  site_domain       = "https://schedule-staging.vintasoftware.com"
-  frontend_base_url = "https://schedule-staging.vintasoftware.com"
+  allowed_hosts     = ["api.schedule-staging.vinta.studio"]
+  site_domain       = "https://schedule-staging.vinta.studio"
+  frontend_base_url = "https://schedule-staging.vinta.studio"
 
   # The API's own CORS headers.
   cors_allowed_origins = [
-    "https://schedule-staging.vintasoftware.com",
+    "https://schedule-staging.vinta.studio",
   ]
 
   # Direct browser uploads to the media bucket (django-s3direct). Separate knob.
   storage_cors_allowed_origins = [
-    "https://schedule-staging.vintasoftware.com",
+    "https://schedule-staging.vinta.studio",
   ]
 
-  default_from_email = "noreply@schedule-staging.vintasoftware.com"
+  default_from_email = "noreply@schedule-staging.vinta.studio"
   default_bcc_emails = ["hugo@vinta.com.br"]
 
   # Staging takes payments through Stripe, so the MercadoPago credentials are

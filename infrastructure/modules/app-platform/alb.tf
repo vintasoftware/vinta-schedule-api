@@ -1,15 +1,31 @@
 ########################################
 # TLS certificate
 #
-# Issued by ACM in the deploy account, validated by DNS records written into the
-# hosted zone in the *other* account through the `aws.dns` provider that
-# root.hcl generates. ACM renews it automatically for as long as those validation
+# Issued by ACM in the deploy account, validated by DNS records written either
+# into the hosted zone in the *other* account through the `aws.dns` provider that
+# root.hcl generates, or into Cloudflare (dns_provider = "cloudflare", see
+# cloudflare.tf). ACM renews it automatically for as long as those validation
 # records stay in place -- deleting them silently breaks renewal a year later.
 ########################################
 
+locals {
+  use_route53    = var.dns_provider == "route53"
+  use_cloudflare = var.dns_provider == "cloudflare"
+
+  cert_validation_records = {
+    for dvo in aws_acm_certificate.api.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      type   = dvo.resource_record_type
+      record = dvo.resource_record_value
+    }
+  }
+}
+
 data "aws_route53_zone" "this" {
+  count = local.use_route53 ? 1 : 0
+
   provider     = aws.dns
-  name         = var.route53_zone_name
+  name         = var.dns_zone_name
   private_zone = false
 }
 
@@ -17,7 +33,7 @@ data "aws_route53_zone" "this" {
 #
 # The record that blocks it is not on the apex -- vintasoftware.com carries no
 # CAA at all. It sits on the environment's frontend name
-# (schedule-staging.vintasoftware.com, which is Vercel's) and lists
+# (schedule.vintasoftware.com, a CNAME to Vercel) and lists
 # letsencrypt.org, pki.goog, sectigo.com and globalsign.com, but not
 # amazon.com. CAA resolution walks up from the hostname and stops at the first
 # name that has one, so everything under the frontend name inherits that
@@ -26,9 +42,14 @@ data "aws_route53_zone" "this" {
 # A CAA at the exact host is the closest match and wins (RFC 8659), so this
 # authorizes ACM here without touching the frontend's own policy. Same reason
 # modules/s3-cloudfront writes one for each of its two hostnames.
+#
+# Route 53 only: on Cloudflare the api name is a CNAME, which no other record
+# may share. See cloudflare.tf.
 resource "aws_route53_record" "api_caa" {
+  count = local.use_route53 ? 1 : 0
+
   provider = aws.dns
-  zone_id  = data.aws_route53_zone.this.zone_id
+  zone_id  = data.aws_route53_zone.this[0].zone_id
   name     = var.api_domain
   type     = "CAA"
   ttl      = 300
@@ -51,16 +72,10 @@ resource "aws_acm_certificate" "api" {
 }
 
 resource "aws_route53_record" "cert_validation" {
-  for_each = {
-    for dvo in aws_acm_certificate.api.domain_validation_options : dvo.domain_name => {
-      name   = dvo.resource_record_name
-      type   = dvo.resource_record_type
-      record = dvo.resource_record_value
-    }
-  }
+  for_each = local.use_route53 ? local.cert_validation_records : {}
 
   provider        = aws.dns
-  zone_id         = data.aws_route53_zone.this.zone_id
+  zone_id         = data.aws_route53_zone.this[0].zone_id
   name            = each.value.name
   type            = each.value.type
   records         = [each.value.record]
@@ -69,8 +84,11 @@ resource "aws_route53_record" "cert_validation" {
 }
 
 resource "aws_acm_certificate_validation" "api" {
-  certificate_arn         = aws_acm_certificate.api.arn
-  validation_record_fqdns = [for r in aws_route53_record.cert_validation : r.fqdn]
+  certificate_arn = aws_acm_certificate.api.arn
+  validation_record_fqdns = concat(
+    [for r in aws_route53_record.cert_validation : r.fqdn],
+    [for r in cloudflare_dns_record.cert_validation : r.name],
+  )
 }
 
 ########################################
@@ -177,12 +195,14 @@ resource "aws_lb_listener" "https" {
 }
 
 ########################################
-# api.<env>.vintasoftware.com -> ALB or API Gateway
+# api_domain -> ALB or API Gateway (Route 53; Cloudflare in cloudflare.tf)
 ########################################
 
 resource "aws_route53_record" "api" {
+  count = local.use_route53 ? 1 : 0
+
   provider = aws.dns
-  zone_id  = data.aws_route53_zone.this.zone_id
+  zone_id  = data.aws_route53_zone.this[0].zone_id
   name     = var.api_domain
   type     = "A"
 

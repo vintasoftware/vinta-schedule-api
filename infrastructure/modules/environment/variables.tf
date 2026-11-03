@@ -10,8 +10,9 @@
 ########################################
 # Identity + providers
 #
-# `aws_region` and `dns_role_arn` are read by the provider block root.hcl
+# `aws_region` and `dns_role_arn` are read by the provider blocks root.hcl
 # generates into this module, as well as (for the region) by the app module.
+# The Cloudflare provider block comes from Scalr instead -- see root.hcl.
 ########################################
 
 variable "project_name" {
@@ -30,12 +31,18 @@ variable "aws_region" {
 }
 
 variable "dns_role_arn" {
-  description = "Role in the DNS account that the aws.dns provider assumes to write Route 53 records."
+  description = "Role in the DNS account that the aws.dns provider assumes to write Route 53 records. Still required with dns_provider = \"cloudflare\": root.hcl configures the provider either way."
   type        = string
 }
 
-variable "route53_zone_name" {
-  description = "Route 53 hosted zone the custom domains live under (e.g. vintasoftware.com). No trailing dot."
+variable "dns_provider" {
+  description = "Where the custom domains' DNS lives: \"route53\" or \"cloudflare\"."
+  type        = string
+  default     = null
+}
+
+variable "dns_zone_name" {
+  description = "Zone the custom domains live under (e.g. vintasoftware.com), in Route 53 or Cloudflare per dns_provider. No trailing dot."
   type        = string
 }
 

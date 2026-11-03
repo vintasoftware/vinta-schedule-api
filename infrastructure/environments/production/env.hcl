@@ -9,8 +9,9 @@ locals {
 
   aws_region = "us-east-1"
 
-  # Route 53 hosted zone the custom domains live under.
-  route53_zone_name = "vintasoftware.com"
+  # DNS for the custom domains: a Route 53 hosted zone in the DNS account.
+  dns_provider  = "route53"
+  dns_zone_name = "vintasoftware.com"
 
   # Role in the DNS account that Terraform assumes to write Route 53 records.
   dns_role_arn = "arn:aws:iam::310361226925:role/vinta-schedule-dns-deployer"
