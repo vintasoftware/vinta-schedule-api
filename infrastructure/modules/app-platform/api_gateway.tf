@@ -72,6 +72,14 @@ resource "aws_service_discovery_service" "web" {
   # stops returning a task as soon as that check fails.
   # (`failure_threshold` is deprecated and fixed at 1, so it is left unset.)
   health_check_custom_config {}
+
+  lifecycle {
+    # Cloud Map reports failure_threshold = 1 even though it was never set, and
+    # the provider marks the whole block as forcing replacement. Without this,
+    # every plan replaces the service, and the delete fails while ECS has tasks
+    # registered in it ("Service contains registered instances").
+    ignore_changes = [health_check_custom_config]
+  }
 }
 
 ########################################
