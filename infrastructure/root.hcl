@@ -55,6 +55,12 @@ generate "backend" {
 # Inject the AWS providers into the environment module so each environment's
 # terragrunt.hcl doesn't repeat them. `aws_region` and `dns_role_arn` are
 # declared by modules/environment itself.
+#
+# There is deliberately no `provider "cloudflare"` block. The Scalr provider
+# configuration linked to the workspace injects one with `api_token` set, and
+# Scalr's docs say not to declare an empty one alongside it. An environment
+# on Route 53 has no such configuration, and gets Terraform's implicit empty
+# block. Nothing there uses it, so it needs no token.
 generate "provider" {
   path      = "provider.tf"
   if_exists = "overwrite"

@@ -18,16 +18,18 @@ module "storage" {
   source = "../s3-cloudfront"
 
   providers = {
-    aws     = aws
-    aws.dns = aws.dns
+    aws        = aws
+    aws.dns    = aws.dns
+    cloudflare = cloudflare
   }
 
   project_name = var.project_name
   environment  = var.environment
 
-  route53_zone_name = var.route53_zone_name
-  static_domain     = var.static_domain
-  media_domain      = var.media_domain
+  dns_provider  = var.dns_provider
+  dns_zone_name = var.dns_zone_name
+  static_domain = var.static_domain
+  media_domain  = var.media_domain
 
   media_bucket_name  = var.media_bucket_name
   static_bucket_name = var.static_bucket_name
@@ -40,16 +42,18 @@ module "app" {
   source = "../app-platform"
 
   providers = {
-    aws     = aws
-    aws.dns = aws.dns
+    aws        = aws
+    aws.dns    = aws.dns
+    cloudflare = cloudflare
   }
 
   project_name = var.project_name
   environment  = var.environment
   aws_region   = var.aws_region
 
-  route53_zone_name = var.route53_zone_name
-  api_domain        = var.api_domain
+  dns_provider  = var.dns_provider
+  dns_zone_name = var.dns_zone_name
+  api_domain    = var.api_domain
 
   # Buckets and CDN hostnames come from the module above rather than from a
   # second copy of the same values. This is also the dependency edge that makes

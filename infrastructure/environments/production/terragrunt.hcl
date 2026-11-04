@@ -25,8 +25,9 @@ inputs = {
   environment  = local.env.locals.environment
   aws_region   = local.env.locals.aws_region
 
-  dns_role_arn      = local.env.locals.dns_role_arn
-  route53_zone_name = local.env.locals.route53_zone_name
+  dns_role_arn  = local.env.locals.dns_role_arn
+  dns_provider  = local.env.locals.dns_provider
+  dns_zone_name = local.env.locals.dns_zone_name
 
   ####################################
   # Domains

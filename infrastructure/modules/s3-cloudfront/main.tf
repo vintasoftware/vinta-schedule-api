@@ -10,15 +10,33 @@ data "aws_cloudfront_cache_policy" "optimized" {
 }
 
 ########################################
-# Custom domains: ACM cert (DNS-validated) + Route 53
+# Custom domains: ACM cert (DNS-validated) + Route 53 or Cloudflare
 #
 # CloudFront only accepts ACM certs from us-east-1 — the provider must be
 # us-east-1 (env.hcl sets aws_region = "us-east-1").
+#
+# Every Route 53 object below is counted on `use_route53`; the Cloudflare
+# equivalents live in cloudflare.tf.
 ########################################
 
+locals {
+  use_route53    = var.dns_provider == "route53"
+  use_cloudflare = var.dns_provider == "cloudflare"
+
+  cert_validation_records = {
+    for dvo in aws_acm_certificate.cdn.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      type   = dvo.resource_record_type
+      record = dvo.resource_record_value
+    }
+  }
+}
+
 data "aws_route53_zone" "this" {
+  count = local.use_route53 ? 1 : 0
+
   provider     = aws.dns
-  name         = var.route53_zone_name
+  name         = var.dns_zone_name
   private_zone = false
 }
 
@@ -34,16 +52,10 @@ resource "aws_acm_certificate" "cdn" {
 }
 
 resource "aws_route53_record" "cert_validation" {
-  for_each = {
-    for dvo in aws_acm_certificate.cdn.domain_validation_options : dvo.domain_name => {
-      name   = dvo.resource_record_name
-      type   = dvo.resource_record_type
-      record = dvo.resource_record_value
-    }
-  }
+  for_each = local.use_route53 ? local.cert_validation_records : {}
 
   provider        = aws.dns
-  zone_id         = data.aws_route53_zone.this.zone_id
+  zone_id         = data.aws_route53_zone.this[0].zone_id
   name            = each.value.name
   type            = each.value.type
   records         = [each.value.record]
@@ -52,8 +64,11 @@ resource "aws_route53_record" "cert_validation" {
 }
 
 resource "aws_acm_certificate_validation" "cdn" {
-  certificate_arn         = aws_acm_certificate.cdn.arn
-  validation_record_fqdns = [for r in aws_route53_record.cert_validation : r.fqdn]
+  certificate_arn = aws_acm_certificate.cdn.arn
+  validation_record_fqdns = concat(
+    [for r in aws_route53_record.cert_validation : r.fqdn],
+    [for r in cloudflare_dns_record.cert_validation : r.name],
+  )
 }
 
 ########################################
@@ -232,10 +247,14 @@ resource "aws_cloudfront_distribution" "static" {
 
 # CAA: authorize Amazon (ACM) to issue certs for these hostnames. The parent
 # zone's CAA blocks Amazon by default; a CAA at the exact host is the closest
-# match and takes precedence (RFC 8659) without changing apex policy.
+# match and takes precedence (RFC 8659) without changing apex policy. Route 53
+# only: on Cloudflare these names are CNAMEs, which no other record may share --
+# see cloudflare.tf.
 resource "aws_route53_record" "static_caa" {
+  count = local.use_route53 ? 1 : 0
+
   provider = aws.dns
-  zone_id  = data.aws_route53_zone.this.zone_id
+  zone_id  = data.aws_route53_zone.this[0].zone_id
   name     = var.static_domain
   type     = "CAA"
   ttl      = 300
@@ -243,8 +262,10 @@ resource "aws_route53_record" "static_caa" {
 }
 
 resource "aws_route53_record" "media_caa" {
+  count = local.use_route53 ? 1 : 0
+
   provider = aws.dns
-  zone_id  = data.aws_route53_zone.this.zone_id
+  zone_id  = data.aws_route53_zone.this[0].zone_id
   name     = var.media_domain
   type     = "CAA"
   ttl      = 300
@@ -253,8 +274,10 @@ resource "aws_route53_record" "media_caa" {
 
 # DNS: point each custom domain at its CloudFront distribution (A + AAAA aliases).
 resource "aws_route53_record" "static" {
+  count = local.use_route53 ? 1 : 0
+
   provider = aws.dns
-  zone_id  = data.aws_route53_zone.this.zone_id
+  zone_id  = data.aws_route53_zone.this[0].zone_id
   name     = var.static_domain
   type     = "A"
   alias {
@@ -265,8 +288,10 @@ resource "aws_route53_record" "static" {
 }
 
 resource "aws_route53_record" "static_aaaa" {
+  count = local.use_route53 ? 1 : 0
+
   provider = aws.dns
-  zone_id  = data.aws_route53_zone.this.zone_id
+  zone_id  = data.aws_route53_zone.this[0].zone_id
   name     = var.static_domain
   type     = "AAAA"
   alias {
@@ -277,8 +302,10 @@ resource "aws_route53_record" "static_aaaa" {
 }
 
 resource "aws_route53_record" "media" {
+  count = local.use_route53 ? 1 : 0
+
   provider = aws.dns
-  zone_id  = data.aws_route53_zone.this.zone_id
+  zone_id  = data.aws_route53_zone.this[0].zone_id
   name     = var.media_domain
   type     = "A"
   alias {
@@ -289,8 +316,10 @@ resource "aws_route53_record" "media" {
 }
 
 resource "aws_route53_record" "media_aaaa" {
+  count = local.use_route53 ? 1 : 0
+
   provider = aws.dns
-  zone_id  = data.aws_route53_zone.this.zone_id
+  zone_id  = data.aws_route53_zone.this[0].zone_id
   name     = var.media_domain
   type     = "AAAA"
   alias {

@@ -84,13 +84,25 @@ variable "single_nat_gateway" {
 # DNS / TLS
 ########################################
 
-variable "route53_zone_name" {
-  description = "Route 53 hosted zone the API domain lives under (e.g. vintasoftware.com). No trailing dot."
+variable "dns_provider" {
+  description = "Where the API domain's DNS lives: \"route53\" (through the aws.dns provider) or \"cloudflare\"."
+  type        = string
+  default     = "route53"
+  nullable    = false
+
+  validation {
+    condition     = contains(["route53", "cloudflare"], var.dns_provider)
+    error_message = "dns_provider must be \"route53\" or \"cloudflare\"."
+  }
+}
+
+variable "dns_zone_name" {
+  description = "Zone the API domain lives under (e.g. vintasoftware.com), in Route 53 or Cloudflare per dns_provider. No trailing dot."
   type        = string
 }
 
 variable "api_domain" {
-  description = "Public hostname for the API, pointed at the ALB (e.g. api.schedule-staging.vintasoftware.com)."
+  description = "Public hostname for the API, pointed at the ALB or API Gateway (e.g. api.schedule-staging.vinta.studio)."
   type        = string
 }
 

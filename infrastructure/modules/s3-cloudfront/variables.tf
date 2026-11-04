@@ -39,8 +39,20 @@ variable "media_domain" {
   type        = string
 }
 
-variable "route53_zone_name" {
-  description = "Route 53 hosted zone the custom domains live under (e.g. vintasoftware.com). No trailing dot."
+variable "dns_provider" {
+  description = "Where the custom domains' DNS lives: \"route53\" (through the aws.dns provider) or \"cloudflare\"."
+  type        = string
+  default     = "route53"
+  nullable    = false
+
+  validation {
+    condition     = contains(["route53", "cloudflare"], var.dns_provider)
+    error_message = "dns_provider must be \"route53\" or \"cloudflare\"."
+  }
+}
+
+variable "dns_zone_name" {
+  description = "Zone the custom domains live under (e.g. vintasoftware.com), in Route 53 or Cloudflare per dns_provider. No trailing dot."
   type        = string
 }
 

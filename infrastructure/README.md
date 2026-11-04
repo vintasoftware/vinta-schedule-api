@@ -55,7 +55,7 @@ settings. See [Staging's cost switches](#stagings-cost-switches).
 ```
                        Route 53 (DNS account, cross-account role)
                                     |
-                    api.schedule-staging.vintasoftware.com
+                       api.schedule.vintasoftware.com
                                     |
    internet ──▶ ALB (public subnets, ACM cert, 80 ⇒ 301 ⇒ 443)
                                     |
@@ -244,6 +244,11 @@ needs **AWS credentials**, as **shell (environment) variables** on the workspace
   more.
 - **Preferred over static keys:** attach a Scalr **Provider Configuration** for
   AWS (OIDC / role delegation) to the environment — no long-lived keys stored.
+- **Staging also needs a Cloudflare Provider Configuration** with `api_token`
+  set, linked to `VintaScheduleStaging`. Its DNS is on Cloudflare — see
+  [Cloudflare DNS (staging)](#cloudflare-dns-staging). Scalr injects the
+  `provider "cloudflare"` block into the run, which is why no `.tf` file
+  declares one. Production is on Route 53 and needs none.
 
 Two non-workspace settings authenticate Terragrunt to Scalr itself (set in your
 shell / CI, never committed):
@@ -259,6 +264,12 @@ shell), and applies are triggered by pushing to this repository rather than
 from your machine — see [Run](#run).
 
 ## Cross-account DNS (Route 53)
+
+`dns_provider` in each `env.hcl` picks where an environment's records go.
+Production uses `"route53"`, which this section covers. Staging uses
+`"cloudflare"`, covered in [Cloudflare DNS (staging)](#cloudflare-dns-staging).
+root.hcl configures the `aws.dns` provider for both, so staging still carries a
+`dns_role_arn` that it never writes through.
 
 `vintasoftware.com` lives in a **different AWS account** than the buckets,
 CloudFront and the ALB. ACM certs and load balancers are created in the deploy
@@ -312,7 +323,7 @@ aws iam put-user-policy --user-name "vinta-schedule-${ENV}-deployer" \
 ### Every hostname here needs its own CAA record
 
 `vintasoftware.com` carries no CAA, but the environment's frontend name does —
-`schedule-staging.vintasoftware.com` is Vercel's, and its CAA lists
+`schedule.vintasoftware.com` is a CNAME to Vercel, and Vercel's CAA lists
 `letsencrypt.org`, `pki.goog`, `sectigo.com` and `globalsign.com`. CAA
 resolution walks up from the hostname and stops at the first name holding one,
 so every name under the frontend inherits a policy that does not authorize
@@ -341,6 +352,66 @@ Delete that CNAME in the DNS account before applying. **Deleting it is the
 cutover**: the hostname stops resolving to Render the moment it goes, and only
 starts resolving to the ALB once the apply writes the alias record — so expect
 the API to be unreachable in between, and do it when that is acceptable.
+
+## Cloudflare DNS (staging)
+
+Staging lives under `vinta.studio`, whose nameservers are Cloudflare's. With
+`dns_provider = "cloudflare"`, both modules write their records there
+(`cloudflare.tf` in each) and skip every Route 53 resource:
+
+| Name | Record |
+|---|---|
+| `api.schedule-staging.vinta.studio` | CNAME → API Gateway's regional domain (or the ALB) |
+| `static.schedule-staging.vinta.studio` | CNAME → static CloudFront distribution |
+| `media.schedule-staging.vinta.studio` | CNAME → media CloudFront distribution |
+| ACM's `_<hash>` name under each of the three | CNAME → ACM validation target |
+
+Every record is **DNS-only (grey cloud)**. AWS terminates TLS with the ACM
+certificate, so proxying through Cloudflare would only stack a second proxy in
+front of it. Leave them unproxied in the dashboard too.
+
+The token is a Cloudflare API token scoped to the `vinta.studio` zone, with
+**Zone → Zone → Read** and **Zone → DNS → Edit**. Put it in the Scalr
+Cloudflare provider configuration's `api_token`, not in this repository.
+
+### No per-host CAA on Cloudflare
+
+On Route 53 each hostname carries `0 issue "amazon.com"`, because the
+frontend's CNAME to Vercel inherits Vercel's CAA, and that CAA does not list
+Amazon (see [Every hostname here needs its own CAA
+record](#every-hostname-here-needs-its-own-caa-record)). Route 53 can put that
+CAA next to an alias A record. On Cloudflare each hostname is a CNAME, and a
+CNAME may not share its name with any other record, so the CAA cannot exist.
+
+CAA lookup climbs from `api.schedule-staging.vinta.studio` to its parent
+`schedule-staging.vinta.studio`. Once the frontend is a CNAME to Vercel, that
+parent answers with Vercel's CAA, and **ACM refuses to issue or renew with
+`CAA_ERROR`**. The first apply only works while the frontend name has no CAA
+of its own. When this was written, `schedule-staging.vinta.studio` had no
+records at all.
+
+Before the frontend moves to Vercel (or before the certificates' first
+renewal, about 13 months after issue), choose one of these:
+
+- Point the frontend at Vercel with an **A record** (`76.76.21.21`) instead of a
+  CNAME, and add a CAA at `schedule-staging.vinta.studio` that lists Vercel's
+  four CAs (`letsencrypt.org`, `pki.goog`, `sectigo.com`, `globalsign.com`)
+  plus `amazon.com`. The three AWS hostnames below it then inherit a policy
+  that allows ACM.
+- Or move the API hostnames out from under the frontend name.
+
+Check with `dig +short CAA schedule-staging.vinta.studio`. An answer that does
+not include `amazon.com` means ACM will fail.
+
+### Moving staging off `vintasoftware.com`
+
+The apply that switched staging to `vinta.studio` is itself the cutover. It
+replaces both ACM certificates and the API Gateway custom domain, updates the
+CloudFront aliases, and **deletes the old Route 53 records** in the
+`vintasoftware.com` zone. The old `*.schedule-staging.vintasoftware.com`
+hostnames stop answering as soon as that runs. Anything still pointing at them
+needs to move too: the frontend's API base URL, the Google OAuth redirect URIs,
+and the provider webhook URLs registered with Stripe.
 
 ## Migrating the staging workspace
 
@@ -565,7 +636,7 @@ the SSM parameter the stack writes.
 ### 3. Verify
 
 ```bash
-curl -i https://api.schedule-staging.vintasoftware.com/healthz/
+curl -i https://api.schedule-staging.vinta.studio/healthz/
 ```
 
 ## Day-to-day operations
