@@ -91,11 +91,6 @@ class FakeHost:
         """
         self._service = service
 
-    def _remove_available_time_windows_that_overlap_with_blocked_times_and_events(
-        self, *args, **kwargs
-    ) -> None:
-        pass
-
     def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None:
         pass
 

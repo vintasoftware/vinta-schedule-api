@@ -80,9 +80,6 @@ from calendar_integration.services.dataclasses import (
     UnavailableTimeWindow,
 )
 from calendar_integration.services.protocols.base_calendar_service import BaseCalendarService
-from calendar_integration.services.protocols.initializer_or_authenticated_calendar_service import (
-    InitializedOrAuthenticatedCalendarService,
-)
 from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
@@ -244,56 +241,6 @@ class AvailabilityService:
     def _serialize_event(self, event: CalendarEvent) -> CalendarEventData:
         """Build webhook payload for calendar event."""
         return _serialize_event_util(event)
-
-    def _remove_available_time_windows_that_overlap_with_blocked_times_and_events(
-        self,
-        calendar_id: int,
-        blocked_times: Iterable[BlockedTime],
-        events: Iterable[CalendarEvent],
-        start_time: datetime.datetime,
-        end_time: datetime.datetime,
-    ):
-        """
-        Removes AvailableTime windows that overlap with BlockedTime or CalendarEvent instances.
-        """
-        context = cast("InitializedOrAuthenticatedCalendarService", self._context)
-        if not context.organization:
-            return
-
-        blocked_times = list(blocked_times)
-        events = list(events)
-
-        available_time_windows = AvailableTime.objects.filter_by_organization(
-            context.organization.id
-        ).filter(
-            calendar_fk_id=calendar_id,
-            start_time__gte=start_time,
-            end_time__lte=end_time,
-        )
-
-        available_time_windows_to_delete: list[int] = []
-
-        for available_time in available_time_windows:
-            # Check if the available time overlaps with any blocked time
-            overlaps_with_blocked = any(
-                bt.start_time < available_time.end_time and bt.end_time > available_time.start_time
-                for bt in blocked_times
-            )
-            # Check if the available time overlaps with any event
-            overlaps_with_event = any(
-                event.start_time < available_time.end_time
-                and event.end_time > available_time.start_time
-                for event in events
-            )
-
-            if overlaps_with_blocked or overlaps_with_event:
-                # If it overlaps, remove it from the list of blocked times
-                available_time_windows_to_delete.append(available_time.id)
-
-        AvailableTime.objects.filter_by_organization(context.organization.id).filter(
-            id__in=available_time_windows_to_delete,
-            calendar_fk_id=calendar_id,
-        ).delete()
 
     @staticmethod
     def _subtract_busy_intervals(

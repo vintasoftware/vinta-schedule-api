@@ -3,8 +3,7 @@
 Tests construct CalendarSyncService directly (bypassing the CalendarService
 facade) using a real CalendarServiceContext fed a fake calendar adapter, plus a
 lightweight fake host for the concerns routed back to the facade
-(``_remove_available_time_windows_that_overlap_with_blocked_times_and_events``,
-``_grant_calendar_owner_permissions``, ``request_calendar_sync``,
+(``_grant_calendar_owner_permissions``, ``request_calendar_sync``,
 ``_execute_organization_calendar_resources_import``).
 
 The two flows covered are:
@@ -56,28 +55,15 @@ class FakeHost:
     """Minimal SyncServiceHost used in unit tests.
 
     Records the calls routed back to the facade so individual tests can assert on
-    them. ``_remove_available_time_windows_...`` and ``_grant_calendar_owner_permissions``
-    are no-ops with call capture; ``request_calendar_sync`` and
+    them. ``_grant_calendar_owner_permissions`` is a no-op with call capture;
+    ``request_calendar_sync`` and
     ``_execute_organization_calendar_resources_import`` capture their arguments.
     """
 
     def __init__(self) -> None:
-        self.remove_calls: list[tuple[Any, ...]] = []
         self.grant_calls: list[Calendar] = []
         self.request_calendar_sync_calls: list[dict[str, Any]] = []
         self.execute_org_import_calls: list[tuple[datetime.datetime, datetime.datetime]] = []
-
-    def _remove_available_time_windows_that_overlap_with_blocked_times_and_events(
-        self,
-        calendar_id: int,
-        blocked_times: Any,
-        events: Any,
-        start_time: datetime.datetime,
-        end_time: datetime.datetime,
-    ) -> None:
-        self.remove_calls.append(
-            (calendar_id, list(blocked_times), list(events), start_time, end_time)
-        )
 
     def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None:
         self.grant_calls.append(calendar)

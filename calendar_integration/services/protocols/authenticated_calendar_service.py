@@ -117,12 +117,3 @@ class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Pr
     ): ...
 
     def _apply_sync_changes(self, calendar_id: int, changes: EventsSyncChanges): ...
-
-    def _remove_available_time_windows_that_overlap_with_blocked_times_and_events(
-        self,
-        calendar_id: int,
-        blocked_times: Iterable[BlockedTime],
-        events: Iterable[CalendarEvent],
-        start_time: datetime.datetime,
-        end_time: datetime.datetime,
-    ): ...

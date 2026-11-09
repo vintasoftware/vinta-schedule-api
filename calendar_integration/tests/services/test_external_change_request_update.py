@@ -63,22 +63,9 @@ class FakeHost:
     """Minimal SyncServiceHost for tests — records calls, no-ops the actions."""
 
     def __init__(self) -> None:
-        self.remove_calls: list[tuple[Any, ...]] = []
         self.grant_calls: list[Calendar] = []
         self.request_calendar_sync_calls: list[dict[str, Any]] = []
         self.execute_org_import_calls: list[tuple[datetime.datetime, datetime.datetime]] = []
-
-    def _remove_available_time_windows_that_overlap_with_blocked_times_and_events(
-        self,
-        calendar_id: int,
-        blocked_times: Any,
-        events: Any,
-        start_time: datetime.datetime,
-        end_time: datetime.datetime,
-    ) -> None:
-        self.remove_calls.append(
-            (calendar_id, list(blocked_times), list(events), start_time, end_time)
-        )
 
     def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None:
         self.grant_calls.append(calendar)

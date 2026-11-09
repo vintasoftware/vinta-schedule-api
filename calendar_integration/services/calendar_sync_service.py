@@ -16,14 +16,9 @@ via the constructor:
   cache (the multi-tenant fix for lru_cache). Shared so lookups are not
   duplicated across the facade and this service.
 - ``host`` — the :class:`SyncServiceHost` (currently the facade itself). The sync
-  concern routes two things back through it:
-
-  - **available-time pruning** (``_remove_available_time_windows_that_overlap_with_blocked_times_and_events``)
-    — the availability concern; reaching it through the host keeps a single
-    implementation and the call graph the existing test suite asserts on.
-  - **owner-permission granting** (``_grant_calendar_owner_permissions``) — a shared
-    facade helper used by import flows; routed through the host so it has one
-    implementation and stays byte-for-byte.
+  concern routes **owner-permission granting** (``_grant_calendar_owner_permissions``)
+  back through it — a shared facade helper used by import flows; routed through the
+  host so it has one implementation and stays byte-for-byte.
 
 The sync diff/merge machine (``_process_events_for_sync`` / ``_apply_sync_changes``),
 the existing-data lookup, the full-sync deletion pass, and the orphan-linking pass
@@ -116,16 +111,10 @@ def _summarize_external_ids(resources: list[CalendarResourceData]) -> str:
 class SyncServiceHost(Protocol):
     """The collaborator surface the sync concern routes back to the facade for.
 
-    Two concerns are not part of the sync concern's extracted surface and stay on
-    the facade:
-
-    - **available-time pruning**
-      (``_remove_available_time_windows_that_overlap_with_blocked_times_and_events``)
-      — the availability concern; reached through the host to keep one
-      implementation and the call graph the existing test suite patches via the facade;
-    - **owner-permission granting** (``_grant_calendar_owner_permissions``) — a shared
-      facade helper used by the import flows; routed through the host for a single
-      implementation.
+    **Owner-permission granting** (``_grant_calendar_owner_permissions``) is not part
+    of the sync concern's extracted surface and stays on the facade — a shared facade
+    helper used by the import flows; routed through the host for a single
+    implementation.
 
     Two sync entry points are *also* routed back through the host even though their
     real implementation lives in this service. The existing test suite patches
@@ -140,15 +129,6 @@ class SyncServiceHost(Protocol):
     The facade currently supplies itself; individual concerns may be swapped out
     later without changing this service's call sites.
     """
-
-    def _remove_available_time_windows_that_overlap_with_blocked_times_and_events(
-        self,
-        calendar_id: int,
-        blocked_times: Iterable[BlockedTime],
-        events: Iterable[CalendarEvent],
-        start_time: datetime.datetime,
-        end_time: datetime.datetime,
-    ) -> None: ...
 
     def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None: ...
 
@@ -935,16 +915,6 @@ class CalendarSyncService:
 
         # Apply all changes to database
         self._apply_sync_changes(calendar.id, changes)
-
-        # Update available time windows if needed
-        if calendar.manage_available_windows:
-            self._host._remove_available_time_windows_that_overlap_with_blocked_times_and_events(
-                calendar.id,
-                changes.blocked_times_to_create + changes.blocked_times_to_update,
-                changes.events_to_update,
-                start_date,
-                end_date,
-            )
 
     def _get_existing_calendar_data(
         self,
