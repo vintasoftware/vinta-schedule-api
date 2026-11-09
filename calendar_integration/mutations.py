@@ -528,27 +528,43 @@ def _to_slot_input_data(
     ]
 
 
+def _appointment_type_write_error(
+    system_user: SystemUser | None, organization: Organization
+) -> str | None:
+    """Return an error message if the token may not create, update or delete appointment types.
+
+    Only org-wide and scoped-admin tokens may, matching REST, where these actions
+    are admin-only (``AppointmentTypePermission``). A scoped-member token, including
+    one whose membership is missing or inactive, is refused. A missing token is
+    refused too: ``IsAuthenticated`` always sets one, so only a direct resolver call
+    gets here without it. Booking (``create_appointment_type_event``) is not gated
+    here, because members may book appointment types they take part in.
+    """
+    if system_user is None or system_user_scope(system_user, organization) not in (
+        "org_wide",
+        "scoped_admin",
+    ):
+        return "You do not have permission to manage appointment types."
+    return None
+
+
 def _pool_attachment_error(
     system_user: SystemUser | None,
-    organization: Organization,
     slots: list[AppointmentTypeSlotInput],
 ) -> str | None:
     """Return an error message if the token may not set ``pool_ids`` on these slots.
 
-    Attaching or detaching a pool is checked like writing the pool itself (see
-    ``_assert_can_write_calendar_pools`` in ``public_api/mutations.py``): the token
-    needs the ``CALENDAR_POOL`` resource and an org-wide or scoped-admin scope.
-    Otherwise a token denied ``CALENDAR_POOL``, or a scoped member, could pull a
-    pool's calendars into a slot by id. Slots that leave ``pool_ids`` out need no
-    check, so callers that never send it are unaffected.
+    Attaching or detaching a pool needs the ``CALENDAR_POOL`` resource, like writing
+    the pool itself (``_assert_can_write_calendar_pools`` in
+    ``public_api/mutations.py``). Otherwise a token denied ``CALENDAR_POOL`` could
+    pull a pool's calendars into a slot by id. Callers run
+    ``_appointment_type_write_error`` first, which already limits the token to
+    org-wide or scoped-admin. Slots that leave ``pool_ids`` out need no check, so
+    callers that never send it are unaffected.
     """
     if all(slot.pool_ids is None for slot in slots):
         return None
-    if (
-        system_user is None
-        or not system_user.has_resource(PublicAPIResources.CALENDAR_POOL)
-        or system_user_scope(system_user, organization) not in ("org_wide", "scoped_admin")
-    ):
+    if system_user is None or not system_user.has_resource(PublicAPIResources.CALENDAR_POOL):
         return "You do not have permission to manage calendar pools."
     return None
 
@@ -812,9 +828,10 @@ class AppointmentTypeMutations:
             return AppointmentTypeResult(success=False, error_message="Organization not found")
         if input.organization_id != organization.id:
             return AppointmentTypeResult(success=False, error_message="Organization not found")
-        if error_message := _pool_attachment_error(
-            info.context.request.public_api_system_user, organization, input.slots
-        ):
+        system_user = info.context.request.public_api_system_user
+        if error_message := _appointment_type_write_error(
+            system_user, organization
+        ) or _pool_attachment_error(system_user, input.slots):
             return AppointmentTypeResult(success=False, error_message=error_message)
         deps = get_appointment_type_mutation_dependencies()
         deps.appointment_type_service.initialize(organization=organization)
@@ -851,9 +868,10 @@ class AppointmentTypeMutations:
             return AppointmentTypeResult(success=False, error_message="Organization not found")
         if input.organization_id != organization.id:
             return AppointmentTypeResult(success=False, error_message="Organization not found")
-        if error_message := _pool_attachment_error(
-            info.context.request.public_api_system_user, organization, input.slots
-        ):
+        system_user = info.context.request.public_api_system_user
+        if error_message := _appointment_type_write_error(
+            system_user, organization
+        ) or _pool_attachment_error(system_user, input.slots):
             return AppointmentTypeResult(success=False, error_message=error_message)
         deps = get_appointment_type_mutation_dependencies()
         deps.appointment_type_service.initialize(organization=organization)
@@ -890,6 +908,10 @@ class AppointmentTypeMutations:
             return DeleteAppointmentTypeResult(
                 success=False, error_message="Organization not found"
             )
+        if error_message := _appointment_type_write_error(
+            info.context.request.public_api_system_user, organization
+        ):
+            return DeleteAppointmentTypeResult(success=False, error_message=error_message)
         deps = get_appointment_type_mutation_dependencies()
         deps.appointment_type_service.initialize(organization=organization)
         try:

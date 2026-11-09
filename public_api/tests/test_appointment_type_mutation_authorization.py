@@ -803,3 +803,155 @@ def test_control_gated_mutation_is_rejected_unauthenticated(anon_client, org_b, 
         or "permission" in messages.lower()
         or "access" in messages.lower()
     ), body["errors"]
+
+
+# ---------------------------------------------------------------------------
+# 6. createAppointmentType / updateAppointmentType / deleteAppointmentType:
+#    role scope. Only org-wide and scoped-admin tokens may write, as on REST.
+# ---------------------------------------------------------------------------
+
+APPOINTMENT_TYPE_WRITE_FORBIDDEN = "You do not have permission to manage appointment types."
+
+
+def _scoped_post(org, group, *, is_active=True):
+    """post() for a token scoped to a fresh ``group`` membership in ``org``."""
+    user = baker.make(User, email=f"scoped_{uuid.uuid4().hex[:8]}@example.com")
+    membership = make_membership(user=user, organization=org, groups=(group,), is_active=is_active)
+    return _token_client(org, scoped_to_membership=membership)
+
+
+def _create_variables(org):
+    return {
+        "input": {
+            "organizationId": org.id,
+            "name": "Scoped AppointmentType",
+            "slots": [],
+            "isPrivate": True,
+        }
+    }
+
+
+def _update_variables(org, appointment_type):
+    return {
+        "input": {
+            "organizationId": org.id,
+            "appointmentTypeId": appointment_type.id,
+            "name": "Renamed By Scoped Token",
+            "slots": [],
+            "isPrivate": True,
+        }
+    }
+
+
+def _delete_variables(org, appointment_type):
+    return {"input": {"organizationId": org.id, "appointmentTypeId": appointment_type.id}}
+
+
+class TestAppointmentTypeWriteRoleScope:
+    @pytest.mark.parametrize(
+        ("group", "is_active"),
+        [(GROUP_ORGANIZATION_MEMBER, True), (GROUP_ORGANIZATION_ADMIN, False)],
+        ids=["member", "inactive-admin"],
+    )
+    def test_scoped_member_create_refused(self, org_a, group, is_active):
+        post = _scoped_post(org_a, group, is_active=is_active)
+
+        body = post(CREATE_APPOINTMENT_TYPE_MUTATION, _create_variables(org_a))
+
+        assert body["data"]["createAppointmentType"] == {
+            "success": False,
+            "errorMessage": APPOINTMENT_TYPE_WRITE_FORBIDDEN,
+            "appointmentType": None,
+        }
+        assert not AppointmentType.objects.filter_by_organization(org_a.id).exists()
+
+    @pytest.mark.parametrize(
+        ("group", "is_active"),
+        [(GROUP_ORGANIZATION_MEMBER, True), (GROUP_ORGANIZATION_ADMIN, False)],
+        ids=["member", "inactive-admin"],
+    )
+    def test_scoped_member_update_refused(
+        self, org_a, org_a_existing_appointment_type, group, is_active
+    ):
+        original_name = org_a_existing_appointment_type.name
+        post = _scoped_post(org_a, group, is_active=is_active)
+
+        body = post(
+            UPDATE_APPOINTMENT_TYPE_MUTATION,
+            _update_variables(org_a, org_a_existing_appointment_type),
+        )
+
+        assert body["data"]["updateAppointmentType"] == {
+            "success": False,
+            "errorMessage": APPOINTMENT_TYPE_WRITE_FORBIDDEN,
+            "appointmentType": None,
+        }
+        org_a_existing_appointment_type.refresh_from_db()
+        assert org_a_existing_appointment_type.name == original_name
+
+    @pytest.mark.parametrize(
+        ("group", "is_active"),
+        [(GROUP_ORGANIZATION_MEMBER, True), (GROUP_ORGANIZATION_ADMIN, False)],
+        ids=["member", "inactive-admin"],
+    )
+    def test_scoped_member_delete_refused(
+        self, org_a, org_a_existing_appointment_type, group, is_active
+    ):
+        post = _scoped_post(org_a, group, is_active=is_active)
+
+        body = post(
+            DELETE_APPOINTMENT_TYPE_MUTATION,
+            _delete_variables(org_a, org_a_existing_appointment_type),
+        )
+
+        assert body["data"]["deleteAppointmentType"] == {
+            "success": False,
+            "errorMessage": APPOINTMENT_TYPE_WRITE_FORBIDDEN,
+        }
+        assert (
+            AppointmentType.objects.filter_by_organization(org_a.id)
+            .filter(id=org_a_existing_appointment_type.id)
+            .exists()
+        )
+
+    def test_scoped_admin_create_succeeds(self, org_a):
+        post = _scoped_post(org_a, GROUP_ORGANIZATION_ADMIN)
+
+        body = post(CREATE_APPOINTMENT_TYPE_MUTATION, _create_variables(org_a))
+
+        result = body["data"]["createAppointmentType"]
+        assert result["errorMessage"] is None
+        assert result["success"] is True
+        created = AppointmentType.objects.filter_by_organization(org_a.id).get()
+        assert result["appointmentType"] == {"id": str(created.id), "name": created.name}
+        assert created.name == "Scoped AppointmentType"
+
+    def test_scoped_admin_update_succeeds(self, org_a, org_a_existing_appointment_type):
+        post = _scoped_post(org_a, GROUP_ORGANIZATION_ADMIN)
+
+        body = post(
+            UPDATE_APPOINTMENT_TYPE_MUTATION,
+            _update_variables(org_a, org_a_existing_appointment_type),
+        )
+
+        assert body["data"]["updateAppointmentType"] == {
+            "success": True,
+            "errorMessage": None,
+            "appointmentType": {
+                "id": str(org_a_existing_appointment_type.id),
+                "name": "Renamed By Scoped Token",
+            },
+        }
+        org_a_existing_appointment_type.refresh_from_db()
+        assert org_a_existing_appointment_type.name == "Renamed By Scoped Token"
+
+    def test_scoped_admin_delete_succeeds(self, org_a, org_a_existing_appointment_type):
+        post = _scoped_post(org_a, GROUP_ORGANIZATION_ADMIN)
+
+        body = post(
+            DELETE_APPOINTMENT_TYPE_MUTATION,
+            _delete_variables(org_a, org_a_existing_appointment_type),
+        )
+
+        assert body["data"]["deleteAppointmentType"] == {"success": True, "errorMessage": None}
+        assert not AppointmentType.objects.filter_by_organization(org_a.id).exists()
