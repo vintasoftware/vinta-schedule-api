@@ -109,6 +109,21 @@ def _mock_info_with_org(organization):
     return info
 
 
+def _mock_write_info(organization):
+    """Like ``_mock_info_with_org``, with a real org-wide token on the request.
+
+    The create/update/delete appointment type mutations refuse a request with no
+    token, so calling them directly needs one. An org-wide token is what
+    ``IsAuthenticated`` would let through for an organization's own integration.
+    """
+    info = _mock_info_with_org(organization)
+    system_user, _token = PublicAPIAuthService().create_system_user(
+        integration_name="appointment-type-writes", organization=organization
+    )
+    info.context.request.public_api_system_user = system_user
+    return info
+
+
 # ---------------------------------------------------------------------------
 # Query tests
 # ---------------------------------------------------------------------------
@@ -319,7 +334,7 @@ def test_create_appointment_type_mutation(organization, internal_calendars):
         return_value=deps,
     ):
         result = mutations.create_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is True
     assert result.appointment_type is not None
@@ -354,7 +369,7 @@ def test_create_appointment_type_mutation_defaults_is_private_true(
         return_value=deps,
     ):
         result = mutations.create_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is True
     assert result.appointment_type is not None
@@ -406,7 +421,7 @@ def test_create_appointment_type_mutation_public_without_duration_rejected(
         return_value=deps,
     ):
         result = mutations.create_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is False
     assert "duration" in (result.error_message or "").lower()
@@ -443,7 +458,7 @@ def test_create_appointment_type_mutation_public_with_duration_succeeds(
         return_value=deps,
     ):
         result = mutations.create_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is True
     appointment_type = AppointmentType.objects.filter_by_organization(organization.id).get(
@@ -479,7 +494,7 @@ def test_create_appointment_type_mutation_rejects_non_positive_duration(
         return_value=deps,
     ):
         result = mutations.create_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is False
     assert "duration_seconds" in (result.error_message or "")
@@ -512,7 +527,7 @@ def test_create_appointment_type_mutation_with_is_private_true(organization, int
         return_value=deps,
     ):
         result = mutations.create_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is True
     assert result.appointment_type is not None
@@ -538,6 +553,55 @@ def test_create_appointment_type_mutation_rejects_missing_request_organization()
     result = mutations.create_appointment_type(info=info, input=input_data)
     assert result.success is False
     assert "Organization not found" in (result.error_message or "")
+
+
+@pytest.mark.django_db
+def test_appointment_type_write_mutations_refuse_a_request_without_a_token(
+    organization, clinic_appointment_type
+):
+    """With no token on the request, create/update/delete refuse and change nothing.
+
+    ``IsAuthenticated`` always sets a token on a real request; this covers a
+    direct resolver call, which must fail closed rather than act unrestricted.
+    """
+    mutations = AppointmentTypeMutations()
+    info = _mock_info_with_org(organization)
+    forbidden = "You do not have permission to manage appointment types."
+
+    created = mutations.create_appointment_type(
+        info=info,
+        input=AppointmentTypeInput(organization_id=organization.id, name="New", slots=[]),
+    )
+    updated = mutations.update_appointment_type(
+        info=info,
+        input=UpdateAppointmentTypeInput(
+            organization_id=organization.id,
+            appointment_type_id=clinic_appointment_type.id,
+            name="Renamed",
+            slots=[],
+        ),
+    )
+    deleted = mutations.delete_appointment_type(
+        info=info,
+        input=DeleteAppointmentTypeInput(
+            organization_id=organization.id, appointment_type_id=clinic_appointment_type.id
+        ),
+    )
+
+    assert (created.success, created.error_message, created.appointment_type) == (
+        False,
+        forbidden,
+        None,
+    )
+    assert (updated.success, updated.error_message, updated.appointment_type) == (
+        False,
+        forbidden,
+        None,
+    )
+    assert (deleted.success, deleted.error_message) == (False, forbidden)
+    assert list(
+        AppointmentType.objects.filter_by_organization(organization.id).values_list("id", "name")
+    ) == [(clinic_appointment_type.id, "Clinic")]
 
 
 @pytest.mark.django_db
@@ -581,7 +645,7 @@ def test_create_appointment_type_mutation_surfaces_validation_error(
         return_value=deps,
     ):
         result = mutations.create_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is False
     assert "duplicate" in (result.error_message or "").lower()
@@ -616,7 +680,7 @@ def test_update_appointment_type_mutation(
         return_value=deps,
     ):
         result = mutations.update_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is True
     clinic_appointment_type.refresh_from_db()
@@ -668,7 +732,7 @@ def test_update_appointment_type_mutation_public_without_duration_rejected(
         return_value=deps,
     ):
         result = mutations.update_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is False
     assert "duration" in (result.error_message or "").lower()
@@ -714,7 +778,7 @@ def test_update_appointment_type_mutation_public_with_duration_succeeds(
         return_value=deps,
     ):
         result = mutations.update_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is True
     appointment_type.refresh_from_db()
@@ -762,7 +826,7 @@ def test_update_appointment_type_mutation_public_uses_existing_duration(
         return_value=deps,
     ):
         result = mutations.update_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is True
     appointment_type.refresh_from_db()
@@ -809,7 +873,7 @@ def test_update_appointment_type_mutation_toggle_is_private_false_to_true(
         return_value=deps,
     ):
         result = mutations.update_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is True
     appointment_type.refresh_from_db()
@@ -861,7 +925,7 @@ def test_update_appointment_type_mutation_omitting_is_private_leaves_unchanged(
         return_value=deps,
     ):
         result = mutations.update_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is True
     appointment_type.refresh_from_db()
@@ -886,7 +950,7 @@ def test_update_appointment_type_mutation_missing_appointment_type(organization)
         return_value=deps,
     ):
         result = mutations.update_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is False
     assert "not found" in (result.error_message or "").lower()
@@ -904,7 +968,7 @@ def test_delete_appointment_type_mutation(organization, clinic_appointment_type)
         return_value=deps,
     ):
         result = mutations.delete_appointment_type(
-            info=_mock_info_with_org(organization), input=input_data
+            info=_mock_write_info(organization), input=input_data
         )
     assert result.success is True
     assert (

@@ -59,6 +59,9 @@ mutation UpdateAppointmentType($input: UpdateAppointmentTypeInput!) {{
 
 BOTH_RESOURCES = [PublicAPIResources.APPOINTMENT_TYPE, PublicAPIResources.CALENDAR_POOL]
 FORBIDDEN = "You do not have permission to manage calendar pools."
+# A scoped member is refused before poolIds is looked at: it may not write
+# appointment types at all.
+APPOINTMENT_TYPE_FORBIDDEN = "You do not have permission to manage appointment types."
 
 
 def _make_calendar(org: Organization) -> Calendar:
@@ -195,7 +198,11 @@ class TestCreateAppointmentTypeWithPools:
 
         result = _create(post, org, [_slot("Host", [host_calendar.id], poolIds=[pool.id])])
 
-        assert result == {"success": False, "errorMessage": FORBIDDEN, "appointmentType": None}
+        assert result == {
+            "success": False,
+            "errorMessage": APPOINTMENT_TYPE_FORBIDDEN,
+            "appointmentType": None,
+        }
         assert not AppointmentType.objects.filter_by_organization(org.id).exists()
 
     def test_pool_from_another_organization_rejected(self, org, admin_post, host_calendar):
@@ -308,5 +315,9 @@ class TestUpdateAppointmentTypePools:
             [_slot("Host", [host_calendar.id], poolIds=[pool_b[0].id])],
         )
 
-        assert result == {"success": False, "errorMessage": FORBIDDEN, "appointmentType": None}
+        assert result == {
+            "success": False,
+            "errorMessage": APPOINTMENT_TYPE_FORBIDDEN,
+            "appointmentType": None,
+        }
         assert _attached_pool_ids(org, "Host") == {pool.id}
