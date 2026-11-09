@@ -4888,86 +4888,233 @@ def test_apply_sync_changes_with_recurrence_rules_and_events(
     assert created_event.recurrence_rule.count == 3
 
 
+def _utc(hour: int, minute: int = 0) -> datetime.datetime:
+    return datetime.datetime(2025, 6, 22, hour, minute, tzinfo=datetime.UTC)
+
+
+@pytest.fixture
+def managed_calendar(calendar):
+    """The shared ``calendar`` fixture, switched to manage its own availability windows."""
+    calendar.manage_available_windows = True
+    calendar.save(update_fields=["manage_available_windows"])
+    return calendar
+
+
+@pytest.fixture
+def nine_to_five_available_time(managed_calendar):
+    """A 09:00-17:00 UTC availability window on the managed calendar."""
+    return AvailableTime.objects.create(
+        calendar_fk=managed_calendar,
+        start_time_tz_unaware=_utc(9),
+        end_time_tz_unaware=_utc(17),
+        timezone="UTC",
+        organization=managed_calendar.organization,
+    )
+
+
+def _provider_event(
+    external_id: str, start: datetime.datetime, end: datetime.datetime
+) -> CalendarEventAdapterOutputData:
+    return CalendarEventAdapterOutputData(
+        calendar_external_id="cal_123",
+        external_id=external_id,
+        title="Busy",
+        description="",
+        start_time=start,
+        end_time=end,
+        timezone="UTC",
+        attendees=[],
+        status="confirmed",
+    )
+
+
+def _sync_provider_events(
+    service: CalendarService,
+    mock_google_adapter: Mock,
+    calendar: Calendar,
+    events: list[CalendarEventAdapterOutputData],
+    should_update_events: bool = False,
+) -> None:
+    mock_google_adapter.get_events.return_value = {
+        "events": events,
+        "next_sync_token": "tok",
+    }
+    calendar_sync = CalendarSync.objects.create(
+        calendar_fk=calendar,
+        start_datetime=_utc(0),
+        end_datetime=_utc(23, 59),
+        should_update_events=should_update_events,
+        organization=calendar.organization,
+        status=CalendarSyncStatus.IN_PROGRESS,
+    )
+    service._execute_calendar_sync(calendar_sync, sync_token=None)
+
+
+def _bookable_spans(
+    service: CalendarService, calendar: Calendar
+) -> list[tuple[datetime.datetime, datetime.datetime]]:
+    windows = service.get_availability_windows_in_range(calendar, _utc(0), _utc(23, 59))
+    return sorted((w.start_time, w.end_time) for w in windows)
+
+
+def _stored_span(available_time: AvailableTime) -> tuple[datetime.datetime, datetime.datetime]:
+    stored = AvailableTime.objects.filter_by_organization(available_time.organization_id).get(
+        id=available_time.id
+    )
+    return (stored.start_time, stored.end_time)
+
+
 @pytest.mark.django_db
-def test_remove_available_time_windows_overlap(
-    social_account, social_token, mock_google_adapter, calendar
+def test_sync_with_partially_overlapping_blocker_keeps_available_time(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    managed_calendar,
+    nine_to_five_available_time,
+    patch_get_calendar,
 ):
-    """Test removing available time windows that overlap with blocked times and events."""
-    # Create available time windows
-    available_time1 = AvailableTime.objects.create(
-        calendar_fk=calendar,
-        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 9, 0, tzinfo=datetime.UTC),
-        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 30, tzinfo=datetime.UTC),
-        timezone="UTC",
-        organization=calendar.organization,
-    )
-    available_time2 = AvailableTime.objects.create(
-        calendar_fk=calendar,
-        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 14, 0, tzinfo=datetime.UTC),
-        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 16, 0, tzinfo=datetime.UTC),
-        timezone="UTC",
-        organization=calendar.organization,
-    )
-
-    # Create blocked time that overlaps with available_time1
-    blocked_time = BlockedTime(
-        calendar_fk=calendar,
-        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
-        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
-        start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC).replace(
-            tzinfo=zoneinfo.ZoneInfo("UTC")
-        ),
-        end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC).replace(
-            tzinfo=zoneinfo.ZoneInfo("UTC")
-        ),
-        timezone="UTC",
-        reason="Blocked",
-        external_id="block_overlap",
-        organization=calendar.organization,
-    )
-
-    # Create event that overlaps with available_time2
-    event = CalendarEvent(
-        calendar_fk=calendar,
-        title="Event",
-        external_id="event_overlap",
-        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC),
-        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 16, 30, tzinfo=datetime.UTC),
-        start_time=datetime.datetime(2025, 6, 22, 15, 0, tzinfo=datetime.UTC).replace(
-            tzinfo=zoneinfo.ZoneInfo("UTC")
-        ),
-        end_time=datetime.datetime(2025, 6, 22, 16, 30, tzinfo=datetime.UTC).replace(
-            tzinfo=zoneinfo.ZoneInfo("UTC")
-        ),
-        timezone="UTC",
-        organization=calendar.organization,
-    )
-
+    """A synced blocker inside an availability window splits bookable time; the window stays."""
     service = CalendarService()
-    service.authenticate(account=social_account.user, organization=calendar.organization)
-    service._remove_available_time_windows_that_overlap_with_blocked_times_and_events(
-        calendar.id,
-        [blocked_time],
-        [event],
-        datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC),
-        datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC),
+    service.authenticate(account=social_account.user, organization=managed_calendar.organization)
+
+    _sync_provider_events(
+        service,
+        mock_google_adapter,
+        managed_calendar,
+        [_provider_event("busy", _utc(10), _utc(11))],
     )
 
-    # Verify both available time windows were deleted due to overlaps
-    assert (
-        not AvailableTime.objects.filter_by_organization(calendar.organization_id)
-        .filter(
-            id=available_time1.id,
-        )
-        .exists()
+    assert _stored_span(nine_to_five_available_time) == (_utc(9), _utc(17))
+    assert _bookable_spans(service, managed_calendar) == [
+        (_utc(9), _utc(10)),
+        (_utc(11), _utc(17)),
+    ]
+
+
+@pytest.mark.django_db
+def test_sync_with_fully_covering_blocker_keeps_available_time(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    managed_calendar,
+    nine_to_five_available_time,
+    patch_get_calendar,
+):
+    """A blocker covering the whole window leaves no bookable time, but keeps the window."""
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=managed_calendar.organization)
+
+    _sync_provider_events(
+        service, mock_google_adapter, managed_calendar, [_provider_event("busy", _utc(8), _utc(18))]
     )
-    assert (
-        not AvailableTime.objects.filter_by_organization(calendar.organization_id)
-        .filter(
-            id=available_time2.id,
-        )
-        .exists()
+
+    assert _stored_span(nine_to_five_available_time) == (_utc(9), _utc(17))
+    assert _bookable_spans(service, managed_calendar) == []
+
+
+@pytest.mark.django_db
+def test_removing_synced_blocker_restores_bookable_time(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    managed_calendar,
+    nine_to_five_available_time,
+    patch_get_calendar,
+):
+    """Removing a synced blocker frees the whole window again, with no window to recreate.
+
+    The blocker is removed by deleting its stored row directly: full sync does not yet
+    delete blockers that vanished from the provider, which is a separate sync concern.
+    """
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=managed_calendar.organization)
+    _sync_provider_events(
+        service,
+        mock_google_adapter,
+        managed_calendar,
+        [_provider_event("busy", _utc(10), _utc(11))],
     )
+
+    BlockedTime.objects.filter_by_organization(managed_calendar.organization_id).filter(
+        external_id="busy"
+    ).delete()
+
+    assert _stored_span(nine_to_five_available_time) == (_utc(9), _utc(17))
+    assert _bookable_spans(service, managed_calendar) == [(_utc(9), _utc(17))]
+
+
+@pytest.mark.django_db
+def test_moving_synced_blocker_moves_bookable_time(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    managed_calendar,
+    nine_to_five_available_time,
+    patch_get_calendar,
+):
+    """Bookable time follows a blocker once its new interval is stored locally.
+
+    The blocker is moved by writing its stored times directly: whether a provider-side
+    move reaches those columns is a separate sync concern.
+    """
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=managed_calendar.organization)
+    _sync_provider_events(
+        service,
+        mock_google_adapter,
+        managed_calendar,
+        [_provider_event("busy", _utc(10), _utc(11))],
+    )
+
+    BlockedTime.objects.filter_by_organization(managed_calendar.organization_id).filter(
+        external_id="busy"
+    ).update(start_time_tz_unaware=_utc(14), end_time_tz_unaware=_utc(15))
+
+    assert _stored_span(nine_to_five_available_time) == (_utc(9), _utc(17))
+    assert _bookable_spans(service, managed_calendar) == [
+        (_utc(9), _utc(14)),
+        (_utc(15), _utc(17)),
+    ]
+
+
+@pytest.mark.django_db
+def test_sync_updating_overlapping_event_keeps_available_time(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    managed_calendar,
+    nine_to_five_available_time,
+    patch_get_calendar,
+):
+    """An updated event that overlaps an availability window does not delete the window."""
+    organization = managed_calendar.organization
+    organization.external_event_update_policy = ExternalEventUpdatePolicy.ALLOW
+    organization.save(update_fields=["external_event_update_policy"])
+    CalendarEvent.objects.create(
+        calendar_fk=managed_calendar,
+        title="Busy",
+        external_id="event_overlap",
+        start_time_tz_unaware=_utc(10),
+        end_time_tz_unaware=_utc(11),
+        timezone="UTC",
+        organization=organization,
+    )
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=organization)
+
+    _sync_provider_events(
+        service,
+        mock_google_adapter,
+        managed_calendar,
+        [_provider_event("event_overlap", _utc(10), _utc(11))],
+        should_update_events=True,
+    )
+
+    assert _stored_span(nine_to_five_available_time) == (_utc(9), _utc(17))
+    assert _bookable_spans(service, managed_calendar) == [
+        (_utc(9), _utc(10)),
+        (_utc(11), _utc(17)),
+    ]
 
 
 @pytest.mark.django_db

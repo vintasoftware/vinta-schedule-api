@@ -2006,23 +2006,6 @@ class CalendarService(BaseCalendarService):
         """
         return self._get_sync_service()._apply_sync_changes(calendar_id, changes)
 
-    def _remove_available_time_windows_that_overlap_with_blocked_times_and_events(
-        self,
-        calendar_id: int,
-        blocked_times: Iterable[BlockedTime],
-        events: Iterable[CalendarEvent],
-        start_time: datetime.datetime,
-        end_time: datetime.datetime,
-    ) -> None:
-        """Delegation: removes AvailableTime windows that overlap with BlockedTime or CalendarEvent.
-
-        Kept on the facade for backward compatibility with existing tests and internal
-        callers (sync flow at _execute_calendar_sync). Delegates to AvailabilityService.
-        """
-        return self._get_availability_service()._remove_available_time_windows_that_overlap_with_blocked_times_and_events(
-            calendar_id, blocked_times, events, start_time, end_time
-        )
-
     @staticmethod
     def _subtract_busy_intervals(
         window_start: datetime.datetime,
