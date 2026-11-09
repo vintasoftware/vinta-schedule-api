@@ -1339,7 +1339,16 @@ class CalendarSyncService:
             changes.matched_event_ids.add(existing_blocked_time.external_id)
             return
 
-        # Update existing blocked time
+        # Update existing blocked time. start_time/end_time are generated from the wall-clock
+        # fields and timezone, so those are what get saved; the generated fields are also set
+        # in memory because the available-window cleanup reads them after the bulk update.
+        existing_blocked_time.start_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+            event.start_time, event.timezone
+        )
+        existing_blocked_time.end_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
+            event.end_time, event.timezone
+        )
+        existing_blocked_time.timezone = event.timezone
         existing_blocked_time.start_time = event.start_time
         existing_blocked_time.end_time = event.end_time
         existing_blocked_time.reason = event.title
@@ -1582,7 +1591,14 @@ class CalendarSyncService:
         if changes.blocked_times_to_update:
             BlockedTime.objects.bulk_update(
                 changes.blocked_times_to_update,
-                ["start_time_tz_unaware", "end_time_tz_unaware", "reason", "external_id"],
+                [
+                    "start_time_tz_unaware",
+                    "end_time_tz_unaware",
+                    "timezone",
+                    "reason",
+                    "external_id",
+                    "meta",
+                ],
             )
 
         if changes.events_to_delete:

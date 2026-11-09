@@ -4540,6 +4540,75 @@ def test_process_existing_blocked_time(social_account, social_token, mock_google
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("incoming_timezone", "expected_wall_clock_start", "expected_wall_clock_end"),
+    [
+        # Same zone as the stored block: 15:00Z/16:00Z is 12:00/13:00 in Recife (UTC-3).
+        ("America/Recife", (2025, 6, 23, 12, 0), (2025, 6, 23, 13, 0)),
+        # The provider moved the event into another zone: 15:00Z/16:00Z is 17:00/18:00 in
+        # Berlin (UTC+2 in June).
+        ("Europe/Berlin", (2025, 6, 23, 17, 0), (2025, 6, 23, 18, 0)),
+    ],
+)
+def test_rescheduled_provider_event_persists_imported_blocked_time_interval(
+    social_account,
+    social_token,
+    mock_google_adapter,
+    calendar,
+    incoming_timezone,
+    expected_wall_clock_start,
+    expected_wall_clock_end,
+):
+    """A provider event moved in time moves its imported blocked time in the database."""
+    blocked_time = BlockedTime.objects.create(
+        calendar_fk=calendar,
+        # 09:00-10:00 in Recife, i.e. 12:00Z-13:00Z.
+        start_time_tz_unaware=datetime.datetime(2025, 6, 22, 9, 0, tzinfo=datetime.UTC),
+        end_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+        timezone="America/Recife",
+        reason="Busy",
+        external_id="moved_block_123",
+        organization=calendar.organization,
+    )
+    rescheduled_event_data = CalendarEventAdapterOutputData(
+        calendar_external_id="cal_123",
+        external_id="moved_block_123",
+        title="Busy",
+        description="",
+        start_time=datetime.datetime(2025, 6, 23, 15, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2025, 6, 23, 16, 0, tzinfo=datetime.UTC),
+        timezone=incoming_timezone,
+        attendees=[],
+        status="confirmed",
+        original_payload={"id": "moved_block_123", "updated": "2025-06-21T10:00:00Z"},
+    )
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=calendar.organization)
+    changes = EventsSyncChanges()
+    service._process_existing_blocked_time(rescheduled_event_data, blocked_time, changes)
+    service._apply_sync_changes(calendar.id, changes)
+
+    stored_block = BlockedTime.objects.filter_by_organization(calendar.organization).get(
+        external_id="moved_block_123"
+    )
+    assert stored_block.pk == blocked_time.pk
+    assert stored_block.timezone == incoming_timezone
+    assert stored_block.start_time_tz_unaware == datetime.datetime(
+        *expected_wall_clock_start, tzinfo=datetime.UTC
+    )
+    assert stored_block.end_time_tz_unaware == datetime.datetime(
+        *expected_wall_clock_end, tzinfo=datetime.UTC
+    )
+    assert stored_block.start_time == datetime.datetime(2025, 6, 23, 15, 0, tzinfo=datetime.UTC)
+    assert stored_block.end_time == datetime.datetime(2025, 6, 23, 16, 0, tzinfo=datetime.UTC)
+    assert stored_block.meta["latest_original_payload"] == {
+        "id": "moved_block_123",
+        "updated": "2025-06-21T10:00:00Z",
+    }
+
+
+@pytest.mark.django_db
 def test_process_event_attendees_new_user(
     social_account, social_token, mock_google_adapter, calendar_event
 ):
