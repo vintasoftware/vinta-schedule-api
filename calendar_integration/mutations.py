@@ -73,8 +73,11 @@ from calendar_integration.services.external_event_change_request_service import 
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
 from common.utils.request_utils import proxied_client_ip
 from organizations.models import Organization, OrganizationMembership
+from public_api.constants import PublicAPIResources
 from public_api.extensions import raise_over_limit_graphql_error
+from public_api.models import SystemUser
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
+from public_api.scoping import system_user_scope
 
 
 if TYPE_CHECKING:
@@ -327,6 +330,12 @@ class AppointmentTypeSlotInput:
     required_count: int = 1
     description: str = ""
     order: int = 0
+    #: Ids of the ``CalendarPool``s attached to this slot. Their calendars join the
+    #: slot alongside ``calendar_ids``. Omitted or ``null`` leaves the slot's pools
+    #: as they are (no pools on a new slot); ``[]`` detaches every pool; a list
+    #: replaces them. Sending it needs the same access as writing a pool -- see
+    #: ``_pool_attachment_error``.
+    pool_ids: list[int] | None = None
 
 
 @strawberry.input
@@ -513,9 +522,35 @@ def _to_slot_input_data(
             required_count=s.required_count,
             description=s.description,
             order=s.order,
+            pool_ids=None if s.pool_ids is None else list(s.pool_ids),
         )
         for s in slots
     ]
+
+
+def _pool_attachment_error(
+    system_user: SystemUser | None,
+    organization: Organization,
+    slots: list[AppointmentTypeSlotInput],
+) -> str | None:
+    """Return an error message if the token may not set ``pool_ids`` on these slots.
+
+    Attaching or detaching a pool is checked like writing the pool itself (see
+    ``_assert_can_write_calendar_pools`` in ``public_api/mutations.py``): the token
+    needs the ``CALENDAR_POOL`` resource and an org-wide or scoped-admin scope.
+    Otherwise a token denied ``CALENDAR_POOL``, or a scoped member, could pull a
+    pool's calendars into a slot by id. Slots that leave ``pool_ids`` out need no
+    check, so callers that never send it are unaffected.
+    """
+    if all(slot.pool_ids is None for slot in slots):
+        return None
+    if (
+        system_user is None
+        or not system_user.has_resource(PublicAPIResources.CALENDAR_POOL)
+        or system_user_scope(system_user, organization) not in ("org_wide", "scoped_admin")
+    ):
+        return "You do not have permission to manage calendar pools."
+    return None
 
 
 def _appointment_type_duration_from_seconds(
@@ -777,6 +812,10 @@ class AppointmentTypeMutations:
             return AppointmentTypeResult(success=False, error_message="Organization not found")
         if input.organization_id != organization.id:
             return AppointmentTypeResult(success=False, error_message="Organization not found")
+        if error_message := _pool_attachment_error(
+            info.context.request.public_api_system_user, organization, input.slots
+        ):
+            return AppointmentTypeResult(success=False, error_message=error_message)
         deps = get_appointment_type_mutation_dependencies()
         deps.appointment_type_service.initialize(organization=organization)
         # create_appointment_type raises OverLimitError when the organization is at its
@@ -812,6 +851,10 @@ class AppointmentTypeMutations:
             return AppointmentTypeResult(success=False, error_message="Organization not found")
         if input.organization_id != organization.id:
             return AppointmentTypeResult(success=False, error_message="Organization not found")
+        if error_message := _pool_attachment_error(
+            info.context.request.public_api_system_user, organization, input.slots
+        ):
+            return AppointmentTypeResult(success=False, error_message=error_message)
         deps = get_appointment_type_mutation_dependencies()
         deps.appointment_type_service.initialize(organization=organization)
         try:
