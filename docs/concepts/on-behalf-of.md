@@ -6,8 +6,8 @@ product calls our API to create it. With an organization-wide token, our audit
 trail would only record that **your integration** made the change.
 
 Send the `X-Public-Api-On-Behalf-Of` header to say which member you are acting
-for. We record that member next to your token on every audit record the request
-writes, so the organization can see who was behind each change.
+for. Every audit record that names your token as the one who made a change then
+also names that member, so the organization can see who was behind it.
 
 ```http
 POST /graphql/
@@ -39,7 +39,9 @@ elsewhere, for example as `membershipUserId`.
 | Scoped to one member | Any | Ignored. That token's member is already recorded |
 
 A request runs one operation. If that operation is a mutation, the header is
-checked, and every change the mutation makes is recorded with the same member.
+checked, and every audit record the mutation writes for your token names the same
+member. Records the system writes on its own (for example, follow-up changes it
+makes after yours) are not attributed to anyone.
 
 ## Errors
 

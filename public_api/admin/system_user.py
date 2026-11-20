@@ -14,6 +14,7 @@ from vinta_billing.exceptions import OverLimitError
 from common.managers import unscoped_default_manager
 from payments.seams.resource_keys import PUBLIC_API_SYSTEM_USERS
 from payments.seams.scopes import scope_for
+from public_api.exceptions import ORG_WIDE_ONLY_SWITCH_MESSAGE
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
 
@@ -72,14 +73,7 @@ class SystemUserAdminForm(forms.ModelForm):
         ):
             # A member-scoped token ignores the on-behalf-of header, so it could
             # never write with the switch on.
-            raise forms.ValidationError(
-                {
-                    "requires_on_behalf_of": (
-                        "Only organization-wide and org-less tokens can require the "
-                        "X-Public-Api-On-Behalf-Of header."
-                    )
-                }
-            )
+            raise forms.ValidationError({"requires_on_behalf_of": ORG_WIDE_ONLY_SWITCH_MESSAGE})
         if self.instance.pk is not None or cleaned_data is None or entitlement_service is None:
             return cleaned_data
 
@@ -202,28 +196,16 @@ class SystemUserAdmin(admin.ModelAdmin):
         # OrganizationAdmin.save_model's identical pattern.
         if not public_api_auth_service:
             raise ValueError("PublicAPIAuthService is not provided")
+        acting_user = request.user if request.user.is_authenticated else None
 
         if change:
             # The switch goes through the service, which audits the change. The form
-            # has already written the new value onto ``obj``, so put the stored one
-            # back before saving the other fields.
-            switch_changed = "requires_on_behalf_of" in form.changed_data
-            requires_on_behalf_of = obj.requires_on_behalf_of
-            if switch_changed:
-                obj.requires_on_behalf_of = not requires_on_behalf_of
+            # has already written the requested value onto ``obj``, so save the other
+            # fields with the stored value, then let the service apply the new one.
+            requested = obj.requires_on_behalf_of
+            obj.requires_on_behalf_of = form.initial["requires_on_behalf_of"]
             super().save_model(request, obj, form, change)
-            if switch_changed:
-                public_api_auth_service.set_requires_on_behalf_of(
-                    obj,
-                    requires_on_behalf_of,
-                    actor=(
-                        public_api_auth_service.audit_service.actor_from_user(
-                            request.user, obj.organization_id
-                        )
-                        if obj.organization_id is not None
-                        else None
-                    ),
-                )
+            public_api_auth_service.set_requires_on_behalf_of(obj, requested, acted_by=acting_user)
             return None
 
         try:
@@ -231,6 +213,7 @@ class SystemUserAdmin(admin.ModelAdmin):
                 integration_name=form.cleaned_data["integration_name"],
                 organization=form.cleaned_data["organization"],
                 requires_on_behalf_of=form.cleaned_data.get("requires_on_behalf_of", False),
+                acted_by=acting_user,
             )
         except OverLimitError as exc:
             # The organization is at its `public_api_system_users` ceiling. Show it as

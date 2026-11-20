@@ -4,7 +4,7 @@ Spec: [2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_SPEC.md](2026-11-19-PUBLIC_API_
 
 ## 1. Goals
 
-1. Organization-wide and org-less public API tokens can name the organization member they act for with an `X-Public-Api-On-Behalf-Of` header. Every audit record a mutation request writes then carries that member as a claim, and the token stays the actor.
+1. Organization-wide and org-less public API tokens can name the organization member they act for with an `X-Public-Api-On-Behalf-Of` header. Every audit record the mutation writes with the token as the actor then carries that member as a claim, and the token stays the actor.
 2. A mutation request whose header names someone who is not a current member of the bound organization is rejected before any resolver runs. Nothing changes and nothing is audited.
 3. A per-token `requires_on_behalf_of` switch, off by default, makes the header mandatory on that token's mutation requests. Org admins (REST, GraphQL token creation) and staff (Django admin) can set it, and every change to it is audited.
 4. Staff searching the audit trail for a person also find the token actions claimed for them, and each such record is visibly labeled as a claim.
@@ -32,7 +32,7 @@ Non-goals:
 | **What counts as a write** | The executed operation is a `MUTATION`. A document can hold several operations, but GraphQL executes only the one `operationName` selects, so "mixed query and mutation" means "the selected operation is a mutation". Subscriptions are not served by this endpoint. |
 | **Rejection shape** | When a request is rejected, the extension raises a `GraphQLError` in `on_execute` before it yields, following the `OrganizationRateLimiter` precedent. Strawberry turns that into an error result and skips execution, so no resolver runs and nothing is written. That gives HTTP 200 with `errors[0].extensions.code`, the same shape as every other GraphQL error here. The codes are `ON_BEHALF_OF_MEMBER_INVALID` (malformed, empty, or not an **active** member: memberships are deactivated with `is_active=False`, not deleted) and `ON_BEHALF_OF_MEMBER_REQUIRED` (the switch is on and the header is absent). They are declared as constants in @public_api/constants.py. |
 | **Which tokens it applies to** | Organization-wide tokens (`organization` set, `scoped_to_membership_user_id` null) and org-less tokens (`organization` null; the member is checked against the organization chosen by `X-Public-Api-Organization-Id`). Member-scoped tokens: the header is ignored entirely, never validated, never recorded. Read-only operations: the header is ignored and not validated. |
-| **How the claim reaches the audit record** | A request-scoped `contextvars.ContextVar` in a new module, @public_api/on_behalf_of.py, holding a frozen `OnBehalfOfClaim(system_user_id, membership_user_id, label)`. The extension binds it around execution with a context manager that resets it on every exit path, the same discipline as `organization_context`. `OrganizationAuditService.record` reads it and applies it **only when the record's actor is that token** (`actor_type == system_user` and `actor_key == claim.system_user_id`), so a claim can never end up on a different actor. A caller that passes its own `on_behalf_of` keeps it. A context variable rather than an attribute on the `SystemUser` instance, because calendar services re-fetch or receive the token through several paths (`user_or_token`), and an instance attribute would silently drop the claim on any path that holds a different instance. |
+| **How the claim reaches the audit record** | The audit app owns attribution. `OrganizationAuditService.on_behalf_of_member(system_user, membership)` is a context manager that builds the `CLAIMED_MEMBERSHIP` snapshot once and binds it, with the token's actor key, in a request-scoped `contextvars.ContextVar` in @audit_integration/services.py. It resets the variable on every exit path, the same discipline as `organization_context`. `OrganizationAuditService.record` applies the claim **only when the record's actor is that token** (`actor_type == system_user` and `actor_key` matches), so a claim can never end up on a different actor. The header check (parse, active-membership lookup, the switch) lives in `PublicAPIAuthService.on_behalf_of_claim`, which raises typed errors and returns the context manager. The extension only decides whether the header applies, calls the service, and maps the errors to `GraphQLError`. A caller that passes its own `on_behalf_of` keeps it. A context variable rather than an attribute on the `SystemUser` instance, because calendar services re-fetch or receive the token through several paths (`user_or_token`), and an instance attribute would silently drop the claim on any path that holds a different instance. |
 | **Audit storage** | The audit package's own record-level `on_behalf_of` identity ("the identity behind the actor, when one principal acted as another"). It already has a column, round-trips through every repository, and appears in the admin CSV export. The claimed member is an identity of a new type, `AuditActorType.CLAIMED_MEMBERSHIP`: its key and `user_id` are the membership user id, its label is `label_for_user` at action time, and its `metadata` names the token that made the claim. The type is what marks it as a claim. No schema change. (The first draft added three custom columns to the token's actor row. They were replaced during implementation once the native field turned up.) |
 | **Labeling the claim** | When a claim applies, the token actor's `identity_label` becomes `"<token label> on behalf of <member label> (claimed)"`. That puts the claim in front of anyone reading the admin list, and makes the package admin's existing free-text search (which matches `actor__identity_label`) find these records by the member's username with no change to the package. |
 | **Searching for a person** | `OrganizationAuditQuery.actor_user_emails` matches `actor__user__email` **or** `on_behalf_of__user__email`, per the spec's "Both, labeled" answer. No separate filter is added. |
@@ -67,8 +67,9 @@ Migration `public_api/migrations/0011_systemuser_requires_on_behalf_of.py`: one 
 
 ### 3.3 Type plumbing
 
-- @public_api/on_behalf_of.py (new): `OnBehalfOfClaim` frozen dataclass; the `ContextVar[OnBehalfOfClaim | None]`; `on_behalf_of_claim(claim)` context manager (bind, then reset on exit); `current_on_behalf_of_claim()` reader.
+- @audit_integration/services.py: a private `_OnBehalfOfClaim(actor_key, member)` dataclass and its `ContextVar`, bound only through `OrganizationAuditService.on_behalf_of_member`.
 - @public_api/constants.py: `ON_BEHALF_OF_HEADER = "X-Public-Api-On-Behalf-Of"`, and an `OnBehalfOfErrorCode` `StrEnum` with `INVALID` and `REQUIRED`.
+- @public_api/exceptions.py: `OnBehalfOfMemberError` with `OnBehalfOfMemberInvalidError` and `OnBehalfOfMemberRequiredError`, each carrying its error code and message; `ORG_WIDE_ONLY_SWITCH_MESSAGE`, shared by the service error and the admin form.
 
 ## 4. API Design
 
@@ -81,7 +82,7 @@ Migration `public_api/migrations/0011_systemuser_requires_on_behalf_of.py`: one 
 | Org-wide / org-less | mutation | absent | off | Served as today, no claim. |
 | Org-wide / org-less | mutation | absent | on | `ON_BEHALF_OF_MEMBER_REQUIRED`, nothing executed. |
 | Org-wide / org-less | mutation | not a positive int, or not a current member of the bound organization | any | `ON_BEHALF_OF_MEMBER_INVALID`, nothing executed. |
-| Org-wide / org-less | mutation | current member | any | Executed; every audit record carries the claim. |
+| Org-wide / org-less | mutation | current member | any | Executed; every audit record with the token as the actor carries the claim. |
 
 Error body (HTTP 200):
 
@@ -146,7 +147,7 @@ Wave = how deep a phase sits in the dependency graph. Phases in the same wave ha
 **Feature flag**: none — see **Guiding Decisions**.
 
 Changes:
-1. @public_api/on_behalf_of.py (new): `OnBehalfOfClaim`, the context variable, the `on_behalf_of_claim(...)` context manager, and `current_on_behalf_of_claim()`, as described under **Type plumbing**. No Django imports, so @audit_integration/services.py can import it without a cycle.
+1. [audit_integration/services.py](../audit_integration/services.py): the claim context variable and `OrganizationAuditService.on_behalf_of_member(system_user, membership)`, as described under **Type plumbing**.
 2. [audit_integration/constants.py](../audit_integration/constants.py): `AuditActorType.CLAIMED_MEMBERSHIP`.
 3. [audit_integration/services.py](../audit_integration/services.py): override `record`, with the same signature as the base. When no `on_behalf_of` was passed and the bound claim belongs to the actor's token, fill `on_behalf_of` with a `CLAIMED_MEMBERSHIP` identity and relabel the actor `"<token label> on behalf of <member label> (claimed)"`. Otherwise call the base unchanged.
 
@@ -164,7 +165,7 @@ Tests:
 
 **Reusable skills**: `write-unit-test`.
 
-Acceptance: an audit record written while an `OnBehalfOfClaim` for the acting token is bound has the member as its `on_behalf_of` (type `claimed_membership`), and its actor label reads "… on behalf of … (claimed)". With no claim bound, every existing audit test passes unchanged.
+Acceptance: an audit record written inside `on_behalf_of_member(...)` for the acting token has the member as its `on_behalf_of` (type `claimed_membership`), and its actor label reads "… on behalf of … (claimed)". With no claim bound, every existing audit test passes unchanged.
 
 ### Phase 2 — Token `requires_on_behalf_of` field
 
@@ -202,10 +203,8 @@ Changes:
 2. [public_api/extensions.py](../public_api/extensions.py): `OnBehalfOfMemberExtension(SchemaExtension)`. In `on_execute`:
    1. Read `public_api_system_user` and `public_api_organization` from the request in the execution context.
    2. Skip, by just yielding, unless the operation is a `MUTATION` and the token is organization-wide (`organization_id` set and `scoped_to_membership_user_id` null). Org-less tokens are skipped in this phase; Phase 4 widens the check.
-   3. Header absent: yield with nothing bound.
-   4. Header present: parse it as a positive int, and check `OrganizationMembership.objects.active().filter(organization_id=<bound org id>, user_id=<id>).select_related("user")`. On any failure, raise `GraphQLError(..., extensions={"code": "ON_BEHALF_OF_MEMBER_INVALID"})` before yielding. Execution is skipped.
-   5. Valid: build `OnBehalfOfClaim(system_user.id, membership.user_id, audit_service.label_for_user(membership.user))` and yield inside `on_behalf_of_claim(claim)`.
-   Keep the decision in one small pure function (token, operation type, raw header) returning one of "skip", "reject: code", or "check member" so Phases 4 and 5 each add one branch to it.
+   3. Call `PublicAPIAuthService.on_behalf_of_claim(system_user, organization, header)`. It returns a no-op context manager when the header is absent. Otherwise it parses the header as a positive int, checks `OrganizationMembership.objects.active()` in the bound organization, and returns `audit_service.on_behalf_of_member(...)`. A bad value raises `OnBehalfOfMemberInvalidError`.
+   4. Map an `OnBehalfOfMemberError` to `GraphQLError(error.message, extensions={"code": error.code})`, raised before yielding, so execution is skipped. Otherwise yield inside the returned context manager.
 3. [public_api/schema.py](../public_api/schema.py): register the extension after `OrganizationRateLimiter`, so a rate-limited request is rejected before a membership query is spent on it.
 
 Spec use-case: UC1 — a partner books for a staff member; UC4 — a partner sends a wrong member (bundled; see **Guiding Decisions**).
@@ -396,7 +395,6 @@ Acceptance: `GET /public-api-docs/concepts/on-behalf-of/` returns the doc, and i
 ## 8. Touch List
 
 **Phase 1**
-- @public_api/on_behalf_of.py (new)
 - [audit_integration/constants.py](../audit_integration/constants.py)
 - [audit_integration/services.py](../audit_integration/services.py)
 - @audit_integration/tests/test_on_behalf_of_claim.py (new)

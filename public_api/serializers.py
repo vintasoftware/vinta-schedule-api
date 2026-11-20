@@ -71,18 +71,6 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
             # No owner — org-wide token; no additional validation needed.
             return attrs
 
-        if attrs.get("requires_on_behalf_of"):
-            # A member-scoped token ignores the on-behalf-of header, so it could
-            # never write with the switch on.
-            raise serializers.ValidationError(
-                {
-                    "requires_on_behalf_of": [
-                        "Only organization-wide tokens can require the "
-                        "X-Public-Api-On-Behalf-Of header."
-                    ]
-                }
-            )
-
         request = self.context["request"]
         caller_membership: OrganizationMembership | None = request.organization_membership
         if caller_membership is None:
@@ -144,6 +132,7 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
                     organization=membership.organization,
                     scoped_to_membership=resolved_membership,
                     requires_on_behalf_of=validated_data.get("requires_on_behalf_of", False),
+                    acted_by=request.user,
                 )
                 # dict.fromkeys dedupes while preserving order, so the unique
                 # (system_user, resource_name) constraint cannot be violated.

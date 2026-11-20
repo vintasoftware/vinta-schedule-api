@@ -26,7 +26,6 @@ from audit_integration.repositories import OrganizationAuditRepository
 from audit_integration.services import OrganizationAuditService
 from audit_integration.types import OrganizationAuditQuery
 from organizations.models import Organization, OrganizationMembership
-from public_api.on_behalf_of import OnBehalfOfClaim, on_behalf_of_claim
 from public_api.services import PublicAPIAuthService
 from users.models import User
 
@@ -222,24 +221,19 @@ def test_the_guard_lets_a_project_query_through_when_it_uses_only_portable_field
     assert record_matches(stored[0], OrganizationAuditQuery(actions=["create"])) is True
 
 
-def _claimed_record(service, organization, token, member) -> AuditRecordData:
-    """A record a public API token wrote while claiming to act for ``member``."""
-    claim = OnBehalfOfClaim(
-        system_user_id=token.id,
-        membership_user_id=member.user_id,
-        label=member.user.email,
-    )
-    with on_behalf_of_claim(claim):
-        actor, on_behalf_of = service._apply_on_behalf_of_claim(
-            service.actor_from_system_user(token)
+def _write_claimed_record(service, organization, token, member, capture) -> None:
+    """Record an action a public API token took while claiming to act for ``member``.
+
+    Goes through ``OrganizationAuditService.record`` and the real dispatcher,
+    which persists in-process under the test settings.
+    """
+    with service.on_behalf_of_member(token, member), capture(execute=True):
+        service.record(
+            action="update",
+            actor=service.actor_from_system_user(token),
+            subject=SubjectRef(subject_type="organizations.organization", subject_id="1"),
+            scope=ScopeRef(scope_type=ScopeType.SCOPED, scope_key=str(organization.id)),
         )
-    return AuditRecordData(
-        action_key="update",
-        actor=actor,
-        on_behalf_of=on_behalf_of,
-        subject=SubjectRef(subject_type="organizations.organization", subject_id="1"),
-        scope=ScopeRef(scope_type=ScopeType.SCOPED, scope_key=str(organization.id)),
-    )
 
 
 @pytest.fixture
@@ -251,18 +245,16 @@ def token(organization):
 
 
 def test_the_email_filter_also_finds_actions_claimed_for_the_person(
-    repository, service, organization, token
+    repository, service, organization, token, django_capture_on_commit_callbacks
 ):
     """Searching for a person returns what they did and what tokens claimed for them."""
     ana = _membership(organization, "ana@example.com")
     someone_else = _membership(organization, "other@example.com")
-    repository.bulk_add(
-        [
-            _record(service, organization, ana),
-            _claimed_record(service, organization, token, ana),
-            _claimed_record(service, organization, token, someone_else),
-        ]
-    )
+    repository.bulk_add([_record(service, organization, ana)])
+    for member in (ana, someone_else):
+        _write_claimed_record(
+            service, organization, token, member, django_capture_on_commit_callbacks
+        )
 
     page = repository.query(OrganizationAuditQuery(actor_user_emails=["ANA@example.com"]), limit=50)
 
@@ -276,11 +268,11 @@ def test_the_email_filter_also_finds_actions_claimed_for_the_person(
 
 
 def test_free_text_search_finds_a_claimed_action_by_the_member(
-    repository, service, organization, token
+    repository, service, organization, token, django_capture_on_commit_callbacks
 ):
     """The admin's free-text search matches the actor label, which names the member."""
     ana = _membership(organization, "ana@example.com")
-    repository.bulk_add([_claimed_record(service, organization, token, ana)])
+    _write_claimed_record(service, organization, token, ana, django_capture_on_commit_callbacks)
 
     page = repository.query(AuditQuery(search="ana@example.com"), limit=50)
 

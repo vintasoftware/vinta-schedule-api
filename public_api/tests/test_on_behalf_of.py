@@ -23,7 +23,6 @@ from organizations.tests.helpers import make_membership
 from public_api.constants import ON_BEHALF_OF_HEADER, OnBehalfOfErrorCode, PublicAPIResources
 from public_api.exceptions import OnBehalfOfSwitchOnScopedTokenError
 from public_api.models import ResourceAccess, SystemUser
-from public_api.on_behalf_of import current_on_behalf_of_claim
 from public_api.services import PublicAPIAuthService
 from users.models import User
 
@@ -42,6 +41,24 @@ CREATE_TWO_POLICIES = """
 mutation CreateTwo($calendarId: Int!) {
     first: createBookingPolicy(input: {isOrganizationDefault: true}) { success }
     second: createBookingPolicy(input: {calendarId: $calendarId}) { success }
+}
+"""
+
+CREATE_CALENDAR_POLICY = """
+mutation CreateForCalendar($calendarId: Int!) {
+    createBookingPolicy(input: {calendarId: $calendarId}) { success }
+}
+"""
+
+CREATE_MEMBER_POLICY = """
+mutation CreateForMember($membershipUserId: Int!) {
+    createBookingPolicy(input: {membershipUserId: $membershipUserId}) { success }
+}
+"""
+
+CREATE_SYSTEM_USER_TOKEN = """
+mutation Mint($input: CreateSystemUserTokenInput!) {
+    createSystemUserToken(input: $input) { systemUserId }
 }
 """
 
@@ -95,19 +112,17 @@ def _mint(
     *,
     scoped_to_membership: OrganizationMembership | None = None,
     requires_on_behalf_of: bool = False,
+    resources: tuple[str, ...] = (PublicAPIResources.BOOKING_POLICY,),
 ) -> Token:
     auth_service = PublicAPIAuthService()
     system_user, secret = auth_service.create_system_user(
         integration_name=f"test_{uuid.uuid4().hex[:8]}",
         organization=organization,
         scoped_to_membership=scoped_to_membership,
+        requires_on_behalf_of=requires_on_behalf_of,
     )
-    if requires_on_behalf_of:
-        system_user.requires_on_behalf_of = True
-        system_user.save(update_fields=["requires_on_behalf_of"])
-    baker.make(
-        ResourceAccess, system_user=system_user, resource_name=PublicAPIResources.BOOKING_POLICY
-    )
+    for resource in resources:
+        baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
     return Token(system_user=system_user, secret=secret, auth_service=auth_service)
 
 
@@ -239,33 +254,68 @@ class TestOrganizationWideToken:
 
         assert body == {"data": {"bookingPolicies": []}}
 
-    def test_the_claim_is_unbound_after_the_request(self, organization, member):
+    def test_the_claim_does_not_outlive_its_request(self, organization, member, audit_task):
         token = _mint(organization)
-
+        calendar = baker.make(Calendar, organization=organization)
         token.post(CREATE_DEFAULT_POLICY, on_behalf_of=str(member.user_id))
-        # The second create fails inside the resolver (one default per organization).
+        # This one fails inside the resolver (one default per organization).
         failed = token.post(CREATE_DEFAULT_POLICY, on_behalf_of=str(member.user_id))
+        audit_task.reset_mock()
+
+        body = token.post(CREATE_CALENDAR_POLICY, variables={"calendarId": calendar.id})
 
         assert failed.get("errors")
-        assert current_on_behalf_of_claim() is None
+        assert body == {"data": {"createBookingPolicy": {"success": True}}}
+        [payload] = _payloads(audit_task)
+        assert payload["actor"]["identity_label"] == f"system-user:{token.system_user.id}"
+        assert payload["on_behalf_of"] is None
+
+    def test_a_minted_token_is_recorded_as_created_for_the_member(
+        self, organization, member, audit_task
+    ):
+        organization.can_invite_organizations = True
+        organization.save(update_fields=["can_invite_organizations"])
+        token = _mint(organization, resources=(PublicAPIResources.SYSTEM_USER,))
+
+        body = token.post(
+            CREATE_SYSTEM_USER_TOKEN,
+            variables={
+                "input": {
+                    "organizationId": str(organization.id),
+                    "integrationName": "minted-for-ana",
+                    "resources": [PublicAPIResources.CALENDAR],
+                }
+            },
+            on_behalf_of=str(member.user_id),
+        )
+
+        assert "errors" not in body, body
+        [payload] = _payloads(audit_task)
+        assert payload["action_key"] == "create"
+        assert payload["actor"]["identity_key"] == str(token.system_user.id)
+        assert payload["on_behalf_of"]["identity_key"] == str(member.user_id)
 
 
 class TestMemberScopedToken:
-    def test_the_header_is_ignored(self, organization, member):
-        token = _mint(organization, scoped_to_membership=member)
+    def test_the_header_is_ignored_and_the_write_is_attributed_as_before(
+        self, organization, member, audit_task
+    ):
+        dan = make_membership(
+            user=baker.make(User, email="dan@example.com"), organization=organization
+        )
+        token = _mint(organization, scoped_to_membership=dan)
 
-        without_header = token.post(CREATE_DEFAULT_POLICY)
-        with_junk_header = token.post(CREATE_DEFAULT_POLICY, on_behalf_of="abc")
+        body = token.post(
+            CREATE_MEMBER_POLICY,
+            variables={"membershipUserId": dan.user_id},
+            on_behalf_of=str(member.user_id),
+        )
 
-        assert OnBehalfOfErrorCode.INVALID.value not in _error_codes(with_junk_header)
-        assert _error_codes(with_junk_header) == _error_codes(without_header)
-
-    def test_a_forced_switch_is_not_enforced(self, organization, member):
-        token = _mint(organization, scoped_to_membership=member, requires_on_behalf_of=True)
-
-        body = token.post(CREATE_DEFAULT_POLICY)
-
-        assert OnBehalfOfErrorCode.REQUIRED.value not in _error_codes(body)
+        assert body == {"data": {"createBookingPolicy": {"success": True}}}
+        [payload] = _payloads(audit_task)
+        assert payload["actor"]["identity_label"] == f"system-user:{token.system_user.id}"
+        assert payload["actor"]["metadata"]["system_user_scoped_to_membership"] == dan.user_id
+        assert payload["on_behalf_of"] is None
 
 
 class TestOrgLessToken:
@@ -367,7 +417,9 @@ class TestRequiresOnBehalfOfService:
         token = _mint(organization)
 
         with TestCase.captureOnCommitCallbacks(execute=True):
-            changed = token.auth_service.set_requires_on_behalf_of(token.system_user, False)
+            changed = token.auth_service.set_requires_on_behalf_of(
+                token.system_user, False, acted_by=None
+            )
 
         assert changed is False
         assert not audit_task.delay.called
@@ -376,7 +428,7 @@ class TestRequiresOnBehalfOfService:
         token = _mint(organization, scoped_to_membership=member)
 
         with pytest.raises(OnBehalfOfSwitchOnScopedTokenError):
-            token.auth_service.set_requires_on_behalf_of(token.system_user, True)
+            token.auth_service.set_requires_on_behalf_of(token.system_user, True, acted_by=None)
 
         token.system_user.refresh_from_db()
         assert token.system_user.requires_on_behalf_of is False
@@ -385,7 +437,9 @@ class TestRequiresOnBehalfOfService:
         token = _mint(None)
 
         with TestCase.captureOnCommitCallbacks(execute=True):
-            changed = token.auth_service.set_requires_on_behalf_of(token.system_user, True)
+            changed = token.auth_service.set_requires_on_behalf_of(
+                token.system_user, True, acted_by=None
+            )
 
         assert changed is True
         stored = SystemUser.original_manager.get(id=token.system_user.id)

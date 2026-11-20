@@ -47,7 +47,6 @@
       "depends_on": [],
       "prompt_ref": "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md#phase-1",
       "touches": [
-        "public_api/on_behalf_of.py",
         "audit_integration/constants.py",
         "audit_integration/services.py",
         "audit_integration/tests/test_on_behalf_of_claim.py"

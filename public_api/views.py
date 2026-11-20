@@ -15,7 +15,6 @@ from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ViewSet
 from vinta_billing.services.entitlement_service import EntitlementService
 
-from audit_integration.services import OrganizationAuditService
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.permissions import IsOrganizationAdmin
 from payments.seams.scopes import scope_for
@@ -89,13 +88,11 @@ class SystemUserTokenViewSet(
         public_api_auth_service: Annotated[
             PublicAPIAuthService, Provide["public_api_auth_service"]
         ],
-        audit_service: Annotated[OrganizationAuditService, Provide["audit_service"]],
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.entitlement_service = entitlement_service
         self.public_api_auth_service = public_api_auth_service
-        self.audit_service = audit_service
 
     def get_queryset(self):  # type: ignore[override]
         """Org-scoped queryset with prefetched ResourceAccess rows for list/retrieve.
@@ -236,21 +233,11 @@ class SystemUserTokenViewSet(
         with transaction.atomic():
             # Omitted means unchanged. Set first, so a refused value (the switch on a
             # member-scoped token) fails before any grant changes.
-            if (
-                requires_on_behalf_of is not None
-                and requires_on_behalf_of != system_user.requires_on_behalf_of
-            ):
-                # Set by ``TenantScopedViewMixin``; ``IsOrganizationAdmin`` has already
-                # required it, so the system-actor fallback is only a guard.
-                membership = getattr(request, "organization_membership", None)
+            if requires_on_behalf_of is not None:
                 self.public_api_auth_service.set_requires_on_behalf_of(
                     system_user,
                     requires_on_behalf_of,
-                    actor=(
-                        self.audit_service.actor_from_membership(membership)
-                        if membership is not None
-                        else None
-                    ),
+                    acted_by=request.user if request.user.is_authenticated else None,
                 )
 
             # Get currently-granted resources

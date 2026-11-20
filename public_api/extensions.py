@@ -1,5 +1,5 @@
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Annotated, Any, NoReturn
+from typing import TYPE_CHECKING, Annotated, NoReturn
 
 from django.conf import settings
 from django.http import HttpRequest
@@ -18,13 +18,12 @@ from vinta_billing.exceptions import OverLimitError
 
 from common.redis import ResilientLimiter
 from common.utils.request_utils import proxied_client_ip
-from organizations.models import OrganizationMembership
-from public_api.constants import ON_BEHALF_OF_HEADER, OnBehalfOfErrorCode
-from public_api.on_behalf_of import OnBehalfOfClaim, on_behalf_of_claim
+from public_api.constants import ON_BEHALF_OF_HEADER
+from public_api.exceptions import OnBehalfOfMemberError, PublicAPIServiceUnavailableError
 
 
 if TYPE_CHECKING:
-    from audit_integration.services import OrganizationAuditService
+    from public_api.services import PublicAPIAuthService
 
 
 def raise_over_limit_graphql_error(exc: OverLimitError) -> NoReturn:
@@ -196,38 +195,14 @@ class OrganizationRateLimiter(SchemaExtension):
         return None
 
 
-def _parse_member_id(raw: str) -> int | None:
-    """Read a membership user id from the header value, or ``None`` if it is not one.
-
-    Only a plain positive integer is accepted. Anything else (empty, signed,
-    padded, a float) is not an id a partner could have read from this API.
-    """
-    if not raw.isascii() or not raw.isdigit():
-        return None
-    member_id = int(raw)
-    return member_id if member_id > 0 else None
-
-
-@inject
-def _member_label(
-    user: Any,
-    audit_service: Annotated["OrganizationAuditService | None", Provide["audit_service"]] = None,
-) -> str:
-    """The member's audit label, built the same way a member acting directly gets one."""
-    if audit_service is None:
-        return ""
-    return audit_service.label_for_user(user)
-
-
 class OnBehalfOfMemberExtension(SchemaExtension):
-    """Check the ``X-Public-Api-On-Behalf-Of`` header and record it as a claim.
+    """Bind a mutation's ``X-Public-Api-On-Behalf-Of`` claim for the audit trail.
 
     An organization-wide or org-less token can name the organization member it
-    is acting for. On a mutation, this extension checks that the header names
-    an active member of the organization the request is bound to, and then
-    binds the claim for the rest of the request, so every audit record the
-    mutation writes carries it (see ``public_api.on_behalf_of``). The token
-    stays the actor and keeps exactly the access it had.
+    is acting for. On a mutation, ``PublicAPIAuthService.on_behalf_of_claim``
+    checks the header, and every audit record the token writes while the
+    mutation runs carries the member as a claim. The token stays the actor and
+    keeps exactly the access it had.
 
     The header is ignored, without being checked, when:
 
@@ -235,16 +210,24 @@ class OnBehalfOfMemberExtension(SchemaExtension):
     * the token is scoped to a member, because its member is already recorded;
     * an org-less token chose no organization, so there is none to check against.
 
-    A request is rejected with a GraphQL error, before any resolver runs, when
-    the header is present but is not a positive integer or does not name an
-    active member (``ON_BEHALF_OF_MEMBER_INVALID``), or when the token has
-    ``requires_on_behalf_of`` set and the header is missing
-    (``ON_BEHALF_OF_MEMBER_REQUIRED``). Nothing has been written at that point,
-    so there is nothing to roll back. The error message never repeats the value
-    that was sent.
+    A refused header becomes a GraphQL error with the error's ``code`` in
+    ``extensions``, raised before any resolver runs, so nothing is written.
 
     Runs inside ``PublicApiSystemUserMiddleware``'s ``organization_context``.
     """
+
+    @inject
+    def _auth_service(
+        self,
+        service: Annotated[
+            "PublicAPIAuthService | None", Provide["public_api_auth_service"]
+        ] = None,
+    ) -> "PublicAPIAuthService":
+        # Same shape as ``PublicApiSystemUserMiddleware``: a broken DI wiring fails
+        # loudly instead of skipping the check.
+        if service is None:
+            raise PublicAPIServiceUnavailableError()
+        return service
 
     def on_execute(self) -> AsyncIteratorOrIterator[None]:
         """Check the header on mutations, then run the operation with the claim bound."""
@@ -261,36 +244,13 @@ class OnBehalfOfMemberExtension(SchemaExtension):
             yield
             return None
 
-        raw = request.headers.get(ON_BEHALF_OF_HEADER)
-        if raw is None:
-            if system_user.requires_on_behalf_of:
-                raise GraphQLError(
-                    f"This token requires the {ON_BEHALF_OF_HEADER} header on mutations.",
-                    extensions={"code": OnBehalfOfErrorCode.REQUIRED.value},
-                )
-            yield
-            return None
-
-        member_id = _parse_member_id(raw.strip())
-        membership = (
-            None
-            if member_id is None
-            else OrganizationMembership.objects.active()
-            .filter(organization_id=organization.id, user_id=member_id)
-            .select_related("user")
-            .first()
-        )
-        if membership is None:
-            raise GraphQLError(
-                f"{ON_BEHALF_OF_HEADER} does not name an active member of this organization.",
-                extensions={"code": OnBehalfOfErrorCode.INVALID.value},
+        try:
+            claim = self._auth_service().on_behalf_of_claim(
+                system_user, organization, request.headers.get(ON_BEHALF_OF_HEADER)
             )
+        except OnBehalfOfMemberError as error:
+            raise GraphQLError(error.message, extensions={"code": error.code.value}) from error
 
-        claim = OnBehalfOfClaim(
-            system_user_id=system_user.id,
-            membership_user_id=membership.user_id,
-            label=_member_label(membership.user),
-        )
-        with on_behalf_of_claim(claim):
+        with claim:
             yield
         return None

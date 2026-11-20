@@ -135,7 +135,7 @@ stateDiagram-v2
 - **Org-less token with no organization chosen.** Nothing changes from today. The header is checked against the organization the request chose, never against any other.
 - **Member removed while a request is running.** The check happens once at the start of the request. A claim that was valid then stays on the record.
 - **Member removed after the action.** The audit record keeps the claim as written. Removing a member does not rewrite history.
-- **One request makes several changes.** Every audit record the request writes carries the same claim.
+- **One request makes several changes.** Every audit record the request writes with the token as the actor carries the same claim. Records written with the system as the actor are not attributed.
 - **Header present but empty or malformed on a write.** Rejected the same way as an unknown member.
 
 **Idempotency.** Nothing to add. The header is a property of one request, not stored state. Retrying the same request makes the same attribution decision and leaves the target data as the underlying operation already would.

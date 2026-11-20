@@ -1665,6 +1665,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                     integration_name=input.integration_name,
                     organization=target_org,
                     requires_on_behalf_of=input.requires_on_behalf_of,
+                    acted_by=info.context.request.public_api_system_user,
                 )
                 # dict.fromkeys dedupes while preserving order; prevents constraint violations
                 ResourceAccess.objects.bulk_create(
@@ -1759,6 +1760,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                     integration_name=input.integration_name,
                     organization=org,
                     scoped_to_membership=membership,
+                    acted_by=info.context.request.public_api_system_user,
                 )
                 # dict.fromkeys dedupes while preserving order; prevents constraint violations
                 ResourceAccess.objects.bulk_create(
