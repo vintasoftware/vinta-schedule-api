@@ -9,12 +9,22 @@ fall back to an in-process bucket while the circuit is open.
 import logging
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from typing import Any
 
 from django.conf import settings
 
-from pyrate_limiter import InMemoryBucket, Limiter, Rate, RedisBucket
+from pyrate_limiter import (
+    AbstractBucket,
+    BucketFactory,
+    InMemoryBucket,
+    Limiter,
+    Rate,
+    RateItem,
+    RedisBucket,
+)
+from pyrate_limiter.buckets.redis_bucket import LuaScript
 from redis import Redis
 from redis.exceptions import RedisError
 
@@ -147,6 +157,69 @@ def is_redis_available() -> bool:
     return get_redis_connection() is not None and redis_breaker.allows_request()
 
 
+def _now_ms() -> int:
+    # Wall-clock time, so every process writing to the same Redis key agrees on it.
+    return time.time_ns() // 1_000_000
+
+
+class _ExpiringRedisBucket(RedisBucket):
+    """A ``RedisBucket`` whose key expires once its longest window has passed.
+
+    Per-name keys are not registered with pyrate's leaker thread, so without a TTL
+    the key of a name that stops calling would stay in Redis forever.
+    """
+
+    def put(self, item: RateItem) -> bool:
+        accepted = bool(super().put(item))
+        ttl_seconds = max(rate.interval for rate in self.rates) // 1000 + 1
+        self.redis.expire(self.bucket_key, ttl_seconds)
+        return accepted
+
+
+class _PerNameBucketFactory(BucketFactory):
+    """Give every name passed to ``try_acquire`` its own bucket.
+
+    A ``Limiter`` built over a single bucket ignores the name and charges every
+    caller to the same budget. This factory routes each name to its own bucket
+    instead. It does not start pyrate's leaker thread: each bucket drops its expired
+    items when it is fetched.
+    """
+
+    def __init__(self, make_bucket: Callable[[str], AbstractBucket]):
+        self._make_bucket = make_bucket
+
+    def wrap_item(self, name: str, weight: int = 1) -> RateItem:
+        return RateItem(name, _now_ms(), weight=weight)
+
+    def get(self, item: RateItem) -> AbstractBucket:
+        bucket = self._make_bucket(item.name)
+        bucket.leak(item.timestamp)
+        return bucket
+
+
+class _InMemoryBuckets:
+    """Per-name in-process buckets, capped so that many distinct names (one per
+    client IP, say) cannot grow the process without bound. The least recently
+    used name is dropped first, which resets its count."""
+
+    def __init__(self, rates: list[Rate], max_names: int = 10_000):
+        self._rates = rates
+        self._max_names = max_names
+        self._buckets: OrderedDict[str, InMemoryBucket] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def __call__(self, name: str) -> InMemoryBucket:
+        with self._lock:
+            bucket = self._buckets.get(name)
+            if bucket is None:
+                bucket = self._buckets[name] = InMemoryBucket(self._rates)
+                if len(self._buckets) > self._max_names:
+                    self._buckets.popitem(last=False)
+            else:
+                self._buckets.move_to_end(name)
+            return bucket
+
+
 class ResilientLimiter:
     """A pyrate-limiter ``Limiter`` that tolerates Redis being absent or down.
 
@@ -157,6 +230,11 @@ class ResilientLimiter:
 
     The public surface mirrors ``Limiter`` (``try_acquire`` plus attribute
     pass-through), so it is a drop-in replacement for the module-level limiters.
+
+    By default every call shares one budget, whatever name it passes: that is
+    what a quota owned by a third party (Google, Outlook) needs. Pass
+    ``per_name=True`` to give each name its own budget instead, stored in Redis
+    under ``<bucket_key>:<name>``.
     """
 
     def __init__(
@@ -168,8 +246,10 @@ class ResilientLimiter:
         name: str | None = None,
         breaker: CircuitBreaker | None = None,
         redis_url: str | None = None,
+        per_name: bool = False,
     ):
         self._rates = list(rates)
+        self._per_name = per_name
         self._bucket_key = bucket_key
         # ``max_delay`` (milliseconds) selects the pyrate-limiter 4 blocking mode:
         # ``None`` -> non-blocking (reject immediately when exhausted);
@@ -194,15 +274,27 @@ class ResilientLimiter:
         if conn is None or not self._breaker.allows_request():
             return None
         try:
-            bucket = self._breaker.call(RedisBucket.init, self._rates, conn, self._bucket_key)
+            if not self._per_name:
+                bucket = self._breaker.call(RedisBucket.init, self._rates, conn, self._bucket_key)
+                return Limiter(bucket)
+            script_hash = self._breaker.call(conn.script_load, LuaScript.PUT_ITEM)
         except (RedisError, CircuitBreakerOpenError) as exc:
             logger.warning("Redis unavailable for limiter '%s': %s", self._name, exc)
             return None
-        return Limiter(bucket)
+        return Limiter(
+            _PerNameBucketFactory(
+                lambda name: _ExpiringRedisBucket(
+                    self._rates, conn, f"{self._bucket_key}:{name}", script_hash
+                )
+            )
+        )
 
     def _get_memory_limiter(self) -> Limiter:
         if self._memory_limiter is None:
-            self._memory_limiter = Limiter(InMemoryBucket(self._rates))
+            if self._per_name:
+                self._memory_limiter = Limiter(_PerNameBucketFactory(_InMemoryBuckets(self._rates)))
+            else:
+                self._memory_limiter = Limiter(InMemoryBucket(self._rates))
         return self._memory_limiter
 
     def _active_limiter(self) -> tuple[Limiter, bool]:
