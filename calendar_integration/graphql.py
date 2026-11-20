@@ -399,6 +399,15 @@ class AttendanceMembershipGraphQLType:
     organization_id: int
 
 
+@strawberry.type
+class EventSlotAssignmentGraphQLType:
+    """One pick of an appointment type booking: the slot it fills and the users who own the
+    picked calendar. ``user_ids`` is empty when no member owns that calendar."""
+
+    slot_id: strawberry.ID
+    user_ids: list[int]
+
+
 @strawberry_django.type(EventAttendance)
 class EventAttendanceGraphQLType:
     """GraphQL type for an EventAttendance through-model row.
@@ -623,6 +632,25 @@ class CalendarEventGraphQLType:
             ]
         _attach_current_roster_flags(selections)
         return selections  # type: ignore
+
+    @strawberry.field
+    def slot_assignments(self) -> list[EventSlotAssignmentGraphQLType]:
+        """Who fills each slot of an appointment type booking, for every token: one entry
+        per pick, in pick order. It names users, which ``attendeeMemberships`` already shows
+        to every token, and no calendar, so a scoped token learns who holds each role without
+        reaching ``appointmentTypeSelections`` on other owners' calendars."""
+        selections = sorted(self.appointment_type_selections.all(), key=lambda s: s.pk)  # type: ignore[attr-defined]
+        return [
+            EventSlotAssignmentGraphQLType(
+                slot_id=strawberry.ID(str(selection.slot_fk_id)),
+                user_ids=sorted(
+                    ownership.membership_user_id
+                    for ownership in selection.calendar.ownerships.all()
+                    if ownership.membership_user_id is not None
+                ),
+            )
+            for selection in selections
+        ]
 
     @strawberry.field
     def bundle_representations(self, info: strawberry.Info) -> list["CalendarEventGraphQLType"]:
