@@ -12,6 +12,7 @@ from model_bakery import baker
 from vinta_audit_logs.types import AuditQuery, IdentitySnapshot, SubjectRef
 
 from audit_integration.constants import AuditActorType
+from audit_integration.models import OrganizationAuditIdentity
 from audit_integration.repositories import OrganizationAuditRepository
 from audit_integration.services import IDENTITY_LABEL_MAX_LENGTH, OrganizationAuditService
 from organizations.models import Organization, OrganizationMembership
@@ -155,6 +156,13 @@ class TestRecord:
         assert stored.actor.identity_label.startswith(f"system-user:{token.id} on behalf of aaa")
         assert stored.on_behalf_of is not None
         assert stored.on_behalf_of.identity_label == long_email
+
+
+def test_the_label_cap_matches_the_column():
+    """The cap is a copy of the column's length; this fails if the two drift apart."""
+    field = OrganizationAuditIdentity._meta.get_field("identity_label")
+
+    assert IDENTITY_LABEL_MAX_LENGTH == field.max_length
 
 
 class TestClaimLifetime:

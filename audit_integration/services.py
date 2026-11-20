@@ -27,8 +27,8 @@ from audit_integration.constants import AuditActorType
 from audit_integration.repositories import OrganizationAuditRepository
 
 
-#: ``AbstractAuditIdentity.identity_label``'s ``max_length``. A label longer
-#: than this fails the insert in the worker, and the record is lost.
+#: ``AbstractAuditIdentity.identity_label``'s ``max_length``, pinned by a test.
+#: A label longer than this fails the insert in the worker, and the record is lost.
 IDENTITY_LABEL_MAX_LENGTH = 255
 
 
