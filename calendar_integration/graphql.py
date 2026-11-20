@@ -385,6 +385,19 @@ class ExternalAttendeeGraphQLType:
 
 
 @strawberry.type
+class EventAppointmentTypeSummaryGraphQLType:
+    """The appointment type an event was booked through, by id and name only.
+
+    It carries no slots, so it names no calendar, and a provider-scoped token can read it
+    on its own events. ``CalendarEvent.appointmentType`` carries the slots and stays
+    hidden from scoped tokens.
+    """
+
+    id: strawberry.ID  # noqa: A003
+    name: str
+
+
+@strawberry.type
 class AttendanceMembershipGraphQLType:
     """Membership identity for an internal event attendee.
 
@@ -596,6 +609,18 @@ class CalendarEventGraphQLType:
     def resources(self, info: strawberry.Info) -> list["CalendarGraphQLType"]:
         """Resource calendars allocated to this event, restricted to the owner's set."""
         return _scoped_calendar_list(list(self.resources.all()), _owner_scoped_calendar_ids(info))  # type: ignore
+
+    @strawberry_django.field(select_related=["appointment_type"])
+    def appointment_type_summary(self) -> EventAppointmentTypeSummaryGraphQLType | None:
+        """The id and name of the appointment type the event was booked through, for every
+        token. ``null`` when the event was not booked through one, and on a generated
+        occurrence of a recurring event, which does not copy its master's type."""
+        appointment_type = cast("CalendarEvent", self).appointment_type
+        if appointment_type is None:
+            return None
+        return EventAppointmentTypeSummaryGraphQLType(
+            id=strawberry.ID(str(appointment_type.id)), name=appointment_type.name
+        )
 
     @strawberry.field
     def appointment_type(self, info: strawberry.Info) -> "AppointmentTypeGraphQLType | None":
