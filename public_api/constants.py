@@ -1,3 +1,5 @@
+from enum import StrEnum
+
 from django.db.models import TextChoices
 
 
@@ -112,3 +114,19 @@ PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
         PublicAPIResources.BATCH_UPSERT_APPOINTMENT_TYPE_SCOPED_QUOTA_RULES,
     ]
 )
+
+
+#: Request header in which an organization-wide or org-less token names the
+#: organization member it is acting for. Recorded in the audit trail as the
+#: token's claim; it never changes what the token may access.
+ON_BEHALF_OF_HEADER = "X-Public-Api-On-Behalf-Of"
+
+
+class OnBehalfOfErrorCode(StrEnum):
+    """``extensions.code`` of the GraphQL errors the on-behalf-of check returns."""
+
+    #: The header is malformed, or does not name an active member of the
+    #: request's organization.
+    INVALID = "ON_BEHALF_OF_MEMBER_INVALID"
+    #: The token requires the header on mutations and the request did not send it.
+    REQUIRED = "ON_BEHALF_OF_MEMBER_REQUIRED"

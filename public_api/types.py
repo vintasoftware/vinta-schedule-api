@@ -104,6 +104,9 @@ class CreateSystemUserTokenInput:
     organization_id: strawberry.ID
     integration_name: str
     resources: list[str]
+    #: When true, the token's mutations must name the member they act for in the
+    #: X-Public-Api-On-Behalf-Of header.
+    requires_on_behalf_of: bool = False
 
 
 @strawberry.type

@@ -1664,6 +1664,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
                 system_user, plaintext_token = deps.public_api_auth_service.create_system_user(
                     integration_name=input.integration_name,
                     organization=target_org,
+                    requires_on_behalf_of=input.requires_on_behalf_of,
                 )
                 # dict.fromkeys dedupes while preserving order; prevents constraint violations
                 ResourceAccess.objects.bulk_create(

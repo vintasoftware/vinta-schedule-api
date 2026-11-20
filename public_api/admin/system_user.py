@@ -55,7 +55,7 @@ class SystemUserAdminForm(forms.ModelForm):
 
     class Meta:
         model = SystemUser
-        fields = ("organization", "integration_name")
+        fields = ("organization", "integration_name", "requires_on_behalf_of")
 
     @inject
     def clean(
@@ -65,6 +65,21 @@ class SystemUserAdminForm(forms.ModelForm):
         ] = None,
     ) -> dict[str, Any] | None:
         cleaned_data = super().clean()
+        if (
+            cleaned_data is not None
+            and cleaned_data.get("requires_on_behalf_of")
+            and self.instance.scoped_to_membership_user_id is not None
+        ):
+            # A member-scoped token ignores the on-behalf-of header, so it could
+            # never write with the switch on.
+            raise forms.ValidationError(
+                {
+                    "requires_on_behalf_of": (
+                        "Only organization-wide and org-less tokens can require the "
+                        "X-Public-Api-On-Behalf-Of header."
+                    )
+                }
+            )
         if self.instance.pk is not None or cleaned_data is None or entitlement_service is None:
             return cleaned_data
 
@@ -134,6 +149,7 @@ class SystemUserAdmin(admin.ModelAdmin):
                     "organization",
                     "integration_name",
                     "scoped_to_membership",
+                    "requires_on_behalf_of",
                     "long_lived_token_hash",
                     "is_active",
                 )
@@ -188,12 +204,33 @@ class SystemUserAdmin(admin.ModelAdmin):
             raise ValueError("PublicAPIAuthService is not provided")
 
         if change:
-            return super().save_model(request, obj, form, change)
+            # The switch goes through the service, which audits the change. The form
+            # has already written the new value onto ``obj``, so put the stored one
+            # back before saving the other fields.
+            switch_changed = "requires_on_behalf_of" in form.changed_data
+            requires_on_behalf_of = obj.requires_on_behalf_of
+            if switch_changed:
+                obj.requires_on_behalf_of = not requires_on_behalf_of
+            super().save_model(request, obj, form, change)
+            if switch_changed:
+                public_api_auth_service.set_requires_on_behalf_of(
+                    obj,
+                    requires_on_behalf_of,
+                    actor=(
+                        public_api_auth_service.audit_service.actor_from_user(
+                            request.user, obj.organization_id
+                        )
+                        if obj.organization_id is not None
+                        else None
+                    ),
+                )
+            return None
 
         try:
             instance, token = public_api_auth_service.create_system_user(
                 integration_name=form.cleaned_data["integration_name"],
                 organization=form.cleaned_data["organization"],
+                requires_on_behalf_of=form.cleaned_data.get("requires_on_behalf_of", False),
             )
         except OverLimitError as exc:
             # The organization is at its `public_api_system_users` ceiling. Show it as
@@ -205,6 +242,7 @@ class SystemUserAdmin(admin.ModelAdmin):
         obj.id = instance.id
         obj.long_lived_token_hash = instance.long_lived_token_hash
         obj.is_active = instance.is_active
+        obj.requires_on_behalf_of = instance.requires_on_behalf_of
 
         if instance.organization:
             access_message = f"with access to organization '{instance.organization.name}'"

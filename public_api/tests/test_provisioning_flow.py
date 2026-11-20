@@ -1,6 +1,7 @@
 """Integration tests for the provisioning flow: createOrganization, createInvitation."""
 
 import datetime
+import uuid
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -822,3 +823,46 @@ class TestCreateSystemUserTokenProvisioning:
         child_org = Organization.objects.get(name="Minted Child Org")
         assert child_org.can_invite_organizations is False
         assert child_org.parent == reseller_org
+
+
+@pytest.mark.django_db
+class TestCreateSystemUserTokenRequiresOnBehalfOf:
+    """createSystemUserToken passes ``requiresOnBehalfOf`` to the minted token."""
+
+    def _mint(self, extra_input: dict) -> SystemUser:
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        auth_service = PublicAPIAuthService()
+        reseller_su, reseller_token = auth_service.create_system_user(
+            integration_name=f"reseller_{uuid.uuid4().hex[:8]}", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=reseller_su, resource_name="system_user")
+        from di_core.containers import container
+
+        assert container is not None  # noqa: S101
+        with container.public_api_auth_service.override(auth_service):
+            response = APIClient().post(
+                "/graphql/",
+                data={
+                    "query": CREATE_SYSTEM_USER_TOKEN_MUTATION,
+                    "variables": {
+                        "input": {
+                            "organizationId": str(reseller_org.id),
+                            "integrationName": f"minted_{uuid.uuid4().hex[:8]}",
+                            "resources": ["calendar"],
+                            **extra_input,
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {reseller_su.id}:{reseller_token}"},
+            )
+        body = response.json()
+        assert "errors" not in body, body
+        minted_id = int(body["data"]["createSystemUserToken"]["systemUserId"])
+        return SystemUser.original_manager.get(id=minted_id)
+
+    def test_the_switch_is_set_when_asked(self):
+        assert self._mint({"requiresOnBehalfOf": True}).requires_on_behalf_of is True
+
+    def test_the_switch_defaults_to_off(self):
+        assert self._mint({}).requires_on_behalf_of is False

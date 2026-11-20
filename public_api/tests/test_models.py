@@ -75,3 +75,32 @@ class TestSystemUserCanBookAnyAppointmentType:
         system_user = self._token(other if token_organization == "other" else None)
 
         assert system_user.can_book_any_appointment_type(organization.id) is False
+
+
+@pytest.mark.django_db
+class TestSystemUserRequiresOnBehalfOf:
+    """The ``requires_on_behalf_of`` switch is off unless someone turns it on."""
+
+    def test_a_new_token_does_not_require_on_behalf_of(self):
+        organization = baker.make(Organization, name="Switch Organization")
+
+        system_user = SystemUser.objects.create(
+            organization=organization,
+            integration_name="switch-default",
+            long_lived_token_hash="hash",
+        )
+
+        system_user.refresh_from_db()
+        assert system_user.requires_on_behalf_of is False
+
+    def test_an_org_less_token_can_require_on_behalf_of(self):
+        system_user = SystemUser.objects.create(
+            organization=None,
+            integration_name="switch-org-less",
+            long_lived_token_hash="hash",
+            requires_on_behalf_of=True,
+        )
+
+        system_user = SystemUser.original_manager.get(id=system_user.id)
+        assert system_user.organization_id is None
+        assert system_user.requires_on_behalf_of is True

@@ -12,19 +12,93 @@ user's groups are all mutable state, and an audit trail that re-reads them in
 the worker records what was true at write time rather than at action time.
 """
 
+from collections.abc import Sequence
+from dataclasses import replace
 from typing import Annotated, Any
 
 from dependency_injector.wiring import Provide, inject
 from vinta_audit_logs.constants import ScopeType
 from vinta_audit_logs.services import AuditService
-from vinta_audit_logs.types import IdentitySnapshot, ScopeRef
+from vinta_audit_logs.types import IdentitySnapshot, ScopeRef, SubjectRef
 
 from audit_integration.constants import AuditActorType
 from audit_integration.repositories import OrganizationAuditRepository
+from public_api.on_behalf_of import current_on_behalf_of_claim
 
 
 class OrganizationAuditService(AuditService):
     """AuditService with this project's notions of scope and actor."""
+
+    # ------------------------------------------------------------------
+    # Recording
+    # ------------------------------------------------------------------
+
+    def record(
+        self,
+        *,
+        action: str,
+        actor: IdentitySnapshot,
+        subject: SubjectRef,
+        scope: ScopeRef | None = None,
+        on_behalf_of: IdentitySnapshot | None = None,
+        affected: Sequence[IdentitySnapshot] = (),
+        diff: dict | None = None,
+        action_name: str = "",
+        action_content_type_key: str = "",
+    ) -> None:
+        """Record an audit entry, adding the request's on-behalf-of claim when it applies.
+
+        A public API token can name the member it is acting for in the
+        ``X-Public-Api-On-Behalf-Of`` header. When the request bound such a
+        claim, and this record's actor is the token that made it, the member
+        goes into the record's ``on_behalf_of`` and the actor's label says the
+        action was claimed for them. A caller that passes ``on_behalf_of`` itself
+        keeps its own value. Everything else is the base class's ``record``.
+        """
+        if on_behalf_of is None:
+            actor, on_behalf_of = self._apply_on_behalf_of_claim(actor)
+        super().record(
+            action=action,
+            actor=actor,
+            subject=subject,
+            scope=scope,
+            on_behalf_of=on_behalf_of,
+            affected=affected,
+            diff=diff,
+            action_name=action_name,
+            action_content_type_key=action_content_type_key,
+        )
+
+    def _apply_on_behalf_of_claim(
+        self, actor: IdentitySnapshot
+    ) -> tuple[IdentitySnapshot, IdentitySnapshot | None]:
+        """Return the actor and on-behalf-of identity for the request's claim, if any.
+
+        The claim applies only when the actor is the token that made it. A
+        claim from a different token, or no claim at all, leaves the actor as
+        it was and returns no on-behalf-of identity.
+        """
+        claim = current_on_behalf_of_claim()
+        if (
+            claim is None
+            or actor.identity_type != AuditActorType.SYSTEM_USER
+            or actor.identity_key != str(claim.system_user_id)
+        ):
+            return actor, None
+
+        member = IdentitySnapshot(
+            identity_type=AuditActorType.CLAIMED_MEMBERSHIP,
+            identity_key=str(claim.membership_user_id),
+            identity_label=claim.label,
+            user_id=claim.membership_user_id,
+            metadata={"claimed_by_system_user_id": claim.system_user_id},
+        )
+        member_label = claim.label or f"member:{claim.membership_user_id}"
+        claimed_actor = replace(
+            actor,
+            identity_label=f"{actor.identity_label} on behalf of {member_label} (claimed)",
+        )
+        return claimed_actor, member
 
     # ------------------------------------------------------------------
     # Scope

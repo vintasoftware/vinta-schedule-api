@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from django.db import transaction
 
 from dependency_injector.wiring import Provide, inject
+from vinta_audit_logs.types import IdentitySnapshot
 from vinta_billing.exceptions import OverLimitError
 
 from audit_integration.constants import AuditAction
@@ -15,6 +16,7 @@ from common.utils.authentication_utils import (
 )
 from payments.seams.resource_keys import PUBLIC_API_SYSTEM_USERS
 from payments.seams.scopes import scope_for
+from public_api.exceptions import OnBehalfOfSwitchOnScopedTokenError
 from public_api.models import SystemUser
 
 
@@ -71,6 +73,7 @@ class PublicAPIAuthService:
         organization: "Organization | None",
         scoped_to_membership: "OrganizationMembership | None" = None,
         bypass_limits: bool = False,
+        requires_on_behalf_of: bool = False,
     ) -> tuple[SystemUser, str]:
         """
         Create a new system user with a long-lived token.
@@ -85,6 +88,9 @@ class PublicAPIAuthService:
             When set, the token may only read/write data belonging to calendars owned by the
             membership's user within that organization.
             When None (default), the token has org-wide access (legacy default).
+        :param requires_on_behalf_of: When True, the token's mutation requests must name
+            the member they act for in ``X-Public-Api-On-Behalf-Of``. Refused together with
+            ``scoped_to_membership``, since a member-scoped token ignores that header.
         :param bypass_limits: When True, skips the ``public_api_system_users`` limit guard
             below. Only management commands and one-off repair scripts should pass this --
             never a request-handling path.
@@ -111,6 +117,9 @@ class PublicAPIAuthService:
         :return: Tuple of (system_user, plaintext_token). The plaintext token is exposed
             once and never persisted; only the hash is stored.
         """
+        if requires_on_behalf_of and scoped_to_membership is not None:
+            raise OnBehalfOfSwitchOnScopedTokenError()
+
         if organization is None:
             logger.warning(
                 "Creating org-less system user %r: no organization to resolve a billing "
@@ -131,6 +140,7 @@ class PublicAPIAuthService:
             "integration_name": integration_name,
             "long_lived_token_hash": hash_long_lived_token(token),
             "is_active": True,
+            "requires_on_behalf_of": requires_on_behalf_of,
         }
         if scoped_to_membership is not None:
             create_kwargs["scoped_to_membership_user_id"] = scoped_to_membership.user_id
@@ -156,5 +166,52 @@ class PublicAPIAuthService:
                     organization.id,
                     ([scoped_to_membership.user_id] if scoped_to_membership is not None else []),
                 ),
+                # Only when the switch starts on, so every other create record keeps
+                # the shape it always had.
+                diff=(
+                    {"requires_on_behalf_of": {"old": None, "new": True}}
+                    if requires_on_behalf_of
+                    else None
+                ),
             )
         return system_user, token
+
+    def set_requires_on_behalf_of(
+        self,
+        system_user: SystemUser,
+        requires_on_behalf_of: bool,
+        *,
+        actor: IdentitySnapshot | None = None,
+    ) -> bool:
+        """Turn the token's ``requires_on_behalf_of`` switch on or off, and audit the change.
+
+        :param system_user: The token to change.
+        :param requires_on_behalf_of: The new value.
+        :param actor: Who made the change. ``None`` records the system as the actor.
+        :raises OnBehalfOfSwitchOnScopedTokenError: When turning the switch on for a token
+            scoped to a member. That token ignores the header, so it could never write again.
+        :return: Whether the value changed. Setting the value it already has does nothing
+            and writes no audit record.
+
+        The audit record is skipped for an org-less token, for the same reason as in
+        :meth:`create_system_user`: the audit trail has no scope for "every organization".
+        """
+        if requires_on_behalf_of and system_user.scoped_to_membership_user_id is not None:
+            raise OnBehalfOfSwitchOnScopedTokenError()
+
+        previous = system_user.requires_on_behalf_of
+        if previous == requires_on_behalf_of:
+            return False
+
+        system_user.requires_on_behalf_of = requires_on_behalf_of
+        system_user.save(update_fields=["requires_on_behalf_of"])
+
+        if system_user.organization_id is not None:
+            self.audit_service.record(
+                action=AuditAction.UPDATE,
+                actor=actor if actor is not None else self.audit_service.system_actor(),
+                subject=self.audit_service.subject_from_instance(system_user),
+                scope=self.audit_service.scope_from_organization_id(system_user.organization_id),
+                diff={"requires_on_behalf_of": {"old": previous, "new": requires_on_behalf_of}},
+            )
+        return True

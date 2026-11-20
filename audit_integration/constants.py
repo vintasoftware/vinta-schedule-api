@@ -20,6 +20,11 @@ class AuditActorType(models.TextChoices):
     MEMBERSHIP = "membership", "Membership"
     SYSTEM_USER = "system_user", "System user"
     SINGLE_USE_CODE = "single_use_code", "Single-use code"
+    #: The member a public API token said it was acting for, in the
+    #: ``X-Public-Api-On-Behalf-Of`` header. Only ever an audit record's
+    #: ``on_behalf_of``, never its actor: it is the token's claim, and we only
+    #: checked that the member was active in the organization.
+    CLAIMED_MEMBERSHIP = "claimed_membership", "Claimed membership"
 
 
 class AuditAction(models.TextChoices):

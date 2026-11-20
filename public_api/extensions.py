@@ -1,9 +1,10 @@
 from collections.abc import Iterable
-from typing import NoReturn
+from typing import TYPE_CHECKING, Annotated, Any, NoReturn
 
 from django.conf import settings
 from django.http import HttpRequest
 
+from dependency_injector.wiring import Provide, inject
 from graphql.error import GraphQLError
 from pyrate_limiter import (
     Duration,
@@ -11,11 +12,19 @@ from pyrate_limiter import (
 )
 from rest_framework.views import set_rollback
 from strawberry.extensions import SchemaExtension
+from strawberry.types.graphql import OperationType
 from strawberry.utils.await_maybe import AsyncIteratorOrIterator
 from vinta_billing.exceptions import OverLimitError
 
 from common.redis import ResilientLimiter
 from common.utils.request_utils import proxied_client_ip
+from organizations.models import OrganizationMembership
+from public_api.constants import ON_BEHALF_OF_HEADER, OnBehalfOfErrorCode
+from public_api.on_behalf_of import OnBehalfOfClaim, on_behalf_of_claim
+
+
+if TYPE_CHECKING:
+    from audit_integration.services import OrganizationAuditService
 
 
 def raise_over_limit_graphql_error(exc: OverLimitError) -> NoReturn:
@@ -184,4 +193,104 @@ class OrganizationRateLimiter(SchemaExtension):
             )
 
         yield
+        return None
+
+
+def _parse_member_id(raw: str) -> int | None:
+    """Read a membership user id from the header value, or ``None`` if it is not one.
+
+    Only a plain positive integer is accepted. Anything else (empty, signed,
+    padded, a float) is not an id a partner could have read from this API.
+    """
+    if not raw.isascii() or not raw.isdigit():
+        return None
+    member_id = int(raw)
+    return member_id if member_id > 0 else None
+
+
+@inject
+def _member_label(
+    user: Any,
+    audit_service: Annotated["OrganizationAuditService | None", Provide["audit_service"]] = None,
+) -> str:
+    """The member's audit label, built the same way a member acting directly gets one."""
+    if audit_service is None:
+        return ""
+    return audit_service.label_for_user(user)
+
+
+class OnBehalfOfMemberExtension(SchemaExtension):
+    """Check the ``X-Public-Api-On-Behalf-Of`` header and record it as a claim.
+
+    An organization-wide or org-less token can name the organization member it
+    is acting for. On a mutation, this extension checks that the header names
+    an active member of the organization the request is bound to, and then
+    binds the claim for the rest of the request, so every audit record the
+    mutation writes carries it (see ``public_api.on_behalf_of``). The token
+    stays the actor and keeps exactly the access it had.
+
+    The header is ignored, without being checked, when:
+
+    * the operation is not a mutation, because only writes are audited;
+    * the token is scoped to a member, because its member is already recorded;
+    * an org-less token chose no organization, so there is none to check against.
+
+    A request is rejected with a GraphQL error, before any resolver runs, when
+    the header is present but is not a positive integer or does not name an
+    active member (``ON_BEHALF_OF_MEMBER_INVALID``), or when the token has
+    ``requires_on_behalf_of`` set and the header is missing
+    (``ON_BEHALF_OF_MEMBER_REQUIRED``). Nothing has been written at that point,
+    so there is nothing to roll back. The error message never repeats the value
+    that was sent.
+
+    Runs inside ``PublicApiSystemUserMiddleware``'s ``organization_context``.
+    """
+
+    def on_execute(self) -> AsyncIteratorOrIterator[None]:
+        """Check the header on mutations, then run the operation with the claim bound."""
+        request: HttpRequest = self.execution_context.context.request
+        system_user = getattr(request, "public_api_system_user", None)
+        organization = getattr(request, "public_api_organization", None)
+
+        if (
+            system_user is None
+            or organization is None
+            or system_user.scoped_to_membership_user_id is not None
+            or self.execution_context.operation_type != OperationType.MUTATION
+        ):
+            yield
+            return None
+
+        raw = request.headers.get(ON_BEHALF_OF_HEADER)
+        if raw is None:
+            if system_user.requires_on_behalf_of:
+                raise GraphQLError(
+                    f"This token requires the {ON_BEHALF_OF_HEADER} header on mutations.",
+                    extensions={"code": OnBehalfOfErrorCode.REQUIRED.value},
+                )
+            yield
+            return None
+
+        member_id = _parse_member_id(raw.strip())
+        membership = (
+            None
+            if member_id is None
+            else OrganizationMembership.objects.active()
+            .filter(organization_id=organization.id, user_id=member_id)
+            .select_related("user")
+            .first()
+        )
+        if membership is None:
+            raise GraphQLError(
+                f"{ON_BEHALF_OF_HEADER} does not name an active member of this organization.",
+                extensions={"code": OnBehalfOfErrorCode.INVALID.value},
+            )
+
+        claim = OnBehalfOfClaim(
+            system_user_id=system_user.id,
+            membership_user_id=membership.user_id,
+            label=_member_label(membership.user),
+        )
+        with on_behalf_of_claim(claim):
+            yield
         return None
