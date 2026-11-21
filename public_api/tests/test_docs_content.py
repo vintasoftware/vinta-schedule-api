@@ -5,6 +5,7 @@ from django.conf import settings
 import pytest
 from rest_framework.exceptions import NotFound
 
+from public_api.constants import ON_BEHALF_OF_HEADER, OnBehalfOfErrorCode
 from public_api.docs_content import (
     _ALLOWLIST,
     _extract_title,
@@ -21,12 +22,13 @@ EXPECTED_SLUGS = (
     "appointment-types",
     "calendars",
     "events",
+    "on-behalf-of",
     "recurrence",
 )
 
 
 class TestListConceptDocs:
-    def test_returns_all_six_real_files_with_real_titles(self):
+    def test_returns_every_real_file_with_its_real_title(self):
         summaries = list_concept_docs()
 
         assert [summary["slug"] for summary in summaries] == sorted(EXPECTED_SLUGS)
@@ -96,3 +98,15 @@ class TestGetConceptDoc:
 
     def test_allowlist_contains_exactly_the_expected_slugs(self):
         assert set(_ALLOWLIST.keys()) == set(EXPECTED_SLUGS)
+
+
+class TestOnBehalfOfConceptDoc:
+    """The partner doc names the header and both error codes, so renaming either fails here."""
+
+    def test_it_documents_the_header_and_error_codes(self):
+        doc = get_concept_doc("on-behalf-of")
+
+        assert doc["title"] == "Acting on Behalf of a Member"
+        assert ON_BEHALF_OF_HEADER in doc["markdown"]
+        for code in OnBehalfOfErrorCode:
+            assert code.value in doc["markdown"]

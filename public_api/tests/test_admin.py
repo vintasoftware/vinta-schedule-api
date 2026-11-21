@@ -15,13 +15,14 @@ this file is what fails if it is removed.
 """
 
 from typing import Any
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import Client
 
 import pytest
 
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from public_api.models import SystemUser
 
 
@@ -102,3 +103,81 @@ class TestTheAddFormReportsACrossOrganizationClash:
         assert SystemUser.original_manager.filter(
             integration_name="free-name", organization=organization_b
         ).exists()
+
+
+@pytest.mark.django_db
+class TestRequiresOnBehalfOfInTheAdmin:
+    """Staff can set the switch, each change is audited, and member-scoped tokens refuse it."""
+
+    def _change_payload(self, system_user: SystemUser, *, requires: bool) -> dict[str, Any]:
+        payload = {
+            "organization": str(system_user.organization_id or ""),
+            "integration_name": system_user.integration_name,
+            "available_resources-TOTAL_FORMS": "0",
+            "available_resources-INITIAL_FORMS": "0",
+            "available_resources-MIN_NUM_FORMS": "0",
+            "available_resources-MAX_NUM_FORMS": "1000",
+        }
+        if requires:
+            payload["requires_on_behalf_of"] = "on"
+        return payload
+
+    def test_the_add_form_sets_it(self, admin_client: Client, organization_a: Organization):
+        payload = {**_add_payload(organization_a, "switch-add"), "requires_on_behalf_of": "on"}
+
+        response = admin_client.post(ADD_URL, payload, follow=False)
+
+        assert response.status_code == 302  # noqa: PLR2004
+        system_user = SystemUser.original_manager.get(integration_name="switch-add")
+        assert system_user.requires_on_behalf_of is True
+
+    def test_changing_it_saves_and_audits(
+        self,
+        admin_client: Client,
+        organization_a: Organization,
+        django_capture_on_commit_callbacks: Any,
+    ):
+        system_user = SystemUser.objects.create(
+            organization=organization_a,
+            integration_name="switch-change",
+            long_lived_token_hash="hash",
+        )
+
+        with (
+            patch("vinta_audit_logs.tasks.persist_audit_record") as audit_task,
+            django_capture_on_commit_callbacks(execute=True),
+        ):
+            response = admin_client.post(
+                f"/super/public_api/systemuser/{system_user.pk}/change/",
+                self._change_payload(system_user, requires=True),
+                follow=False,
+            )
+
+        assert response.status_code == 302  # noqa: PLR2004
+        system_user.refresh_from_db()
+        assert system_user.requires_on_behalf_of is True
+        diffs = [call.args[0]["diff"] for call in audit_task.delay.call_args_list]
+        assert diffs == [{"requires_on_behalf_of": {"old": False, "new": True}}]
+
+    def test_a_member_scoped_token_refuses_it(
+        self, admin_client: Client, organization_a: Organization
+    ):
+        member = User.objects.create_user(email="scoped-member@example.com", password="x")  # noqa: S106
+        OrganizationMembership.objects.create(organization=organization_a, user=member)
+        system_user = SystemUser.objects.create(
+            organization=organization_a,
+            integration_name="switch-scoped",
+            long_lived_token_hash="hash",
+            scoped_to_membership_user_id=member.id,
+        )
+
+        response = admin_client.post(
+            f"/super/public_api/systemuser/{system_user.pk}/change/",
+            self._change_payload(system_user, requires=True),
+            follow=False,
+        )
+
+        assert response.status_code == 200  # noqa: PLR2004
+        assert "requires_on_behalf_of" in response.context["adminform"].form.errors
+        system_user.refresh_from_db()
+        assert system_user.requires_on_behalf_of is False

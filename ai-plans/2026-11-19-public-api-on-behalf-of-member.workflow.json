@@ -1,0 +1,191 @@
+{
+  "$schema": "https://github.com/vintasoftware/vinta-ai-workflows/schemas/workflow.v1.schema.json",
+  "schema_version": 1,
+  "id": "2026-11-19-public-api-on-behalf-of-member",
+  "plan_ref": "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md",
+  "plan_context_refs": [
+    "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md#1-goals",
+    "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md#2-guiding-decisions"
+  ],
+  "base_branch": "main",
+  "crew": {
+    "tier1": {
+      "tier": 1,
+      "model": "claude-haiku-4-5",
+      "description": "One BooleanField and its migration."
+    },
+    "tier2-1": {
+      "tier": 2,
+      "model": "claude-sonnet-5-5",
+      "description": "Audit columns and claim context, the person search, and the org-less and switch branches of the extension."
+    },
+    "tier2-2": {
+      "tier": 2,
+      "model": "claude-sonnet-5-5",
+      "description": "Switch management across REST, GraphQL creation and admin, then the partner concept doc."
+    },
+    "tier3": {
+      "tier": 3,
+      "model": "claude-opus-5-5",
+      "description": "The pre-execution on-behalf-of schema extension."
+    }
+  },
+  "defaults": {
+    "model": "claude-sonnet-5-5"
+  },
+  "resources": {
+    "lane": {
+      "capacity": 4,
+      "kind": "worktree",
+      "description": "One desk per implementer, kept for the whole run."
+    }
+  },
+  "nodes": [
+    {
+      "id": "p1",
+      "name": "Audit columns and claim context",
+      "depends_on": [],
+      "prompt_ref": "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md#phase-1",
+      "touches": [
+        "audit_integration/constants.py",
+        "audit_integration/services.py",
+        "audit_integration/tests/test_on_behalf_of_claim.py"
+      ],
+      "crew": "tier2-1"
+    },
+    {
+      "id": "p2",
+      "name": "Token requires_on_behalf_of field",
+      "depends_on": [],
+      "prompt_ref": "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md#phase-2",
+      "touches": [
+        "public_api/models.py",
+        "public_api/migrations/0011_systemuser_requires_on_behalf_of.py",
+        "public_api/tests/test_models.py"
+      ],
+      "crew": "tier1"
+    },
+    {
+      "id": "p3",
+      "name": "Record and check claims for org-wide tokens",
+      "depends_on": [
+        {
+          "node": "p1",
+          "artifact": "the `on_behalf_of_claim` context manager and `actor_from_system_user` reading it"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md#phase-3",
+      "touches": [
+        "public_api/constants.py",
+        "public_api/extensions.py",
+        "public_api/schema.py",
+        "public_api/tests/test_on_behalf_of.py"
+      ],
+      "crew": "tier3"
+    },
+    {
+      "id": "p4",
+      "name": "Accept claims from org-less tokens",
+      "depends_on": [
+        {
+          "node": "p3",
+          "artifact": "the `OnBehalfOfMemberExtension` decision function this widens"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md#phase-4",
+      "touches": [
+        "public_api/extensions.py",
+        "public_api/tests/test_on_behalf_of.py"
+      ],
+      "crew": "tier2-1"
+    },
+    {
+      "id": "p5",
+      "name": "Enforce the requires_on_behalf_of switch",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "the `SystemUser.requires_on_behalf_of` field"
+        },
+        {
+          "node": "p4",
+          "artifact": "the decision function in public_api/extensions.py after it admits org-less tokens; both phases edit it"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md#phase-5",
+      "touches": [
+        "public_api/extensions.py",
+        "public_api/tests/test_on_behalf_of.py"
+      ],
+      "crew": "tier2-1"
+    },
+    {
+      "id": "p6",
+      "name": "Manage the switch (REST, GraphQL creation, admin)",
+      "depends_on": [
+        {
+          "node": "p2",
+          "artifact": "the `SystemUser.requires_on_behalf_of` field"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md#phase-6",
+      "touches": [
+        "public_api/serializers.py",
+        "public_api/services.py",
+        "public_api/views.py",
+        "public_api/types.py",
+        "public_api/mutations.py",
+        "public_api/admin/system_user.py",
+        "schema.yml",
+        "public_api/exceptions.py",
+        "public_api/tests/test_views.py",
+        "public_api/tests/test_provisioning_flow.py",
+        "public_api/tests/test_on_behalf_of.py",
+        "public_api/tests/test_admin.py"
+      ],
+      "crew": "tier2-2"
+    },
+    {
+      "id": "p7",
+      "name": "Staff search finds claimed actions",
+      "depends_on": [
+        {
+          "node": "p1",
+          "artifact": "the claimed member stored as `Audit.on_behalf_of`, which this filters on"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md#phase-7",
+      "touches": [
+        "audit_integration/repositories.py",
+        "audit_integration/types.py",
+        "audit_integration/tests/test_project_query.py"
+      ],
+      "crew": "tier2-1"
+    },
+    {
+      "id": "p8",
+      "name": "Partner docs for on-behalf-of",
+      "depends_on": [
+        {
+          "node": "p3",
+          "artifact": "the `ON_BEHALF_OF_MEMBER_INVALID` error code and org-wide behavior it documents"
+        },
+        {
+          "node": "p4",
+          "artifact": "the org-less behavior it documents"
+        },
+        {
+          "node": "p5",
+          "artifact": "the `ON_BEHALF_OF_MEMBER_REQUIRED` code and switch behavior it documents"
+        }
+      ],
+      "prompt_ref": "ai-plans/2026-11-19-PUBLIC_API_ON_BEHALF_OF_MEMBER_IMPLEMENTATION_PLAN.md#phase-8",
+      "touches": [
+        "docs/concepts/on-behalf-of.md",
+        "public_api/tests/test_docs_content.py",
+        "public_api/tests/test_docs_endpoint.py"
+      ],
+      "crew": "tier2-2"
+    }
+  ]
+}

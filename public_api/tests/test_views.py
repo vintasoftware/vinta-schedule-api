@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
@@ -1860,3 +1861,156 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
         assert_response_status_code(create_response, status.HTTP_201_CREATED)
         created = SystemUser.original_manager.get(pk=create_response.json()["id"])
         assert created.organization_id == other_organization.pk
+
+
+@pytest.mark.django_db
+class TestSystemUserTokenRequiresOnBehalfOf:
+    """The ``requires_on_behalf_of`` switch on create and update."""
+
+    CREATE_URL = "api:PublicAPITokens-list"
+
+    def _detail_url(self, token_id):
+        return reverse("api:PublicAPITokens-detail", kwargs={"pk": token_id})
+
+    @pytest.fixture
+    def audit_task(self):
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as task:
+            yield task
+
+    def _switch_audit_payloads(self, audit_task):
+        return [
+            call.args[0]
+            for call in audit_task.delay.call_args_list
+            if "requires_on_behalf_of" in (call.args[0].get("diff") or {})
+        ]
+
+    def test_create_with_the_switch_on(self, admin_client, organization):
+        payload = {
+            "integration_name": "switch-on",
+            "available_resources": [PublicAPIResources.CALENDAR],
+            "requires_on_behalf_of": True,
+        }
+
+        response = admin_client.post(reverse(self.CREATE_URL), payload, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.json()["requires_on_behalf_of"] is True
+        system_user = SystemUser.objects.filter_by_organization(organization).get(
+            id=response.json()["id"]
+        )
+        assert system_user.requires_on_behalf_of is True
+
+    def test_create_defaults_to_off(self, admin_client, organization):
+        payload = {
+            "integration_name": "switch-default",
+            "available_resources": [PublicAPIResources.CALENDAR],
+        }
+
+        response = admin_client.post(reverse(self.CREATE_URL), payload, format="json")
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.json()["requires_on_behalf_of"] is False
+
+    def test_create_refuses_the_switch_on_a_member_scoped_token(
+        self, admin_client, organization, member_user
+    ):
+        payload = {
+            "integration_name": "switch-scoped",
+            "available_resources": [sorted(PROVIDER_SCOPED_RESOURCES)[0]],
+            "scoped_to_user": member_user.id,
+            "requires_on_behalf_of": True,
+        }
+
+        response = admin_client.post(reverse(self.CREATE_URL), payload, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "requires_on_behalf_of" in response.json()
+        assert not SystemUser.objects.filter_by_organization(organization).exists()
+
+    def test_update_turns_the_switch_on_and_off_and_audits_each_change(
+        self, admin_client, organization, admin_user, audit_task, django_capture_on_commit_callbacks
+    ):
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        url = self._detail_url(system_user.id)
+        resources = [PublicAPIResources.CALENDAR]
+
+        with django_capture_on_commit_callbacks(execute=True):
+            on = admin_client.patch(
+                url,
+                {"available_resources": resources, "requires_on_behalf_of": True},
+                format="json",
+            )
+        with django_capture_on_commit_callbacks(execute=True):
+            off = admin_client.patch(
+                url,
+                {"available_resources": resources, "requires_on_behalf_of": False},
+                format="json",
+            )
+
+        assert_response_status_code(on, status.HTTP_200_OK)
+        assert on.json()["requires_on_behalf_of"] is True
+        assert_response_status_code(off, status.HTTP_200_OK)
+        assert off.json()["requires_on_behalf_of"] is False
+        payloads = self._switch_audit_payloads(audit_task)
+        assert [payload["diff"] for payload in payloads] == [
+            {"requires_on_behalf_of": {"old": False, "new": True}},
+            {"requires_on_behalf_of": {"old": True, "new": False}},
+        ]
+        assert {payload["action_key"] for payload in payloads} == {"update"}
+        assert {payload["actor"]["identity_type"] for payload in payloads} == {"membership"}
+        assert {payload["actor"]["user_id"] for payload in payloads} == {admin_user.id}
+
+    def test_update_without_the_field_leaves_it_unchanged(
+        self, admin_client, organization, audit_task, django_capture_on_commit_callbacks
+    ):
+        system_user = baker.make(
+            SystemUser, organization=organization, is_active=True, requires_on_behalf_of=True
+        )
+
+        with django_capture_on_commit_callbacks(execute=True):
+            response = admin_client.patch(
+                self._detail_url(system_user.id),
+                {"available_resources": [PublicAPIResources.CALENDAR]},
+                format="json",
+            )
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        system_user.refresh_from_db()
+        assert system_user.requires_on_behalf_of is True
+        assert self._switch_audit_payloads(audit_task) == []
+
+    def test_update_refuses_the_switch_on_a_member_scoped_token(
+        self, admin_client, organization, member_user
+    ):
+        system_user = baker.make(
+            SystemUser,
+            organization=organization,
+            is_active=True,
+            scoped_to_membership_user_id=member_user.id,
+        )
+        resource = sorted(PROVIDER_SCOPED_RESOURCES)[0]
+        baker.make(ResourceAccess, system_user=system_user, resource_name=resource)
+
+        response = admin_client.patch(
+            self._detail_url(system_user.id),
+            {"available_resources": [resource], "requires_on_behalf_of": True},
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "requires_on_behalf_of" in response.json()
+        system_user.refresh_from_db()
+        assert system_user.requires_on_behalf_of is False
+
+    def test_a_non_admin_cannot_change_it(self, member_client, organization):
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+
+        response = member_client.patch(
+            self._detail_url(system_user.id),
+            {"available_resources": [PublicAPIResources.CALENDAR], "requires_on_behalf_of": True},
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        system_user.refresh_from_db()
+        assert system_user.requires_on_behalf_of is False

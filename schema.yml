@@ -15193,6 +15193,8 @@ paths:
 
         Accepts ``available_resources`` (a non-empty list of valid resource values).
         Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        Also accepts an optional ``requires_on_behalf_of``; omitted leaves it unchanged,
+        and a change is audited. Turning it on for a member-scoped token is a 400.
         ``integration_name`` and ``token`` are never mutated; if sent in the body,
         they are silently ignored.
 
@@ -15357,6 +15359,8 @@ paths:
 
         Accepts ``available_resources`` (a non-empty list of valid resource values).
         Reconciles ResourceAccess rows: adds new, removes dropped, de-duplicates.
+        Also accepts an optional ``requires_on_behalf_of``; omitted leaves it unchanged,
+        and a change is audited. Turning it on for a member-scoped token is a 400.
         ``integration_name`` and ``token`` are never mutated; if sent in the body,
         they are silently ignored.
 
@@ -22493,7 +22497,8 @@ components:
         Input serializer for updating a public-API token's resource grants.
 
         Accepts ``available_resources`` (a non-empty list of valid ``PublicAPIResources`` values)
-        only.  ``integration_name`` and ``token`` are never accepted or changed.
+        and an optional ``requires_on_behalf_of``.  ``integration_name`` and ``token`` are never
+        accepted or changed.
         The view reconciles ResourceAccess rows: adds rows for newly-granted resources,
         removes rows for dropped resources.
       properties:
@@ -22501,6 +22506,11 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AvailableResourcesEnum'
+        requires_on_behalf_of:
+          type: boolean
+          description: Turn on or off the requirement that the token's GraphQL mutations
+            name the member they act for in the X-Public-Api-On-Behalf-Of header.
+            Omit to leave it unchanged. Organization-wide tokens only.
     PatchedWebhookConfiguration:
       type: object
       properties:
@@ -23222,11 +23232,18 @@ components:
             ``scoped_to_membership_user_id`` is a concrete column already storing the
             membership's user_id, so the value is returned directly with no extra query.
           readOnly: true
+        requires_on_behalf_of:
+          type: boolean
+          readOnly: true
+          description: When set, mutation requests from this token must name the member
+            they act for in the X-Public-Api-On-Behalf-Of header. Organization-wide
+            and org-less tokens only.
       required:
       - available_resources
       - id
       - integration_name
       - is_active
+      - requires_on_behalf_of
       - scoped_to_user
     SystemUserTokenCreate:
       type: object
@@ -23255,6 +23272,12 @@ components:
         scoped_to_user:
           type: integer
           nullable: true
+        requires_on_behalf_of:
+          type: boolean
+          default: false
+          description: When true, the token's GraphQL mutations must name the member
+            they act for in the X-Public-Api-On-Behalf-Of header. Not allowed together
+            with scoped_to_user.
       required:
       - available_resources
       - integration_name
@@ -23296,6 +23319,12 @@ components:
             ``scoped_to_membership_user_id`` already stores the membership's user_id, so the
             value is returned directly with no extra query.
           readOnly: true
+        requires_on_behalf_of:
+          type: boolean
+          readOnly: true
+          description: When set, mutation requests from this token must name the member
+            they act for in the X-Public-Api-On-Behalf-Of header. Organization-wide
+            and org-less tokens only.
         token:
           type: string
           readOnly: true
@@ -23304,6 +23333,7 @@ components:
       - id
       - integration_name
       - is_active
+      - requires_on_behalf_of
       - scoped_to_user
       - token
     SystemUserTokenUpdate:
@@ -23312,7 +23342,8 @@ components:
         Input serializer for updating a public-API token's resource grants.
 
         Accepts ``available_resources`` (a non-empty list of valid ``PublicAPIResources`` values)
-        only.  ``integration_name`` and ``token`` are never accepted or changed.
+        and an optional ``requires_on_behalf_of``.  ``integration_name`` and ``token`` are never
+        accepted or changed.
         The view reconciles ResourceAccess rows: adds rows for newly-granted resources,
         removes rows for dropped resources.
       properties:
@@ -23320,6 +23351,11 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AvailableResourcesEnum'
+        requires_on_behalf_of:
+          type: boolean
+          description: Turn on or off the requirement that the token's GraphQL mutations
+            name the member they act for in the X-Public-Api-On-Behalf-Of header.
+            Omit to leave it unchanged. Organization-wide tokens only.
       required:
       - available_resources
     TriggerSourceEnum:

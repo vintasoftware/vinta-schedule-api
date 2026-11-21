@@ -106,6 +106,13 @@ class SystemUser(
         help_text="Hash of the the system user's access token.",
     )
     is_active = models.BooleanField(default=True, help_text="Indicates if the user is active.")
+    requires_on_behalf_of = models.BooleanField(
+        default=False,
+        help_text=(
+            "When set, mutation requests from this token must name the member they act for "
+            "in the X-Public-Api-On-Behalf-Of header. Organization-wide and org-less tokens only."
+        ),
+    )
     deleted_at = models.DateTimeField(null=True, blank=True, default=None, db_index=True)
 
     def save(self, *args: Any, **kwargs: Any) -> None:

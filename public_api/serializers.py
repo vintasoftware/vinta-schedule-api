@@ -35,6 +35,14 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
         allow_empty=False,
     )
     scoped_to_user = serializers.IntegerField(required=False, allow_null=True)
+    requires_on_behalf_of = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text=(
+            "When true, the token's GraphQL mutations must name the member they act for in "
+            "the X-Public-Api-On-Behalf-Of header. Not allowed together with scoped_to_user."
+        ),
+    )
 
     @inject
     def __init__(
@@ -123,6 +131,8 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
                     integration_name=integration_name,
                     organization=membership.organization,
                     scoped_to_membership=resolved_membership,
+                    requires_on_behalf_of=validated_data.get("requires_on_behalf_of", False),
+                    acted_by=request.user,
                 )
                 # dict.fromkeys dedupes while preserving order, so the unique
                 # (system_user, resource_name) constraint cannot be violated.
@@ -169,6 +179,7 @@ class SystemUserTokenResponseSerializer(serializers.ModelSerializer):
             "is_active",
             "available_resources",
             "scoped_to_user",
+            "requires_on_behalf_of",
             "token",
         )
         read_only_fields = fields
@@ -208,7 +219,14 @@ class SystemUserTokenSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SystemUser
-        fields = ("id", "integration_name", "is_active", "available_resources", "scoped_to_user")
+        fields = (
+            "id",
+            "integration_name",
+            "is_active",
+            "available_resources",
+            "scoped_to_user",
+            "requires_on_behalf_of",
+        )
         read_only_fields = fields
 
     def get_available_resources(self, obj: SystemUser) -> list[str]:
@@ -291,7 +309,8 @@ class SystemUserTokenUpdateSerializer(serializers.Serializer):
     """Input serializer for updating a public-API token's resource grants.
 
     Accepts ``available_resources`` (a non-empty list of valid ``PublicAPIResources`` values)
-    only.  ``integration_name`` and ``token`` are never accepted or changed.
+    and an optional ``requires_on_behalf_of``.  ``integration_name`` and ``token`` are never
+    accepted or changed.
     The view reconciles ResourceAccess rows: adds rows for newly-granted resources,
     removes rows for dropped resources.
     """
@@ -300,4 +319,12 @@ class SystemUserTokenUpdateSerializer(serializers.Serializer):
         child=serializers.ChoiceField(choices=PublicAPIResources.choices),
         required=True,
         allow_empty=False,
+    )
+    requires_on_behalf_of = serializers.BooleanField(
+        required=False,
+        help_text=(
+            "Turn on or off the requirement that the token's GraphQL mutations name the "
+            "member they act for in the X-Public-Api-On-Behalf-Of header. Omit to leave it "
+            "unchanged. Organization-wide tokens only."
+        ),
     )
