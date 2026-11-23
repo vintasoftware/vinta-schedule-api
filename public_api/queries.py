@@ -1116,7 +1116,7 @@ class Query:
         deps.appointment_type_service.initialize(organization=org)
         events = deps.appointment_type_service.get_appointment_type_events(
             appointment_type_id=appointment_type_id, start=start_datetime, end=end_datetime
-        )
+        ).select_related("appointment_type")
         return cast(list[CalendarEventGraphQLType], list(events))
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
