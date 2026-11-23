@@ -67,9 +67,15 @@ class OrganizationAuditRepository(DjangoORMAuditRepository):
         if q.actor_user_emails is not None:
             # audit -> identity -> user. Case-insensitive because email is, and
             # an OR of iexact rather than __in so the comparison stays
-            # case-insensitive per value.
+            # case-insensitive per value. A record whose ``on_behalf_of`` is the
+            # person matches too: a public API token claimed to act for them.
+            # Those records keep the token as the actor, so a reader can tell
+            # them apart by ``actor_type``.
             qs = qs.filter(
-                self._or_all(Q(actor__user__email__iexact=email) for email in q.actor_user_emails)
+                self._or_all(
+                    Q(actor__user__email__iexact=email) | Q(on_behalf_of__user__email__iexact=email)
+                    for email in q.actor_user_emails
+                )
             )
 
         if q.actor_group_ids is not None:

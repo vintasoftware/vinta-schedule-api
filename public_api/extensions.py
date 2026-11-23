@@ -1,9 +1,10 @@
 from collections.abc import Iterable
-from typing import NoReturn
+from typing import TYPE_CHECKING, Annotated, NoReturn
 
 from django.conf import settings
 from django.http import HttpRequest
 
+from dependency_injector.wiring import Provide, inject
 from graphql.error import GraphQLError
 from pyrate_limiter import (
     Duration,
@@ -11,11 +12,18 @@ from pyrate_limiter import (
 )
 from rest_framework.views import set_rollback
 from strawberry.extensions import SchemaExtension
+from strawberry.types.graphql import OperationType
 from strawberry.utils.await_maybe import AsyncIteratorOrIterator
 from vinta_billing.exceptions import OverLimitError
 
 from common.redis import ResilientLimiter
 from common.utils.request_utils import proxied_client_ip
+from public_api.constants import ON_BEHALF_OF_HEADER
+from public_api.exceptions import OnBehalfOfMemberError, PublicAPIServiceUnavailableError
+
+
+if TYPE_CHECKING:
+    from public_api.services import PublicAPIAuthService
 
 
 def raise_over_limit_graphql_error(exc: OverLimitError) -> NoReturn:
@@ -184,4 +192,65 @@ class OrganizationRateLimiter(SchemaExtension):
             )
 
         yield
+        return None
+
+
+class OnBehalfOfMemberExtension(SchemaExtension):
+    """Bind a mutation's ``X-Public-Api-On-Behalf-Of`` claim for the audit trail.
+
+    An organization-wide or org-less token can name the organization member it
+    is acting for. On a mutation, ``PublicAPIAuthService.on_behalf_of_claim``
+    checks the header, and every audit record the token writes while the
+    mutation runs carries the member as a claim. The token stays the actor and
+    keeps exactly the access it had.
+
+    The header is ignored, without being checked, when:
+
+    * the operation is not a mutation, because only writes are audited;
+    * the token is scoped to a member, because its member is already recorded;
+    * an org-less token chose no organization, so there is none to check against.
+
+    A refused header becomes a GraphQL error with the error's ``code`` in
+    ``extensions``, raised before any resolver runs, so nothing is written.
+
+    Runs inside ``PublicApiSystemUserMiddleware``'s ``organization_context``.
+    """
+
+    @inject
+    def _auth_service(
+        self,
+        service: Annotated[
+            "PublicAPIAuthService | None", Provide["public_api_auth_service"]
+        ] = None,
+    ) -> "PublicAPIAuthService":
+        # Same shape as ``PublicApiSystemUserMiddleware``: a broken DI wiring fails
+        # loudly instead of skipping the check.
+        if service is None:
+            raise PublicAPIServiceUnavailableError()
+        return service
+
+    def on_execute(self) -> AsyncIteratorOrIterator[None]:
+        """Check the header on mutations, then run the operation with the claim bound."""
+        request: HttpRequest = self.execution_context.context.request
+        system_user = getattr(request, "public_api_system_user", None)
+        organization = getattr(request, "public_api_organization", None)
+
+        if (
+            system_user is None
+            or organization is None
+            or system_user.scoped_to_membership_user_id is not None
+            or self.execution_context.operation_type != OperationType.MUTATION
+        ):
+            yield
+            return None
+
+        try:
+            claim = self._auth_service().on_behalf_of_claim(
+                system_user, organization, request.headers.get(ON_BEHALF_OF_HEADER)
+            )
+        except OnBehalfOfMemberError as error:
+            raise GraphQLError(error.message, extensions={"code": error.code.value}) from error
+
+        with claim:
+            yield
         return None
