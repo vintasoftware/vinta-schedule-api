@@ -56,6 +56,11 @@ inputs = {
   # modules/app-platform/api_gateway.tf. Production stays on the ALB.
   ingress_mode = "api_gateway"
 
+  # Raised from the module's 50 rps / 100 burst so that one organization at its
+  # public API limit (settings/base.py) does not use up the whole stage's budget.
+  api_gateway_throttling_rate_limit  = 200
+  api_gateway_throttling_burst_limit = 400
+
   ####################################
   # Django
   ####################################
