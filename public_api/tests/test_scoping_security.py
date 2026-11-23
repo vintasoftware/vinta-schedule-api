@@ -703,6 +703,68 @@ class TestNestedFieldOwnerScopeSecurity:
         assert [len(event["slotAssignments"]) for event in data["calendarEvents"]] == [2, 2, 2]
         assert three_event_queries == one_event_queries
 
+    _APPOINTMENT_TYPE_EVENTS_SLOT_ASSIGNMENTS_Q = """
+        query Q($appointmentTypeId: Int!, $start: DateTime!, $end: DateTime!) {
+            appointmentTypeEvents(
+                appointmentTypeId: $appointmentTypeId, startDatetime: $start, endDatetime: $end
+            ) {
+                id
+                slotAssignments { slotId userIds }
+            }
+        }
+    """
+
+    def _appointment_type_events_slot_assignments_query_count(self, event_count):
+        """Books ``event_count`` events with a pick on two providers' calendars under one
+        appointment type, reads them with ``appointmentTypeEvents``, and returns the response
+        data and query count."""
+        org = self._org()
+        _ua, _mem_a, cal_a = self._provider_with_calendar(org, "a")
+        _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")
+        _event, appointment_type, _slot, _own, _foreign = self._event_with_appointment_type(
+            org, cal_a, cal_b
+        )
+        for _ in range(event_count - 1):
+            event, *_rest = self._event_with_appointment_type(org, cal_a, cal_b)
+            event.appointment_type_fk = appointment_type
+            event.save(update_fields=["appointment_type_fk"])
+        system_user, token, auth = self._org_wide_token(
+            org, [PublicAPIResources.CALENDAR_EVENT, PublicAPIResources.APPOINTMENT_TYPE]
+        )
+        variables = {
+            "appointmentTypeId": appointment_type.id,
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-09-02T00:00:00Z",
+        }
+        with CaptureQueriesContext(connection) as queries:
+            response = self._post(
+                self._APPOINTMENT_TYPE_EVENTS_SLOT_ASSIGNMENTS_Q,
+                system_user,
+                token,
+                auth,
+                variables,
+            )
+        return self._data(response), len(queries)
+
+    def test_appointment_type_events_slot_assignments_costs_no_query_per_event(self, _rl):
+        """appointmentTypeEvents loads every event's picks and their calendar owners with the
+        events, so three booked events cost as many queries as one."""
+        # Warm Django's ContentType cache, which the generic externalClientIdentifiers
+        # prefetch fills with one query on its first use.
+        _rl.return_value = iter([None])
+        self._appointment_type_events_slot_assignments_query_count(1)
+        _rl.return_value = iter([None])
+        _one, one_event_queries = self._appointment_type_events_slot_assignments_query_count(1)
+        _rl.return_value = iter([None])
+        data, three_event_queries = self._appointment_type_events_slot_assignments_query_count(3)
+
+        assert [len(event["slotAssignments"]) for event in data["appointmentTypeEvents"]] == [
+            2,
+            2,
+            2,
+        ]
+        assert three_event_queries == one_event_queries
+
     # ==================================================================
     # CalendarEvent.appointmentTypeSummary — id and name, for every token
     # ==================================================================
