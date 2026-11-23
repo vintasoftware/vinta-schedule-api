@@ -498,7 +498,10 @@ class Query:
                 owned_ids,
                 start_datetime,
                 end_datetime,
-                optimize_queryset=lambda qs: qs.prefetch_related("external_client_identifiers"),
+                optimize_queryset=lambda qs: qs.prefetch_related(
+                    "external_client_identifiers",
+                    "appointment_type_selections__calendar__ownerships",
+                ),
             )
             if matching_event_ids is not None:
                 events = [
@@ -522,7 +525,10 @@ class Query:
             calendar,
             start_datetime,
             end_datetime,
-            optimize_queryset=lambda qs: qs.prefetch_related("external_client_identifiers"),
+            optimize_queryset=lambda qs: qs.prefetch_related(
+                "external_client_identifiers",
+                "appointment_type_selections__calendar__ownerships",
+            ),
         )
 
         allowed_ids = (
