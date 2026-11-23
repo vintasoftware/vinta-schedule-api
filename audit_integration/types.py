@@ -65,7 +65,10 @@ class OrganizationAuditQuery(AuditQuery):
     """
 
     # actor.user.email IN (...) -- case-insensitive, because email is.
-    # Two joins: audit -> identity -> user.
+    # Two joins: audit -> identity -> user. Also matches records whose
+    # ``on_behalf_of`` is that person: actions a public API token claimed to take
+    # for them. Those keep the token as the actor (``actor_type`` is
+    # ``system_user``), which is how a reader tells them apart.
     actor_user_emails: list[str] | None = None
 
     # The audit identity's live group relation. "every action taken by someone

@@ -518,7 +518,9 @@ class Query:
                 owned_ids,
                 start_datetime,
                 end_datetime,
-                optimize_queryset=lambda qs: _optimize_events(qs, info),
+                optimize_queryset=lambda qs: _optimize_events(
+                    qs.prefetch_related("appointment_type_selections__calendar__ownerships"), info
+                ),
             )
             if matching_event_ids is not None:
                 events = [
@@ -542,7 +544,9 @@ class Query:
             calendar,
             start_datetime,
             end_datetime,
-            optimize_queryset=lambda qs: _optimize_events(qs, info),
+            optimize_queryset=lambda qs: _optimize_events(
+                qs.prefetch_related("appointment_type_selections__calendar__ownerships"), info
+            ),
         )
 
         allowed_ids = (

@@ -558,6 +558,152 @@ class TestNestedFieldOwnerScopeSecurity:
             assert cal_a.id in pool and cal_b.id in pool
 
     # ==================================================================
+    # CalendarEvent.slotAssignments — who fills each slot, for every token
+    # ==================================================================
+
+    _SLOT_ASSIGNMENTS_Q = """
+        query Q($eventId: Int!) {
+            calendarEvents(eventId: $eventId) {
+                id
+                appointmentTypeSelections { id slot { id } }
+                slotAssignments { slotId userIds }
+            }
+        }
+    """
+
+    _RANGE_SLOT_ASSIGNMENTS_Q = """
+        query Q($userId: Int!, $start: DateTime!, $end: DateTime!) {
+            calendarEvents(userId: $userId, startDatetime: $start, endDatetime: $end) {
+                id
+                slotAssignments { slotId userIds }
+            }
+        }
+    """
+
+    def test_slot_assignments_scoped_token_reads_every_pick(self, _rl):
+        """A scoped token reads who fills the slot on every pick, the other owner's included,
+        while appointmentTypeSelections still shows only its own pick, with slot suppressed."""
+        _rl.return_value = iter([None])
+        org = self._org()
+        user_a, mem_a, cal_a = self._provider_with_calendar(org, "a")
+        user_b, _mem_b, cal_b = self._provider_with_calendar(org, "b")
+        event, _appointment_type, slot, sel_own, _sel_foreign = self._event_with_appointment_type(
+            org, cal_a, cal_b
+        )
+        system_user, token, auth = self._scoped_token(
+            org, mem_a, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        data = self._data(
+            self._post(self._SLOT_ASSIGNMENTS_Q, system_user, token, auth, {"eventId": event.id})
+        )
+
+        assert data["calendarEvents"] == [
+            {
+                "id": str(event.id),
+                "appointmentTypeSelections": [{"id": str(sel_own.id), "slot": None}],
+                "slotAssignments": [
+                    {"slotId": str(slot.id), "userIds": [user_a.id]},
+                    {"slotId": str(slot.id), "userIds": [user_b.id]},
+                ],
+            }
+        ]
+
+    def test_slot_assignments_org_wide_token(self, _rl):
+        """An org-wide token reads the same assignments."""
+        _rl.return_value = iter([None])
+        org = self._org()
+        user_a, _mem_a, cal_a = self._provider_with_calendar(org, "a")
+        user_b, _mem_b, cal_b = self._provider_with_calendar(org, "b")
+        event, _appointment_type, slot, _own, _foreign = self._event_with_appointment_type(
+            org, cal_a, cal_b
+        )
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_EVENT])
+
+        data = self._data(
+            self._post(self._SLOT_ASSIGNMENTS_Q, system_user, token, auth, {"eventId": event.id})
+        )
+
+        assert data["calendarEvents"][0]["slotAssignments"] == [
+            {"slotId": str(slot.id), "userIds": [user_a.id]},
+            {"slotId": str(slot.id), "userIds": [user_b.id]},
+        ]
+
+    def test_slot_assignments_pick_on_calendar_without_member_owner(self, _rl):
+        """A pick on a calendar no member owns, such as a room, names no user."""
+        _rl.return_value = iter([None])
+        org = self._org()
+        user_a, mem_a, cal_a = self._provider_with_calendar(org, "a")
+        room = baker.make(
+            Calendar, organization=org, name="Room", external_id=f"room-{uuid.uuid4().hex[:8]}"
+        )
+        event, _appointment_type, slot, _own, _foreign = self._event_with_appointment_type(
+            org, cal_a, room
+        )
+        system_user, token, auth = self._scoped_token(
+            org, mem_a, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        data = self._data(
+            self._post(self._SLOT_ASSIGNMENTS_Q, system_user, token, auth, {"eventId": event.id})
+        )
+
+        assert data["calendarEvents"][0]["slotAssignments"] == [
+            {"slotId": str(slot.id), "userIds": [user_a.id]},
+            {"slotId": str(slot.id), "userIds": []},
+        ]
+
+    def test_slot_assignments_empty_without_appointment_type(self, _rl):
+        """An event not booked through an appointment type has no assignments."""
+        _rl.return_value = iter([None])
+        org = self._org()
+        _ua, mem_a, cal_a = self._provider_with_calendar(org, "a")
+        event = _make_event(org, cal_a)
+        system_user, token, auth = self._scoped_token(
+            org, mem_a, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        data = self._data(
+            self._post(self._SLOT_ASSIGNMENTS_Q, system_user, token, auth, {"eventId": event.id})
+        )
+
+        assert data["calendarEvents"][0]["slotAssignments"] == []
+
+    def _slot_assignments_range_query_count(self, event_count):
+        """Books ``event_count`` events with a pick on two providers' calendars, reads them by
+        the first provider's ``userId`` with its scoped token, and returns the response data
+        and query count."""
+        org = self._org()
+        user_a, mem_a, cal_a = self._provider_with_calendar(org, "a")
+        _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")
+        for _ in range(event_count):
+            self._event_with_appointment_type(org, cal_a, cal_b)
+        system_user, token, auth = self._scoped_token(
+            org, mem_a, [PublicAPIResources.CALENDAR_EVENT]
+        )
+        variables = {
+            "userId": user_a.id,
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-09-02T00:00:00Z",
+        }
+        with CaptureQueriesContext(connection) as queries:
+            response = self._post(
+                self._RANGE_SLOT_ASSIGNMENTS_Q, system_user, token, auth, variables
+            )
+        return self._data(response), len(queries)
+
+    def test_slot_assignments_range_read_costs_no_query_per_event(self, _rl):
+        """The userId range read loads every event's picks and their calendar owners with the
+        events, so three booked events cost as many queries as one."""
+        _rl.return_value = iter([None])
+        _one, one_event_queries = self._slot_assignments_range_query_count(1)
+        _rl.return_value = iter([None])
+        data, three_event_queries = self._slot_assignments_range_query_count(3)
+
+        assert [len(event["slotAssignments"]) for event in data["calendarEvents"]] == [2, 2, 2]
+        assert three_event_queries == one_event_queries
+
+    # ==================================================================
     # CalendarEvent.appointmentTypeSummary — id and name, for every token
     # ==================================================================
 

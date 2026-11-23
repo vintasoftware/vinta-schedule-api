@@ -12,19 +12,119 @@ user's groups are all mutable state, and an audit trail that re-reads them in
 the worker records what was true at write time rather than at action time.
 """
 
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from typing import Annotated, Any
 
 from dependency_injector.wiring import Provide, inject
 from vinta_audit_logs.constants import ScopeType
 from vinta_audit_logs.services import AuditService
-from vinta_audit_logs.types import IdentitySnapshot, ScopeRef
+from vinta_audit_logs.types import IdentitySnapshot, ScopeRef, SubjectRef
 
 from audit_integration.constants import AuditActorType
 from audit_integration.repositories import OrganizationAuditRepository
 
 
+#: ``AbstractAuditIdentity.identity_label``'s ``max_length``, pinned by a test.
+#: A label longer than this fails the insert in the worker, and the record is lost.
+IDENTITY_LABEL_MAX_LENGTH = 255
+
+
+@dataclass(frozen=True)
+class _OnBehalfOfClaim:
+    """A token's claim, bound for one request, that it acts for one member."""
+
+    #: ``identity_key`` of the token's actor snapshot.
+    actor_key: str
+    #: The member, as the record's ``on_behalf_of``.
+    member: IdentitySnapshot
+
+
+_on_behalf_of_claim: ContextVar[_OnBehalfOfClaim | None] = ContextVar(
+    "audit_on_behalf_of_claim", default=None
+)
+
+
 class OrganizationAuditService(AuditService):
     """AuditService with this project's notions of scope and actor."""
+
+    # ------------------------------------------------------------------
+    # Recording
+    # ------------------------------------------------------------------
+
+    def record(
+        self,
+        *,
+        action: str,
+        actor: IdentitySnapshot,
+        subject: SubjectRef,
+        scope: ScopeRef | None = None,
+        on_behalf_of: IdentitySnapshot | None = None,
+        affected: Sequence[IdentitySnapshot] = (),
+        diff: dict | None = None,
+        action_name: str = "",
+        action_content_type_key: str = "",
+    ) -> None:
+        """Record an audit entry, adding the request's on-behalf-of claim when it applies.
+
+        Inside :meth:`on_behalf_of_member`, a record whose actor is the claiming
+        token gets the member as its ``on_behalf_of``, and the actor's label
+        says the action was claimed for them. A caller that passes
+        ``on_behalf_of`` itself keeps its own value. Everything else is the base
+        class's ``record``.
+        """
+        claim = _on_behalf_of_claim.get()
+        if (
+            on_behalf_of is None
+            and claim is not None
+            and actor.identity_type == AuditActorType.SYSTEM_USER
+            and actor.identity_key == claim.actor_key
+        ):
+            on_behalf_of = claim.member
+            label = f"{actor.identity_label} on behalf of {claim.member.identity_label} (claimed)"
+            actor = replace(actor, identity_label=label[:IDENTITY_LABEL_MAX_LENGTH])
+        super().record(
+            action=action,
+            actor=actor,
+            subject=subject,
+            scope=scope,
+            on_behalf_of=on_behalf_of,
+            affected=affected,
+            diff=diff,
+            action_name=action_name,
+            action_content_type_key=action_content_type_key,
+        )
+
+    @contextmanager
+    def on_behalf_of_member(self, system_user: Any, membership: Any) -> Iterator[None]:
+        """Attribute the audit records ``system_user`` writes in the block to ``membership``.
+
+        A public API token can name the member it is acting for in the
+        ``X-Public-Api-On-Behalf-Of`` header. That is the token's claim: the
+        caller has checked the membership is active, nothing more. So the
+        member is recorded as ``on_behalf_of`` with the ``CLAIMED_MEMBERSHIP``
+        type, and the token stays the actor.
+
+        Only records whose actor is this token carry the claim. The previous
+        binding is restored on every exit path, so a claim never leaks into
+        the next request a worker serves.
+        """
+        member = IdentitySnapshot(
+            identity_type=AuditActorType.CLAIMED_MEMBERSHIP,
+            identity_key=str(membership.user_id),
+            identity_label=self.label_for_user(membership.user) or f"member:{membership.user_id}",
+            user_id=membership.user_id,
+            metadata={"claimed_by_system_user_id": system_user.id},
+        )
+        token = _on_behalf_of_claim.set(
+            _OnBehalfOfClaim(actor_key=str(system_user.id), member=member)
+        )
+        try:
+            yield
+        finally:
+            _on_behalf_of_claim.reset(token)
 
     # ------------------------------------------------------------------
     # Scope

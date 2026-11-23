@@ -18,13 +18,14 @@ EXPECTED_SLUGS = (
     "appointment-types",
     "calendars",
     "events",
+    "on-behalf-of",
     "recurrence",
 )
 
 
 @pytest.mark.django_db
 class TestPublicApiDocsList:
-    def test_list_returns_all_six_docs(self, anonymous_client):
+    def test_list_returns_every_doc(self, anonymous_client):
         response = anonymous_client.get("/public-api-docs/")
 
         assert response.status_code == status.HTTP_200_OK
