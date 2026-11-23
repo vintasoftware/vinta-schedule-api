@@ -671,9 +671,9 @@ class TestNestedFieldOwnerScopeSecurity:
             {"id": str(event.id), "appointmentType": None, "appointmentTypeSummary": None}
         ]
 
-    def _range_query_count(self, event_count):
+    def _range_query_count(self, event_count, query=_RANGE_APPOINTMENT_TYPE_SUMMARY_Q):
         """Books ``event_count`` events through one appointment type on a scoped provider's
-        calendar, reads them by ``userId``, and returns the response data and query count."""
+        calendar, reads them by ``userId``, and returns the response data and the queries."""
         org = self._org()
         user_a, mem_a, cal_a = self._provider_with_calendar(org, "a")
         _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")
@@ -691,10 +691,8 @@ class TestNestedFieldOwnerScopeSecurity:
             "end": "2026-09-02T00:00:00Z",
         }
         with CaptureQueriesContext(connection) as queries:
-            response = self._post(
-                self._RANGE_APPOINTMENT_TYPE_SUMMARY_Q, system_user, token, auth, variables
-            )
-        return self._data(response), appointment_type, len(queries)
+            response = self._post(query, system_user, token, auth, variables)
+        return self._data(response), appointment_type, queries
 
     def test_event_appointment_type_summary_range_read_costs_no_query_per_event(self, _rl):
         """The userId range read loads every event's type in the events query, so three
@@ -707,7 +705,30 @@ class TestNestedFieldOwnerScopeSecurity:
         assert [event["appointmentTypeSummary"] for event in data["calendarEvents"]] == [
             {"id": str(appointment_type.id), "name": appointment_type.name}
         ] * 3
-        assert three_event_queries == one_event_queries
+        assert len(three_event_queries) == len(one_event_queries)
+
+    def test_event_range_read_skips_appointment_type_join_when_not_requested(self, _rl):
+        """The userId range read joins the appointment type only for a query that asks
+        for it, so a read without it fetches the events alone."""
+        _rl.return_value = iter([None])
+        data, _appointment_type, queries = self._range_query_count(
+            1,
+            query="""
+                query Q($userId: Int!, $start: DateTime!, $end: DateTime!) {
+                    calendarEvents(userId: $userId, startDatetime: $start, endDatetime: $end) {
+                        id
+                    }
+                }
+            """,
+        )
+
+        assert len(data["calendarEvents"]) == 1
+        assert not [
+            query["sql"]
+            for query in queries.captured_queries
+            if query["sql"].startswith('SELECT "calendar_integration_calendarevent"')
+            and '"calendar_integration_appointmenttype"' in query["sql"]
+        ]
 
     _APPOINTMENT_TYPE_EVENTS_SUMMARY_Q = """
         query Q($appointmentTypeId: Int!, $start: DateTime!, $end: DateTime!) {

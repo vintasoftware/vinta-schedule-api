@@ -287,7 +287,11 @@ def test_appointment_type_events_query(organization, clinic_appointment_type, in
         calendar_service=Mock(),
         appointment_type_service=AppointmentTypeService(),
     )
-    with patch("public_api.queries.get_query_dependencies", return_value=deps):
+    # The optimizer reads the GraphQL selection, which a mocked ``info`` does not carry.
+    with (
+        patch("public_api.queries.get_query_dependencies", return_value=deps),
+        patch("public_api.queries._optimize_events", side_effect=lambda qs, _info: qs),
+    ):
         events = Query().appointment_type_events(
             info=info,
             appointment_type_id=clinic_appointment_type.id,

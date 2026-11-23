@@ -622,7 +622,7 @@ class CalendarEventGraphQLType:
             id=strawberry.ID(str(appointment_type.id)), name=appointment_type.name
         )
 
-    @strawberry.field
+    @strawberry_django.field(select_related=["appointment_type"])
     def appointment_type(self, info: strawberry.Info) -> "AppointmentTypeGraphQLType | None":
         """The booking AppointmentType. Suppressed entirely for scoped tokens: an appointment type
         aggregates calendars across providers, so exposing it (and its slots' candidate
