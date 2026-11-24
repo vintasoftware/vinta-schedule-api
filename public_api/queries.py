@@ -11,6 +11,7 @@ import strawberry_django
 from dependency_injector.wiring import Provide, inject
 from django_virtual_models import QuerySet
 from graphql import GraphQLError
+from strawberry_django.optimizer import OptimizerConfig, optimize
 
 from calendar_integration.booking_auth import MAX_CODE_GATED_RANGE
 from calendar_integration.constants import CalendarType, ExternalEventChangeRequestStatus
@@ -205,6 +206,25 @@ def _slice_qs[TQuerySet: QuerySet](qs: TQuerySet, offset: int, limit: int) -> TQ
     if limit <= 0 or limit > 100:
         raise GraphQLError("Limit must be between 1 and 100")
     return qs[offset : offset + limit]
+
+
+# Joins only: ``only()`` would defer columns the recurring-event expansion still reads.
+_SELECT_RELATED_ONLY = OptimizerConfig(
+    enable_only=False, enable_prefetch_related=False, enable_annotate=False
+)
+
+
+def _optimize_events[TQuerySet: QuerySet](qs: TQuerySet, info: strawberry.Info) -> TQuerySet:
+    """Apply the requested fields' ``select_related`` hints to an events query that is
+    returned as a list, which the optimizer extension never sees."""
+    # ``optimize`` chains the queryset it is given, so the class is kept; its stub says
+    # plain ``QuerySet``.
+    return cast(
+        TQuerySet,
+        optimize(
+            qs.prefetch_related("external_client_identifiers"), info, config=_SELECT_RELATED_ONLY
+        ),
+    )
 
 
 def _prepare_service_and_calendar(
@@ -498,9 +518,8 @@ class Query:
                 owned_ids,
                 start_datetime,
                 end_datetime,
-                optimize_queryset=lambda qs: qs.prefetch_related(
-                    "external_client_identifiers",
-                    "appointment_type_selections__calendar__ownerships",
+                optimize_queryset=lambda qs: _optimize_events(
+                    qs.prefetch_related("appointment_type_selections__calendar__ownerships"), info
                 ),
             )
             if matching_event_ids is not None:
@@ -525,9 +544,8 @@ class Query:
             calendar,
             start_datetime,
             end_datetime,
-            optimize_queryset=lambda qs: qs.prefetch_related(
-                "external_client_identifiers",
-                "appointment_type_selections__calendar__ownerships",
+            optimize_queryset=lambda qs: _optimize_events(
+                qs.prefetch_related("appointment_type_selections__calendar__ownerships"), info
             ),
         )
 
@@ -1118,8 +1136,8 @@ class Query:
         deps.appointment_type_service.initialize(organization=org)
         events = deps.appointment_type_service.get_appointment_type_events(
             appointment_type_id=appointment_type_id, start=start_datetime, end=end_datetime
-        )
-        return cast(list[CalendarEventGraphQLType], list(events))
+        ).prefetch_related("appointment_type_selections__calendar__ownerships")
+        return cast(list[CalendarEventGraphQLType], list(_optimize_events(events, info)))
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def appointment_type_stale_selections(
