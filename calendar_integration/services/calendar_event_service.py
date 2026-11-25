@@ -144,9 +144,13 @@ class EventSchedule:
     tagged UTC, while writers assign them naive, and a naive datetime never equals an
     aware one; stripping the tag lets either kind compare by wall-clock. The rule is
     in the form ``RecurrenceRule.to_rrule_string`` writes, so one rule spelled two
-    ways compares equal; it is ``None`` for an event that does not recur. Two
-    schedules are equal exactly when they put the event's occurrences at the same
-    times.
+    ways compares equal; it is ``None`` for an event that does not recur.
+
+    Equal schedules put the event's occurrences at the same times. Unequal ones may
+    still put them at the same times (``COUNT`` against the matching ``UNTIL``, or
+    two timezones with the same offset), so a changed schedule does not mean a moved
+    occurrence: ``update_event`` checks rooms only at occurrences the event does not
+    hold yet.
     """
 
     start_time_tz_unaware: datetime.datetime
@@ -1259,9 +1263,10 @@ class CalendarEventService:
         ``spans`` are the times the event takes after the change that it does not
         take already: the new span of a moved event or occurrence, or the new
         occurrences of a series (``_occurrence_spans``). ``ignoring_event_ids`` are the
-        moved event's own rows, which still sit at the old time. The rooms are not checked as rooms again: one disabled since it was
-        booked stays held. They are locked like ``validate_requested_rooms`` locks
-        them, so call it inside the transaction that moves the event.
+        moved event's own rows, which still sit at the old time. The rooms are not
+        checked as rooms again: one disabled since it was booked stays held. They are
+        locked like ``validate_requested_rooms`` locks them, so call it inside the
+        transaction that moves the event.
 
         :raises RoomUnavailableError: a room is taken during one of the spans.
         """
@@ -1569,8 +1574,8 @@ class CalendarEventService:
                 } & {r.resource_id for r in event_data.resource_allocations}
                 if kept_room_ids:
                     # The rooms must be free at every occurrence the event does not
-                    # hold yet: all of them when it moves, only the added ones when
-                    # its rule grows, none when its rule only drops occurrences.
+                    # hold yet. A rule that only drops occurrences, as truncating a
+                    # series does, adds none, so it checks nothing.
                     held = set(
                         self._occurrence_spans(
                             event, event.start_time, event.end_time, EventSchedule.stored(event)
