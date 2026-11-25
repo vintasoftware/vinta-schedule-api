@@ -413,9 +413,12 @@ def serialize_event_data_input(
             event=event, external_attendee__id__in=new_external_attendances_attendee_ids
         )
     }
+    new_room_ids = [r.resource_id for r in event_data.resource_allocations]
     existing_room_statuses = {
         allocation.calendar_fk_id: allocation.status
-        for allocation in ResourceAllocation.objects.unscoped().filter(event=event)
+        for allocation in ResourceAllocation.objects.unscoped().filter(
+            event=event, calendar_fk_id__in=new_room_ids
+        )
     }
     return CalendarEventData(
         id=event.id,
@@ -483,8 +486,7 @@ def serialize_event_data_input(
                 ),
             )
             for room in Calendar.objects.filter_by_organization(organization).filter(
-                id__in=[r.resource_id for r in event_data.resource_allocations],
-                calendar_type=CalendarType.RESOURCE,
+                id__in=new_room_ids, calendar_type=CalendarType.RESOURCE
             )
         ],
         external_id=event.external_id,
