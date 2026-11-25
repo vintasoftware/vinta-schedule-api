@@ -181,9 +181,10 @@ class GetAvailableTimeOccurrencesWithBulkModificationsJSON(Func):
 class ManagedCalendarIsFreeInRange(Func):
     """Whether a managed calendar can take a booking for ``[start, end)``.
 
-    Arguments: organization id, calendar id, start, end. True when an availability
-    window occurrence (recurring windows expanded) covers the range and no event or
-    blocked time occurrence overlaps it. See
+    Arguments: organization id, calendar id, start, end, and optionally an event id
+    and an array of blocked time ids that do not count as busy. True when an
+    availability window occurrence (recurring windows expanded) covers the range and
+    no other event or blocked time occurrence overlaps it. See
     ``migrations/sql/functions/managed_calendar_is_free_in_range``.
     """
 

@@ -247,6 +247,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=ms_event.id,
+            ical_uid=ms_event.ical_uid,
             title=ms_event.subject,
             description=ms_event.body_content,
             start_time=ms_event.start_time,
@@ -1038,6 +1039,7 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         return CalendarEventAdapterOutputData(
             calendar_external_id=ms_event.calendar_id,
             external_id=ms_event.id,
+            ical_uid=ms_event.ical_uid,
             title=ms_event.subject,
             description=ms_event.body_content,
             start_time=ms_event.start_time,

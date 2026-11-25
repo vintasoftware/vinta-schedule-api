@@ -5259,6 +5259,7 @@ def test_create_event_with_available_windows(
     mock_event_data.end_time = end_time
     mock_event_data.external_id = "ext_123"
     mock_event_data.original_payload = {"test": "data"}
+    mock_event_data.ical_uid = "ext_123@google.com"
 
     mock_google_adapter.create_event.return_value = mock_event_data
 
@@ -5423,6 +5424,7 @@ def test_create_event_with_partial_availability(
     mock_event_data.end_time = end_time
     mock_event_data.external_id = "partial_ext_123"
     mock_event_data.original_payload = {"partial": "data"}
+    mock_event_data.ical_uid = "partial_ext_123@google.com"
 
     mock_google_adapter.create_event.return_value = mock_event_data
 
@@ -5521,6 +5523,7 @@ def test_create_event_with_multiple_availability_windows(
     mock_event_data.end_time = end_time
     mock_event_data.external_id = "multi_ext_123"
     mock_event_data.original_payload = {"multi": "data"}
+    mock_event_data.ical_uid = "multi_ext_123@google.com"
 
     mock_google_adapter.create_event.return_value = mock_event_data
 
@@ -5612,6 +5615,7 @@ def test_create_event_with_attendees(
     mock_event_data.end_time = end_time
     mock_event_data.external_id = "attendee_ext_123"
     mock_event_data.original_payload = {"attendees": "data"}
+    mock_event_data.ical_uid = "attendee_ext_123@google.com"
 
     mock_google_adapter.create_event.return_value = mock_event_data
 

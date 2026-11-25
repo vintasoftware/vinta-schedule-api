@@ -83,6 +83,7 @@ def sample_event_data():
         ],
         "organizer": {"emailAddress": {"address": "organizer@example.com", "name": "Organizer"}},
         "isCancelled": False,
+        "iCalUId": "040000008200E00074C5B7101A82E008",
     }
 
 
@@ -766,6 +767,7 @@ def test_parse_event(client, sample_event_data):
     assert event.location == "Conference Room A"
     assert len(event.attendees) == 1
     assert event.is_cancelled is False
+    assert event.ical_uid == "040000008200E00074C5B7101A82E008"
 
 
 def test_format_attendees(client):

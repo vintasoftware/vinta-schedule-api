@@ -984,30 +984,12 @@ class BookingCodeRescheduleAppointmentTypeEventViewSet(BookingCodeViewMixin, Gen
         # code can only ever affect the exact appointment-type event it was minted for.
         event_id: int = token.event_fk_id  # type: ignore[assignment]
 
-        # --- availability pre-check (code-path only) against the bound event's
-        # primary calendar, BEFORE the atomic block, so the code is never consumed
-        # on an out-of-window attempt. ---
-        try:
-            bound_event = (
-                CalendarEvent.objects.filter_by_organization(org.id)
-                .select_related("calendar")
-                .get(id=event_id)
-            )
-        except CalendarEvent.DoesNotExist as exc:
-            raise InvalidCodeAPIException() from exc
-
-        primary_calendar = bound_event.calendar
-        if primary_calendar is not None and primary_calendar.manage_available_windows:
-            calendar_service.initialize_without_provider(organization=org)
-            available_windows = calendar_service.get_availability_windows_in_range(
-                primary_calendar, data["start_time"], data["end_time"]
-            )
-            if not available_windows:
-                raise SlotUnavailableAPIException()
-
         # --- atomic reschedule + consume. appointment_type_service is wired with the
         # code-initialized calendar_service so both the primary-calendar update
-        # and the appointment-type-level authorization checks see the same auth context. ---
+        # and the appointment-type-level authorization checks see the same auth context.
+        # The service checks every crew calendar's availability at the new time; an
+        # unavailable slot raises inside this block, before consume_code, so the code
+        # stays unused. ---
         try:
             with translate_booking_write_errors(
                 permission_denied_message="This code does not permit rescheduling this event."

@@ -1,4 +1,5 @@
 import datetime
+from typing import ClassVar
 from unittest.mock import Mock, patch
 
 from django.core.exceptions import ImproperlyConfigured
@@ -1706,3 +1707,52 @@ class TestEventMeeting:
             "https://teams.example.com/j/1",
             False,
         )
+
+
+class TestGoogleCalendarAdapterICalUID:
+    """The adapter reads the iCalendar UID off the raw Google payload."""
+
+    _GOOGLE_EVENT: ClassVar[dict] = {
+        "id": "event_123",
+        "iCalUID": "event_123@google.com",
+        "summary": "Test Event",
+        "description": "",
+        "start": {"dateTime": "2025-06-22T10:00:00Z", "timeZone": "UTC"},
+        "end": {"dateTime": "2025-06-22T11:00:00Z", "timeZone": "UTC"},
+        "attendees": [],
+    }
+
+    def test_create_event_returns_the_ical_uid(self, adapter, mock_rate_limiters):
+        adapter.client.events.return_value.insert.return_value.execute.return_value = (
+            self._GOOGLE_EVENT
+        )
+
+        result = adapter.create_event(
+            CalendarEventAdapterInputData(
+                calendar_external_id="calendar_123",
+                title="Test Event",
+                description="",
+                start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+                end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+                timezone="UTC",
+                attendees=[],
+                meeting=AdapterMeeting(),
+            )
+        )
+
+        assert result.ical_uid == "event_123@google.com"
+
+    def test_get_events_returns_the_ical_uid(self, adapter, mock_rate_limiters):
+        adapter.client.events.return_value.list.return_value.execute.return_value = {
+            "items": [self._GOOGLE_EVENT],
+            "nextSyncToken": "sync_token_123",
+        }
+
+        result = adapter.get_events(
+            "calendar_123",
+            False,
+            datetime.datetime(2025, 6, 22, 0, 0, tzinfo=datetime.UTC),
+            datetime.datetime(2025, 6, 22, 23, 59, tzinfo=datetime.UTC),
+        )
+
+        assert [event.ical_uid for event in result["events"]] == ["event_123@google.com"]

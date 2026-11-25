@@ -165,7 +165,7 @@ def _resolve_token_audit_actor(
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Collection, Iterable
 
     from vinta_billing.models import Subscription
     from vinta_billing.services.entitlement_service import EntitlementService
@@ -954,6 +954,7 @@ class CalendarEventService:
         # ``None``, not "": the column is unique, and NULL is what lets any number
         # of provider-less events coexist. See ``CalendarEvent.external_id``.
         external_id: str | None = None
+        ical_uid = ""
         original_payload: dict = {}
         if write_adapter:
             users_by_id = {
@@ -1003,6 +1004,7 @@ class CalendarEventService:
                 )
             )
             external_id = created_event.external_id or None
+            ical_uid = created_event.ical_uid
             original_payload = created_event.original_payload or {}
             meeting = meeting.reconciled(created_event)
 
@@ -1037,6 +1039,7 @@ class CalendarEventService:
             ),
             timezone=event_data.timezone,
             external_id=external_id,
+            ical_uid=ical_uid,
             meta={"latest_original_payload": original_payload} if context.calendar_adapter else {},
             parent_recurring_object_fk=parent_event,
             is_recurring_exception=event_data.is_recurring_exception,
@@ -1155,7 +1158,9 @@ class CalendarEventService:
         ``update_event`` do not call it, because other flows (moving an event,
         splitting a series) send an event's existing rooms again, and those must
         not collide with the event they came from or fail once a room is disabled.
-        A recurring event is checked over its first occurrence only.
+        Those rooms go through ``assert_kept_rooms_free`` instead, which
+        ``update_event`` and ``reschedule_event_occurrence`` run whenever they move
+        an event. A recurring event is checked over its first occurrence only.
 
         The rooms stay locked until the caller's transaction commits, so call it
         inside the transaction that writes the allocations.
@@ -1185,12 +1190,88 @@ class CalendarEventService:
         if len(found) != len(requested):
             raise RoomNotFoundError()
 
+        self._raise_if_rooms_taken(requested, start_time, end_time)
+
+    def assert_kept_rooms_free(
+        self,
+        room_ids: Collection[int],
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        *,
+        ignoring_event_ids: Collection[int],
+    ) -> None:
+        """Check that rooms an event already holds are free at its new time.
+
+        ``ignoring_event_ids`` are the moved event's own rows, which still sit at the
+        old time. The rooms are not checked as rooms again: one disabled since it was
+        booked stays held. They are locked like ``validate_requested_rooms`` locks
+        them, so call it inside the transaction that moves the event. Only the given
+        span is checked: a recurring series that moves is checked over its first
+        occurrence, as ``validate_requested_rooms`` checks a new one.
+
+        :raises RoomUnavailableError: a room is taken during the new time.
+        """
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
+        if not room_ids:
+            return
+        list(
+            Calendar.objects.filter_by_organization(context.organization.id)
+            .filter(id__in=room_ids)
+            .order_by("id")
+            .select_for_update()
+            .values_list("id", flat=True)
+        )
+        self._raise_if_rooms_taken(
+            room_ids, start_time, end_time, ignoring_event_ids=ignoring_event_ids
+        )
+
+    def _assert_series_rooms_free(
+        self,
+        series: CalendarEvent,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        *,
+        moved_occurrence_id: int | None,
+    ) -> None:
+        """Check the rooms of ``series`` for one of its occurrences moving to a new time.
+
+        A moved occurrence holds no rooms of its own: the series holds them, and its
+        expansion lists the occurrence at its current time under them. So the series'
+        rooms are what the occurrence takes along, whichever path moves it. The
+        series and the occurrence's own row (``moved_occurrence_id``, once it has one)
+        do not block it, which also means the series' other occurrences are not
+        counted against it.
+        """
+        own_event_ids = {series.id}
+        if moved_occurrence_id is not None:
+            own_event_ids.add(moved_occurrence_id)
+        self.assert_kept_rooms_free(
+            {ra.calendar_fk_id for ra in series.resource_allocations.all() if ra.calendar_fk_id},
+            start_time,
+            end_time,
+            ignoring_event_ids=own_event_ids,
+        )
+
+    def _raise_if_rooms_taken(
+        self,
+        room_ids: Collection[int],
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        *,
+        ignoring_event_ids: Collection[int] = (),
+    ) -> None:
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
         booked = slot_engine.fetch_blocking_spans(
             context.organization.id,
-            requested,
+            set(room_ids),
             start_time,
             end_time,
             with_bulk_modifications=False,
+            ignoring_event_ids=ignoring_event_ids,
         )
         if any(
             slot_engine.intervals_overlap(span, (start_time, end_time))
@@ -1210,8 +1291,8 @@ class CalendarEventService:
 
         Only rooms in ``room_ids`` that ``event`` does not hold yet go through
         ``validate_requested_rooms``. A room it already holds is kept as it is, even if
-        it was disabled since. The rooms it holds are not checked at a new time, so a
-        caller that moves the event must check them itself.
+        it was disabled since. ``update_event`` checks the rooms it keeps when it moves
+        the event (``assert_kept_rooms_free``).
 
         :raises RoomNotFoundError: an added id is not an active room of the organization.
         :raises RoomUnavailableError: an added room is taken during the requested time.
@@ -1292,6 +1373,46 @@ class CalendarEventService:
             appointment_type_id=event.appointment_type_fk_id,
         ):
             raise PermissionDenied("You do not have permission to update this event.")
+
+        # Compared on the stored wall-clock fields, the ones written below: the
+        # generated ``start_time`` / ``end_time`` are not comparable to the input.
+        moves = (
+            event.timezone != event_data.timezone
+            or event.start_time_tz_unaware.replace(tzinfo=None)
+            != self.convert_naive_utc_datetime_to_timezone(
+                event_data.start_time, event_data.timezone
+            ).replace(tzinfo=None)
+            or event.end_time_tz_unaware.replace(tzinfo=None)
+            != self.convert_naive_utc_datetime_to_timezone(
+                event_data.end_time, event_data.timezone
+            ).replace(tzinfo=None)
+        )
+        if moves:
+            moved_occurrence_of = (
+                EventRecurrenceException.objects.filter_by_organization(context.organization.id)
+                .filter(modified_event=event)
+                .select_related("parent_event")
+                .first()
+            )
+            if moved_occurrence_of is not None:
+                self._assert_series_rooms_free(
+                    moved_occurrence_of.parent_event,
+                    event_data.start_time,
+                    event_data.end_time,
+                    moved_occurrence_id=event.id,
+                )
+            else:
+                self.assert_kept_rooms_free(
+                    {
+                        ra.calendar_fk_id
+                        for ra in event.resource_allocations.all()
+                        if ra.calendar_fk_id
+                    }
+                    & {r.resource_id for r in event_data.resource_allocations},
+                    event_data.start_time,
+                    event_data.end_time,
+                    ignoring_event_ids={event.id},
+                )
 
         if event.is_bundle_primary:
             return self._host._update_bundle_event(event, event_data)
@@ -2257,6 +2378,16 @@ class CalendarEventService:
             organization_id=context.organization.id,
             exception_date=recurrence_id,
         ).first()
+
+        self._assert_series_rooms_free(
+            master,
+            start_time,
+            end_time,
+            moved_occurrence_id=(
+                existing_exception.modified_event_fk_id if existing_exception is not None else None
+            ),
+        )
+
         if existing_exception is not None and existing_exception.modified_event_fk_id is not None:
             existing_modified = existing_exception.modified_event
             existing_modified.start_time_tz_unaware = self.convert_naive_utc_datetime_to_timezone(
@@ -2307,6 +2438,7 @@ class CalendarEventService:
         # ``None``, not "": the column is unique, and NULL is what lets any number
         # of provider-less events coexist. See ``CalendarEvent.external_id``.
         external_id: str | None = None
+        ical_uid = ""
         original_payload: dict[str, Any] = {}
         # The occurrence becomes its own provider event, so it keeps the series' custom
         # link, and a generated meeting gets a conference of its own.
@@ -2330,6 +2462,7 @@ class CalendarEventService:
                 )
             )
             external_id = created_external.external_id or None
+            ical_uid = created_external.ical_uid
             original_payload = created_external.original_payload or {}
             meeting = meeting.reconciled(created_external)
 
@@ -2345,6 +2478,7 @@ class CalendarEventService:
             end_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(end_time, timezone),
             timezone=timezone,
             external_id=external_id,
+            ical_uid=ical_uid,
             meta={"latest_original_payload": original_payload} if context.calendar_adapter else {},
             parent_recurring_object_fk=master,
             is_recurring_exception=True,

@@ -94,6 +94,7 @@ class MSGraphEvent:
     is_cancelled: bool = False
     recurrence_pattern: dict[str, Any] | None = None
     original_payload: dict[str, Any] | None = None
+    ical_uid: str = ""
 
 
 @dataclass
@@ -987,6 +988,7 @@ class MSOutlookCalendarAPIClient:
             is_cancelled=event_data.get("isCancelled", False),
             recurrence_pattern=event_data.get("recurrence"),
             original_payload=event_data,
+            ical_uid=event_data.get("iCalUId", ""),
         )
 
     def _format_attendees(self, attendees: list[dict[str, Any]]) -> list[dict[str, Any]]:

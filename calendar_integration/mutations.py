@@ -2086,40 +2086,12 @@ class AppointmentTypeMutations:
         # only ever affect the exact appointment-type event it was minted for.
         event_id: int = token.event_fk_id  # type: ignore[assignment]
 
-        # --- Step 7: availability pre-check (code-path only) ---
-        # For the primary calendar of the bound appointment-type event: if it manages
-        # availability windows, verify the new times fall within a declared window
-        # BEFORE entering the atomic block.  This keeps the code alive on failure.
-        try:
-            bound_event = (
-                CalendarEvent.objects.filter_by_organization(org.id)
-                .select_related("calendar")
-                .get(id=event_id)
-            )
-        except CalendarEvent.DoesNotExist:
-            return CodeEventResult(
-                success=False,
-                error_code=BookingCodeErrorCode.INVALID_CODE,
-                error_message="Invalid or unknown booking code.",
-            )
-
-        primary_calendar = bound_event.calendar
         start_time, end_time = event_times_to_utc(input.start_time, input.end_time, input.timezone)
-        if primary_calendar is not None and primary_calendar.manage_available_windows:
-            deps.calendar_service.initialize_without_provider(organization=org)
-            available_windows = deps.calendar_service.get_availability_windows_in_range(
-                primary_calendar,
-                start_time,
-                end_time,
-            )
-            if not available_windows:
-                return CodeEventResult(
-                    success=False,
-                    error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
-                    error_message="The requested time slot is not available.",
-                )
 
-        # --- Step 8: atomic update + consume ---
+        # --- Step 7: atomic update + consume ---
+        # The service checks every crew calendar's availability at the new time; an
+        # unavailable slot raises inside this block, before consume_code, so the code
+        # stays unused and the patient may retry.
         # Update FIRST, then consume — so on a race the loser's consume_code raises under
         # the row lock and the whole transaction (including the just-updated event) rolls
         # back, leaving exactly one update and the code consumed once.

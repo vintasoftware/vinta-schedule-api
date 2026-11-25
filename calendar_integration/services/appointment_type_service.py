@@ -1,6 +1,6 @@
 import datetime
 import uuid
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
@@ -3581,11 +3581,14 @@ class AppointmentTypeService:
         the Building Blocks integration) store it and rely on it remaining stable
         across reschedules.
 
-        v1 limitation: non-primary calendar BASE availability is NOT re-checked
-        on reschedule. Only the primary calendar's base availability is gated
-        (in the mutation's availability check). Non-primary double-booking
-        against base availability is therefore possible and intentionally
-        unenforced for this time-only reschedule path.
+        Base availability is re-checked at the new time for every calendar the
+        event occupies, as ``create_appointment_type_event`` checks it at booking
+        time: the primary calendar, every calendar selected for the event, and
+        every calendar holding one of its linked BlockedTimes. The event itself,
+        those BlockedTimes, and the BlockedTimes the calendar sync imported from
+        the provider's copies of the event (same ``ical_uid``) are ignored by that
+        check: they still sit at the old time, and a move that overlaps the old
+        slot must not conflict with itself.
 
         Appointment-type-scoped availability windows ARE re-checked here for every
         calendar currently selected for this event (primary and non-primary
@@ -3646,9 +3649,6 @@ class AppointmentTypeService:
                 f"Event {event_id} is not an appointment type event (appointment_type_fk is not set)."
             )
 
-        # Appointment-type-scoped availability windows: reject the reschedule if ANY
-        # calendar currently selected for this event is outside its
-        # appointment-type-scoped window for the NEW time.
         selection_pairs = list(
             CalendarEventAppointmentTypeSelection.objects.filter_by_organization(
                 self.organization_id
@@ -3656,6 +3656,42 @@ class AppointmentTypeService:
             .filter(event_fk=event)
             .values_list("slot_fk_id", "calendar_fk_id")
         )
+        # The non-primary BlockedTimes linked to this appointment-type event, identified
+        # by the external_id convention set in _create_non_primary_blocked_times:
+        # ``appointment-type-event-{event.id}-cal-{cid}``.
+        blocked_times = list(
+            BlockedTime.objects.filter_by_organization(self.organization_id).filter(
+                external_id__startswith=f"appointment-type-event-{event_id}-cal-"
+            )
+        )
+
+        primary_calendar_id: int = event.calendar_fk_id  # type: ignore[assignment]
+        crew_calendar_ids = (
+            {primary_calendar_id}
+            | {calendar_id for _slot_id, calendar_id in selection_pairs}
+            | {bt.calendar_fk_id for bt in blocked_times}
+        )
+        own_blocked_time_ids = {bt.id for bt in blocked_times}
+        if event.ical_uid:
+            # A crew calendar on the primary's provider gets no linked BlockedTime: the
+            # provider's invite puts the event there, and the calendar sync imports
+            # that copy as a BlockedTime (see _create_non_primary_blocked_times). The
+            # copy is this event too. The sync moves it, so it is not moved below.
+            own_blocked_time_ids |= set(
+                BlockedTime.objects.filter_by_organization(self.organization_id)
+                .synced_copies_of_provider_event(event.ical_uid, crew_calendar_ids)
+                .values_list("id", flat=True)
+            )
+        self._assert_calendars_available(
+            crew_calendar_ids,
+            start_time,
+            end_time,
+            ignoring_event_id=event.id,
+            ignoring_blocked_time_ids=own_blocked_time_ids,
+        )
+        # Appointment-type-scoped availability windows: reject the reschedule if ANY
+        # calendar currently selected for this event is outside its
+        # appointment-type-scoped window for the NEW time.
         self._assert_calendars_within_appointment_type_scoped_windows(
             selection_pairs,
             start_time,
@@ -3699,22 +3735,14 @@ class AppointmentTypeService:
             resource_allocations=preserved_resource_allocations,
         )
 
-        primary_calendar_id: int = event.calendar_fk_id  # type: ignore[assignment]
         updated_event = self.calendar_service.update_event(
             primary_calendar_id, event_id, event_data
         )
 
-        # Update the non-primary BlockedTimes linked to this appointment-type event.
-        # They are identified by the external_id convention set in
-        # _create_non_primary_blocked_times: ``appointment-type-event-{event.id}-cal-{cid}``.
+        # Move the non-primary BlockedTimes linked to this appointment-type event.
         new_start_tz_unaware = _convert_naive_utc_datetime_to_timezone(start_time, tz)
         new_end_tz_unaware = _convert_naive_utc_datetime_to_timezone(end_time, tz)
 
-        blocked_times_qs = BlockedTime.objects.filter_by_organization(self.organization_id).filter(
-            external_id__startswith=f"appointment-type-event-{event_id}-cal-"
-        )
-
-        blocked_times = list(blocked_times_qs)
         for bt in blocked_times:
             bt.start_time_tz_unaware = new_start_tz_unaware
             bt.end_time_tz_unaware = new_end_tz_unaware
@@ -3835,14 +3863,26 @@ class AppointmentTypeService:
         calendar_ids: Iterable[int],
         start: datetime.datetime,
         end: datetime.datetime,
+        *,
+        ignoring_event_id: int | None = None,
+        ignoring_blocked_time_ids: Collection[int] = (),
     ) -> None:
+        """Raise unless every calendar in ``calendar_ids`` is free for ``[start, end)``.
+
+        ``ignoring_event_id`` / ``ignoring_blocked_time_ids`` name rows that do not
+        count as busy (see ``CalendarQuerySet.only_calendars_available_in_ranges``).
+        """
         calendar_ids = set(calendar_ids)
         if not calendar_ids:
             return
         available_ids = set(
             Calendar.objects.filter_by_organization(self.organization_id)
             .filter(id__in=calendar_ids)
-            .only_calendars_available_in_ranges([(start, end)])
+            .only_calendars_available_in_ranges(
+                [(start, end)],
+                ignoring_event_id=ignoring_event_id,
+                ignoring_blocked_time_ids=ignoring_blocked_time_ids,
+            )
             .values_list("id", flat=True)
         )
         unavailable = calendar_ids - available_ids
