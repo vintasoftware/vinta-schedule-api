@@ -98,11 +98,12 @@ case as a **split**:
    chain.
 
 The original lives unchanged before the modification date; the
-continuation expresses the new rule afterwards. Helpers like
-`get_occurrences_in_range_with_bulk_modifications` and
-`only_calendars_available_in_ranges_with_bulk_modifications` walk both
-when computing occurrences/availability so callers see the
-post-modification reality.
+continuation expresses the new rule afterwards. Occurrence helpers like
+`get_occurrences_in_range_with_bulk_modifications` walk both, so callers
+see the post-modification reality from the original row. Availability
+needs no such helper: the continuation is a series row of its own on the
+same calendar, which `only_calendars_available_in_ranges` expands like
+any other.
 
 ### Healthcare examples — splits
 
@@ -136,6 +137,8 @@ post-modification reality.
 - Querysets like `annotate_recurring_occurrences_on_date_range` push
   expansion into SQL via Postgres functions so the API doesn't have to
   pull master rows into Python first.
-- The `*_with_bulk_modifications` family is more expensive than the
-  base methods because it walks continuation chains. Only use it when
-  the caller needs the consolidated view.
+- The `*_with_bulk_modifications` occurrence helpers
+  (`get_occurrences_in_range_with_bulk_modifications`,
+  `annotate_recurring_occurrences_with_bulk_modifications_on_date_range`)
+  are more expensive than the base methods because they walk continuation
+  chains. Only use them when the caller needs the consolidated view.

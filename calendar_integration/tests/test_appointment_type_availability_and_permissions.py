@@ -99,56 +99,6 @@ def _seed_availability(calendars, start, end):
 
 
 # ---------------------------------------------------------------------------
-# bulk-modification parity
-# ---------------------------------------------------------------------------
-@pytest.mark.django_db
-def test_only_appointment_types_bookable_in_ranges_with_bulk_modifications_runs(
-    organization, clinic_appointment_type, managed_calendars
-):
-    """Smoke test: the bulk-mods variant returns the same appointment type as the non-bulk
-    variant when no bulk modifications exist on events or blocked times."""
-    now = timezone.now().replace(microsecond=0)
-    start = now + timedelta(hours=1)
-    end = start + timedelta(hours=1)
-    _seed_availability(managed_calendars.values(), start, end)
-
-    without = list(
-        AppointmentType.objects.filter_by_organization(
-            organization.id
-        ).only_appointment_types_bookable_in_ranges([(start, end)])
-    )
-    with_bulk = list(
-        AppointmentType.objects.filter_by_organization(
-            organization.id
-        ).only_appointment_types_bookable_in_ranges_with_bulk_modifications([(start, end)])
-    )
-    assert [g.id for g in without] == [g.id for g in with_bulk] == [clinic_appointment_type.id]
-
-
-@pytest.mark.django_db
-def test_check_appointment_type_availability_with_bulk_modifications_flag(
-    service, clinic_appointment_type, managed_calendars
-):
-    now = timezone.now().replace(microsecond=0)
-    start = now + timedelta(hours=1)
-    end = start + timedelta(hours=1)
-    _seed_availability(managed_calendars.values(), start, end)
-
-    result_default = service.check_appointment_type_availability(
-        appointment_type_id=clinic_appointment_type.id, ranges=[(start, end)]
-    )
-    result_bulk = service.check_appointment_type_availability(
-        appointment_type_id=clinic_appointment_type.id,
-        ranges=[(start, end)],
-        with_bulk_modifications=True,
-    )
-    # Same shape/contents when no bulk modifications exist.
-    assert [s.slot_id for s in result_default[0].slots] == [s.slot_id for s in result_bulk[0].slots]
-    for default_slot, bulk_slot in zip(result_default[0].slots, result_bulk[0].slots, strict=False):
-        assert default_slot.available_calendar_ids == bulk_slot.available_calendar_ids
-
-
-# ---------------------------------------------------------------------------
 # Batched `find_bookable_slots`
 # ---------------------------------------------------------------------------
 @pytest.mark.django_db
