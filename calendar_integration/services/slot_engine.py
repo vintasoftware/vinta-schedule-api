@@ -125,6 +125,28 @@ def intervals_overlap(a: Span, b: Span) -> bool:
     return a_start < b_end and b_start < a_end
 
 
+def any_spans_overlap(spans: Iterable[Span], others: Iterable[Span]) -> bool:
+    """Return True if any span in ``spans`` overlaps any span in ``others``.
+
+    Both lists are sorted by start and walked once together, so a series of a few
+    hundred occurrences against a room's bookings costs one pass, not one check per
+    pair. Spans inside one list may overlap each other. Touching is not overlap.
+    """
+    left = sorted(spans)
+    right = sorted(others)
+    i = j = 0
+    while i < len(left) and j < len(right):
+        if intervals_overlap(left[i], right[j]):
+            return True
+        # Nothing after right[j] starts before left[i] ends, and the other way round,
+        # so the span that ends first cannot overlap anything still ahead.
+        if left[i][1] <= right[j][1]:
+            i += 1
+        else:
+            j += 1
+    return False
+
+
 def split_calendars_by_management(
     organization_id: int, calendar_ids: set[int]
 ) -> tuple[set[int], set[int]]:

@@ -13,7 +13,10 @@ changes them later through ``updateCalendarEvent``. Covered here, over the real
 - an update naming another organization's room, or adding a room taken at the
   event's time, is refused and changes nothing;
 - a room booked this way is taken for an appointment type that books rooms through
-  a slot.
+  a slot;
+- a weekly series is checked over every occurrence, not only the first: adding a
+  room taken on a later occurrence, or rescheduling the series to a time its room is
+  taken on a later occurrence, is refused and changes nothing.
 """
 
 import datetime
@@ -23,6 +26,7 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.constants import CalendarProvider, CalendarType, CalendarVisibility
+from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import (
     AppointmentType,
     AppointmentTypeSlot,
@@ -51,6 +55,12 @@ mutation CreateAppointmentTypeEvent($input: AppointmentTypeEventInput!) {
 UPDATE_CALENDAR_EVENT_MUTATION = """
 mutation UpdateCalendarEvent($input: UpdateCalendarEventInput!) {
     updateCalendarEvent(input: $input) { id }
+}
+"""
+
+RESCHEDULE_CALENDAR_EVENT_MUTATION = """
+mutation RescheduleCalendarEvent($input: RescheduleCalendarEventInput!) {
+    rescheduleCalendarEvent(input: $input) { id }
 }
 """
 
@@ -313,3 +323,82 @@ def test_a_room_booked_on_an_event_is_taken_for_a_room_slot(
         "event": None,
     }
     assert CalendarEvent.objects.filter_by_organization(organization.id).count() == 1
+
+
+def _weekly_series(calendar, hour: int) -> CalendarEvent:
+    """Four Mondays from 2030-06-03, ``hour``:00 to ``hour``:30 UTC."""
+    return CalendarEventFactory.create_recurring_event(
+        calendar=calendar,
+        title="Weekly",
+        description="",
+        start_time=datetime.datetime(2030, 6, 3, hour, 0),
+        end_time=datetime.datetime(2030, 6, 3, hour, 30),
+        frequency="WEEKLY",
+        count=4,
+    )
+
+
+def _hold_on_the_third_monday(room, calendar) -> None:
+    """Another meeting holds ``room`` on 2030-06-17, 11:00 to 12:00 UTC."""
+    other = baker.make(
+        CalendarEvent,
+        organization=room.organization,
+        calendar_fk=calendar,
+        title="Other meeting",
+        start_time_tz_unaware=datetime.datetime(2030, 6, 17, 11, 0),
+        end_time_tz_unaware=datetime.datetime(2030, 6, 17, 12, 0),
+        timezone="UTC",
+    )
+    ResourceAllocation.objects.create(organization=room.organization, event=other, calendar_fk=room)
+
+
+def test_update_adding_a_room_taken_on_a_later_occurrence_of_a_series_is_refused(
+    org_wide_post, organization, booking_calendar, room
+):
+    series = _weekly_series(booking_calendar, hour=11)
+    _hold_on_the_third_monday(room, booking_calendar)
+
+    updated = _update(org_wide_post, organization, series.id, resourceCalendarIds=[room.id])
+
+    assert [e["message"] for e in updated["errors"]] == [
+        "Room is not available at the requested time."
+    ]
+    assert _room_ids(organization, series.id) == set()
+
+
+def test_rescheduling_a_series_onto_a_time_its_room_is_taken_on_a_later_occurrence_is_refused(
+    org_wide_post, organization, booking_calendar, room
+):
+    series = _weekly_series(booking_calendar, hour=10)
+    ResourceAllocation.objects.create(organization=organization, event=series, calendar_fk=room)
+    _hold_on_the_third_monday(room, booking_calendar)
+
+    def reschedule(start: str, end: str) -> dict:
+        return org_wide_post(
+            RESCHEDULE_CALENDAR_EVENT_MUTATION,
+            {
+                "input": {
+                    "organizationId": organization.id,
+                    "calendarId": booking_calendar.id,
+                    "eventId": series.id,
+                    "startTime": start,
+                    "endTime": end,
+                    "timezone": "UTC",
+                }
+            },
+        )
+
+    refused = reschedule("2030-06-03T11:00:00+00:00", "2030-06-03T11:30:00+00:00")
+
+    assert [e["message"] for e in refused["errors"]] == [
+        "Room is not available at the requested time."
+    ]
+    stored = CalendarEvent.objects.filter_by_organization(organization.id).get(id=series.id)
+    assert stored.start_time_tz_unaware.replace(tzinfo=None) == datetime.datetime(2030, 6, 3, 10)
+
+    moved = reschedule("2030-06-03T12:00:00+00:00", "2030-06-03T12:30:00+00:00")
+
+    assert moved.get("errors") is None
+    stored = CalendarEvent.objects.filter_by_organization(organization.id).get(id=series.id)
+    assert stored.start_time_tz_unaware.replace(tzinfo=None) == datetime.datetime(2030, 6, 3, 12)
+    assert stored.recurrence_rule is not None
