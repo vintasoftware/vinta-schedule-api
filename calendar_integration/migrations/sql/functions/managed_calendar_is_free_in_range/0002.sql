@@ -25,9 +25,8 @@
 -- p_ignored_event_id and p_ignored_blocked_time_ids name rows that do not count
 -- as busy. Rescheduling passes the event being moved and its own blocked times:
 -- they still sit at the old time while the new time is checked, and must not
--- conflict with themselves.
-DROP FUNCTION IF EXISTS managed_calendar_is_free_in_range(BIGINT, BIGINT, TIMESTAMPTZ, TIMESTAMPTZ);
-
+-- conflict with themselves. The two arguments make this a new signature, so the
+-- migration manager drops the 4-argument version (and on reverse, this one).
 CREATE OR REPLACE FUNCTION managed_calendar_is_free_in_range(
     p_organization_id BIGINT,
     p_calendar_id BIGINT,
