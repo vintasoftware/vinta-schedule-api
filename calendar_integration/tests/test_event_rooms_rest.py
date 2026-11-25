@@ -7,10 +7,10 @@ same check the public API and appointment-type booking use:
   occurrences is refused with a 400 and writes nothing;
 - an update that adds a room is checked at the event's new time and rule;
 - a room the event already holds is not checked again on an update that does not
-  move it, so an existing double booking does not block a rename.
-
-Rooms that are not active rooms of the organization never get this far: the
-serializer's ``calendar`` field only accepts those.
+  move it, so an existing double booking does not block a rename;
+- a calendar that is not an active room of the organization (another organization's
+  room, a disabled room, a personal calendar) is refused by the serializer's
+  ``calendar`` field with a 400 and writes nothing.
 """
 
 import datetime
@@ -23,7 +23,7 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.constants import CalendarProvider, CalendarType, CalendarVisibility
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
@@ -168,6 +168,51 @@ def test_creating_an_event_with_a_free_room_books_it(client, organization, room,
     assert (
         ResourceAllocation.objects.filter_by_organization(organization.id)
         .filter(event_fk_id=response.json()["id"], calendar_fk_id=room.id)
+        .exists()
+    )
+
+
+@pytest.mark.parametrize("bad_room", ["foreign", "disabled"])
+def test_creating_an_event_with_a_calendar_that_is_not_a_bookable_room_is_refused(
+    client, organization, host_calendar, bad_room
+):
+    rooms = {
+        "foreign": lambda: _calendar(
+            Organization.objects.create(name="Other Org", should_sync_rooms=False),
+            "Foreign Room",
+            CalendarType.RESOURCE,
+        ),
+        "disabled": lambda: baker.make(
+            Calendar,
+            organization=organization,
+            name="Closed Room",
+            external_id=f"rest-rooms-{uuid.uuid4().hex[:8]}",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.RESOURCE,
+            visibility=CalendarVisibility.INACTIVE,
+        ),
+    }
+
+    response = _create(client, host_calendar, _at(3, 10), _at(3, 11), [rooms[bad_room]()])
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "resource_allocations" in response.json()
+    assert _events_titled(organization, "Planning") == 0
+
+
+def test_adding_a_calendar_that_is_not_a_room_is_refused(
+    client, member, organization, host_calendar
+):
+    event = _booked(client, member, host_calendar, _at(3, 10), _at(3, 11), [])
+    personal = _calendar(organization, "Someone", CalendarType.PERSONAL)
+
+    response = _patch(client, event, resource_allocations=[{"calendar": personal.id}])
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "resource_allocations" in response.json()
+    assert (
+        not ResourceAllocation.objects.filter_by_organization(organization.id)
+        .filter(event_fk_id=event.id)
         .exists()
     )
 

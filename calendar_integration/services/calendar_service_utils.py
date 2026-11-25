@@ -398,7 +398,7 @@ def serialize_event_data_input(
     # ``new`` side and falsely flag it as an attendee change.
     member_user_ids = resolve_member_user_ids(new_attendance_user_ids, organization.id)
     attendances_users_by_id = {u.id: u for u in User.objects.filter(id__in=member_user_ids)}
-    # ``unscoped()`` on both: ``event`` is an organization-safe relation, so
+    # ``unscoped()`` on all three: ``event`` is an organization-safe relation, so
     # filtering it by instance puts the event's ``organization_id`` in the ``ON``
     # clause -- the tenant boundary is in the query already.
     existing_attendances_by_user_id = {

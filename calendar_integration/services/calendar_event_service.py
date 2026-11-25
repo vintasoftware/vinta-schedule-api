@@ -1368,21 +1368,24 @@ class CalendarEventService:
         if not is_initialized_or_authenticated_calendar_service(context):
             raise
 
+        def schedule_columns(*, with_new_rule: bool) -> dict[str, Any]:
+            """The row's columns for ``schedule``; saves a rule row when asked to."""
+            columns: dict[str, Any] = {
+                "start_time_tz_unaware": schedule.start_time_tz_unaware,
+                "end_time_tz_unaware": schedule.end_time_tz_unaware,
+                "timezone": schedule.timezone,
+            }
+            if with_new_rule:
+                rule = RecurrenceRule.from_rrule_string(
+                    cast("str", schedule.recurrence_rule), context.organization
+                )
+                rule.save()
+                columns["recurrence_rule_fk"] = rule
+            return columns
+
         window_start = max(start_time, timezone.now())
+        events = CalendarEvent.objects.filter_by_organization(context.organization.id)
         with transaction.atomic():
-            stored = EventSchedule.stored(event) if event is not None else None
-            if schedule != stored:
-                row_values: dict[str, Any] = {
-                    "start_time_tz_unaware": schedule.start_time_tz_unaware,
-                    "end_time_tz_unaware": schedule.end_time_tz_unaware,
-                    "timezone": schedule.timezone,
-                }
-                if stored is None or schedule.recurrence_rule != stored.recurrence_rule:
-                    rule = RecurrenceRule.from_rrule_string(
-                        schedule.recurrence_rule, context.organization
-                    )
-                    rule.save()
-                    row_values["recurrence_rule_fk"] = rule
             if event is None:
                 # ``bulk_create`` rather than ``create``: the stand-in sends no signals.
                 [stand_in] = CalendarEvent.objects.bulk_create(
@@ -1391,18 +1394,20 @@ class CalendarEventService:
                             organization=context.organization,
                             calendar_fk_id=calendar_id,
                             title="",
-                            **row_values,
+                            **schedule_columns(with_new_rule=True),
                         )
                     ]
                 )
-                event_id = stand_in.id
+                events = events.filter(id=stand_in.id)
             else:
-                event_id = event.id
-            events = CalendarEvent.objects.filter_by_organization(context.organization.id).filter(
-                id=event_id
-            )
-            if event is not None and schedule != stored:
-                events.update(**row_values)
+                events = events.filter(id=event.id)
+                stored = EventSchedule.stored(event)
+                if schedule != stored:
+                    events.update(
+                        **schedule_columns(
+                            with_new_rule=schedule.recurrence_rule != stored.recurrence_rule
+                        )
+                    )
             occurrences = (
                 events.annotate_recurring_occurrences_on_date_range(
                     window_start,
