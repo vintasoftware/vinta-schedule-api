@@ -17,6 +17,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from calendar_integration.booking_auth import BOOKING_CODE_HEADER
+from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import (
     AppointmentType,
     AppointmentTypeSlot,
@@ -81,23 +82,11 @@ def _is_available(calendar: Calendar, start: datetime.datetime, end: datetime.da
     )
 
 
-def _is_available_with_bulk_modifications(
-    calendar: Calendar, start: datetime.datetime, end: datetime.datetime
-) -> bool:
-    return (
-        Calendar.objects.filter_by_organization(calendar.organization_id)
-        .only_calendars_available_in_ranges_with_bulk_modifications([(start, end)])
-        .filter(id=calendar.id)
-        .exists()
-    )
-
-
 @pytest.mark.django_db
 @pytest.mark.usefixtures("daily_window")
 @pytest.mark.parametrize("day", [DAY_ONE, LATER_DAY])
 def test_recurring_window_covers_every_occurrence(calendar, day):
     assert _is_available(calendar, _utc(day, 10), _utc(day, 11))
-    assert _is_available_with_bulk_modifications(calendar, _utc(day, 10), _utc(day, 11))
 
 
 @pytest.mark.django_db
@@ -151,9 +140,6 @@ def test_overlapping_event_makes_calendar_unavailable(calendar, organization):
     )
 
     assert not _is_available(calendar, _utc(LATER_DAY, 10), _utc(LATER_DAY, 11))
-    assert not _is_available_with_bulk_modifications(
-        calendar, _utc(LATER_DAY, 10), _utc(LATER_DAY, 11)
-    )
 
 
 @pytest.mark.django_db
@@ -392,6 +378,35 @@ def test_event_moved_by_an_exception_blocks_only_its_new_time(calendar, organiza
 
 
 @pytest.mark.django_db
+@pytest.mark.usefixtures("daily_window")
+def test_a_bulk_modification_continuation_counts_as_busy(calendar):
+    """A bulk modification shortens a series and continues it as a series row of its
+    own on the same calendar, so the plain check counts the continuation."""
+    parent = CalendarEventFactory.create_recurring_event(
+        calendar=calendar,
+        title="Daily",
+        description="",
+        start_time=datetime.datetime(2030, 6, 3, 10, 0),
+        end_time=datetime.datetime(2030, 6, 3, 11, 0),
+        frequency="DAILY",
+        until=_utc(datetime.date(2030, 6, 4), 10),
+    )
+    CalendarEventFactory.create_recurring_event(
+        calendar=calendar,
+        title="Daily, moved",
+        description="",
+        start_time=datetime.datetime(2030, 6, 5, 14, 0),
+        end_time=datetime.datetime(2030, 6, 5, 15, 0),
+        frequency="DAILY",
+        count=5,
+        bulk_modification_parent_fk=parent,
+    )
+
+    assert not _is_available(calendar, _utc(LATER_DAY, 14), _utc(LATER_DAY, 15))
+    assert _is_available(calendar, _utc(LATER_DAY, 10), _utc(LATER_DAY, 11))
+
+
+@pytest.mark.django_db
 def test_window_series_that_ended_does_not_make_calendar_available(service, calendar):
     service.create_available_time(
         calendar=calendar,
@@ -406,9 +421,6 @@ def test_window_series_that_ended_does_not_make_calendar_available(service, cale
         calendar, _utc(datetime.date(2030, 6, 5), 10), _utc(DAY_ONE.replace(day=5), 11)
     )
     assert not _is_available(calendar, _utc(LATER_DAY, 10), _utc(LATER_DAY, 11))
-    assert not _is_available_with_bulk_modifications(
-        calendar, _utc(LATER_DAY, 10), _utc(LATER_DAY, 11)
-    )
 
 
 @pytest.mark.django_db

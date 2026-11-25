@@ -66,16 +66,7 @@ def _hold(room: Calendar, host_calendar: Calendar) -> CalendarEvent:
 
 
 @pytest.mark.parametrize("managed", [False, True], ids=["unmanaged-room", "managed-room"])
-@pytest.mark.parametrize(
-    "filter_name",
-    [
-        "only_calendars_available_in_ranges",
-        "only_calendars_available_in_ranges_with_bulk_modifications",
-    ],
-)
-def test_a_room_held_by_another_calendars_event_is_not_available(
-    organization, managed, filter_name
-):
+def test_a_room_held_by_another_calendars_event_is_not_available(organization, managed):
     host_calendar = _calendar(organization, "Host", CalendarType.PERSONAL)
     held_room = _calendar(organization, "Room 1", CalendarType.RESOURCE, managed=managed)
     free_room = _calendar(organization, "Room 2", CalendarType.RESOURCE, managed=managed)
@@ -84,7 +75,7 @@ def test_a_room_held_by_another_calendars_event_is_not_available(
     rooms = Calendar.objects.filter_by_organization(organization.id).filter(
         id__in=[held_room.id, free_room.id]
     )
-    available = getattr(rooms, filter_name)([(START, END)])
+    available = rooms.only_calendars_available_in_ranges([(START, END)])
 
     assert set(available.values_list("id", flat=True)) == {free_room.id}
 

@@ -2979,14 +2979,12 @@ class AppointmentTypeService:
         self,
         appointment_type_id: int,
         ranges: Iterable[tuple[datetime.datetime, datetime.datetime]],
-        with_bulk_modifications: bool = False,
     ) -> list[AppointmentTypeRangeAvailability]:
         """For every range, list which calendars in each slot's pool are available.
 
         A slot with an empty `available_calendar_ids` is unbookable for that range.
-        `with_bulk_modifications` does not change the result: a bulk modification's
-        continuation series is a row of its own, which the availability check
-        already expands.
+        A bulk modification's continuation series is a calendar row of its own, which
+        the availability check already expands, so split-off occurrences count too.
 
         Appointment-type-scoped availability windows are intersected in AFTER base
         availability: a calendar with no
@@ -3113,12 +3111,6 @@ class AppointmentTypeService:
                     )
                 )
 
-        calendar_qs_method = (
-            "only_calendars_available_in_ranges_with_bulk_modifications"
-            if with_bulk_modifications
-            else "only_calendars_available_in_ranges"
-        )
-
         # Only calendars in a slot pool can end up in ``base_available`` below, so the
         # availability query is narrowed to them.
         pool_calendar_ids: set[int] = set().union(*slot_pool_by_id.values())
@@ -3126,12 +3118,10 @@ class AppointmentTypeService:
         results: list[AppointmentTypeRangeAvailability] = []
         for start, end in ranges:
             available_ids = set(
-                getattr(
-                    Calendar.objects.filter_by_organization(self.organization_id).filter(
-                        id__in=pool_calendar_ids
-                    ),
-                    calendar_qs_method,
-                )([(start, end)]).values_list("id", flat=True)
+                Calendar.objects.filter_by_organization(self.organization_id)
+                .filter(id__in=pool_calendar_ids)
+                .only_calendars_available_in_ranges([(start, end)])
+                .values_list("id", flat=True)
             )
             slot_results = []
             for s in slots:

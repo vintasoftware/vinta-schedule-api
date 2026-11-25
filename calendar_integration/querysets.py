@@ -440,19 +440,6 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
             )
         )
 
-    def only_calendars_available_in_ranges_with_bulk_modifications(
-        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
-    ):
-        """The same check as ``only_calendars_available_in_ranges``.
-
-        A bulk modification splits a series into its shortened original and a
-        continuation series, which is a row of its own on the same calendar.
-        ``calendar_is_free_in_ranges`` expands every series row, so the continuation's
-        occurrences already count. Kept for the availability searches that take a
-        bulk-modification variant as a whole.
-        """
-        return self.only_calendars_available_in_ranges(ranges)
-
     def annotate_effective_policy(self) -> "CalendarQuerySet":
         """Annotate the four ``effective_*_seconds`` booking-policy columns.
 
@@ -899,45 +886,24 @@ class AppointmentTypeQuerySet(OrganizationScopedQuerySet):
         Returns appointment types where, for every range, every slot has at least
         `required_count` calendars from its pool available
         (per CalendarQuerySet.only_calendars_available_in_ranges).
+
+        A bulk modification's continuation series is a calendar row of its own, which
+        that check already expands, so split-off occurrences count too.
         """
-        return self._only_appointment_types_bookable_in_ranges(
-            ranges, with_bulk_modifications=False
-        )
-
-    def only_appointment_types_bookable_in_ranges_with_bulk_modifications(
-        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
-    ):
-        """The same check as `only_appointment_types_bookable_in_ranges`.
-
-        Calendar availability gives the same answer with or without bulk
-        modifications (see `only_calendars_available_in_ranges_with_bulk_modifications`).
-        """
-        return self._only_appointment_types_bookable_in_ranges(ranges, with_bulk_modifications=True)
-
-    def _only_appointment_types_bookable_in_ranges(
-        self,
-        ranges: Iterable[tuple[datetime.datetime, datetime.datetime]],
-        *,
-        with_bulk_modifications: bool,
-    ):
         from calendar_integration.models import AppointmentTypeSlot, Calendar
 
         ranges = list(ranges)
         if not ranges:
             return self.none()
 
-        calendar_method = (
-            "only_calendars_available_in_ranges_with_bulk_modifications"
-            if with_bulk_modifications
-            else "only_calendars_available_in_ranges"
-        )
-
         qs = self
         for start_datetime, end_datetime in ranges:
-            available_calendar_ids = getattr(
-                Calendar.objects.unscoped().filter(organization_id=OuterRef("organization_id")),
-                calendar_method,
-            )([(start_datetime, end_datetime)]).values("id")
+            available_calendar_ids = (
+                Calendar.objects.unscoped()
+                .filter(organization_id=OuterRef("organization_id"))
+                .only_calendars_available_in_ranges([(start_datetime, end_datetime)])
+                .values("id")
+            )
             unsatisfied_slot = (
                 AppointmentTypeSlot.objects.unscoped()
                 # Correlated on the organization as well as on the appointment type key --

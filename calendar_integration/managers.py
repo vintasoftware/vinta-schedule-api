@@ -192,18 +192,6 @@ class CalendarManager(_CalendarManagerBase):  # type: ignore[misc,valid-type]
         """
         return self.get_queryset().only_calendars_available_in_ranges(ranges=ranges)
 
-    def only_calendars_available_in_ranges_with_bulk_modifications(
-        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
-    ):
-        """The same check as `only_calendars_available_in_ranges`.
-
-        A bulk modification's continuation series is a row of its own, which the plain
-        check already expands, so the two return the same calendars.
-        """
-        return self.get_queryset().only_calendars_available_in_ranges_with_bulk_modifications(
-            ranges=ranges
-        )
-
     def annotate_effective_policy(self) -> CalendarQuerySet:
         """Annotate the four ``effective_*_seconds`` booking-policy columns.
 
@@ -372,20 +360,6 @@ class AppointmentTypeManager(_AppointmentTypeManagerBase):  # type: ignore[misc,
         from its pool available in every requested range.
         """
         return self.get_queryset().only_appointment_types_bookable_in_ranges(ranges=ranges)
-
-    def only_appointment_types_bookable_in_ranges_with_bulk_modifications(
-        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
-    ):
-        """The same check as `only_appointment_types_bookable_in_ranges`.
-
-        Calendar availability gives the same answer with or without bulk
-        modifications (see `only_calendars_available_in_ranges_with_bulk_modifications`).
-        """
-        return (
-            self.get_queryset().only_appointment_types_bookable_in_ranges_with_bulk_modifications(
-                ranges=ranges
-            )
-        )
 
     def annotate_effective_policy(self) -> AppointmentTypeQuerySet:
         """Annotate the four ``effective_*_seconds`` booking-policy columns.
