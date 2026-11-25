@@ -15,8 +15,9 @@ changes them later through ``updateCalendarEvent``. Covered here, over the real
 - a room booked this way is taken for an appointment type that books rooms through
   a slot;
 - a weekly series is checked over every occurrence, not only the first: adding a
-  room taken on a later occurrence, or rescheduling the series to a time its room is
-  taken on a later occurrence, is refused and changes nothing.
+  room taken on a later occurrence, rescheduling the series to a time its room is
+  taken on a later occurrence, or extending its rule onto such an occurrence, is
+  refused and changes nothing.
 """
 
 import datetime
@@ -325,8 +326,8 @@ def test_a_room_booked_on_an_event_is_taken_for_a_room_slot(
     assert CalendarEvent.objects.filter_by_organization(organization.id).count() == 1
 
 
-def _weekly_series(calendar, hour: int) -> CalendarEvent:
-    """Four Mondays from 2030-06-03, ``hour``:00 to ``hour``:30 UTC."""
+def _weekly_series(calendar, hour: int, count: int = 4) -> CalendarEvent:
+    """``count`` Mondays from 2030-06-03, ``hour``:00 to ``hour``:30 UTC."""
     return CalendarEventFactory.create_recurring_event(
         calendar=calendar,
         title="Weekly",
@@ -334,7 +335,7 @@ def _weekly_series(calendar, hour: int) -> CalendarEvent:
         start_time=datetime.datetime(2030, 6, 3, hour, 0),
         end_time=datetime.datetime(2030, 6, 3, hour, 30),
         frequency="WEEKLY",
-        count=4,
+        count=count,
     )
 
 
@@ -402,3 +403,37 @@ def test_rescheduling_a_series_onto_a_time_its_room_is_taken_on_a_later_occurren
     stored = CalendarEvent.objects.filter_by_organization(organization.id).get(id=series.id)
     assert stored.start_time_tz_unaware.replace(tzinfo=None) == datetime.datetime(2030, 6, 3, 12)
     assert stored.recurrence_rule is not None
+
+
+def test_extending_a_series_rule_onto_a_time_its_room_is_taken_is_refused(
+    org_wide_post, organization, booking_calendar, room
+):
+    """Two Mondays at 11:00; a rule of four reaches the 17th, when the room is taken."""
+    series = _weekly_series(booking_calendar, hour=11, count=2)
+    ResourceAllocation.objects.create(organization=organization, event=series, calendar_fk=room)
+    _hold_on_the_third_monday(room, booking_calendar)
+
+    refused = org_wide_post(
+        RESCHEDULE_CALENDAR_EVENT_MUTATION,
+        {
+            "input": {
+                "organizationId": organization.id,
+                "calendarId": booking_calendar.id,
+                "eventId": series.id,
+                "startTime": "2030-06-03T11:00:00+00:00",
+                "endTime": "2030-06-03T11:30:00+00:00",
+                "timezone": "UTC",
+                "rruleString": "FREQ=WEEKLY;COUNT=4",
+            }
+        },
+    )
+
+    assert [e["message"] for e in refused["errors"]] == [
+        "Room is not available at the requested time."
+    ]
+    stored = (
+        CalendarEvent.objects.filter_by_organization(organization.id)
+        .select_related("recurrence_rule")
+        .get(id=series.id)
+    )
+    assert stored.recurrence_rule.count == 2

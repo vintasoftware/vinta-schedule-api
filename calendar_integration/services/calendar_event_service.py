@@ -135,6 +135,45 @@ TRANSFER_MEETING_NOT_SUPPORTED_MESSAGE = (
 #: nothing synced past it to collide with.
 ROOM_CHECK_LOOKAHEAD = datetime.timedelta(days=365)
 
+
+@dataclasses.dataclass(frozen=True)
+class EventSchedule:
+    """Where an event's occurrences fall: its wall-clock span, timezone and rule.
+
+    The span is the local wall-clock pair, kept naive. The stored fields read back
+    tagged UTC, while writers assign them naive, and a naive datetime never equals an
+    aware one; stripping the tag lets either kind compare by wall-clock. The rule is
+    in the form ``RecurrenceRule.to_rrule_string`` writes, so one rule spelled two
+    ways compares equal; it is ``None`` for an event that does not recur. Two
+    schedules are equal exactly when they put the event's occurrences at the same
+    times.
+    """
+
+    start_time_tz_unaware: datetime.datetime
+    end_time_tz_unaware: datetime.datetime
+    timezone: str
+    recurrence_rule: str | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "start_time_tz_unaware", self.start_time_tz_unaware.replace(tzinfo=None)
+        )
+        object.__setattr__(
+            self, "end_time_tz_unaware", self.end_time_tz_unaware.replace(tzinfo=None)
+        )
+
+    @classmethod
+    def stored(cls, event: CalendarEvent) -> EventSchedule:
+        """The schedule ``event``'s row holds."""
+        rule = event.recurrence_rule
+        return cls(
+            start_time_tz_unaware=event.start_time_tz_unaware,
+            end_time_tz_unaware=event.end_time_tz_unaware,
+            timezone=event.timezone,
+            recurrence_rule=rule.to_rrule_string() if rule else None,
+        )
+
+
 # The stored attendee holding a payload's identifiers, or None, keyed by those pairs.
 # ``update_event`` looks each one up for the permission check and again for the write;
 # this lets the second lookup reuse the first.
@@ -1217,10 +1256,10 @@ class CalendarEventService:
     ) -> None:
         """Check that rooms an event already holds are free at its new time.
 
-        ``spans`` are the times the event takes after the move: one span for a single
-        event or occurrence, every occurrence for a series (``_occurrence_spans``).
-        ``ignoring_event_ids`` are the moved event's own rows, which still sit at the
-        old time. The rooms are not checked as rooms again: one disabled since it was
+        ``spans`` are the times the event takes after the change that it does not
+        take already: the new span of a moved event or occurrence, or the new
+        occurrences of a series (``_occurrence_spans``). ``ignoring_event_ids`` are the
+        moved event's own rows, which still sit at the old time. The rooms are not checked as rooms again: one disabled since it was
         booked stays held. They are locked like ``validate_requested_rooms`` locks
         them, so call it inside the transaction that moves the event.
 
@@ -1266,17 +1305,41 @@ class CalendarEventService:
             ignoring_event_ids=own_event_ids,
         )
 
-    def _occurrence_spans(
+    def _requested_schedule(
         self,
-        event: CalendarEvent,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
         *,
         iana_tz: str,
         recurrence_rule: str | None,
+    ) -> EventSchedule:
+        """The schedule an event takes when it runs ``[start_time, end_time)`` in
+        ``iana_tz`` under the RRULE string ``recurrence_rule``."""
+        context = cast("BaseCalendarService", self._context)
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
+        return EventSchedule(
+            start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(start_time, iana_tz),
+            end_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(end_time, iana_tz),
+            timezone=iana_tz,
+            recurrence_rule=(
+                RecurrenceRule.from_rrule_string(
+                    recurrence_rule, context.organization
+                ).to_rrule_string()
+                if recurrence_rule
+                else None
+            ),
+        )
+
+    def _occurrence_spans(
+        self,
+        event: CalendarEvent,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        schedule: EventSchedule,
     ) -> list[slot_engine.Span]:
-        """The spans ``event`` takes once it runs ``[start_time, end_time)`` under
-        ``recurrence_rule`` in ``iana_tz``.
+        """The spans ``event`` takes under ``schedule``, which runs it
+        ``[start_time, end_time)``.
 
         An event without a rule takes the one span. A series takes every occurrence
         that ends after the later of ``start_time`` and now, up to
@@ -1286,38 +1349,41 @@ class CalendarEventService:
 
         The occurrences come from ``calculate_recurring_events``, so a cancelled
         occurrence is left out and a moved one is listed at its own time. That
-        function reads the series from its row, which may not hold the new time or
-        rule yet. So the row takes them inside a savepoint, and the savepoint is
-        rolled back once the occurrences are read: nothing is written.
+        function reads the series from its row. When ``schedule`` is not the stored
+        one, the row takes it inside a savepoint, and the savepoint is rolled back once
+        the occurrences are read: nothing is written.
         """
-        if not recurrence_rule:
+        if schedule.recurrence_rule is None:
             return [(start_time, end_time)]
         context = cast("BaseCalendarService", self._context)
         if not is_initialized_or_authenticated_calendar_service(context):
             raise
 
         window_start = max(start_time, timezone.now())
-        window_end = window_start + ROOM_CHECK_LOOKAHEAD
         events = CalendarEvent.objects.filter_by_organization(context.organization.id).filter(
             id=event.id
         )
-        new_values: dict[str, Any] = {
-            "start_time_tz_unaware": self.convert_naive_utc_datetime_to_timezone(
-                start_time, iana_tz
-            ),
-            "end_time_tz_unaware": self.convert_naive_utc_datetime_to_timezone(end_time, iana_tz),
-            "timezone": iana_tz,
-        }
-        stored_rule = event.recurrence_rule
+        stored = EventSchedule.stored(event)
         with transaction.atomic():
-            if stored_rule is None or stored_rule.to_rrule_string() != recurrence_rule:
-                rule = RecurrenceRule.from_rrule_string(recurrence_rule, context.organization)
-                rule.save()
-                new_values["recurrence_rule_fk"] = rule
-            events.update(**new_values)
+            if schedule != stored:
+                new_values: dict[str, Any] = {
+                    "start_time_tz_unaware": schedule.start_time_tz_unaware,
+                    "end_time_tz_unaware": schedule.end_time_tz_unaware,
+                    "timezone": schedule.timezone,
+                }
+                if schedule.recurrence_rule != stored.recurrence_rule:
+                    rule = RecurrenceRule.from_rrule_string(
+                        schedule.recurrence_rule, context.organization
+                    )
+                    rule.save()
+                    new_values["recurrence_rule_fk"] = rule
+                events.update(**new_values)
             occurrences = (
                 events.annotate_recurring_occurrences_on_date_range(
-                    window_start, window_end, max_occurrences=1000, overlap=True
+                    window_start,
+                    window_start + ROOM_CHECK_LOOKAHEAD,
+                    max_occurrences=1000,
+                    overlap=True,
                 )
                 .values_list("recurring_occurrences", flat=True)
                 .get()
@@ -1386,15 +1452,16 @@ class CalendarEventService:
         added_room_ids = set(room_ids) - current_room_ids
         if not added_room_ids:
             return
-        stored_rule = event.recurrence_rule
+        stored_rule = EventSchedule.stored(event).recurrence_rule
         self._validate_requested_rooms_over(
             added_room_ids,
             self._occurrence_spans(
                 event,
                 start_time,
                 end_time,
-                iana_tz=event.timezone,
-                recurrence_rule=stored_rule.to_rrule_string() if stored_rule else None,
+                self._requested_schedule(
+                    start_time, end_time, iana_tz=event.timezone, recurrence_rule=stored_rule
+                ),
             ),
         )
 
@@ -1470,20 +1537,17 @@ class CalendarEventService:
         ):
             raise PermissionDenied("You do not have permission to update this event.")
 
-        # Compared on the stored wall-clock fields, the ones written below: the
-        # generated ``start_time`` / ``end_time`` are not comparable to the input.
-        moves = (
-            event.timezone != event_data.timezone
-            or event.start_time_tz_unaware.replace(tzinfo=None)
-            != self.convert_naive_utc_datetime_to_timezone(
-                event_data.start_time, event_data.timezone
-            ).replace(tzinfo=None)
-            or event.end_time_tz_unaware.replace(tzinfo=None)
-            != self.convert_naive_utc_datetime_to_timezone(
-                event_data.end_time, event_data.timezone
-            ).replace(tzinfo=None)
+        # The update moves the event when its occurrences land elsewhere: a new time,
+        # timezone or rule. Compared on the stored wall-clock fields, the ones written
+        # below: the generated ``start_time`` / ``end_time`` are not comparable to the
+        # input.
+        schedule = self._requested_schedule(
+            event_data.start_time,
+            event_data.end_time,
+            iana_tz=event_data.timezone,
+            recurrence_rule=event_data.recurrence_rule,
         )
-        if moves:
+        if schedule != EventSchedule.stored(event):
             moved_occurrence_of = (
                 EventRecurrenceException.objects.filter_by_organization(context.organization.id)
                 .filter(modified_event=event)
@@ -1504,17 +1568,23 @@ class CalendarEventService:
                     if ra.calendar_fk_id
                 } & {r.resource_id for r in event_data.resource_allocations}
                 if kept_room_ids:
-                    # A series takes its rooms along to every occurrence, at the new
-                    # time and under the rule it is saved with below.
+                    # The rooms must be free at every occurrence the event does not
+                    # hold yet: all of them when it moves, only the added ones when
+                    # its rule grows, none when its rule only drops occurrences.
+                    held = set(
+                        self._occurrence_spans(
+                            event, event.start_time, event.end_time, EventSchedule.stored(event)
+                        )
+                    )
                     self.assert_kept_rooms_free(
                         kept_room_ids,
-                        self._occurrence_spans(
-                            event,
-                            event_data.start_time,
-                            event_data.end_time,
-                            iana_tz=event_data.timezone,
-                            recurrence_rule=event_data.recurrence_rule,
-                        ),
+                        [
+                            span
+                            for span in self._occurrence_spans(
+                                event, event_data.start_time, event_data.end_time, schedule
+                            )
+                            if span not in held
+                        ],
                         ignoring_event_ids={event.id},
                     )
 

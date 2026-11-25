@@ -7,7 +7,10 @@ all of them, not only the first:
   later occurrence;
 - moving a series (``update_event``) refuses a new time at which a kept room is taken
   on any later occurrence, including occurrences a rule changed in the same update
-  adds. Its own old occurrences do not count against it.
+  adds. Its own old occurrences do not count against it;
+- changing only the rule checks the occurrences it adds. A rule that only drops
+  occurrences, or the same rule spelled another way, checks nothing, so an existing
+  double booking does not block it.
 
 The occurrences come from the Postgres expansion, so the rule's COUNT ends the check,
 a cancelled occurrence does not need the room, and occurrences already over are not
@@ -31,6 +34,7 @@ from calendar_integration.models import (
     ResourceAllocation,
 )
 from calendar_integration.services import slot_engine
+from calendar_integration.services.calendar_event_service import EventSchedule
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
@@ -240,6 +244,68 @@ def test_occurrences_a_new_rule_adds_in_the_same_move_are_checked(service, room,
     # Under its own rule the series ends before the 17th.
     _move(service, series, room, _at(3, 11), _at(3, 11, 30), rrule="FREQ=WEEKLY;COUNT=2")
     assert _naive(_stored(series).start_time_tz_unaware) == _naive(_at(3, 11))
+
+
+def test_extending_the_rule_without_moving_checks_the_added_occurrences(
+    service, room, host_calendar
+):
+    series = _series(host_calendar, _at(3, 11), _at(3, 11, 30), count=2, room=room)
+    _taken_by_an_event(room, host_calendar)
+
+    with pytest.raises(RoomUnavailableError):
+        _move(service, series, room, _at(3, 11), _at(3, 11, 30), rrule="FREQ=WEEKLY;COUNT=4")
+
+    assert _stored(series).recurrence_rule.count == 2
+
+
+@pytest.mark.parametrize(
+    "rrule",
+    ["FREQ=WEEKLY;COUNT=2", "RRULE:FREQ=WEEKLY;COUNT=4"],
+    ids=["shortened", "same-rule-spelled-differently"],
+)
+def test_a_rule_change_that_adds_no_occurrence_does_not_check_the_rooms(
+    service, room, host_calendar, rrule
+):
+    """The room is already double-booked on the 10th, which the series keeps either
+    way; the update must still go through."""
+    series = _series(host_calendar, _at(3, 11), _at(3, 11, 30), room=room)
+    _event_holding(room, host_calendar, _at(10, 11), _at(10, 12))
+
+    _move(service, series, room, _at(3, 11), _at(3, 11, 30), rrule=rrule)
+
+    assert _stored(series).recurrence_rule.to_rrule_string() == rrule.removeprefix("RRULE:")
+
+
+@pytest.mark.parametrize(
+    ("change", "differs"),
+    [
+        ({}, False),
+        ({"recurrence_rule": "RRULE:FREQ=WEEKLY;COUNT=4"}, False),
+        ({"recurrence_rule": "FREQ=WEEKLY;COUNT=5"}, True),
+        ({"start_time": _at(3, 11, 5)}, True),
+        ({"iana_tz": "America/Sao_Paulo"}, True),
+    ],
+    ids=["same", "same-rule-spelled-differently", "new-rule", "new-time", "new-timezone"],
+)
+def test_the_requested_schedule_equals_the_stored_one_only_when_nothing_moves(
+    service, host_calendar, change, differs
+):
+    """``update_event`` checks rooms only when the two differ, so an update that keeps
+    the event where it is must compare equal."""
+    series = _series(host_calendar, _at(3, 11), _at(3, 11, 30))
+    requested = {
+        "start_time": _at(3, 11),
+        "end_time": _at(3, 11, 30),
+        "iana_tz": "UTC",
+        "recurrence_rule": "FREQ=WEEKLY;COUNT=4",
+        **change,
+    }
+
+    schedule = service._get_event_service()._requested_schedule(
+        requested.pop("start_time"), requested.pop("end_time"), **requested
+    )
+
+    assert (schedule != EventSchedule.stored(_stored(series))) is differs
 
 
 def test_adding_a_room_taken_on_a_later_occurrence_is_refused(service, room, host_calendar):
