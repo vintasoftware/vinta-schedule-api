@@ -1408,45 +1408,41 @@ class CalendarEventSerializer(VirtualModelSerializer):
         elif rrule_string:
             final_rrule_string = rrule_string
 
-        event = self.calendar_service.create_event(
-            calendar_id=calendar.id,
-            event_data=CalendarEventInputData(
-                title=validated_data.get("title"),
-                description=validated_data.get("description"),
-                start_time=validated_data.get("start_time"),
-                end_time=validated_data.get("end_time"),
-                timezone=validated_data.get("timezone"),
-                resource_allocations=[
-                    ResourceAllocationInputData(resource_id=ra["calendar"].id)
-                    for ra in resource_allocations
-                ],
-                attendances=[
-                    EventAttendanceInputData(user_id=att["user"].id) for att in attendances
-                ],
-                external_attendances=[
-                    EventExternalAttendanceInputData(
-                        external_attendee=ExternalAttendeeInputData(
-                            id=ext["external_attendee"].get("id"),
-                            email=ext["external_attendee"]["email"],
-                            name=ext["external_attendee"]["name"],
-                            external_client_identifiers=_map_external_client_identifiers(
-                                ext["external_attendee"].get("external_client_identifiers")
-                            ),
-                        )
+        event_data = CalendarEventInputData(
+            title=validated_data.get("title"),
+            description=validated_data.get("description"),
+            start_time=validated_data.get("start_time"),
+            end_time=validated_data.get("end_time"),
+            timezone=validated_data.get("timezone"),
+            resource_allocations=[
+                ResourceAllocationInputData(resource_id=ra["calendar"].id)
+                for ra in resource_allocations
+            ],
+            attendances=[EventAttendanceInputData(user_id=att["user"].id) for att in attendances],
+            external_attendances=[
+                EventExternalAttendanceInputData(
+                    external_attendee=ExternalAttendeeInputData(
+                        id=ext["external_attendee"].get("id"),
+                        email=ext["external_attendee"]["email"],
+                        name=ext["external_attendee"]["name"],
+                        external_client_identifiers=_map_external_client_identifiers(
+                            ext["external_attendee"].get("external_client_identifiers")
+                        ),
                     )
-                    for ext in external_attendances
-                ],
-                # Recurrence fields
-                recurrence_rule=final_rrule_string,
-                parent_event_id=parent_recurring_object_id,
-                is_recurring_exception=validated_data.get("is_recurring_exception", False),
-                external_client_identifiers=_map_external_client_identifiers(
-                    external_client_identifiers
-                ),
+                )
+                for ext in external_attendances
+            ],
+            # Recurrence fields
+            recurrence_rule=final_rrule_string,
+            parent_event_id=parent_recurring_object_id,
+            is_recurring_exception=validated_data.get("is_recurring_exception", False),
+            external_client_identifiers=_map_external_client_identifiers(
+                external_client_identifiers
             ),
         )
-
-        return event
+        # The rooms must be free for every occurrence the new event will have.
+        self.calendar_service.validate_room_changes(calendar.id, event_data)
+        return self.calendar_service.create_event(calendar_id=calendar.id, event_data=event_data)
 
     def update(self, instance: CalendarEvent, validated_data: dict) -> CalendarEvent:
         if not self.calendar_service:
@@ -1544,56 +1540,49 @@ class CalendarEventSerializer(VirtualModelSerializer):
             # Keep existing recurrence rule
             final_rrule_string = instance.recurrence_rule.to_rrule_string()
 
-        event = self.calendar_service.update_event(
-            calendar_id=calendar.id,
-            event_id=instance.id,
-            event_data=CalendarEventInputData(
-                title=validated_data.get("title", instance.title),
-                description=validated_data.get("description", instance.description),
-                start_time=validated_data.get("start_time", instance.start_time),
-                end_time=validated_data.get("end_time", instance.end_time),
-                timezone=validated_data.get("timezone", instance.timezone),
-                resource_allocations=[
-                    ResourceAllocationInputData(
-                        resource_id=_resource_allocation_id_from_payload(ra)
+        event_data = CalendarEventInputData(
+            title=validated_data.get("title", instance.title),
+            description=validated_data.get("description", instance.description),
+            start_time=validated_data.get("start_time", instance.start_time),
+            end_time=validated_data.get("end_time", instance.end_time),
+            timezone=validated_data.get("timezone", instance.timezone),
+            resource_allocations=[
+                ResourceAllocationInputData(resource_id=_resource_allocation_id_from_payload(ra))
+                for ra in resource_allocations
+            ],
+            attendances=[
+                EventAttendanceInputData(user_id=_attendance_user_id_from_payload(att))
+                for att in attendances
+            ],
+            external_attendances=[
+                EventExternalAttendanceInputData(
+                    external_attendee=ExternalAttendeeInputData(
+                        id=ext["external_attendee"].get("id"),
+                        email=ext["external_attendee"]["email"],
+                        name=ext["external_attendee"]["name"],
+                        external_client_identifiers=_map_external_client_identifiers(
+                            ext["external_attendee"].get("external_client_identifiers")
+                        ),
                     )
-                    for ra in resource_allocations
-                ],
-                attendances=[
-                    EventAttendanceInputData(user_id=_attendance_user_id_from_payload(att))
-                    for att in attendances
-                ],
-                external_attendances=[
-                    EventExternalAttendanceInputData(
-                        external_attendee=ExternalAttendeeInputData(
-                            id=ext["external_attendee"].get("id"),
-                            email=ext["external_attendee"]["email"],
-                            name=ext["external_attendee"]["name"],
-                            external_client_identifiers=_map_external_client_identifiers(
-                                ext["external_attendee"].get("external_client_identifiers")
-                            ),
-                        )
-                    )
-                    for ext in external_attendances
-                ],
-                # Recurrence fields
-                recurrence_rule=final_rrule_string,
-                parent_event_id=parent_recurring_object_id
-                or (
-                    instance.parent_recurring_object.id
-                    if instance.parent_recurring_object
-                    else None
-                ),
-                is_recurring_exception=validated_data.get(
-                    "is_recurring_exception", instance.is_recurring_exception
-                ),
-                external_client_identifiers=_map_external_client_identifiers(
-                    external_client_identifiers
-                ),
+                )
+                for ext in external_attendances
+            ],
+            # Recurrence fields
+            recurrence_rule=final_rrule_string,
+            parent_event_id=parent_recurring_object_id
+            or (instance.parent_recurring_object.id if instance.parent_recurring_object else None),
+            is_recurring_exception=validated_data.get(
+                "is_recurring_exception", instance.is_recurring_exception
+            ),
+            external_client_identifiers=_map_external_client_identifiers(
+                external_client_identifiers
             ),
         )
-
-        return event
+        # A room the update adds must be free at the event's new time and rule.
+        self.calendar_service.validate_room_changes(calendar.id, event_data, event=instance)
+        return self.calendar_service.update_event(
+            calendar_id=calendar.id, event_id=instance.id, event_data=event_data
+        )
 
     @v.hints.no_deferred_fields()
     def get_is_recurring_instance(self, obj: CalendarEvent) -> bool:

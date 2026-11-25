@@ -3977,7 +3977,7 @@ class Mutation(ExternalEventChangeRequestMutations, AppointmentTypeMutations):
 
         try:
             calendar_service.validate_room_changes(
-                existing_event, room_ids, existing_event.start_time, existing_event.end_time
+                existing_event.calendar_fk_id, event_data, event=existing_event
             )
             event = calendar_service.update_event(
                 existing_event.calendar_fk_id, input.event_id, event_data

@@ -19,7 +19,7 @@ import datetime
 import zoneinfo
 from typing import TYPE_CHECKING, Literal, cast
 
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import CalendarType, RSVPStatus
 from calendar_integration.local_time import local_wall_clock_to_utc
 from calendar_integration.models import (
     Calendar,
@@ -27,6 +27,7 @@ from calendar_integration.models import (
     CalendarManagementToken,
     EventAttendance,
     EventExternalAttendance,
+    ResourceAllocation,
 )
 from calendar_integration.services.dataclasses import (
     CalendarEventData,
@@ -412,6 +413,10 @@ def serialize_event_data_input(
             event=event, external_attendee__id__in=new_external_attendances_attendee_ids
         )
     }
+    existing_room_statuses = {
+        allocation.calendar_fk_id: allocation.status
+        for allocation in ResourceAllocation.objects.unscoped().filter(event=event)
+    }
     return CalendarEventData(
         id=event.id,
         calendar_id=event.calendar_fk_id,  # type: ignore[arg-type]
@@ -465,18 +470,19 @@ def serialize_event_data_input(
             # For recurring instances, get external attendances from the parent event; for regular events, use their own
             for external_attendance in input_external_attendances
         ],
+        # A room the event already holds keeps its allocation's status; a room it
+        # gains starts as a new allocation does, pending.
         resources=[
             ResourceData(
-                title=resource_allocation.calendar.name,
-                email=resource_allocation.calendar.email,
-                external_id=resource_allocation.calendar.external_id,
+                title=room.name,
+                email=room.email,
+                external_id=room.external_id,
                 status=cast(
                     Literal["accepted", "declined", "pending"],
-                    resource_allocation.status,
+                    existing_room_statuses.get(room.id, RSVPStatus.PENDING),
                 ),
             )
-            # For recurring instances, get resource allocations from the parent event; for regular events, use their own
-            for resource_allocation in Calendar.objects.filter_by_organization(organization).filter(
+            for room in Calendar.objects.filter_by_organization(organization).filter(
                 id__in=[r.resource_id for r in event_data.resource_allocations],
                 calendar_type=CalendarType.RESOURCE,
             )
