@@ -37,7 +37,15 @@
 -- recurrence exception table (modified_*_fk_id), not by is_recurring_exception. The
 -- calendar sync also sets that flag on plain instance rows that have no exception
 -- row, and those rows are real and must count. The series' expansion already emits
--- the modified occurrence at its new time, so linked rows are skipped as one-off rows.
+-- the modified occurrence at its new time, so a linked row is skipped as a one-off
+-- row, but only when its series is among the rows expanded here: a moved occurrence
+-- can hold a room of its own that its series does not hold, and then only its own
+-- row shows it.
+--
+-- The event rows to look at (on the calendar, or holding it as a room) are a CTE
+-- marked NOT MATERIALIZED. It is read more than once, so Postgres would otherwise
+-- collect every event the calendar ever had before any time filter applies, which
+-- doubled the cost of a one-range check.
 --
 -- p_ignored_event_ids and p_ignored_blocked_time_ids name rows that do not count as
 -- busy. A move passes the event being moved (and, for a moved occurrence, its series)
@@ -118,7 +126,7 @@ BEGIN
 
     -- 2. No event on the calendar, or holding it as a room, may overlap a range.
     IF EXISTS (
-        WITH taking_events AS (
+        WITH taking_events AS NOT MATERIALIZED (
             SELECT ev.id
             FROM calendar_integration_calendarevent ev
             WHERE ev.organization_id = p_organization_id
@@ -142,6 +150,7 @@ BEGIN
           AND NOT EXISTS (
               SELECT 1
               FROM calendar_integration_eventrecurrenceexception x
+              JOIN taking_events p ON p.id = x.parent_event_fk_id
               WHERE x.organization_id = p_organization_id
                 AND x.modified_event_fk_id = ev.id
           )

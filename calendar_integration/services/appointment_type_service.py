@@ -2984,8 +2984,9 @@ class AppointmentTypeService:
         """For every range, list which calendars in each slot's pool are available.
 
         A slot with an empty `available_calendar_ids` is unbookable for that range.
-        Set `with_bulk_modifications=True` to expand recurring events through
-        their bulk-modification continuation series.
+        `with_bulk_modifications` does not change the result: a bulk modification's
+        continuation series is a row of its own, which the availability check
+        already expands.
 
         Appointment-type-scoped availability windows are intersected in AFTER base
         availability: a calendar with no

@@ -195,9 +195,10 @@ class CalendarManager(_CalendarManagerBase):  # type: ignore[misc,valid-type]
     def only_calendars_available_in_ranges_with_bulk_modifications(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):
-        """
-        Same as `only_calendars_available_in_ranges` but expands recurring events
-        through their bulk-modification continuations.
+        """The same check as `only_calendars_available_in_ranges`.
+
+        A bulk modification's continuation series is a row of its own, which the plain
+        check already expands, so the two return the same calendars.
         """
         return self.get_queryset().only_calendars_available_in_ranges_with_bulk_modifications(
             ranges=ranges
@@ -375,10 +376,10 @@ class AppointmentTypeManager(_AppointmentTypeManagerBase):  # type: ignore[misc,
     def only_appointment_types_bookable_in_ranges_with_bulk_modifications(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):
-        """
-        Same as `only_appointment_types_bookable_in_ranges` but expands recurring events
-        through their bulk-modification continuations when computing calendar
-        availability per slot.
+        """The same check as `only_appointment_types_bookable_in_ranges`.
+
+        Calendar availability gives the same answer with or without bulk
+        modifications (see `only_calendars_available_in_ranges_with_bulk_modifications`).
         """
         return (
             self.get_queryset().only_appointment_types_bookable_in_ranges_with_bulk_modifications(

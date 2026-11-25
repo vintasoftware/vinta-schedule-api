@@ -907,10 +907,10 @@ class AppointmentTypeQuerySet(OrganizationScopedQuerySet):
     def only_appointment_types_bookable_in_ranges_with_bulk_modifications(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):
-        """
-        Same as `only_appointment_types_bookable_in_ranges` but expands recurring events
-        through their bulk-modification continuation series so split-off
-        occurrences count against availability.
+        """The same check as `only_appointment_types_bookable_in_ranges`.
+
+        Calendar availability gives the same answer with or without bulk
+        modifications (see `only_calendars_available_in_ranges_with_bulk_modifications`).
         """
         return self._only_appointment_types_bookable_in_ranges(ranges, with_bulk_modifications=True)
 

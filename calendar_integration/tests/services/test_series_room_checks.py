@@ -376,6 +376,29 @@ def test_a_room_that_manages_its_windows_is_free_only_inside_them(
         )
 
 
+def test_a_room_held_by_a_moved_occurrence_of_its_own_is_taken(service, room, host_calendar):
+    """The series holds no room; one occurrence, moved, is given a room of its own."""
+    series = _series(host_calendar, _at(3, 10), _at(3, 10, 30))
+    moved = service.reschedule_event_occurrence(
+        series.calendar_fk_id, series.id, _at(10, 10), _at(10, 15), _at(10, 16), "UTC"
+    )
+    service.update_event(
+        moved.calendar_fk_id,
+        moved.id,
+        CalendarEventInputData(
+            title=None,
+            description=None,
+            start_time=moved.start_time,
+            end_time=moved.end_time,
+            timezone="UTC",
+            resource_allocations=[ResourceAllocationInputData(resource_id=room.id)],
+        ),
+    )
+
+    with pytest.raises(RoomUnavailableError):
+        service.validate_requested_rooms([room.id], _at(10, 15, 30), _at(10, 16))
+
+
 def test_adding_a_room_free_on_every_occurrence_is_allowed(service, room, host_calendar):
     series = _series(host_calendar, _at(3, 10), _at(3, 10, 30))
     _taken_by_an_event(room, host_calendar)
