@@ -399,6 +399,56 @@ def test_a_room_held_by_a_moved_occurrence_of_its_own_is_taken(service, room, ho
         service.validate_requested_rooms([room.id], _at(10, 15, 30), _at(10, 16))
 
 
+def test_an_occurrence_moved_past_its_series_end_still_holds_the_room(service, room, host_calendar):
+    """Mondays until the 24th; the 24th moves to Wednesday the 26th."""
+    series = CalendarEventFactory.create_recurring_event(
+        calendar=host_calendar,
+        title="Weekly",
+        description="",
+        start_time=_naive(_at(3, 10)),
+        end_time=_naive(_at(3, 10, 30)),
+        frequency="WEEKLY",
+        until=_at(24, 10),
+    )
+    _hold(room, series)
+    service.reschedule_event_occurrence(
+        host_calendar.id, series.id, _at(24, 10), _at(26, 10), _at(26, 10, 30), "UTC"
+    )
+
+    with pytest.raises(RoomUnavailableError):
+        service.validate_requested_rooms([room.id], _at(26, 10), _at(26, 10, 30))
+
+
+def test_an_occurrence_moved_before_its_series_start_still_holds_the_room(
+    service, room, host_calendar
+):
+    """Four Mondays from the 10th; the first moves back to Friday the 7th."""
+    series = _series(host_calendar, _at(10, 10), _at(10, 10, 30), room=room)
+    service.reschedule_event_occurrence(
+        host_calendar.id, series.id, _at(10, 10), _at(7, 10), _at(7, 10, 30), "UTC"
+    )
+
+    with pytest.raises(RoomUnavailableError):
+        service.validate_requested_rooms([room.id], _at(7, 10), _at(7, 10, 30))
+
+
+def test_a_blocked_time_moved_past_its_series_end_still_holds_the_room(service, room):
+    """Daily 11:00-12:00 blocks until the 17th; the 17th moves to the 19th."""
+    blocks = service.create_blocked_time(
+        room, _at(15, 11), _at(15, 12), "UTC", rrule_string="FREQ=DAILY;UNTIL=20300617T110000Z"
+    )
+    service.create_recurring_blocked_time_exception(
+        parent_blocked_time=blocks,
+        exception_date=_at(17, 11),
+        modified_start_time=_at(19, 11),
+        modified_end_time=_at(19, 12),
+        modified_timezone="UTC",
+    )
+
+    with pytest.raises(RoomUnavailableError):
+        service.validate_requested_rooms([room.id], _at(19, 11), _at(19, 11, 30))
+
+
 def test_adding_a_room_free_on_every_occurrence_is_allowed(service, room, host_calendar):
     series = _series(host_calendar, _at(3, 10), _at(3, 10, 30))
     _taken_by_an_event(room, host_calendar)

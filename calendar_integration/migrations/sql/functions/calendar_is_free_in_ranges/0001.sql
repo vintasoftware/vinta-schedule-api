@@ -20,9 +20,12 @@
 -- Each recurring row is expanded once, over the span from the first range's start to
 -- the last range's end, and its occurrences are matched against every range. The
 -- recurrence functions stop at 1000 occurrences per row. A series is only expanded
--- when it can reach that span: it starts before the span ends, and its UNTIL is not
--- before the span starts (less the occurrence length, so an occurrence that starts
--- earlier and overlaps the span is still found). A one-off row is found by its own
+-- when it can put an occurrence in that span: its rule reaches the span (it starts
+-- before the span ends, and its UNTIL is not before the span starts, less the
+-- occurrence length, so an occurrence that starts earlier and overlaps the span is
+-- still found), or one of its occurrences was moved into the span. A moved
+-- occurrence keeps its own time, which can be past UNTIL or before the series'
+-- start, and only the series' expansion lists it. A one-off row is found by its own
 -- start and end. Each recurring branch filters recurrence_rule_fk_id IS NOT NULL on
 -- the row itself, not only through the join to the rule: that lets Postgres drop
 -- one-off rows before it calls the recurrence function per row. Without it the
@@ -109,8 +112,22 @@ BEGIN
               AND av.recurrence_rule_fk_id IS NOT NULL
               AND av.appointment_type_slot_fk_id IS NULL
               AND av.parent_recurring_object_fk_id IS NULL
-              AND av.start_time <= v_end
-              AND (rr.until IS NULL OR rr.until >= v_start - (av.end_time - av.start_time))
+              AND (
+                  (av.start_time <= v_end
+                   AND (rr.until IS NULL OR rr.until >= v_start - (av.end_time - av.start_time)))
+                  OR EXISTS (
+                      SELECT 1
+                      FROM calendar_integration_availabletimerecurrenceexception x
+                      JOIN calendar_integration_availabletime m
+                        ON m.id = x.modified_available_time_fk_id
+                        AND m.organization_id = p_organization_id
+                      WHERE x.organization_id = p_organization_id
+                        AND x.parent_available_time_fk_id = av.id
+                        AND NOT x.is_cancelled
+                        AND m.start_time < v_end
+                        AND m.end_time > v_start
+                  )
+              )
         )
         SELECT 1
         FROM unnest(p_ranges) r
@@ -167,9 +184,25 @@ BEGIN
           AND ev.recurrence_rule_fk_id IS NOT NULL
           AND ev.parent_recurring_object_fk_id IS NULL
           AND NOT (ev.id = ANY(p_ignored_event_ids))
-          AND (occ.modified_event_id IS NULL OR NOT (occ.modified_event_id = ANY(p_ignored_event_ids)))
-          AND ev.start_time < v_end
-          AND (rr.until IS NULL OR rr.until >= v_start - (ev.end_time - ev.start_time))
+          AND (
+              occ.modified_event_id IS NULL
+              OR NOT (occ.modified_event_id = ANY(p_ignored_event_ids))
+          )
+          AND (
+              (ev.start_time < v_end
+               AND (rr.until IS NULL OR rr.until >= v_start - (ev.end_time - ev.start_time)))
+              OR EXISTS (
+                  SELECT 1
+                  FROM calendar_integration_eventrecurrenceexception x
+                  JOIN calendar_integration_calendarevent m
+                    ON m.id = x.modified_event_fk_id AND m.organization_id = p_organization_id
+                  WHERE x.organization_id = p_organization_id
+                    AND x.parent_event_fk_id = ev.id
+                    AND NOT x.is_cancelled
+                    AND m.start_time < v_end
+                    AND m.end_time > v_start
+              )
+          )
     ) THEN
         RETURN FALSE;
     END IF;
@@ -209,8 +242,22 @@ BEGIN
           AND bt.appointment_type_slot_fk_id IS NULL
           AND bt.parent_recurring_object_fk_id IS NULL
           AND NOT (bt.id = ANY(p_ignored_blocked_time_ids))
-          AND bt.start_time < v_end
-          AND (rr.until IS NULL OR rr.until >= v_start - (bt.end_time - bt.start_time))
+          AND (
+              (bt.start_time < v_end
+               AND (rr.until IS NULL OR rr.until >= v_start - (bt.end_time - bt.start_time)))
+              OR EXISTS (
+                  SELECT 1
+                  FROM calendar_integration_blockedtimerecurrenceexception x
+                  JOIN calendar_integration_blockedtime m
+                    ON m.id = x.modified_blocked_time_fk_id
+                    AND m.organization_id = p_organization_id
+                  WHERE x.organization_id = p_organization_id
+                    AND x.parent_blocked_time_fk_id = bt.id
+                    AND NOT x.is_cancelled
+                    AND m.start_time < v_end
+                    AND m.end_time > v_start
+              )
+          )
     ) THEN
         RETURN FALSE;
     END IF;
