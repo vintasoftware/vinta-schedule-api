@@ -420,7 +420,8 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
         every kind of calendar: no event on the calendar or holding it as a room, and
         no blocked time, overlaps a range, with recurring rows expanded; and a calendar
         that manages its availability windows has a window occurrence covering each
-        range.
+        range. A bulk modification's continuation is an event series of its own on the
+        same calendar, so it is expanded like any other.
 
         ``ignoring_event_ids`` and ``ignoring_blocked_time_ids`` name rows that do not
         count as busy. A move passes the event it moves (and its series, for a moved
@@ -886,9 +887,6 @@ class AppointmentTypeQuerySet(OrganizationScopedQuerySet):
         Returns appointment types where, for every range, every slot has at least
         `required_count` calendars from its pool available
         (per CalendarQuerySet.only_calendars_available_in_ranges).
-
-        A bulk modification's continuation series is a calendar row of its own, which
-        that check already expands, so split-off occurrences count too.
         """
         from calendar_integration.models import AppointmentTypeSlot, Calendar
 

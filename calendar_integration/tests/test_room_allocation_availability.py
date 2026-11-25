@@ -2,9 +2,9 @@
 
 An event booked with rooms keeps them as resource allocations and writes nothing on
 the rooms' own calendars. Both shared availability paths must still see the room as
-taken: the calendar queryset filter (``only_calendars_available_in_ranges`` and its
-bulk-modification twin), which appointment bookings check selected calendars with,
-and ``slot_engine.fetch_blocking_spans``, which slot discovery walks.
+taken: the calendar queryset filter (``only_calendars_available_in_ranges``), which
+appointment bookings check selected calendars with, and
+``slot_engine.fetch_blocking_spans``, which slot discovery walks.
 """
 
 import datetime

@@ -1,5 +1,4 @@
 import datetime
-from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from django.db import transaction
@@ -181,17 +180,6 @@ class CalendarManager(_CalendarManagerBase):  # type: ignore[misc,valid-type]
         """
         return self.get_queryset().prefetch_latest_sync()
 
-    def only_calendars_available_in_ranges(
-        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
-    ):
-        """
-        Returns calendars that are available in the specified date range.
-        :param start_datetime: Start of the date range.
-        :param end_datetime: End of the date range.
-        :return: QuerySet of calendars available in the specified range.
-        """
-        return self.get_queryset().only_calendars_available_in_ranges(ranges=ranges)
-
     def annotate_effective_policy(self) -> CalendarQuerySet:
         """Annotate the four ``effective_*_seconds`` booking-policy columns.
 
@@ -351,15 +339,6 @@ class AppointmentTypeManager(_AppointmentTypeManagerBase):  # type: ignore[misc,
     def only_member_of(self, membership_user_id: int) -> AppointmentTypeQuerySet:
         """Wraps :meth:`AppointmentTypeQuerySet.only_member_of`."""
         return self.get_queryset().only_member_of(membership_user_id)
-
-    def only_appointment_types_bookable_in_ranges(
-        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
-    ):
-        """
-        Returns appointment types where every slot has at least `required_count` calendars
-        from its pool available in every requested range.
-        """
-        return self.get_queryset().only_appointment_types_bookable_in_ranges(ranges=ranges)
 
     def annotate_effective_policy(self) -> AppointmentTypeQuerySet:
         """Annotate the four ``effective_*_seconds`` booking-policy columns.

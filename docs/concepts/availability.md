@@ -142,12 +142,12 @@ this year only"), and bulk modifications ("starting next quarter we
 move the Thursday clinic to Friday") work the same way they do for
 events.
 
-## Bulk modifications and `*_with_bulk_modifications`
+## Bulk modifications
 
 When a recurring `AvailableTime` is split (e.g. "from April 1 onward,
 Tuesday clinic shifts from 9–12 to 8–11"), the original row is truncated
-with `UNTIL=2026-03-31` and a continuation row is created. Helpers like
-`only_calendars_available_in_ranges_with_bulk_modifications` traverse
-both the original and any continuations so callers see the consolidated
-schedule. See [recurrence.md](recurrence.md#bulk-modifications-and-splits)
+with `UNTIL=2026-03-31` and a continuation row is created on the same
+calendar. The continuation is a series of its own, so
+`only_calendars_available_in_ranges` expands it like any other series and
+needs no special variant. See [recurrence.md](recurrence.md#bulk-modifications-and-splits)
 for the full mechanism.
