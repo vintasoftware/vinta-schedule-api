@@ -1239,6 +1239,7 @@ class CalendarSyncService:
         existing_event.description = event.description
         existing_event.start_time = event.start_time
         existing_event.end_time = event.end_time
+        existing_event.ical_uid = event.ical_uid
         existing_event.meta["latest_original_payload"] = event.original_payload or {}
         changes.events_to_update.append(existing_event)
         changes.matched_event_ids.add(existing_external_id)
@@ -1323,6 +1324,7 @@ class CalendarSyncService:
         existing_blocked_time.end_time = event.end_time
         existing_blocked_time.reason = event.title
         existing_blocked_time.external_id = event.external_id
+        existing_blocked_time.ical_uid = event.ical_uid
         existing_blocked_time.meta["latest_original_payload"] = event.original_payload or {}
         changes.blocked_times_to_update.append(existing_blocked_time)
         changes.matched_event_ids.add(existing_blocked_time.external_id)
@@ -1353,6 +1355,7 @@ class CalendarSyncService:
                     title=event.title,
                     description=event.description,
                     external_id=event.external_id,
+                    ical_uid=event.ical_uid,
                     meta={"latest_original_payload": event.original_payload or {}},
                     organization_id=calendar.organization_id,
                     parent_recurring_object_fk=parent_event,
@@ -1376,6 +1379,7 @@ class CalendarSyncService:
                         timezone=event.timezone,
                         reason=event.title,
                         external_id=event.external_id,
+                        ical_uid=event.ical_uid,
                         meta={
                             "latest_original_payload": event.original_payload or {},
                             "pending_parent_external_id": event.recurring_event_id,
@@ -1403,6 +1407,7 @@ class CalendarSyncService:
                 title=event.title,
                 description=event.description,
                 external_id=event.external_id,
+                ical_uid=event.ical_uid,
                 meta={"latest_original_payload": event.original_payload or {}},
                 organization_id=calendar.organization_id,
                 recurrence_rule_fk=recurrence_rule,
@@ -1425,6 +1430,7 @@ class CalendarSyncService:
                     timezone=event.timezone,
                     reason=event.title,
                     external_id=event.external_id,
+                    ical_uid=event.ical_uid,
                     meta={"latest_original_payload": event.original_payload or {}},
                     organization_id=calendar.organization_id,
                 )
@@ -1544,7 +1550,8 @@ class CalendarSyncService:
 
         if changes.events_to_update:
             CalendarEvent.objects.bulk_update(
-                changes.events_to_update, ["title", "description", "start_time", "end_time"]
+                changes.events_to_update,
+                ["title", "description", "start_time", "end_time", "ical_uid"],
             )
 
         if changes.meetings_to_update:
@@ -1567,6 +1574,7 @@ class CalendarSyncService:
                     "timezone",
                     "reason",
                     "external_id",
+                    "ical_uid",
                     "meta",
                 ],
             )

@@ -1563,6 +1563,10 @@ class CalendarEvent(RecurringMixin):
     # one row could hold it. This is the documented exception to Django's "avoid null
     # on string fields" rule.
     external_id = models.CharField(max_length=255, unique=True, blank=True, null=True)
+    # The provider's iCalendar UID. Every attendee's copy of the event carries the same
+    # one, so it finds the copies the calendar sync imports onto other calendars.
+    # Empty for a provider-less event.
+    ical_uid = models.CharField(max_length=1024, blank=True, default="", db_default="")
 
     # Video meeting. ``meeting_kind`` is "" for an event with no meeting. For a
     # GENERATED meeting, ``meeting_url`` is the link the provider created, and stays
@@ -1862,6 +1866,10 @@ class BlockedTime(RecurringMixin):
     )
     reason = models.CharField(max_length=255, blank=True)
     external_id = models.CharField(max_length=255, blank=True)
+    # The iCalendar UID of the provider event the calendar sync imported this block
+    # from. Matches ``CalendarEvent.ical_uid`` when the block is another attendee's
+    # copy of that event. Empty for a block not imported from a provider.
+    ical_uid = models.CharField(max_length=1024, blank=True, default="", db_default="")
 
     # Block options. A null ``decline_scope`` is a block made without them: it is
     # never written to the calendar provider and cancels nothing. The nullable columns

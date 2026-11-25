@@ -143,9 +143,7 @@ For a function `calculate_business_hours_overlap` in app `calendar_integration`:
    docker compose run --rm api uv run python manage.py migrate calendar_integration
    ```
 
-   Reverse for version `0001` runs `DROP FUNCTION IF EXISTS calculate_business_hours_overlap;` (from the manager's `drop_command_template`).
-
-   **Caveat:** `DROP FUNCTION IF EXISTS <name>;` without an argument list fails when multiple overloads exist. If you ship two functions sharing a name (different signatures), use a custom `drop_command_template` on a subclass that includes the signature.
+   Reverse for version `0001` runs `DROP FUNCTION IF EXISTS calculate_business_hours_overlap(<its arguments>);` for each signature the file creates. The manager reads the signatures from the file's `CREATE [OR REPLACE] FUNCTION <name>(...)` headers, so overloads sharing a name are handled. Write every parameter as `[mode] name type [DEFAULT ...]`.
 
 ### Update existing function
 
@@ -155,10 +153,10 @@ For bumping `calculate_business_hours_overlap` from `0001` → `0002`:
 
 2. **Signature compatibility:**
    - Same argument list + same return type → `CREATE OR REPLACE FUNCTION` works in-place. No rebuild needed for callers / views / generated columns.
-   - Changed signature (added / removed / reordered / retyped arguments) → Postgres treats this as a different function. The old function persists until dropped. You must:
-     1. Drop the old function explicitly in `0002.sql` (or in a separate migration).
-     2. Rebuild every dependent object (views, generated columns, triggers, indexes, other functions calling it) in the same migration chain.
-     3. The reverse path must restore both the old function AND every rebuilt dependent.
+   - Changed signature (added / removed / reordered / retyped arguments) → Postgres treats this as a different function, not a replacement. `FunctionMigrationManager` handles the function itself: going forward it drops the previous version's signatures that `0002.sql` no longer creates, and going back it drops `0002`'s new signatures before restoring `0001`. Don't add a `DROP FUNCTION` to the SQL file or hand-write the migration's reverse. You still must:
+     1. Rebuild every dependent object (views, generated columns, triggers, indexes, other functions calling it) in the same migration chain — the drop fails while they depend on the old signature.
+     2. Make the reverse path restore every rebuilt dependent too.
+   - Same argument list but a different return type → `CREATE OR REPLACE` refuses it. The manager drops nothing here, because the signature is unchanged; drop and rebuild the function in its own migration step.
 
 3. **Migration calls `migration()` with `version="0002"`:** same shape as the version-bump in [create-postgres-view](../create-postgres-view/SKILL.md).
 

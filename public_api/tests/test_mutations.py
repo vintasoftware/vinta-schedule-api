@@ -11326,6 +11326,114 @@ class TestScopedTokenRescheduleAppointmentTypeEvent:
         )
 
     # ------------------------------------------------------------------
+    # Crew availability — every calendar the event occupies is checked
+    # ------------------------------------------------------------------
+
+    def test_reschedule_appointment_type_event_rejects_busy_non_primary_calendar(self):
+        """The new time must be free on every crew calendar, not only the primary one.
+
+        The secondary calendar already has another event at the new time, so the
+        reschedule is refused and neither the event nor its BlockedTime moves.
+        """
+        org = baker.make(Organization, name="AppointmentTypeResched BusyCrew Org")
+        _owner, _membership, primary_cal, secondary_cal, appointment_type = (
+            self._make_appointment_type_setup(org)
+        )
+        appointment_type_event, blocked_time = _make_appointment_type_event(
+            org, appointment_type, primary_cal, secondary_cal
+        )
+        baker.make(
+            _CalendarEvent,
+            organization=org,
+            calendar=secondary_cal,
+            title="Other booking",
+            timezone="UTC",
+            start_time_tz_unaware=datetime.datetime(2026, 11, 5, 14, 0),
+            end_time_tz_unaware=datetime.datetime(2026, 11, 5, 15, 0),
+            external_id=f"other-{uuid.uuid4().hex[:8]}",
+        )
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _RESCHEDULE_APPOINTMENT_TYPE_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._reschedule_appointment_type_input(org, appointment_type_event)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert data["errors"][0]["message"] == (
+            f"Selected calendars [{secondary_cal.id}] are not available for "
+            "the requested time window."
+        )
+        event = _CalendarEvent.objects.filter_by_organization(org.id).get(
+            id=appointment_type_event.id
+        )
+        old_start = datetime.datetime(2026, 11, 5, 10, 0)
+        assert event.start_time_tz_unaware.replace(tzinfo=None) == old_start
+        block = _BlockedTime.objects.filter_by_organization(org.id).get(id=blocked_time.id)
+        assert block.start_time_tz_unaware.replace(tzinfo=None) == old_start
+
+    def test_reschedule_appointment_type_event_rejects_a_taken_room(self):
+        """The room the event holds must be free at the new time too."""
+        org = baker.make(Organization, name="AppointmentTypeResched BusyRoom Org")
+        _owner, _membership, primary_cal, secondary_cal, appointment_type = (
+            self._make_appointment_type_setup(org)
+        )
+        appointment_type_event, blocked_time = _make_appointment_type_event(
+            org, appointment_type, primary_cal, secondary_cal
+        )
+        room = baker.make(
+            Calendar,
+            organization=org,
+            name="Theatre 1",
+            external_id=f"theatre-{uuid.uuid4().hex[:8]}",
+            calendar_type=CalendarType.RESOURCE,
+        )
+        baker.make(
+            ResourceAllocation, organization=org, event=appointment_type_event, calendar=room
+        )
+        other = baker.make(
+            _CalendarEvent,
+            organization=org,
+            calendar=baker.make(Calendar, organization=org, external_id=f"o-{uuid.uuid4().hex}"),
+            title="Other booking",
+            timezone="UTC",
+            start_time_tz_unaware=datetime.datetime(2026, 11, 5, 14, 0),
+            end_time_tz_unaware=datetime.datetime(2026, 11, 5, 15, 0),
+            external_id=f"other-{uuid.uuid4().hex[:8]}",
+        )
+        baker.make(ResourceAllocation, organization=org, event=other, calendar=room)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _RESCHEDULE_APPOINTMENT_TYPE_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._reschedule_appointment_type_input(org, appointment_type_event)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert data["errors"][0]["message"] == "Room is not available at the requested time."
+        old_start = datetime.datetime(2026, 11, 5, 10, 0)
+        event = _CalendarEvent.objects.filter_by_organization(org.id).get(
+            id=appointment_type_event.id
+        )
+        assert event.start_time_tz_unaware.replace(tzinfo=None) == old_start
+        block = _BlockedTime.objects.filter_by_organization(org.id).get(id=blocked_time.id)
+        assert block.start_time_tz_unaware.replace(tzinfo=None) == old_start
+
+    # ------------------------------------------------------------------
     # Non-appointment-type event → "Event not found."
     # ------------------------------------------------------------------
 

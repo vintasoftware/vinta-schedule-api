@@ -1,7 +1,8 @@
 import datetime
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from typing import TYPE_CHECKING
 
+from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from django.db.models import (
     Case,
@@ -408,12 +409,25 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
         )
 
     def only_calendars_available_in_ranges(
-        self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
+        self,
+        ranges: Iterable[tuple[datetime.datetime, datetime.datetime]],
+        *,
+        ignoring_event_id: int | None = None,
+        ignoring_blocked_time_ids: Collection[int] = (),
     ):
         """
         Returns calendars that have available time windows in all specified ranges.
+
+        ``ignoring_event_id`` and ``ignoring_blocked_time_ids`` name rows that do not
+        count as busy. A reschedule passes the event it moves and that event's own
+        blocked times, so the new time does not conflict with the old one.
         """
-        return self._only_calendars_available_in_ranges(ranges, with_bulk_modifications=False)
+        return self._only_calendars_available_in_ranges(
+            ranges,
+            with_bulk_modifications=False,
+            ignoring_event_id=ignoring_event_id,
+            ignoring_blocked_time_ids=ignoring_blocked_time_ids,
+        )
 
     def only_calendars_available_in_ranges_with_bulk_modifications(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
@@ -433,11 +447,15 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
         ranges: Iterable[tuple[datetime.datetime, datetime.datetime]],
         *,
         with_bulk_modifications: bool,
+        ignoring_event_id: int | None = None,
+        ignoring_blocked_time_ids: Collection[int] = (),
     ):
         from calendar_integration.models import BlockedTime, CalendarEvent
 
         if not ranges:
             return self.none()
+
+        ignored_blocked_time_ids = sorted(ignoring_blocked_time_ids)
 
         queries = []
         for start_datetime, end_datetime in ranges:
@@ -454,6 +472,11 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
                             F("id"),
                             Value(start_datetime, output_field=models.DateTimeField()),
                             Value(end_datetime, output_field=models.DateTimeField()),
+                            Value(ignoring_event_id, output_field=models.BigIntegerField()),
+                            Value(
+                                ignored_blocked_time_ids,
+                                output_field=ArrayField(models.BigIntegerField()),
+                            ),
                         ),
                     ),
                     default=Value(False),
@@ -477,6 +500,8 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
                     )
                 )
                 recurring_occurrences_field = "recurring_occurrences"
+            if ignoring_event_id is not None:
+                events_qs = events_qs.exclude(id=ignoring_event_id)
 
             event_overlaps_range = (
                 Q(start_time__range=(start_datetime, end_datetime))
@@ -501,6 +526,7 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
                         # See the ``AvailableTime`` subquery above.
                         BlockedTime.objects.unscoped()
                         .base_rows_only()
+                        .exclude(id__in=ignored_blocked_time_ids)
                         .filter(
                             Q(start_time__range=(start_datetime, end_datetime))
                             | Q(end_time__range=(start_datetime, end_datetime))
@@ -876,6 +902,17 @@ class BlockedTimeQuerySet(
     """
     Custom QuerySet for BlockedTime model to handle specific queries.
     """
+
+    def synced_copies_of_provider_event(
+        self, ical_uid: str, calendar_ids: Collection[int]
+    ) -> "BlockedTimeQuerySet":
+        """Blocked times on ``calendar_ids`` that the calendar sync imported from
+        another attendee's copy of the provider event with this iCalendar UID.
+
+        The UID is the same on every attendee's copy in every provider. The provider
+        event id is not: Outlook gives each mailbox's copy its own id.
+        """
+        return self.filter(ical_uid=ical_uid, calendar_fk_id__in=calendar_ids)
 
     def only_user_authored(self) -> "BlockedTimeQuerySet":
         """Exclude rows the recurrence machinery derived from another row.

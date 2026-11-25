@@ -63,6 +63,7 @@ def mock_ms_event() -> MSGraphEvent:
         organizer={"emailAddress": {"address": "organizer@example.com", "name": "Organizer"}},
         is_cancelled=False,
         original_payload={"id": "test_event_id", "subject": "Test Event"},
+        ical_uid="test_ical_uid",
     )
 
 
@@ -457,6 +458,7 @@ def test_get_event(mock_client_class, mock_settings, mock_credentials, mock_ms_e
 
     assert isinstance(result, CalendarEventAdapterOutputData)
     assert result.external_id == "test_event_id"
+    assert result.ical_uid == "test_ical_uid"
 
     mock_client.get_event.assert_called_once_with("test_event_id", "test_calendar_id")
 

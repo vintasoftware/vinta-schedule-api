@@ -412,6 +412,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
         return CalendarEventAdapterOutputData(
             calendar_external_id=event_data.calendar_external_id,
             external_id=created_event["id"],
+            ical_uid=created_event.get("iCalUID", ""),
             title=created_event["summary"],
             description=created_event.get("description", ""),
             start_time=self._parse_google_datetime(created_event["start"]),
@@ -464,6 +465,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
         return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=event["id"],
+            ical_uid=event.get("iCalUID", ""),
             title=event.get("summary", ""),
             description=event.get("description", ""),
             start_time=self._parse_google_datetime(event["start"]),
@@ -554,6 +556,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
         return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=event["id"],
+            ical_uid=event.get("iCalUID", ""),
             title=event.get("summary", ""),
             description=event.get("description", ""),
             start_time=self._parse_google_datetime(event["start"]),
@@ -616,6 +619,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
         return CalendarEventAdapterOutputData(
             calendar_external_id=calendar_id,
             external_id=updated_event["id"],
+            ical_uid=updated_event.get("iCalUID", ""),
             title=updated_event["summary"],
             description=updated_event.get("description", ""),
             start_time=self._parse_google_datetime(updated_event["start"]),

@@ -358,6 +358,9 @@ class CalendarEventAdapterOutputData:
     meeting_url: str = ""
     # True while the provider is still creating a requested conference.
     meeting_pending: bool = False
+    # The iCalendar UID. Unlike ``external_id``, it is the same on every attendee's
+    # copy of the event in every provider. Empty when the provider sent none.
+    ical_uid: str = ""
 
 
 @dataclass
