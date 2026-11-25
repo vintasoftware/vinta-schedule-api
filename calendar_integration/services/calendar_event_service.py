@@ -1199,9 +1199,11 @@ class CalendarEventService:
         """Check that a caller may book ``room_ids`` for ``[start_time, end_time)``.
 
         Every id must be an active room (resource calendar) of the organization, and
-        no room may already be taken during that time: not by its own calendar's
-        events or blocked times, and not by another event that holds it. Touching
-        spans do not overlap, so back-to-back bookings are fine.
+        each room must be free during that time by the check every calendar goes
+        through (``only_calendars_available_in_ranges``): no event or blocked time of
+        its own calendar, and no other event that holds it, overlaps the time, and a
+        room that manages its availability windows has one open for all of it.
+        Touching spans do not overlap, so back-to-back bookings are fine.
 
         It checks the one span it is given. To give rooms to an event that may be a
         recurring series, use ``validate_room_changes``, which checks every
@@ -1409,27 +1411,25 @@ class CalendarEventService:
         *,
         ignoring_event_ids: Collection[int] = (),
     ) -> None:
-        """Raise when any of ``room_ids`` is taken during any of ``spans``.
+        """Raise when any of ``room_ids`` is not free during every one of ``spans``.
 
-        One read of the rooms' bookings covers all the spans, from the first start to
-        the last end.
+        Free is what ``Calendar.objects.only_calendars_available_in_ranges`` checks for
+        every calendar, so a room is held both by its own calendar's bookings and by
+        events on other calendars that allocate it. One query checks all the spans.
         """
         context = cast("BaseCalendarService", self._context)
         if not is_initialized_or_authenticated_calendar_service(context):
             raise
         if not spans:
             return
-        booked = slot_engine.fetch_blocking_spans(
-            context.organization.id,
-            set(room_ids),
-            min(start for start, _ in spans),
-            max(end for _, end in spans),
-            with_bulk_modifications=False,
-            ignoring_event_ids=ignoring_event_ids,
+        room_ids = set(room_ids)
+        free_room_ids = set(
+            Calendar.objects.filter_by_organization(context.organization.id)
+            .filter(id__in=room_ids)
+            .only_calendars_available_in_ranges(spans, ignoring_event_ids=ignoring_event_ids)
+            .values_list("id", flat=True)
         )
-        if slot_engine.any_spans_overlap(
-            spans, [span for room_spans in booked.values() for span in room_spans]
-        ):
+        if free_room_ids != room_ids:
             raise RoomUnavailableError()
 
     def validate_room_changes(

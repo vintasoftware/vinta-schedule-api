@@ -1,5 +1,16 @@
-from django.contrib.postgres.fields import ArrayField
-from django.db.models import BooleanField, ExpressionWrapper, Func, JSONField, Value
+import datetime
+from collections.abc import Collection, Iterable
+
+from django.contrib.postgres.fields import ArrayField, DateTimeRangeField
+from django.db.backends.postgresql.psycopg_any import DateTimeTZRange
+from django.db.models import (
+    BigIntegerField,
+    BooleanField,
+    ExpressionWrapper,
+    Func,
+    JSONField,
+    Value,
+)
 
 
 def _with_overlap(args, overlap: bool):
@@ -178,15 +189,37 @@ class GetAvailableTimeOccurrencesWithBulkModificationsJSON(Func):
     output_field = ArrayField(JSONField())  # PostgreSQL function returns TEXT[] with JSON strings
 
 
-class ManagedCalendarIsFreeInRange(Func):
-    """Whether a managed calendar can take a booking for ``[start, end)``.
+class CalendarIsFreeInRanges(Func):
+    """Whether a calendar can take a booking for every range in ``ranges``.
 
-    Arguments: organization id, calendar id, start, end, and optionally an event id
-    and an array of blocked time ids that do not count as busy. True when an
-    availability window occurrence (recurring windows expanded) covers the range and
-    no other event or blocked time occurrence overlaps it. See
-    ``migrations/sql/functions/managed_calendar_is_free_in_range``.
+    True when no event (on the calendar, or holding it as a room), and no blocked
+    time, overlaps any range, with recurring rows expanded; and, for a calendar that
+    manages its availability windows, one window occurrence covers each range. Events
+    in ``ignoring_event_ids`` and blocked times in ``ignoring_blocked_time_ids`` do not
+    count as busy. See ``migrations/sql/functions/calendar_is_free_in_ranges``.
     """
 
-    function = "managed_calendar_is_free_in_range"
+    function = "calendar_is_free_in_ranges"
     output_field = BooleanField()
+
+    def __init__(
+        self,
+        organization_id,
+        calendar_id,
+        ranges: Iterable[tuple[datetime.datetime, datetime.datetime]],
+        *,
+        ignoring_event_ids: Collection[int] = (),
+        ignoring_blocked_time_ids: Collection[int] = (),
+        **kwargs,
+    ):
+        super().__init__(
+            organization_id,
+            calendar_id,
+            Value(
+                [DateTimeTZRange(start, end) for start, end in ranges],
+                output_field=ArrayField(DateTimeRangeField()),
+            ),
+            Value(sorted(ignoring_event_ids), output_field=ArrayField(BigIntegerField())),
+            Value(sorted(ignoring_blocked_time_ids), output_field=ArrayField(BigIntegerField())),
+            **kwargs,
+        )

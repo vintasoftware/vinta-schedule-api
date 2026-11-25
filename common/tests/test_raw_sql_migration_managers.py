@@ -119,6 +119,15 @@ def test_reversing_the_first_version_drops_each_signature_it_created(versions):
     )
 
 
+def test_retiring_a_version_drops_its_signatures_and_going_back_creates_it_again(versions):
+    versions(v0001=FOUR_ARGS, v0002=SIX_ARGS)
+
+    retirement = MyFnManager("app", "0002").retirement()
+
+    assert retirement.sql == f"DROP FUNCTION IF EXISTS my_fn({SIX_SIGNATURE});\n"
+    assert retirement.reverse_sql == SIX_ARGS
+
+
 def test_a_version_file_that_does_not_create_the_routine_is_refused(versions):
     versions(v0001="CREATE FUNCTION some_other_fn() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;")
 

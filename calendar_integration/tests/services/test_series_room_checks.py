@@ -15,6 +15,11 @@ all of them, not only the first:
 The occurrences come from the Postgres expansion, so the rule's COUNT ends the check,
 a cancelled occurrence does not need the room, and occurrences already over are not
 checked. ``ROOM_CHECK_LOOKAHEAD`` is the furthest a series is checked ahead.
+
+A room is free by the same check as every other calendar
+(``only_calendars_available_in_ranges``): it is taken by its own events and blocked
+times, recurring ones included, and by events elsewhere that hold it; a room that
+manages its availability windows is free only inside them.
 """
 
 import datetime
@@ -27,13 +32,14 @@ from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.exceptions import RoomUnavailableError
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import (
+    AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
     EventRecurrenceException,
+    RecurrenceRule,
     ResourceAllocation,
 )
-from calendar_integration.services import slot_engine
 from calendar_integration.services.calendar_event_service import EventSchedule
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
@@ -182,10 +188,31 @@ def _taken_by_another_series(room, calendar):
     )
 
 
+def _taken_by_a_recurring_blocked_time(room, calendar):
+    """A daily block from Saturday 15th: only its third occurrence lands on Monday."""
+    rule = RecurrenceRule.objects.create(
+        organization=room.organization, frequency="DAILY", interval=1, count=3
+    )
+    baker.make(
+        BlockedTime,
+        organization=room.organization,
+        calendar_fk=room,
+        start_time_tz_unaware=_naive(_at(15, 11)),
+        end_time_tz_unaware=_naive(_at(15, 12)),
+        timezone="UTC",
+        recurrence_rule_fk=rule,
+    )
+
+
 @pytest.mark.parametrize(
     "take_the_room",
-    [_taken_by_an_event, _taken_by_a_blocked_time, _taken_by_another_series],
-    ids=["event", "blocked-time", "another-series"],
+    [
+        _taken_by_an_event,
+        _taken_by_a_blocked_time,
+        _taken_by_another_series,
+        _taken_by_a_recurring_blocked_time,
+    ],
+    ids=["event", "blocked-time", "another-series", "recurring-blocked-time"],
 )
 def test_moving_a_series_onto_a_time_its_room_is_taken_on_a_later_occurrence_is_refused(
     service, room, host_calendar, take_the_room
@@ -316,6 +343,39 @@ def test_adding_a_room_taken_on_a_later_occurrence_is_refused(service, room, hos
         service.validate_room_changes(series, [room.id], series.start_time, series.end_time)
 
 
+def test_a_room_that_manages_its_windows_is_free_only_inside_them(
+    service, organization, room, host_calendar
+):
+    """Open on Mondays 08:00-12:00 from the 3rd to the 10th only."""
+    rule = RecurrenceRule.objects.create(
+        organization=organization, frequency="WEEKLY", interval=1, count=2
+    )
+    AvailableTime.objects.create(
+        organization=organization,
+        calendar=room,
+        start_time_tz_unaware=_naive(_at(3, 8)),
+        end_time_tz_unaware=_naive(_at(3, 12)),
+        timezone="UTC",
+        recurrence_rule_fk=rule,
+    )
+    room.manage_available_windows = True
+    room.save(update_fields=["manage_available_windows"])
+
+    two_mondays = _series(host_calendar, _at(3, 11), _at(3, 11, 30), count=2)
+    assert (
+        service.validate_room_changes(
+            two_mondays, [room.id], two_mondays.start_time, two_mondays.end_time
+        )
+        is None
+    )
+
+    four_mondays = _series(host_calendar, _at(3, 11), _at(3, 11, 30))
+    with pytest.raises(RoomUnavailableError):
+        service.validate_room_changes(
+            four_mondays, [room.id], four_mondays.start_time, four_mondays.end_time
+        )
+
+
 def test_adding_a_room_free_on_every_occurrence_is_allowed(service, room, host_calendar):
     series = _series(host_calendar, _at(3, 10), _at(3, 10, 30))
     _taken_by_an_event(room, host_calendar)
@@ -379,24 +439,3 @@ def test_an_endless_series_is_checked_up_to_the_lookahead(
             check()
     else:
         check()
-
-
-def _spans(*hours: tuple[int, int]) -> list[slot_engine.Span]:
-    return [(_at(3, start), _at(3, end)) for start, end in hours]
-
-
-@pytest.mark.parametrize(
-    ("spans", "others", "expected"),
-    [
-        (_spans((10, 11), (12, 13)), _spans((11, 12)), False),
-        (_spans((10, 11), (12, 13)), _spans((12, 14)), True),
-        (_spans((12, 13), (8, 9)), _spans((9, 12), (8, 10)), True),
-        (_spans((14, 15)), _spans((8, 20), (9, 10)), True),
-        (_spans((8, 9), (10, 11)), _spans((9, 10), (11, 12), (13, 14)), False),
-        ([], _spans((8, 9)), False),
-    ],
-    ids=["gaps", "overlap", "unsorted", "inside-an-early-long-span", "touching", "empty"],
-)
-def test_any_spans_overlap(spans, others, expected):
-    assert slot_engine.any_spans_overlap(spans, others) is expected
-    assert slot_engine.any_spans_overlap(others, spans) is expected
