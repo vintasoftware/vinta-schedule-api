@@ -2984,8 +2984,9 @@ class AppointmentTypeService:
         """For every range, list which calendars in each slot's pool are available.
 
         A slot with an empty `available_calendar_ids` is unbookable for that range.
-        Set `with_bulk_modifications=True` to expand recurring events through
-        their bulk-modification continuation series.
+        `with_bulk_modifications` does not change the result: a bulk modification's
+        continuation series is a row of its own, which the availability check
+        already expands.
 
         Appointment-type-scoped availability windows are intersected in AFTER base
         availability: a calendar with no
@@ -3686,7 +3687,7 @@ class AppointmentTypeService:
             crew_calendar_ids,
             start_time,
             end_time,
-            ignoring_event_id=event.id,
+            ignoring_event_ids={event.id},
             ignoring_blocked_time_ids=own_blocked_time_ids,
         )
         # Appointment-type-scoped availability windows: reject the reschedule if ANY
@@ -3864,12 +3865,12 @@ class AppointmentTypeService:
         start: datetime.datetime,
         end: datetime.datetime,
         *,
-        ignoring_event_id: int | None = None,
+        ignoring_event_ids: Collection[int] = (),
         ignoring_blocked_time_ids: Collection[int] = (),
     ) -> None:
         """Raise unless every calendar in ``calendar_ids`` is free for ``[start, end)``.
 
-        ``ignoring_event_id`` / ``ignoring_blocked_time_ids`` name rows that do not
+        ``ignoring_event_ids`` / ``ignoring_blocked_time_ids`` name rows that do not
         count as busy (see ``CalendarQuerySet.only_calendars_available_in_ranges``).
         """
         calendar_ids = set(calendar_ids)
@@ -3880,7 +3881,7 @@ class AppointmentTypeService:
             .filter(id__in=calendar_ids)
             .only_calendars_available_in_ranges(
                 [(start, end)],
-                ignoring_event_id=ignoring_event_id,
+                ignoring_event_ids=ignoring_event_ids,
                 ignoring_blocked_time_ids=ignoring_blocked_time_ids,
             )
             .values_list("id", flat=True)

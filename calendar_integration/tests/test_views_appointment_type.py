@@ -1126,6 +1126,25 @@ class TestAppointmentTypeEventActions:
         slot_ids_in_payload = {s["slot_id"] for s in response.data[0]["slots"]}
         assert slot_ids_in_payload == set(owned_appointment_type.slots.values_list("id", flat=True))
 
+    @pytest.mark.parametrize(
+        "length", [timedelta(0), timedelta(hours=-1)], ids=["empty", "reversed"]
+    )
+    def test_availability_action_refuses_a_range_that_does_not_move_forward(
+        self, auth_client, owned_appointment_type, length
+    ):
+        start = datetime.datetime(2030, 6, 3, 10, 0, tzinfo=datetime.UTC)
+        url = reverse("api:AppointmentTypes-availability", kwargs={"pk": owned_appointment_type.id})
+        response = auth_client.post(
+            url,
+            {
+                "ranges": [
+                    {"start_time": start.isoformat(), "end_time": (start + length).isoformat()}
+                ]
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+
     def test_bookable_slots_action(
         self, auth_client, owned_appointment_type, internal_calendars, organization
     ):

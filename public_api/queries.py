@@ -1027,6 +1027,9 @@ class Query:
         ranges: list[DateTimeRangeInput],
     ) -> list[AppointmentTypeRangeAvailabilityGraphQLType]:
         """For each range, list which calendars in each slot's pool are available."""
+        for r in ranges:
+            if r.end_time <= r.start_time:
+                raise GraphQLError("Invalid time range.")
         org = _get_org(info)
         deps = get_query_dependencies()
         deps.appointment_type_service.initialize(organization=org)

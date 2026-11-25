@@ -2,7 +2,6 @@ import datetime
 from collections.abc import Collection, Iterable
 from typing import TYPE_CHECKING
 
-from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from django.db.models import (
     Case,
@@ -31,13 +30,13 @@ from calendar_integration.constants import (
     ExternalEventChangeRequestStatus,
 )
 from calendar_integration.database_functions import (
+    CalendarIsFreeInRanges,
     GetAvailableTimeOccurrencesJSON,
     GetAvailableTimeOccurrencesWithBulkModificationsJSON,
     GetBlockedTimeOccurrencesJSON,
     GetBlockedTimeOccurrencesWithBulkModificationsJSON,
     GetEventOccurrencesJSON,
     GetEventOccurrencesWithBulkModificationsJSON,
-    ManagedCalendarIsFreeInRange,
 )
 from common.querysets import OrganizationScopedQuerySet
 from organizations.authorization import membership_holds_permission
@@ -412,157 +411,47 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
         self,
         ranges: Iterable[tuple[datetime.datetime, datetime.datetime]],
         *,
-        ignoring_event_id: int | None = None,
+        ignoring_event_ids: Collection[int] = (),
         ignoring_blocked_time_ids: Collection[int] = (),
     ):
-        """
-        Returns calendars that have available time windows in all specified ranges.
+        """Calendars free for every range in ``ranges``.
 
-        ``ignoring_event_id`` and ``ignoring_blocked_time_ids`` name rows that do not
-        count as busy. A reschedule passes the event it moves and that event's own
-        blocked times, so the new time does not conflict with the old one.
+        Free is what the ``calendar_is_free_in_ranges`` Postgres function checks, for
+        every kind of calendar: no event on the calendar or holding it as a room, and
+        no blocked time, overlaps a range, with recurring rows expanded; and a calendar
+        that manages its availability windows has a window occurrence covering each
+        range.
+
+        ``ignoring_event_ids`` and ``ignoring_blocked_time_ids`` name rows that do not
+        count as busy. A move passes the event it moves (and its series, for a moved
+        occurrence) and that event's own blocked times, so the new time does not
+        conflict with the old one.
         """
-        return self._only_calendars_available_in_ranges(
-            ranges,
-            with_bulk_modifications=False,
-            ignoring_event_id=ignoring_event_id,
-            ignoring_blocked_time_ids=ignoring_blocked_time_ids,
+        ranges = list(ranges)
+        if not ranges:
+            return self.none()
+        return self.filter(
+            CalendarIsFreeInRanges(
+                F("organization_id"),
+                F("id"),
+                ranges,
+                ignoring_event_ids=ignoring_event_ids,
+                ignoring_blocked_time_ids=ignoring_blocked_time_ids,
+            )
         )
 
     def only_calendars_available_in_ranges_with_bulk_modifications(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):
+        """The same check as ``only_calendars_available_in_ranges``.
+
+        A bulk modification splits a series into its shortened original and a
+        continuation series, which is a row of its own on the same calendar.
+        ``calendar_is_free_in_ranges`` expands every series row, so the continuation's
+        occurrences already count. Kept for the availability searches that take a
+        bulk-modification variant as a whole.
         """
-        Same as `only_calendars_available_in_ranges`, but recurring events and
-        blocked times are expanded via their bulk-modification continuation
-        series (`annotate_recurring_occurrences_with_bulk_modifications_on_date_range`).
-        Use this when the caller has split a recurring series with a bulk
-        modification and needs the continuation occurrences to count against
-        availability.
-        """
-        return self._only_calendars_available_in_ranges(ranges, with_bulk_modifications=True)
-
-    def _only_calendars_available_in_ranges(
-        self,
-        ranges: Iterable[tuple[datetime.datetime, datetime.datetime]],
-        *,
-        with_bulk_modifications: bool,
-        ignoring_event_id: int | None = None,
-        ignoring_blocked_time_ids: Collection[int] = (),
-    ):
-        from calendar_integration.models import BlockedTime, CalendarEvent
-
-        if not ranges:
-            return self.none()
-
-        ignored_blocked_time_ids = sorted(ignoring_blocked_time_ids)
-
-        queries = []
-        for start_datetime, end_datetime in ranges:
-            # For managed calendars: an availability window occurrence (recurring
-            # windows expanded) must cover the range, and no event or blocked time may
-            # overlap it. The ``CASE`` keeps the function from running for unmanaged
-            # calendars, which the ``unmanaged_query`` below handles.
-            managed_query = Q(
-                Case(
-                    When(
-                        manage_available_windows=True,
-                        then=ManagedCalendarIsFreeInRange(
-                            F("organization_id"),
-                            F("id"),
-                            Value(start_datetime, output_field=models.DateTimeField()),
-                            Value(end_datetime, output_field=models.DateTimeField()),
-                            Value(ignoring_event_id, output_field=models.BigIntegerField()),
-                            Value(
-                                ignored_blocked_time_ids,
-                                output_field=ArrayField(models.BigIntegerField()),
-                            ),
-                        ),
-                    ),
-                    default=Value(False),
-                    output_field=models.BooleanField(),
-                )
-            )
-
-            if with_bulk_modifications:
-                # ``unscoped()``: the queryset is only ever used as a correlated
-                # subquery below, narrowed by ``calendar_fk_id=OuterRef("id")`` against
-                # the outer organization-scoped calendar row.
-                events_qs = CalendarEvent.objects.unscoped().annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
-                    start_datetime, end_datetime
-                )
-                recurring_occurrences_field = "recurring_occurrences"
-            else:
-                # See the bulk-modifications branch above.
-                events_qs = (
-                    CalendarEvent.objects.unscoped().annotate_recurring_occurrences_on_date_range(
-                        start_datetime, end_datetime
-                    )
-                )
-                recurring_occurrences_field = "recurring_occurrences"
-            if ignoring_event_id is not None:
-                events_qs = events_qs.exclude(id=ignoring_event_id)
-
-            event_overlaps_range = (
-                Q(start_time__range=(start_datetime, end_datetime))
-                | Q(end_time__range=(start_datetime, end_datetime))
-                | Q(start_time__lte=start_datetime, end_time__gte=end_datetime)
-                | Q(**{f"{recurring_occurrences_field}__len__gt": 0})
-            )
-
-            # For unmanaged calendars: must NOT have conflicting events or blocked times
-            unmanaged_query = Q(
-                manage_available_windows=False,
-            ) & ~Q(
-                Q(
-                    id__in=Subquery(
-                        events_qs.filter(event_overlaps_range, calendar_fk_id=OuterRef("id"))
-                        .values("calendar_fk_id")
-                        .distinct()
-                    )
-                )
-                | Q(
-                    id__in=Subquery(
-                        # See the ``AvailableTime`` subquery above.
-                        BlockedTime.objects.unscoped()
-                        .base_rows_only()
-                        .exclude(id__in=ignored_blocked_time_ids)
-                        .filter(
-                            Q(start_time__range=(start_datetime, end_datetime))
-                            | Q(end_time__range=(start_datetime, end_datetime))
-                            | Q(start_time__lte=start_datetime, end_time__gte=end_datetime),
-                            calendar_fk_id=OuterRef("id"),
-                        )
-                        .values("calendar_fk_id")
-                        .distinct()
-                    )
-                )
-            )
-
-            # A room (resource calendar), managed or not, is also taken by an event on
-            # another calendar that holds it as a resource allocation. Such an event
-            # writes nothing on the room's own calendar, so neither check above sees it.
-            held_as_room = Q(
-                id__in=Subquery(
-                    events_qs.filter(
-                        event_overlaps_range,
-                        resource_allocations__calendar_fk_id=OuterRef("id"),
-                    )
-                    .values("resource_allocations__calendar_fk_id")
-                    .distinct()
-                )
-            )
-
-            # Combine both conditions
-            range_query = (managed_query | unmanaged_query) & ~held_as_room
-            queries.append(range_query)
-
-        # All ranges must be satisfied (AND operation)
-        combined_query = queries[0]
-        for query in queries[1:]:
-            combined_query &= query
-
-        return self.filter(combined_query)
+        return self.only_calendars_available_in_ranges(ranges)
 
     def annotate_effective_policy(self) -> "CalendarQuerySet":
         """Annotate the four ``effective_*_seconds`` booking-policy columns.
@@ -1018,10 +907,10 @@ class AppointmentTypeQuerySet(OrganizationScopedQuerySet):
     def only_appointment_types_bookable_in_ranges_with_bulk_modifications(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):
-        """
-        Same as `only_appointment_types_bookable_in_ranges` but expands recurring events
-        through their bulk-modification continuation series so split-off
-        occurrences count against availability.
+        """The same check as `only_appointment_types_bookable_in_ranges`.
+
+        Calendar availability gives the same answer with or without bulk
+        modifications (see `only_calendars_available_in_ranges_with_bulk_modifications`).
         """
         return self._only_appointment_types_bookable_in_ranges(ranges, with_bulk_modifications=True)
 

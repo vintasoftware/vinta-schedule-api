@@ -2695,6 +2695,8 @@ class AppointmentTypeViewSet(VintaScheduleModelViewSet):
         ranges = [
             (r["start_time"], r["end_time"]) for r in input_serializer.validated_data["ranges"]
         ]
+        if any(end <= start for start, end in ranges):
+            raise ValidationError({"ranges": ["Each range must end after it starts."]})
         result = appointment_type_service.check_appointment_type_availability(
             appointment_type_id=appointment_type.id, ranges=ranges
         )

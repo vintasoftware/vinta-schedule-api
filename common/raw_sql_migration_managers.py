@@ -194,6 +194,17 @@ class RoutineMigrationManager(BaseRawSQLMigrationManager):
             return self._drop(self.signatures(self.version))
         return self._drop_left_behind(self.version, previous) + self.read_version(previous)
 
+    def retirement(self):
+        """A migration operation that drops this version's routine for good.
+
+        Use it when a routine is replaced by one under another name. Going back
+        creates this version again.
+        """
+        return migrations.RunSQL(
+            sql=self._drop(self.signatures(self.version)),
+            reverse_sql=self.read_version(self.version),
+        )
+
 
 class FunctionMigrationManager(RoutineMigrationManager):
     migration_type = "function"

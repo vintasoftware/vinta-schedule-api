@@ -60,7 +60,7 @@ Boundary semantics (decided once, applied consistently):
 """
 
 import datetime
-from collections.abc import Collection, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from typing import NamedTuple
 
 from django.db.models import Q, QuerySet
@@ -210,7 +210,6 @@ def fetch_blocking_spans(
     search_window_end: datetime.datetime,
     *,
     with_bulk_modifications: bool,
-    ignoring_event_ids: Collection[int] = (),
 ) -> SpansByCalendarId:
     """Batched blocking (``CalendarEvent`` + ``BlockedTime``) spans for the calendars.
 
@@ -221,9 +220,6 @@ def fetch_blocking_spans(
     A room (resource calendar) is also taken by every event that holds it as a
     resource allocation. Those events live on other calendars and write nothing on
     the room's own calendar, so a third query adds them under the room's id.
-
-    Events in ``ignoring_event_ids`` do not block. Moving an event passes its own
-    rows, so its new time does not conflict with its old one.
     """
     spans: SpansByCalendarId = {}
     if not calendar_ids:
@@ -239,8 +235,6 @@ def fetch_blocking_spans(
         events_qs = CalendarEvent.objects.filter_by_organization(
             organization_id
         ).annotate_recurring_occurrences_on_date_range(search_window_start, search_window_end)
-    if ignoring_event_ids:
-        events_qs = events_qs.exclude(id__in=ignoring_event_ids)
 
     _add_event_spans(
         spans,
