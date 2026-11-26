@@ -1340,13 +1340,14 @@ class CalendarEventService:
 
     def _occurrence_spans(
         self,
-        event: CalendarEvent,
+        calendar_id: int,
+        event: CalendarEvent | None,
         start_time: datetime.datetime,
         end_time: datetime.datetime,
         schedule: EventSchedule,
     ) -> list[slot_engine.Span]:
-        """The spans ``event`` takes under ``schedule``, which runs it
-        ``[start_time, end_time)``.
+        """The spans an event on ``calendar_id`` takes under ``schedule``, which runs
+        it ``[start_time, end_time)``. ``event`` is ``None`` for an event not created yet.
 
         An event without a rule takes the one span. A series takes every occurrence
         that ends after the later of ``start_time`` and now, up to
@@ -1354,11 +1355,12 @@ class CalendarEventService:
         the Postgres expansion stops at 1000 occurrences. Past occurrences are not
         returned: they cannot be booked any more.
 
-        The occurrences come from ``calculate_recurring_events``, so a cancelled
-        occurrence is left out and a moved one is listed at its own time. That
-        function reads the series from its row. When ``schedule`` is not the stored
-        one, the row takes it inside a savepoint, and the savepoint is rolled back once
-        the occurrences are read: nothing is written.
+        The occurrences come from ``calculate_recurring_events``, which reads the
+        series from its row, so a cancelled occurrence is left out and a moved one is
+        listed at its own time. When ``schedule`` is not what the row holds, the row
+        takes it inside a savepoint. For an event not created yet, a stand-in row is
+        inserted there instead. The savepoint is rolled back once the occurrences are
+        read: nothing is written.
         """
         if schedule.recurrence_rule is None:
             return [(start_time, end_time)]
@@ -1366,25 +1368,46 @@ class CalendarEventService:
         if not is_initialized_or_authenticated_calendar_service(context):
             raise
 
+        def schedule_columns(*, with_new_rule: bool) -> dict[str, Any]:
+            """The row's columns for ``schedule``; saves a rule row when asked to."""
+            columns: dict[str, Any] = {
+                "start_time_tz_unaware": schedule.start_time_tz_unaware,
+                "end_time_tz_unaware": schedule.end_time_tz_unaware,
+                "timezone": schedule.timezone,
+            }
+            if with_new_rule:
+                rule = RecurrenceRule.from_rrule_string(
+                    cast("str", schedule.recurrence_rule), context.organization
+                )
+                rule.save()
+                columns["recurrence_rule_fk"] = rule
+            return columns
+
         window_start = max(start_time, timezone.now())
-        events = CalendarEvent.objects.filter_by_organization(context.organization.id).filter(
-            id=event.id
-        )
-        stored = EventSchedule.stored(event)
+        events = CalendarEvent.objects.filter_by_organization(context.organization.id)
         with transaction.atomic():
-            if schedule != stored:
-                new_values: dict[str, Any] = {
-                    "start_time_tz_unaware": schedule.start_time_tz_unaware,
-                    "end_time_tz_unaware": schedule.end_time_tz_unaware,
-                    "timezone": schedule.timezone,
-                }
-                if schedule.recurrence_rule != stored.recurrence_rule:
-                    rule = RecurrenceRule.from_rrule_string(
-                        schedule.recurrence_rule, context.organization
+            if event is None:
+                # ``bulk_create`` rather than ``create``: the stand-in sends no signals.
+                [stand_in] = CalendarEvent.objects.bulk_create(
+                    [
+                        CalendarEvent(
+                            organization=context.organization,
+                            calendar_fk_id=calendar_id,
+                            title="",
+                            **schedule_columns(with_new_rule=True),
+                        )
+                    ]
+                )
+                events = events.filter(id=stand_in.id)
+            else:
+                events = events.filter(id=event.id)
+                stored = EventSchedule.stored(event)
+                if schedule != stored:
+                    events.update(
+                        **schedule_columns(
+                            with_new_rule=schedule.recurrence_rule != stored.recurrence_rule
+                        )
                     )
-                    rule.save()
-                    new_values["recurrence_rule_fk"] = rule
-                events.update(**new_values)
             occurrences = (
                 events.annotate_recurring_occurrences_on_date_range(
                     window_start,
@@ -1434,39 +1457,46 @@ class CalendarEventService:
 
     def validate_room_changes(
         self,
-        event: CalendarEvent,
-        room_ids: Iterable[int],
-        start_time: datetime.datetime,
-        end_time: datetime.datetime,
+        calendar_id: int,
+        event_data: CalendarEventInputData,
+        *,
+        event: CalendarEvent | None = None,
     ) -> None:
-        """Check the rooms an update gives ``event`` for ``[start_time, end_time)``.
+        """Check the rooms ``event_data`` gives an event on ``calendar_id``.
 
-        Only rooms in ``room_ids`` that ``event`` does not hold yet go through
-        ``validate_requested_rooms``. A room it already holds is kept as it is, even if
-        it was disabled since. ``update_event`` checks the rooms it keeps when it moves
-        the event (``assert_kept_rooms_free``). When ``event`` is a recurring series,
-        the added rooms must be free for each of its occurrences
-        (``_occurrence_spans``), under its stored rule and timezone.
+        ``event`` is the event being updated, or ``None`` for one about to be created.
+        Only rooms it does not hold yet are checked, all of them for a new event: each
+        must be an active room of the organization, free for every occurrence the
+        event will have under ``event_data``'s time, timezone and rule
+        (``_occurrence_spans``). A room the event already holds is kept as it is, even
+        if it was disabled since; ``update_event`` re-checks it when the event moves.
+
+        Call it before ``create_event`` / ``update_event``, in their transaction: it
+        locks the rooms like ``validate_requested_rooms``. Those two do not call it,
+        because other flows (splitting a series, moving an event) send an event's rooms
+        again.
 
         :raises RoomNotFoundError: an added id is not an active room of the organization.
         :raises RoomUnavailableError: an added room is taken during one of the spans.
         """
-        current_room_ids = {
-            ra.calendar_fk_id for ra in event.resource_allocations.all() if ra.calendar_fk_id
-        }
-        added_room_ids = set(room_ids) - current_room_ids
+        held_room_ids = (
+            {ra.calendar_fk_id for ra in event.resource_allocations.all() if ra.calendar_fk_id}
+            if event is not None
+            else set()
+        )
+        added_room_ids = {r.resource_id for r in event_data.resource_allocations} - held_room_ids
         if not added_room_ids:
             return
-        stored_rule = EventSchedule.stored(event).recurrence_rule
+        schedule = self._requested_schedule(
+            event_data.start_time,
+            event_data.end_time,
+            iana_tz=event_data.timezone,
+            recurrence_rule=event_data.recurrence_rule,
+        )
         self._validate_requested_rooms_over(
             added_room_ids,
             self._occurrence_spans(
-                event,
-                start_time,
-                end_time,
-                self._requested_schedule(
-                    start_time, end_time, iana_tz=event.timezone, recurrence_rule=stored_rule
-                ),
+                calendar_id, event, event_data.start_time, event_data.end_time, schedule
             ),
         )
 
@@ -1578,7 +1608,11 @@ class CalendarEventService:
                     # series does, adds none, so it checks nothing.
                     held = set(
                         self._occurrence_spans(
-                            event, event.start_time, event.end_time, EventSchedule.stored(event)
+                            calendar_id,
+                            event,
+                            event.start_time,
+                            event.end_time,
+                            EventSchedule.stored(event),
                         )
                     )
                     self.assert_kept_rooms_free(
@@ -1586,7 +1620,11 @@ class CalendarEventService:
                         [
                             span
                             for span in self._occurrence_spans(
-                                event, event_data.start_time, event_data.end_time, schedule
+                                calendar_id,
+                                event,
+                                event_data.start_time,
+                                event_data.end_time,
+                                schedule,
                             )
                             if span not in held
                         ],

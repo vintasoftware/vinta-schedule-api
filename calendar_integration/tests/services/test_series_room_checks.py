@@ -126,6 +126,20 @@ def _series(calendar, start, end, *, frequency="WEEKLY", count=4, room=None, tit
     return series
 
 
+def room_change(event, rooms) -> CalendarEventInputData:
+    """A change that gives ``event`` ``rooms`` at its stored time, timezone and rule."""
+    rule = event.recurrence_rule
+    return CalendarEventInputData(
+        title=None,
+        description=None,
+        start_time=event.start_time,
+        end_time=event.end_time,
+        timezone=event.timezone,
+        resource_allocations=[ResourceAllocationInputData(resource_id=room.id) for room in rooms],
+        recurrence_rule=rule.to_rrule_string() if rule else None,
+    )
+
+
 def _event_holding(room, calendar, start, end) -> CalendarEvent:
     event = CalendarEvent.objects.create(
         organization=calendar.organization,
@@ -340,7 +354,9 @@ def test_adding_a_room_taken_on_a_later_occurrence_is_refused(service, room, hos
     _taken_by_an_event(room, host_calendar)
 
     with pytest.raises(RoomUnavailableError):
-        service.validate_room_changes(series, [room.id], series.start_time, series.end_time)
+        service.validate_room_changes(
+            series.calendar_fk_id, room_change(series, [room]), event=series
+        )
 
 
 def test_a_room_that_manages_its_windows_is_free_only_inside_them(
@@ -364,7 +380,7 @@ def test_a_room_that_manages_its_windows_is_free_only_inside_them(
     two_mondays = _series(host_calendar, _at(3, 11), _at(3, 11, 30), count=2)
     assert (
         service.validate_room_changes(
-            two_mondays, [room.id], two_mondays.start_time, two_mondays.end_time
+            two_mondays.calendar_fk_id, room_change(two_mondays, [room]), event=two_mondays
         )
         is None
     )
@@ -372,7 +388,7 @@ def test_a_room_that_manages_its_windows_is_free_only_inside_them(
     four_mondays = _series(host_calendar, _at(3, 11), _at(3, 11, 30))
     with pytest.raises(RoomUnavailableError):
         service.validate_room_changes(
-            four_mondays, [room.id], four_mondays.start_time, four_mondays.end_time
+            four_mondays.calendar_fk_id, room_change(four_mondays, [room]), event=four_mondays
         )
 
 
@@ -454,7 +470,10 @@ def test_adding_a_room_free_on_every_occurrence_is_allowed(service, room, host_c
     _taken_by_an_event(room, host_calendar)
 
     assert (
-        service.validate_room_changes(series, [room.id], series.start_time, series.end_time) is None
+        service.validate_room_changes(
+            series.calendar_fk_id, room_change(series, [room]), event=series
+        )
+        is None
     )
 
 
@@ -469,7 +488,10 @@ def test_a_cancelled_occurrence_does_not_need_the_room(service, organization, ro
     _taken_by_an_event(room, host_calendar)
 
     assert (
-        service.validate_room_changes(series, [room.id], series.start_time, series.end_time) is None
+        service.validate_room_changes(
+            series.calendar_fk_id, room_change(series, [room]), event=series
+        )
+        is None
     )
 
 
@@ -484,7 +506,10 @@ def test_occurrences_already_over_are_not_checked(service, room, host_calendar):
     )
 
     assert (
-        service.validate_room_changes(series, [room.id], series.start_time, series.end_time) is None
+        service.validate_room_changes(
+            series.calendar_fk_id, room_change(series, [room]), event=series
+        )
+        is None
     )
 
 
@@ -505,7 +530,9 @@ def test_an_endless_series_is_checked_up_to_the_lookahead(
     )
 
     def check():
-        service.validate_room_changes(series, [room.id], series.start_time, series.end_time)
+        service.validate_room_changes(
+            series.calendar_fk_id, room_change(series, [room]), event=series
+        )
 
     if refused:
         with pytest.raises(RoomUnavailableError):

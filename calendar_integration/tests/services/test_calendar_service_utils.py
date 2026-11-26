@@ -16,7 +16,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from calendar_integration.constants import CalendarProvider, CalendarType
-from calendar_integration.models import Calendar, CalendarEvent, EventAttendance
+from calendar_integration.models import (
+    Calendar,
+    CalendarEvent,
+    EventAttendance,
+    ResourceAllocation,
+)
 from calendar_integration.services import calendar_service as calendar_service_module
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_service_utils import (
@@ -318,28 +323,25 @@ class TestSerializeEventInternalAttendee:
 
 
 class TestSerializeEventDataInputResourceAllocations:
-    """Pin the behavior of serialize_event_data_input on the resource-allocation path.
+    """``serialize_event_data_input`` lists the rooms an update gives the event.
 
-    NOTE: This test documents and pins a *known pre-existing latent bug* that the
-    refactor deliberately preserves byte-for-byte. The resources comprehension
-    iterates ``Calendar`` objects (the ``Calendar.original_manager.filter(...)`` result) but then
-    accesses ``resource_allocation.calendar.name`` / ``.status`` as if each item were a
-    ``ResourceAllocation``. A ``Calendar`` has no ``.calendar`` attribute, so when the
-    resource_allocations match a RESOURCE calendar in the org, evaluating the resources
-    list raises ``AttributeError``. We assert that here so the preserved behavior is
-    explicit and any future "fix" is a deliberate, reviewed change rather than an
-    accidental deviation.
+    Each room is read from its calendar. A room the event already holds keeps its
+    allocation's status, and a room it gains is pending, as a new allocation starts.
+    This used to raise ``AttributeError`` (it read allocation fields off the room
+    calendars), which made every user update of an event with rooms fail.
     """
 
-    def test_matching_resource_allocation_raises_attribute_error(self, db, organization):
-        """A non-empty resource_allocations path that matches a RESOURCE Calendar raises."""
-        resource_calendar = Calendar.objects.create(
-            name="Conference Room A",
-            email="room-a@example.com",
-            external_id="ext_resource_a",
-            provider=CalendarProvider.GOOGLE,
-            calendar_type=CalendarType.RESOURCE,
-            organization=organization,
+    def test_rooms_are_listed_with_the_status_of_the_event_allocation(self, db, organization):
+        held_room, new_room = (
+            Calendar.objects.create(
+                name=name,
+                email=f"{external_id}@example.com",
+                external_id=external_id,
+                provider=CalendarProvider.GOOGLE,
+                calendar_type=CalendarType.RESOURCE,
+                organization=organization,
+            )
+            for name, external_id in (("Room A", "ext_room_a"), ("Room B", "ext_room_b"))
         )
         owning_calendar = Calendar.objects.create(
             name="Owning Cal",
@@ -350,24 +352,32 @@ class TestSerializeEventDataInputResourceAllocations:
         event = CalendarEvent.objects.create(
             calendar_fk=owning_calendar,
             organization=organization,
-            title="Event With Resource",
+            title="Event With Rooms",
             start_time_tz_unaware=datetime.datetime(2025, 6, 20, 10, 0, tzinfo=datetime.UTC),
             end_time_tz_unaware=datetime.datetime(2025, 6, 20, 11, 0, tzinfo=datetime.UTC),
             timezone="UTC",
         )
+        ResourceAllocation.objects.create(
+            organization=organization, event=event, calendar_fk=held_room, status="accepted"
+        )
         event_data = CalendarEventInputData(
-            title="Event With Resource",
+            title="Event With Rooms",
             description="",
             start_time=datetime.datetime(2025, 6, 20, 10, 0, tzinfo=datetime.UTC),
             end_time=datetime.datetime(2025, 6, 20, 11, 0, tzinfo=datetime.UTC),
             timezone="UTC",
-            resource_allocations=[ResourceAllocationInputData(resource_id=resource_calendar.id)],
+            resource_allocations=[
+                ResourceAllocationInputData(resource_id=held_room.id),
+                ResourceAllocationInputData(resource_id=new_room.id),
+            ],
         )
 
-        # The (restored) original comprehension iterates Calendar objects but accesses
-        # ``.calendar`` on them — Calendar has no such attribute -> AttributeError.
-        with pytest.raises(AttributeError):
-            serialize_event_data_input(event, event_data, organization)
+        resources = serialize_event_data_input(event, event_data, organization).resources
+
+        assert sorted((r.external_id, r.title, r.email, r.status) for r in resources) == [
+            ("ext_room_a", "Room A", "ext_room_a@example.com", "accepted"),
+            ("ext_room_b", "Room B", "ext_room_b@example.com", "pending"),
+        ]
 
 
 class TestSerializeEventDelegation:

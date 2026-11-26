@@ -19,7 +19,7 @@ import datetime
 import zoneinfo
 from typing import TYPE_CHECKING, Literal, cast
 
-from calendar_integration.constants import CalendarType
+from calendar_integration.constants import CalendarType, RSVPStatus
 from calendar_integration.local_time import local_wall_clock_to_utc
 from calendar_integration.models import (
     Calendar,
@@ -27,6 +27,7 @@ from calendar_integration.models import (
     CalendarManagementToken,
     EventAttendance,
     EventExternalAttendance,
+    ResourceAllocation,
 )
 from calendar_integration.services.dataclasses import (
     CalendarEventData,
@@ -397,7 +398,7 @@ def serialize_event_data_input(
     # ``new`` side and falsely flag it as an attendee change.
     member_user_ids = resolve_member_user_ids(new_attendance_user_ids, organization.id)
     attendances_users_by_id = {u.id: u for u in User.objects.filter(id__in=member_user_ids)}
-    # ``unscoped()`` on both: ``event`` is an organization-safe relation, so
+    # ``unscoped()`` on all three: ``event`` is an organization-safe relation, so
     # filtering it by instance puts the event's ``organization_id`` in the ``ON``
     # clause -- the tenant boundary is in the query already.
     existing_attendances_by_user_id = {
@@ -410,6 +411,13 @@ def serialize_event_data_input(
         a.external_attendee.id: a
         for a in EventExternalAttendance.objects.unscoped().filter(
             event=event, external_attendee__id__in=new_external_attendances_attendee_ids
+        )
+    }
+    new_room_ids = [r.resource_id for r in event_data.resource_allocations]
+    existing_room_statuses = {
+        allocation.calendar_fk_id: allocation.status
+        for allocation in ResourceAllocation.objects.unscoped().filter(
+            event=event, calendar_fk_id__in=new_room_ids
         )
     }
     return CalendarEventData(
@@ -465,20 +473,20 @@ def serialize_event_data_input(
             # For recurring instances, get external attendances from the parent event; for regular events, use their own
             for external_attendance in input_external_attendances
         ],
+        # A room the event already holds keeps its allocation's status; a room it
+        # gains starts as a new allocation does, pending.
         resources=[
             ResourceData(
-                title=resource_allocation.calendar.name,
-                email=resource_allocation.calendar.email,
-                external_id=resource_allocation.calendar.external_id,
+                title=room.name,
+                email=room.email,
+                external_id=room.external_id,
                 status=cast(
                     Literal["accepted", "declined", "pending"],
-                    resource_allocation.status,
+                    existing_room_statuses.get(room.id, RSVPStatus.PENDING),
                 ),
             )
-            # For recurring instances, get resource allocations from the parent event; for regular events, use their own
-            for resource_allocation in Calendar.objects.filter_by_organization(organization).filter(
-                id__in=[r.resource_id for r in event_data.resource_allocations],
-                calendar_type=CalendarType.RESOURCE,
+            for room in Calendar.objects.filter_by_organization(organization).filter(
+                id__in=new_room_ids, calendar_type=CalendarType.RESOURCE
             )
         ],
         external_id=event.external_id,
